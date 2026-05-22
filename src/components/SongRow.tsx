@@ -4,6 +4,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
 import { CachedImage } from './CachedImage';
+import { NowPlayingIndicator } from './NowPlayingIndicator';
 import { RowMetaLine } from './RowMetaLine';
 import { SwipeableRow, type SwipeAction } from './SwipeableRow';
 import { useDownloadStatus } from '../hooks/useDownloadStatus';
@@ -15,6 +16,7 @@ import { type Child } from '../services/subsonicService';
 import { addToPlaylistStore } from '../store/addToPlaylistStore';
 import { moreOptionsStore } from '../store/moreOptionsStore';
 import { offlineModeStore } from '../store/offlineModeStore';
+import { playerStore } from '../store/playerStore';
 import { formatTrackDuration } from '../utils/formatters';
 
 const COVER_SIZE = 300;
@@ -28,6 +30,7 @@ export const SongRow = memo(function SongRow({ song, onPress }: { song: Child; o
   const rating = useRating(song.id, song.userRating);
   const duration =
     song.duration != null ? formatTrackDuration(song.duration) : '—';
+  const isActive = playerStore((s) => s.currentTrack?.id === song.id);
 
   const handleAddToQueue = useCallback(() => {
     addSongToQueue(song);
@@ -83,16 +86,29 @@ export const SongRow = memo(function SongRow({ song, onPress }: { song: Child; o
       onPress={onPress}
     >
       <View style={styles.row}>
-        <CachedImage coverArtId={song.coverArt} size={COVER_SIZE} style={styles.cover} resizeMode="cover" />
+        <View style={styles.coverWrap}>
+          <CachedImage coverArtId={song.coverArt} size={COVER_SIZE} style={styles.cover} resizeMode="cover" />
+          {isActive && (
+            <View style={styles.activeOverlay}>
+              <NowPlayingIndicator size={26} color={colors.primary} />
+            </View>
+          )}
+        </View>
         <View style={styles.text}>
           <Text
-            style={[styles.songName, { color: colors.textPrimary }]}
+            style={[
+              styles.songName,
+              { color: isActive ? colors.primary : colors.textPrimary },
+            ]}
             numberOfLines={1}
           >
             {song.title}
           </Text>
           <Text
-            style={[styles.artistName, { color: colors.textSecondary }]}
+            style={[
+              styles.artistName,
+              { color: isActive ? colors.primary : colors.textSecondary },
+            ]}
             numberOfLines={1}
           >
             {song.artist ?? t('unknownArtist')}
@@ -135,11 +151,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 12,
   },
+  coverWrap: {
+    width: 56,
+    height: 56,
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(0,0,0,0.1)',
+  },
   cover: {
     width: 56,
     height: 56,
     borderRadius: 8,
-    backgroundColor: 'rgba(0,0,0,0.1)',
+  },
+  activeOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   text: {
     flex: 1,

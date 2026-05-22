@@ -46,6 +46,13 @@ jest.mock('../CachedImage', () => {
   return { CachedImage: () => <View /> };
 });
 
+jest.mock('../NowPlayingIndicator', () => {
+  const { View } = require('react-native');
+  return {
+    NowPlayingIndicator: () => <View testID="now-playing-indicator" />,
+  };
+});
+
 jest.mock('../RowMetaLine', () => {
   const { View } = require('react-native');
   return { RowMetaLine: () => <View testID="row-meta" /> };

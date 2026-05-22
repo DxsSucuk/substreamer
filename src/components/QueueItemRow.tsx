@@ -1,9 +1,9 @@
-import { Ionicons } from '@expo/vector-icons';
 import { memo, useCallback, useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
 import { CachedImage } from './CachedImage';
+import { NowPlayingIndicator } from './NowPlayingIndicator';
 import { RowMetaLine } from './RowMetaLine';
 import { SwipeableRow, type SwipeAction } from './SwipeableRow';
 import { useDownloadStatus } from '../hooks/useDownloadStatus';
@@ -127,7 +127,7 @@ export const QueueItemRow = memo(function QueueItemRow({
           />
           {isActive && (
             <View style={styles.activeOverlay}>
-              <Ionicons name="play" size={22} color={colors.primary} style={{ opacity: 1 }} />
+              <NowPlayingIndicator size={24} color={colors.primary} />
             </View>
           )}
         </View>

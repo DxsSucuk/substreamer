@@ -14,6 +14,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
 import { CachedImage } from './CachedImage';
+import { NowPlayingIndicator } from './NowPlayingIndicator';
 import { RowMetaLine } from './RowMetaLine';
 import { SwipeableRow, type SwipeAction } from './SwipeableRow';
 import { useDownloadStatus } from '../hooks/useDownloadStatus';
@@ -23,6 +24,7 @@ import { addSongToQueue, toggleStar } from '../services/moreOptionsService';
 import { addToPlaylistStore } from '../store/addToPlaylistStore';
 import { moreOptionsStore } from '../store/moreOptionsStore';
 import { offlineModeStore } from '../store/offlineModeStore';
+import { playerStore } from '../store/playerStore';
 import { formatTrackDuration } from '../utils/formatters';
 
 import type { ThemeColors } from '../constants/theme';
@@ -50,6 +52,10 @@ export const TrackRow = memo(function TrackRow({ track, trackNumber, colors, onP
   const downloadStatus = useDownloadStatus('song', track.id);
   const offlineMode = offlineModeStore((s) => s.offlineMode);
   const rating = useRating(track.id, track.userRating);
+  // Per-row "is this the currently-playing track" subscription. Returns a
+  // stable boolean per track, so non-active rows only re-render when
+  // currentTrack changes to/from this row (not on every track change).
+  const isActive = playerStore((s) => s.currentTrack?.id === track.id);
   // In offline mode, tracks that aren't fully cached can't play and shouldn't
   // accept any interaction — tapping them today silently routes to the first
   // playable track (via playerService.buildPlayableQueue) which is confusing
@@ -120,24 +126,40 @@ export const TrackRow = memo(function TrackRow({ track, trackNumber, colors, onP
         ]}
         accessibilityState={isOfflineUnplayable ? { disabled: true } : undefined}
       >
-        {trackNumber != null && (
+        {/* Leading slot: cover (if showCoverArt) OR track number — and on
+            the active row, the now-playing indicator replaces the track
+            number outright or overlays the cover. */}
+        {showCoverArt ? (
+          <View style={styles.coverWrap}>
+            <CachedImage
+              coverArtId={track.coverArt}
+              size={COVER_SIZE}
+              style={styles.cover}
+              resizeMode="cover"
+            />
+            {isActive && (
+              <View style={styles.activeOverlay}>
+                <NowPlayingIndicator size={26} color={colors.primary} />
+              </View>
+            )}
+          </View>
+        ) : isActive ? (
+          <View style={styles.numberIndicator}>
+            <NowPlayingIndicator size={20} color={colors.primary} />
+          </View>
+        ) : trackNumber != null ? (
           <Text style={[styles.trackNum, { color: colors.textSecondary }]}>
             {trackNumber}
           </Text>
-        )}
-        {showCoverArt && (
-          <CachedImage
-            coverArtId={track.coverArt}
-            size={COVER_SIZE}
-            style={styles.cover}
-            resizeMode="cover"
-          />
-        )}
+        ) : null}
         <View style={styles.trackInfo}>
           {/* Line 1: title fills, duration pinned to the right edge. */}
           <View style={styles.line}>
             <Text
-              style={[styles.trackTitle, { color: colors.textPrimary }]}
+              style={[
+                styles.trackTitle,
+                { color: isActive ? colors.primary : colors.textPrimary },
+              ]}
               numberOfLines={1}
             >
               {track.title}
@@ -146,12 +168,16 @@ export const TrackRow = memo(function TrackRow({ track, trackNumber, colors, onP
               slots={['duration']}
               durationText={duration}
               durationFontSize={14}
+              durationColor={isActive ? colors.primary : undefined}
             />
           </View>
           {/* Line 2: artist fills, status icons pinned to the right edge. */}
           <View style={[styles.line, styles.artistLine]}>
             <Text
-              style={[styles.trackArtist, { color: colors.textSecondary }]}
+              style={[
+                styles.trackArtist,
+                { color: isActive ? colors.primary : colors.textSecondary },
+              ]}
               numberOfLines={1}
             >
               {track.artist ?? t('unknownArtist')}
@@ -207,12 +233,31 @@ const styles = StyleSheet.create({
     fontSize: 14,
     minWidth: 28,
   },
+  // Width matches `trackNum.minWidth` so swapping the indicator in for
+  // the position number doesn't shift the title column.
+  numberIndicator: {
+    minWidth: 28,
+    alignItems: 'flex-start',
+  },
+  coverWrap: {
+    width: 48,
+    height: 48,
+    marginRight: 12,
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(128,128,128,0.12)',
+  },
   cover: {
     width: 48,
     height: 48,
     borderRadius: 8,
     backgroundColor: 'rgba(128,128,128,0.12)',
-    marginRight: 12,
+  },
+  activeOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   trackInfo: {
     flex: 1,
