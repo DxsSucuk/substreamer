@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useShallow } from 'zustand/react/shallow';
 
+import { BottomSheet } from '../components/BottomSheet';
 import { GradientBackground } from '../components/GradientBackground';
 import { InfoRow } from '../components/InfoRow';
 import { BottomChrome } from '../components/BottomChrome';
@@ -22,7 +23,7 @@ import {
   startScan as startLibraryScan,
   stopPolling,
 } from '../services/scanService';
-import { changePassword, clearApiCache } from '../services/subsonicService';
+import { changePassword, clearApiCache, login, normalizeServerUrl } from '../services/subsonicService';
 import { canUserScan, isAdminRoleUnknown, supports } from '../services/serverCapabilityService';
 import { authStore } from '../store/authStore';
 import { deviceIdentityStore } from '../store/deviceIdentityStore';
@@ -38,9 +39,22 @@ export function SettingsServerScreen() {
   const { alert, alertProps } = useThemedAlert();
   const insets = useSafeAreaInsets();
   const headerHeight = useContext(HeaderHeightContext) ?? 0;
+  const serverUrl = authStore((s) => s.serverUrl);
   const username = authStore((s) => s.username);
   const password = authStore((s) => s.password);
   const [passwordVisible, setPasswordVisible] = useState(false);
+  const [serverUrlSheetVisible, setServerUrlSheetVisible] = useState(false);
+  const [serverUrlInput, setServerUrlInput] = useState('');
+  const [serverUrlSaved, setServerUrlSaved] = useState(false);
+  // Test/save gate state machine. URL changes invalidate any prior test
+  // result so the user can't reach a state where a previously-tested
+  // (but now-edited) URL is committed without re-verification.
+  type ServerUrlTestState =
+    | { kind: 'idle' }
+    | { kind: 'testing' }
+    | { kind: 'passed'; testedUrl: string }
+    | { kind: 'failed'; error: string };
+  const [serverUrlTest, setServerUrlTest] = useState<ServerUrlTestState>({ kind: 'idle' });
   const [changePasswordVisible, setChangePasswordVisible] = useState(false);
   const [currentPw, setCurrentPw] = useState('');
   const [newPw, setNewPw] = useState('');
@@ -62,6 +76,85 @@ export function SettingsServerScreen() {
     setDeviceNameSaved(false);
     setDeviceNameSheetVisible(true);
   }, [deviceLabel]);
+
+  // Server URL editor — for the "my server moved to a new IP" case.
+  // The flow has two stages:
+  //   1. User edits the URL and taps Test. We hit the candidate URL with
+  //      the existing username/password to verify it's a Subsonic server
+  //      that accepts our credentials.
+  //   2. Save is enabled only once the candidate URL has passed Test.
+  //      Save confirms the action (it stops playback + clears the queue
+  //      because in-flight stream URLs are bound to the old host) before
+  //      committing.
+  const handleOpenServerUrlSheet = useCallback(() => {
+    setServerUrlInput(serverUrl ?? '');
+    setServerUrlSaved(false);
+    setServerUrlTest({ kind: 'idle' });
+    setServerUrlSheetVisible(true);
+  }, [serverUrl]);
+
+  // Invalidate any previously-passed test as soon as the URL is edited,
+  // so we can't save a URL different from the one we actually verified.
+  const handleServerUrlInputChange = useCallback((next: string) => {
+    setServerUrlInput(next);
+    setServerUrlTest((prev) => (prev.kind === 'idle' ? prev : { kind: 'idle' }));
+  }, []);
+
+  const handleTestServerUrl = useCallback(async () => {
+    const trimmed = serverUrlInput.trim();
+    if (!trimmed) return;
+    const auth = authStore.getState();
+    if (!auth.username || !auth.password) {
+      setServerUrlTest({ kind: 'failed', error: t('connectionFailed') });
+      return;
+    }
+    const normalised = normalizeServerUrl(trimmed);
+    setServerUrlTest({ kind: 'testing' });
+    const result = await login(normalised, auth.username, auth.password, auth.legacyAuth);
+    if (result.success) {
+      setServerUrlTest({ kind: 'passed', testedUrl: normalised });
+    } else {
+      setServerUrlTest({ kind: 'failed', error: result.error });
+    }
+  }, [serverUrlInput, t]);
+
+  const applyServerUrlChange = useCallback((normalised: string) => {
+    const auth = authStore.getState();
+    if (!auth.username || !auth.password || !auth.apiVersion) return;
+    // Clear the play queue + stop any active playback FIRST. The current
+    // track's source URL is bound to the old host; once we swap the auth
+    // store the player would otherwise keep streaming from the old URL
+    // until its buffer ran out and then 404. Clearing first gives a clean
+    // transition.
+    clearQueue();
+    auth.setSession(normalised, auth.username, auth.password, auth.apiVersion, auth.legacyAuth);
+    clearApiCache();
+    // Clear stale server-info — capability flags / version / extensions
+    // belong to whichever server was at the old URL, not the new one.
+    serverInfoStore.getState().clearServerInfo();
+    setServerUrlSaved(true);
+    setTimeout(() => setServerUrlSheetVisible(false), 500);
+  }, []);
+
+  const handleSaveServerUrl = useCallback(() => {
+    // Guard: Save is only reachable in `passed` state; defensive check
+    // so a refactor that loosens the gating doesn't silently send the
+    // user past the queue-clear confirmation.
+    if (serverUrlTest.kind !== 'passed') return;
+    const normalised = serverUrlTest.testedUrl;
+    if (normalised === serverUrl) {
+      setServerUrlSheetVisible(false);
+      return;
+    }
+    alert(
+      t('serverUrlChangeWarningTitle'),
+      t('serverUrlChangeWarning'),
+      [
+        { text: t('cancel'), style: 'cancel' },
+        { text: t('save'), onPress: () => applyServerUrlChange(normalised) },
+      ],
+    );
+  }, [serverUrlTest, serverUrl, alert, t, applyServerUrlChange]);
 
   const handleSaveDeviceName = useCallback(() => {
     const trimmed = deviceNameInput.trim();
@@ -352,6 +445,26 @@ export function SettingsServerScreen() {
       <View style={settingsStyles.section}>
         <Text style={[settingsStyles.sectionTitle, dynamicStyles.sectionTitle]}>{t('account')}</Text>
         <View style={[settingsStyles.card, settingsStyles.cardPadded, dynamicStyles.card]}>
+          <Pressable
+            onPress={handleOpenServerUrlSheet}
+            style={({ pressed }) => [
+              styles.fieldRow,
+              { borderBottomColor: colors.border },
+              pressed && settingsStyles.pressed,
+            ]}
+          >
+            <Text style={[styles.fieldLabel, { color: colors.textPrimary }]}>{t('serverUrl')}</Text>
+            <View style={styles.deviceNameValue}>
+              <Text
+                style={[styles.fieldValue, { color: colors.textSecondary }]}
+                numberOfLines={1}
+                ellipsizeMode="middle"
+              >
+                {serverUrl ?? '—'}
+              </Text>
+              <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
+            </View>
+          </Pressable>
           <View style={[styles.fieldRow, { borderBottomColor: colors.border }]}>
             <Text style={[styles.fieldLabel, { color: colors.textPrimary }]}>{t('username')}</Text>
             <Text style={[styles.fieldValue, { color: colors.textSecondary }]}>{username ?? '—'}</Text>
@@ -509,59 +622,149 @@ export function SettingsServerScreen() {
       </Pressable>
     </Modal>
 
-    {/* Device name editor */}
-    <Modal
-      visible={deviceNameSheetVisible}
-      transparent
-      animationType="fade"
-      onRequestClose={() => setDeviceNameSheetVisible(false)}
-    >
-      <Pressable style={styles.modalBackdrop} onPress={() => setDeviceNameSheetVisible(false)}>
-        <Pressable style={[styles.modalCard, { backgroundColor: colors.card }]} onPress={() => {}}>
-          <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>{t('deviceName')}</Text>
-          <Text style={[styles.modalHint, { color: colors.textSecondary }]}>
-            {t('deviceNameEditPrompt')}
+    {/* Device name editor — same BottomSheet shape as the server URL
+        editor below so the settings UI feels consistent. */}
+    <BottomSheet visible={deviceNameSheetVisible} onClose={() => setDeviceNameSheetVisible(false)}>
+      <View style={styles.sheetHeader}>
+        <Text style={[styles.sheetTitle, { color: colors.textPrimary }]}>{t('deviceName')}</Text>
+        <Text style={[styles.sheetHint, { color: colors.textSecondary }]}>
+          {t('deviceNameEditPrompt')}
+        </Text>
+      </View>
+      <View style={styles.sheetForm}>
+        <TextInput
+          style={[
+            styles.sheetInput,
+            { backgroundColor: colors.inputBg, color: colors.textPrimary, borderColor: colors.border },
+          ]}
+          placeholder={deviceLabel}
+          placeholderTextColor={colors.textSecondary}
+          value={deviceNameInput}
+          onChangeText={setDeviceNameInput}
+          autoCapitalize="words"
+          autoCorrect={false}
+          returnKeyType="done"
+          onSubmitEditing={handleSaveDeviceName}
+          autoFocus
+        />
+        <Pressable
+          onPress={handleSaveDeviceName}
+          style={({ pressed }) => [
+            styles.sheetSaveButton,
+            { backgroundColor: colors.primary },
+            pressed && styles.sheetButtonPressed,
+          ]}
+        >
+          <Ionicons name="checkmark" size={18} color="#fff" />
+          <Text style={styles.sheetSaveButtonText}>
+            {deviceNameSaved ? t('saved') : t('save')}
           </Text>
-          <TextInput
-            style={[styles.modalInput, { backgroundColor: colors.inputBg, color: colors.textPrimary, borderColor: colors.border }]}
-            placeholder={deviceLabel}
-            placeholderTextColor={colors.textSecondary}
-            value={deviceNameInput}
-            onChangeText={setDeviceNameInput}
-            autoCapitalize="words"
-            autoCorrect={false}
-            returnKeyType="done"
-            onSubmitEditing={handleSaveDeviceName}
-            autoFocus
-          />
-          <View style={styles.modalButtons}>
-            <Pressable
-              onPress={() => setDeviceNameSheetVisible(false)}
-              style={({ pressed }) => [
-                styles.modalButton,
-                { borderColor: colors.border, borderWidth: 1 },
-                pressed && settingsStyles.pressed,
-              ]}
-            >
-              <Text style={[styles.modalButtonText, { color: colors.textPrimary }]}>{t('cancel')}</Text>
-            </Pressable>
-            <Pressable
-              onPress={handleSaveDeviceName}
-              style={({ pressed }) => [
-                styles.modalButton,
-                styles.modalButtonPrimary,
-                { backgroundColor: colors.primary },
-                pressed && settingsStyles.pressed,
-              ]}
-            >
-              <Text style={[styles.modalButtonText, { color: '#fff' }]}>
-                {deviceNameSaved ? t('saved') : t('save')}
-              </Text>
-            </Pressable>
-          </View>
         </Pressable>
-      </Pressable>
-    </Modal>
+        <Pressable
+          onPress={() => setDeviceNameSheetVisible(false)}
+          style={styles.sheetCancelButton}
+        >
+          <Text style={[styles.sheetCancelButtonText, { color: colors.primary }]}>
+            {t('cancel')}
+          </Text>
+        </Pressable>
+      </View>
+    </BottomSheet>
+
+    {/* Server URL editor — for IP-change / port-change / scheme-change.
+        Test gates Save: the user must successfully ping the candidate URL
+        with current credentials before the change can be committed. */}
+    <BottomSheet visible={serverUrlSheetVisible} onClose={() => setServerUrlSheetVisible(false)}>
+      <View style={styles.sheetHeader}>
+        <Text style={[styles.sheetTitle, { color: colors.textPrimary }]}>{t('serverUrl')}</Text>
+        <Text style={[styles.sheetHint, { color: colors.textSecondary }]}>
+          {t('serverUrlEditPrompt')}
+        </Text>
+      </View>
+      <View style={styles.sheetForm}>
+        <TextInput
+          style={[
+            styles.sheetInput,
+            { backgroundColor: colors.inputBg, color: colors.textPrimary, borderColor: colors.border },
+          ]}
+          placeholder="https://music.example.com"
+          placeholderTextColor={colors.textSecondary}
+          value={serverUrlInput}
+          onChangeText={handleServerUrlInputChange}
+          autoCapitalize="none"
+          autoCorrect={false}
+          keyboardType="url"
+          returnKeyType="go"
+          onSubmitEditing={handleTestServerUrl}
+          autoFocus
+          editable={serverUrlTest.kind !== 'testing'}
+        />
+        {/* Inline test status — appears between input and buttons. */}
+        {serverUrlTest.kind === 'passed' && (
+          <View style={styles.sheetTestStatus}>
+            <Ionicons name="checkmark-circle" size={18} color={colors.green ?? colors.primary} />
+            <Text style={[styles.sheetTestStatusText, { color: colors.textSecondary }]}>
+              {t('testPassed')}
+            </Text>
+          </View>
+        )}
+        {serverUrlTest.kind === 'failed' && (
+          <View style={styles.sheetTestStatus}>
+            <Ionicons name="close-circle" size={18} color={colors.red} />
+            <Text style={[styles.sheetTestStatusText, { color: colors.red }]} numberOfLines={3}>
+              {t('testFailed', { error: serverUrlTest.error })}
+            </Text>
+          </View>
+        )}
+        <View style={styles.sheetButtonRow}>
+          <Pressable
+            onPress={handleTestServerUrl}
+            disabled={serverUrlTest.kind === 'testing' || !serverUrlInput.trim()}
+            style={({ pressed }) => [
+              styles.sheetSplitButton,
+              styles.sheetTestButton,
+              {
+                borderColor: colors.primary,
+              },
+              pressed && styles.sheetButtonPressed,
+              (serverUrlTest.kind === 'testing' || !serverUrlInput.trim()) && styles.sheetButtonDisabled,
+            ]}
+          >
+            {serverUrlTest.kind === 'testing' ? (
+              <ActivityIndicator size="small" color={colors.primary} />
+            ) : (
+              <Ionicons name="flask-outline" size={18} color={colors.primary} />
+            )}
+            <Text style={[styles.sheetSplitButtonText, { color: colors.primary }]}>
+              {serverUrlTest.kind === 'testing' ? t('testing') : t('testServer')}
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={handleSaveServerUrl}
+            disabled={serverUrlTest.kind !== 'passed'}
+            style={({ pressed }) => [
+              styles.sheetSplitButton,
+              { backgroundColor: colors.primary },
+              pressed && styles.sheetButtonPressed,
+              serverUrlTest.kind !== 'passed' && styles.sheetButtonDisabled,
+            ]}
+          >
+            <Ionicons name="checkmark" size={18} color="#fff" />
+            <Text style={[styles.sheetSplitButtonText, { color: '#fff' }]}>
+              {serverUrlSaved ? t('saved') : t('save')}
+            </Text>
+          </Pressable>
+        </View>
+        <Pressable
+          onPress={() => setServerUrlSheetVisible(false)}
+          style={styles.sheetCancelButton}
+        >
+          <Text style={[styles.sheetCancelButtonText, { color: colors.primary }]}>
+            {t('cancel')}
+          </Text>
+        </Pressable>
+      </View>
+    </BottomSheet>
 
     <ThemedAlert {...alertProps} />
     </>
@@ -741,6 +944,97 @@ const styles = StyleSheet.create({
     borderWidth: 0,
   },
   modalButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  // BottomSheet-styled server URL editor (mirrors EditShareSheet's layout).
+  sheetHeader: {
+    paddingHorizontal: 4,
+    marginBottom: 16,
+  },
+  sheetTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  sheetHint: {
+    fontSize: 14,
+    lineHeight: 18,
+  },
+  sheetForm: {
+    paddingHorizontal: 4,
+  },
+  sheetInput: {
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 16,
+  },
+  sheetSaveButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderRadius: 12,
+    paddingVertical: 14,
+    marginTop: 20,
+    marginBottom: 8,
+  },
+  sheetSaveButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  sheetButtonPressed: {
+    opacity: 0.8,
+  },
+  sheetButtonDisabled: {
+    opacity: 0.4,
+  },
+  sheetCancelButton: {
+    alignItems: 'center',
+    paddingVertical: 12,
+    marginBottom: 4,
+  },
+  sheetCancelButtonText: {
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  // Test-status row sits between input and the action buttons. Inline
+  // icon + message so the user gets immediate confirmation without
+  // having to read button labels for state.
+  sheetTestStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 12,
+  },
+  sheetTestStatusText: {
+    flex: 1,
+    fontSize: 14,
+    lineHeight: 18,
+  },
+  sheetButtonRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  sheetSplitButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderRadius: 12,
+    paddingVertical: 14,
+  },
+  sheetTestButton: {
+    borderWidth: 1,
+    backgroundColor: 'transparent',
+  },
+  sheetSplitButtonText: {
     fontSize: 16,
     fontWeight: '600',
   },

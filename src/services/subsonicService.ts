@@ -33,7 +33,13 @@ const reactNativeCrypto: Crypto = {
 const { CryptoDigestAlgorithm, CryptoEncoding, getRandomBytesAsync, digestStringAsync } =
   ExpoCrypto;
 
-function normalizeServerUrl(url: string): string {
+/**
+ * Canonical server URL form used by every URL builder in this module.
+ * Trims whitespace, defaults bare hosts to HTTPS, strips trailing slashes.
+ * Exported so the Settings screen's URL editor and any other caller can
+ * round-trip values through the same shape that's stored in authStore.
+ */
+export function normalizeServerUrl(url: string): string {
   let base = url.trim();
   if (!base.startsWith('http://') && !base.startsWith('https://')) {
     base = `https://${base}`;
