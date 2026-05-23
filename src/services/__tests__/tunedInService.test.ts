@@ -734,6 +734,21 @@ describe('fetchCustomMix', () => {
     });
   });
 
+  // Issue #152 — era-only mix (no genre) used to fall through to
+  // "fully random" and ignore fromYear/toYear. Now it makes one call to
+  // getRandomSongsFiltered with the year window and no genre.
+  it('fetches with era filter only when no genres are selected', async () => {
+    mockGetRandomSongsFiltered.mockResolvedValue(songs);
+    const result = await fetchCustomMix([], 2000, 2009, true);
+    expect(result).toEqual(songs);
+    expect(mockGetRandomSongsFiltered).toHaveBeenCalledTimes(1);
+    expect(mockGetRandomSongsFiltered).toHaveBeenCalledWith({
+      size: 20,
+      fromYear: 2000,
+      toYear: 2009,
+    });
+  });
+
   it('splits evenly across multiple genres', async () => {
     mockGetRandomSongsFiltered
       .mockResolvedValueOnce([makeSong({ id: 'a' })])

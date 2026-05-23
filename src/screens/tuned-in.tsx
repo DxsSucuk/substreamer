@@ -629,14 +629,16 @@ const BuildMixSheetContent = memo(function BuildMixSheetContent({
     try {
       let songs: Child[];
       const ll = layoutPreferencesStore.getState().listLength;
-      if (selectedGenres.length === 0) {
-        // No selection — fully random "Mix It Up"
+      const decade = DECADES[selectedDecadeIndex];
+      const hasDecade = decade.fromYear !== undefined && decade.toYear !== undefined;
+      if (selectedGenres.length === 0 && !hasDecade) {
+        // No selection at all — fully random "Mix It Up"
         const strategy = online
           ? { type: 'random' as const, size: ll }
           : { type: 'offline' as const };
         songs = await fetchMixSongs(strategy, ll);
       } else {
-        const decade = DECADES[selectedDecadeIndex];
+        // Era-only, genre-only, or both — fetchCustomMix handles all three.
         songs = await fetchCustomMix(
           selectedGenres,
           decade.fromYear,

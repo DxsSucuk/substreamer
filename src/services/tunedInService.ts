@@ -483,6 +483,16 @@ export async function fetchCustomMix(
     return shuffleArray(results).slice(0, listLength);
   }
 
+  // Era-only (no genre): one Subsonic call with the year window.
+  if (genres.length === 0) {
+    const songs = await getRandomSongsFiltered({
+      size: listLength,
+      fromYear,
+      toYear,
+    });
+    return songs ?? [];
+  }
+
   if (genres.length === 1) {
     const songs = await getRandomSongsFiltered({
       size: listLength,
