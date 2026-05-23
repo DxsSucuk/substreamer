@@ -13,14 +13,6 @@ jest.mock('../DownloadBanner', () => {
   };
 });
 
-jest.mock('../CoverArtRecacheBanner', () => {
-  const { View } = require('react-native');
-  return {
-    CoverArtRecacheBanner: () => <View testID="cover-art-recache-banner" />,
-    RECACHE_BANNER_HEIGHT: 44,
-  };
-});
-
 jest.mock('../../hooks/useLayoutMode', () => ({
   useLayoutMode: jest.fn(() => 'compact'),
 }));

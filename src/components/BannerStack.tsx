@@ -15,15 +15,20 @@
  *   5. (reserved — no connectivity "offline" variant exists today;
  *      ConnectivityBanner hides itself when the user enables offline mode)
  *   6. Library-sync progress / paused-offline variants (LibrarySyncBanner)
+ *   7. Cover-art recache progress (CoverArtRecacheBanner) — transient
+ *      post-Migration-22 sweep; ranks below library-sync progress because
+ *      metadata catch-up is the higher-priority data signal
  */
 
 import { memo } from 'react';
 
 import { ConnectivityBanner } from './ConnectivityBanner';
+import { CoverArtRecacheBanner } from './CoverArtRecacheBanner';
 import { LibrarySyncBanner } from './LibrarySyncBanner';
 import { PersistenceDegradedBanner } from './PersistenceDegradedBanner';
 import { StorageFullBanner } from './StorageFullBanner';
 import { connectivityStore } from '../store/connectivityStore';
+import { coverArtRecacheStore } from '../store/coverArtRecacheStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { isDbHealthy } from '../store/persistence';
 import { storageLimitStore } from '../store/storageLimitStore';
@@ -34,6 +39,8 @@ export const BannerStack = memo(function BannerStack() {
   const offlineMode = offlineModeStore((s) => s.offlineMode);
   const isStorageFull = storageLimitStore((s) => s.isStorageFull);
   const syncPhase = syncStatusStore((s) => s.detailSyncPhase);
+  const recacheStatus = coverArtRecacheStore((s) => s.status);
+  const recacheTotal = coverArtRecacheStore((s) => s.total);
 
   // Persistence-degraded is sticky and captured at module load. If SQLite
   // failed to open, surface this above everything else so the user knows
@@ -60,6 +67,10 @@ export const BannerStack = memo(function BannerStack() {
 
   if (syncPhase === 'syncing' || syncPhase === 'paused-offline') {
     return <LibrarySyncBanner />;
+  }
+
+  if (recacheStatus === 'running' && recacheTotal > 0) {
+    return <CoverArtRecacheBanner />;
   }
   return null;
 });

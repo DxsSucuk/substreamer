@@ -1,12 +1,10 @@
 import { StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { CoverArtRecacheBanner } from './CoverArtRecacheBanner';
 import { DownloadBanner } from './DownloadBanner';
 import { MiniPlayer } from './MiniPlayer';
 import { useLayoutMode } from '../hooks/useLayoutMode';
 import { authStore } from '../store/authStore';
-import { coverArtRecacheStore } from '../store/coverArtRecacheStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { playerStore } from '../store/playerStore';
 
@@ -30,6 +28,10 @@ import { playerStore } from '../store/playerStore';
  * already provides safe-area handling for its own children, so the tabs
  * call passes `false` (the default). Non-tab Stack screens render this
  * as the last layout-flow element, so they pass `true`.
+ *
+ * The cover-art recache progress banner used to live here too in a
+ * download-style strip. It moved to `BannerStack` at the top of the
+ * tabs to match the library-sync notification pill.
  */
 interface BottomChromeProps {
   withSafeAreaPadding?: boolean;
@@ -47,17 +49,14 @@ export function BottomChrome({ withSafeAreaPadding = false }: BottomChromeProps 
       (q) => q.status === 'downloading' || q.status === 'queued' || q.status === 'error',
     ),
   );
-  const isRecaching = coverArtRecacheStore(
-    (s) => s.status === 'running' && s.total > 0,
-  );
   const insets = useSafeAreaInsets();
 
   if (!isLoggedIn) return null;
   // On wide layouts the MiniPlayer never renders, so the chrome only has a
-  // reason to mount when there are downloads or a recache pass running.
-  if (isWide && !hasDownloads && !isRecaching) return null;
-  // On compact layouts we need EITHER a track or an active download or a recache.
-  if (!isWide && !hasCurrentTrack && !hasDownloads && !isRecaching) return null;
+  // reason to mount when there are downloads.
+  if (isWide && !hasDownloads) return null;
+  // On compact layouts we need EITHER a track or an active download.
+  if (!isWide && !hasCurrentTrack && !hasDownloads) return null;
 
   return (
     <View
@@ -66,13 +65,6 @@ export function BottomChrome({ withSafeAreaPadding = false }: BottomChromeProps 
         withSafeAreaPadding ? { paddingBottom: insets.bottom } : null,
       ]}
     >
-      {/* Mount the banner only when there's something to show. The
-          banner's own height animation can stall after a download
-          completes (Reanimated worklet race vs. queue mutation), and
-          there's no UI affordance to dismiss a stuck banner from the
-          tabs view — easier to never let it get into that state. The
-          entrance animation still plays on every fresh mount. */}
-      {isRecaching && <CoverArtRecacheBanner />}
       {hasDownloads && <DownloadBanner />}
       {!isWide && hasCurrentTrack && <MiniPlayer />}
     </View>

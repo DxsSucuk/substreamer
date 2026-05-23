@@ -52,8 +52,17 @@ jest.mock('../PersistenceDegradedBanner', () => ({
   },
 }));
 
+jest.mock('../CoverArtRecacheBanner', () => ({
+  CoverArtRecacheBanner: () => {
+    const React = require('react');
+    const { Text } = require('react-native');
+    return React.createElement(Text, { testID: 'banner-cover-art-recache' }, 'cover-art-recache');
+  },
+}));
+
 import { BannerStack } from '../BannerStack';
 import { connectivityStore } from '../../store/connectivityStore';
+import { coverArtRecacheStore } from '../../store/coverArtRecacheStore';
 import { offlineModeStore } from '../../store/offlineModeStore';
 import { storageLimitStore } from '../../store/storageLimitStore';
 import { syncStatusStore } from '../../store/syncStatusStore';
@@ -64,6 +73,7 @@ function resetAll() {
   offlineModeStore.setState({ offlineMode: false } as any);
   storageLimitStore.setState({ isStorageFull: false } as any);
   syncStatusStore.setState({ detailSyncPhase: 'idle' });
+  coverArtRecacheStore.setState({ status: 'idle', total: 0, processed: 0 } as any);
 }
 
 beforeEach(resetAll);
@@ -165,5 +175,25 @@ describe('BannerStack — priority selection', () => {
     mockDbHealthy = true;
     const { queryByTestId } = render(<BannerStack />);
     expect(queryByTestId('banner-persistence-degraded')).toBeNull();
+  });
+
+  it('shows cover-art recache banner when running and no higher-priority banner is active', () => {
+    coverArtRecacheStore.setState({ status: 'running', total: 100, processed: 25 } as any);
+    const { queryByTestId } = render(<BannerStack />);
+    expect(queryByTestId('banner-cover-art-recache')).not.toBeNull();
+  });
+
+  it('does not show cover-art recache banner when total is 0', () => {
+    coverArtRecacheStore.setState({ status: 'running', total: 0, processed: 0 } as any);
+    const { queryByTestId } = render(<BannerStack />);
+    expect(queryByTestId('banner-cover-art-recache')).toBeNull();
+  });
+
+  it('library-sync progress suppresses cover-art recache (lower priority)', () => {
+    syncStatusStore.setState({ detailSyncPhase: 'syncing' });
+    coverArtRecacheStore.setState({ status: 'running', total: 100, processed: 25 } as any);
+    const { queryByTestId } = render(<BannerStack />);
+    expect(queryByTestId('banner-library-sync')).not.toBeNull();
+    expect(queryByTestId('banner-cover-art-recache')).toBeNull();
   });
 });
