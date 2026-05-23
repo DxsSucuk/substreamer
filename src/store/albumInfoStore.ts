@@ -12,7 +12,7 @@ import { withTimeout } from '../utils/withTimeout';
 /** Hard budget for a single album-info fetch (server + enrichment chain). */
 const FETCH_TIMEOUT_MS = 15_000;
 
-interface AlbumInfoEntry {
+export interface AlbumInfoEntry {
   albumInfo: AlbumInfo;
   /** Wikipedia description if enriched client-side (server had no notes). */
   enrichedNotes: string | null;

@@ -11,7 +11,7 @@
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { FlashList } from '@shopify/flash-list';
 import { LinearGradient } from 'expo-linear-gradient';
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ActivityIndicator,
@@ -68,10 +68,9 @@ import {
   togglePlayPause,
 } from '../services/playerService';
 import { sanitizeBiographyText } from '../utils/formatters';
-import { minDelay } from '../utils/stringHelpers';
 import { type Child } from '../services/subsonicService';
-import { albumInfoStore } from '../store/albumInfoStore';
-import { lyricsStore } from '../store/lyricsStore';
+import { usePlayerAlbumInfo } from '../hooks/usePlayerAlbumInfo';
+import { usePlayerLyrics } from '../hooks/usePlayerLyrics';
 import { playbackSettingsStore } from '../store/playbackSettingsStore';
 import { createShareStore } from '../store/createShareStore';
 import { moreOptionsStore } from '../store/moreOptionsStore';
@@ -134,28 +133,21 @@ export function ExpandedPlayerView({
   // Right panel mode: queue (default), lyrics placeholder, or album info
   const [rightPanelMode, setRightPanelMode] = useState<'queue' | 'lyrics' | 'info'>('queue');
 
-  // Album info state
+  // Album info — fetch only when the user is actually viewing the info panel.
   const albumId = currentTrack?.albumId ?? null;
-  const albumInfoEntry = albumInfoStore((s) => albumId ? s.entries[albumId] : undefined);
-  const albumInfoLoading = albumInfoStore((s) => albumId ? (s.loading[albumId] ?? false) : false);
-  const albumInfoError = albumInfoStore((s) => albumId ? (s.errors[albumId] ?? null) : null);
-  const fetchAttemptedRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (rightPanelMode !== 'info' || !albumId || albumInfoEntry || albumInfoLoading) return;
-    if (fetchAttemptedRef.current === albumId) return;
-    fetchAttemptedRef.current = albumId;
-    albumInfoStore.getState().fetchAlbumInfo(
-      albumId,
-      currentTrack?.artist ?? undefined,
-      currentTrack?.album ?? undefined,
-    );
-  }, [rightPanelMode, albumId, albumInfoEntry, albumInfoLoading, currentTrack?.artist, currentTrack?.album]);
-
-  // Reset fetch guard when album changes
-  useEffect(() => {
-    fetchAttemptedRef.current = null;
-  }, [albumId]);
+  const {
+    entry: albumInfoEntry,
+    loading: albumInfoLoading,
+    error: albumInfoError,
+    refreshing: albumInfoRefreshing,
+    handleRetry: handleRetryAlbumInfo,
+    handleRefresh: handleRefreshAlbumInfo,
+  } = usePlayerAlbumInfo(
+    albumId,
+    currentTrack?.artist,
+    currentTrack?.album,
+    { enabled: rightPanelMode === 'info' },
+  );
 
   const sanitizedNotes = useMemo(() => {
     // Prefer server notes, fall back to Wikipedia-enriched notes
@@ -169,66 +161,14 @@ export function ExpandedPlayerView({
 
   const notesAttributionUrl = albumInfoEntry?.enrichedNotesUrl ?? null;
 
-  // Pull-to-refresh for album info panel
-  const [albumInfoRefreshing, setAlbumInfoRefreshing] = useState(false);
-  const handleRefreshAlbumInfo = useCallback(async () => {
-    if (!albumId) return;
-    setAlbumInfoRefreshing(true);
-    const delay = minDelay();
-    // Clear existing entry so a fresh fetch is triggered
-    const { [albumId]: _, ...rest } = albumInfoStore.getState().entries;
-    albumInfoStore.setState({ entries: rest });
-    fetchAttemptedRef.current = null;
-    await albumInfoStore.getState().fetchAlbumInfo(
-      albumId,
-      currentTrack?.artist ?? undefined,
-      currentTrack?.album ?? undefined,
-    );
-    await delay;
-    setAlbumInfoRefreshing(false);
-  }, [albumId, currentTrack?.artist, currentTrack?.album]);
-
-  const handleRetryAlbumInfo = useCallback(() => {
-    if (!albumId) return;
-    fetchAttemptedRef.current = null;
-    albumInfoStore.getState().fetchAlbumInfo(
-      albumId,
-      currentTrack?.artist ?? undefined,
-      currentTrack?.album ?? undefined,
-    );
-  }, [albumId, currentTrack?.artist, currentTrack?.album]);
-
-  // Lyrics state
+  // Lyrics
   const trackId = currentTrack?.id ?? null;
-  const lyricsEntry = lyricsStore((s) => (trackId ? s.entries[trackId] : undefined));
-  const lyricsLoading = lyricsStore((s) => (trackId ? (s.loading[trackId] ?? false) : false));
-  const lyricsError = lyricsStore((s) => (trackId ? (s.errors[trackId] ?? null) : null));
-  const lyricsFetchAttemptedRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (!trackId || lyricsEntry || lyricsLoading) return;
-    if (lyricsFetchAttemptedRef.current === trackId) return;
-    lyricsFetchAttemptedRef.current = trackId;
-    lyricsStore.getState().fetchLyrics(
-      trackId,
-      currentTrack?.artist ?? undefined,
-      currentTrack?.title ?? undefined,
-    );
-  }, [trackId, lyricsEntry, lyricsLoading, currentTrack?.artist, currentTrack?.title]);
-
-  useEffect(() => {
-    lyricsFetchAttemptedRef.current = null;
-  }, [trackId]);
-
-  const handleRetryLyrics = useCallback(() => {
-    if (!trackId) return;
-    lyricsFetchAttemptedRef.current = null;
-    lyricsStore.getState().fetchLyrics(
-      trackId,
-      currentTrack?.artist ?? undefined,
-      currentTrack?.title ?? undefined,
-    );
-  }, [trackId, currentTrack?.artist, currentTrack?.title]);
+  const {
+    entry: lyricsEntry,
+    loading: lyricsLoading,
+    error: lyricsError,
+    handleRetry: handleRetryLyrics,
+  } = usePlayerLyrics(trackId, currentTrack?.artist, currentTrack?.title);
 
   // Measure the art area so cover art fills available height
   const [artMaxSize, setArtMaxSize] = useState(0);
