@@ -2233,6 +2233,23 @@ const MIGRATION_TASKS: MigrationTask[] = [
     },
   },
 
+  {
+    id: 23,
+    name: 'Clear legacy cover-art recache blob',
+    run: async (log) => {
+      // Phase 4 of the image-cache rework: the old coverArtRecacheStore
+      // (persisted under `substreamer-cover-art-recache`) was replaced by
+      // the persistent SQL image-download queue in v8.0.62+. Drop the
+      // dead blob so it doesn't sit on disk forever.
+      try {
+        await kvStorage.removeItem('substreamer-cover-art-recache');
+        log('[m23] cleared substreamer-cover-art-recache');
+      } catch (e) {
+        log(`[m23] could not clear blob: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+  },
+
   // -------------------------------------------------------------------
   // TEMPLATE – How to add a new migration task:
   //
