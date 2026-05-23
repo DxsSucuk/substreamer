@@ -26,10 +26,21 @@
  */
 import * as SQLite from 'expo-sqlite';
 
+/**
+ * `RunResult` mirrors `SQLiteRunResult` from expo-sqlite. Existing callers
+ * ignore the return value (their TypeScript signature was historically
+ * `void`); widening it lets callers that want row-modification counts read
+ * them without changing existing call sites.
+ */
+export interface RunResult {
+  changes: number;
+  lastInsertRowId: number;
+}
+
 export interface InternalDb {
   getFirstSync<T>(sql: string, params?: readonly unknown[]): T | undefined;
   getAllSync<T>(sql: string, params?: readonly unknown[]): T[];
-  runSync(sql: string, params?: readonly unknown[]): void;
+  runSync(sql: string, params?: readonly unknown[]): RunResult;
   execSync(sql: string): void;
   withTransactionSync(fn: () => void): void;
 }
@@ -248,6 +259,31 @@ try {
   );
   db.execSync(
     'CREATE INDEX IF NOT EXISTS idx_cached_images_cover_art_id ON cached_images (cover_art_id);',
+  );
+
+  // image_download_queue — persistent queue for user-initiated cover-art
+  // refresh cycles. Each row is one cover_art_id awaiting (or in-progress on,
+  // or errored after) a re-download. `PRIMARY KEY (cover_art_id)` dedups
+  // duplicate enqueues via INSERT OR IGNORE. Mirrors the shape of
+  // download_queue for the music queue — same status enum vocabulary
+  // (queued | downloading | error), same retry-once-inline + reset-on-restart
+  // policy. See plans/2026-05-23-image-cache-queue-rework.md.
+  db.execSync(
+    `CREATE TABLE IF NOT EXISTS image_download_queue (
+       cover_art_id TEXT PRIMARY KEY NOT NULL,
+       scope TEXT NOT NULL,
+       status TEXT NOT NULL,
+       error TEXT,
+       attempts INTEGER NOT NULL DEFAULT 0,
+       added_at INTEGER NOT NULL,
+       cycle_id TEXT NOT NULL
+     );`,
+  );
+  db.execSync(
+    'CREATE INDEX IF NOT EXISTS idx_image_download_queue_status ON image_download_queue (status, added_at);',
+  );
+  db.execSync(
+    'CREATE INDEX IF NOT EXISTS idx_image_download_queue_cycle ON image_download_queue (cycle_id);',
   );
 } catch (e) {
   db = null;

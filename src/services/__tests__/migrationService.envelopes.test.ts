@@ -165,7 +165,7 @@ function makeFakeDb() {
 
       return [];
     },
-    runSync(sql: string, params: readonly unknown[] = []): void {
+    runSync(sql: string, params: readonly unknown[] = []) {
       const s = sql.replace(/\s+/g, ' ').trim();
 
       if (/^UPDATE cached_songs SET raw_json = \? WHERE song_id = \?/i.test(s)) {
@@ -241,7 +241,7 @@ describe('migrations 17–20: raw_json backfill', () => {
 
   beforeEach(() => {
     fake = makeFakeDb();
-    setDbForDetailTables(fake.db);
+    setDbForDetailTables(fake.db as never);
     kvStorage.removeItem('substreamer-playlist-details');
     kvStorage.removeItem('substreamer-favorites');
     kvStorage.removeItem('substreamer-auth');

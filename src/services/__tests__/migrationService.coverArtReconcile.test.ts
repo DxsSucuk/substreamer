@@ -288,7 +288,7 @@ function makeFakeDb() {
       }
       return [];
     },
-    runSync(sql: string, params: readonly unknown[] = []): void {
+    runSync(sql: string, params: readonly unknown[] = []) {
       const s = sql.replace(/\s+/g, ' ').trim();
       if (/^DELETE FROM cached_images WHERE cover_art_id = \? AND size = \?/i.test(s)) {
         const [cid, size] = params as [string, number];

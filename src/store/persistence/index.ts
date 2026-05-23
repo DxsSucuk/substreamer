@@ -31,3 +31,6 @@ export * from './detailTables';
 
 // Image-cache row-table API
 export * from './imageCacheTable';
+
+// Image-download-queue row-table API (persistent queue for cover-art refresh cycles)
+export * from './imageDownloadQueueTable';

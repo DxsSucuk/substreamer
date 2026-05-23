@@ -83,6 +83,7 @@ describe('persistence/db (happy path)', () => {
       'cached_item_songs',
       'download_queue',
       'cached_images',
+      'image_download_queue',
     ]);
   });
 
@@ -102,6 +103,8 @@ describe('persistence/db (happy path)', () => {
         'idx_cached_songs_album_id',
         'idx_download_queue_position',
         'idx_download_queue_status',
+        'idx_image_download_queue_cycle',
+        'idx_image_download_queue_status',
         'idx_pending_scrobble_events_time',
         'idx_scrobble_events_time',
         'idx_song_index_albumId',
