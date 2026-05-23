@@ -56,11 +56,17 @@ export const playlistLibraryStore = create<PlaylistLibraryState>()(
         // Prevent duplicate fetches
         if (get().loading) return;
 
-        const oldIds = get().playlists.map((p) => p.id);
         set({ loading: true, error: null });
         try {
           await ensureCoverArtAuth();
           const playlists = await getAllPlaylists();
+
+          // Capture old IDs at COMMIT time, not at fetch start, so the
+          // reconcile hook sees the actual baseline at the moment the
+          // store replacement happens. `getAllPlaylists` throws on
+          // protocol or HTTP failure (see `throwIfSubsonicFailure` in
+          // subsonicService), so we trust the result here.
+          const oldIds = get().playlists.map((p) => p.id);
 
           set({
             playlists,

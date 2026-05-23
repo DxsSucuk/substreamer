@@ -206,8 +206,13 @@ describe('albumLibraryStore', () => {
   // in `dataSyncService.onAlbumReferenced`, which is exercised by
   // `dataSyncService.test.ts`.
 
-  describe('empty-response safety (transient-failure guard)', () => {
-    it('does not wipe a populated cache when both strategies return empty', async () => {
+  describe('empty-result semantics', () => {
+    it('honors a legitimately empty fetch and replaces a populated cache', async () => {
+      // Both transports now throw on Subsonic protocol failure (see
+      // throwIfSubsonicFailure in subsonicService). A clean empty result
+      // is therefore authoritative — honor it rather than preserving stale
+      // data. Previously this test verified the opposite (defensive guard);
+      // see plans/2026-05-22-audit-remediation-roadmap.md Phase 4.
       albumLibraryStore.setState({
         albums: [
           makeAlbum('a1', 'A', 'A Artist'),
@@ -219,9 +224,10 @@ describe('albumLibraryStore', () => {
 
       await albumLibraryStore.getState().fetchAllAlbums();
 
-      expect(albumLibraryStore.getState().albums).toHaveLength(2);
-      expect(albumLibraryStore.getState().error).toBeTruthy();
+      expect(albumLibraryStore.getState().albums).toEqual([]);
+      expect(albumLibraryStore.getState().error).toBeNull();
       expect(albumLibraryStore.getState().loading).toBe(false);
+      expect(albumLibraryStore.getState().lastFetchedAt).toBeGreaterThan(0);
     });
 
     it('DOES replace when the old list was empty and new list is empty (initial state)', async () => {
@@ -230,9 +236,51 @@ describe('albumLibraryStore', () => {
       mockGetAllAlbumsAlphabetical.mockResolvedValue([]);
 
       await albumLibraryStore.getState().fetchAllAlbums();
-      // Empty → empty transition on cold cache: not an error, just a quiet no-op.
       expect(albumLibraryStore.getState().albums).toEqual([]);
       expect(albumLibraryStore.getState().error).toBeNull();
+    });
+
+    it('preserves the cache when a transport error throws', async () => {
+      albumLibraryStore.setState({
+        albums: [makeAlbum('a1', 'A', 'A Artist')],
+      });
+      mockSearchAllAlbums.mockRejectedValue(new Error('Protocol error: search3 failed'));
+
+      await albumLibraryStore.getState().fetchAllAlbums();
+
+      expect(albumLibraryStore.getState().albums).toHaveLength(1);
+      expect(albumLibraryStore.getState().error).toBe('Protocol error: search3 failed');
+    });
+
+    it('captures oldIds at commit time, not at fetch start', async () => {
+      // Mid-fetch mutation: simulate `applyLocalPlay` (or any other
+      // concurrent setState) running while the network call is in flight.
+      // The reconcile hook must see the post-mutation baseline, not the
+      // pre-fetch snapshot.
+      const { registerAlbumLibraryReconcileHook } = require('../albumLibraryStore');
+      const hook = jest.fn();
+      registerAlbumLibraryReconcileHook(hook);
+
+      albumLibraryStore.setState({
+        albums: [makeAlbum('a1', 'A', 'A Artist')],
+      });
+
+      mockSearchAllAlbums.mockImplementation(async () => {
+        // Mutation during the fetch: a play bumps a1's metadata.
+        const cur = albumLibraryStore.getState().albums;
+        albumLibraryStore.setState({
+          albums: [...cur, makeAlbum('a2', 'B', 'B Artist')],
+        });
+        return [makeAlbum('a1', 'A', 'A Artist')];
+      });
+
+      await albumLibraryStore.getState().fetchAllAlbums();
+
+      // oldIds at commit time should include both a1 AND a2 (the mid-fetch
+      // mutation), not just a1 (the pre-fetch snapshot).
+      expect(hook).toHaveBeenCalledWith(['a1', 'a2'], ['a1']);
+
+      registerAlbumLibraryReconcileHook(null);
     });
   });
 

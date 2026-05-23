@@ -100,6 +100,27 @@ export function getApi(): SubsonicAPI | null {
 }
 
 /**
+ * Throw a typed error when a Subsonic response carries a protocol-level
+ * failure envelope (`status: 'failed' | 'fail'`). Some servers and the
+ * subsonic-api SDK return a successful HTTP response with this envelope
+ * rather than throwing on auth errors, server-side index issues, etc. —
+ * without this guard, callers see a silent empty result instead of an
+ * error they can react to.
+ *
+ * HTTP-level transport errors (DNS, TLS, 5xx, etc.) already throw at the
+ * `await api.X()` site; this fills the protocol-error gap.
+ */
+function throwIfSubsonicFailure(
+  response: { status?: string; error?: { code?: number; message?: string } },
+  operation: string,
+): void {
+  if (response.status === 'failed' || response.status === 'fail') {
+    const msg = response.error?.message ?? `${operation} failed`;
+    throw new Error(msg);
+  }
+}
+
+/**
  * Return the cached SubsonicAPI instance without checking offline mode.
  * Used by the connectivity service which must ping the server regardless
  * of offline state to detect when it becomes reachable again.
@@ -519,6 +540,7 @@ export async function searchAllAlbums(): Promise<AlbumID3[]> {
     songCount: 0,
     artistCount: 0,
   });
+  throwIfSubsonicFailure(response, 'search3');
   return response.searchResult3?.album ?? [];
 }
 
@@ -536,6 +558,7 @@ export async function getAlbumListAlphabetical(
     size,
     offset,
   });
+  throwIfSubsonicFailure(response, 'getAlbumList2');
   return response.albumList2?.album ?? [];
 }
 
@@ -666,6 +689,7 @@ export async function getAllPlaylists(): Promise<Playlist[]> {
   const api = getApi();
   if (!api) return [];
   const response = await api.getPlaylists();
+  throwIfSubsonicFailure(response, 'getPlaylists');
   return response.playlists?.playlist ?? [];
 }
 

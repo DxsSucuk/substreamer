@@ -97,10 +97,6 @@ export const albumLibraryStore = create<AlbumLibraryState>()(
         // Prevent duplicate fetches
         if (get().loading) return;
 
-        // Capture old IDs BEFORE the fetch starts so the reconcile hook can
-        // diff the full-refetch result against what we had.
-        const oldIds = get().albums.map((a) => a.id);
-
         set({ loading: true, error: null });
         try {
           await ensureCoverArtAuth();
@@ -113,23 +109,19 @@ export const albumLibraryStore = create<AlbumLibraryState>()(
             albums = await getAllAlbumsAlphabetical();
           }
 
-          // Guard against a transient empty response wiping a populated cache.
-          // Both strategies swallow network errors and return []. If we had a
-          // non-empty library before and the new response is empty, treat as
-          // an error so we DON'T replace the cache (and don't cascade a
-          // mass-wipe through the reconcile hook to albumDetailStore /
-          // songIndexStore).
-          if (albums.length === 0 && oldIds.length > 0) {
-            set({
-              loading: false,
-              error: i18n.t('failedToLoadAlbums'),
-            });
-            return;
-          }
-
           // Sort albums according to the user's preferred sort order,
           // using article-stripped + accent-folded sort keys.
           const sortedAlbums = sortAlbumsByPreference(albums);
+
+          // Capture old IDs at COMMIT time, not at fetch start. Reading them
+          // before the network call diffs against a stale baseline if the
+          // store mutates during the in-flight fetch (e.g. `applyLocalPlay`
+          // bumping a playCount), causing the reconcile hook to receive
+          // false-positive removals. Both transports throw on protocol or
+          // HTTP failure (see `throwIfSubsonicFailure` in subsonicService),
+          // so reaching this point means the empty/non-empty result is
+          // authoritative — honor it.
+          const oldIds = get().albums.map((a) => a.id);
 
           ratingStore.getState().reconcileRatings(
             sortedAlbums.map((a) => ({ id: a.id, serverRating: a.userRating ?? 0 }))
@@ -151,6 +143,8 @@ export const albumLibraryStore = create<AlbumLibraryState>()(
             }
           }
         } catch (e) {
+          // Transport failure (HTTP error or Subsonic protocol failure).
+          // Preserve the existing cache; surface the error in state.
           set({
             loading: false,
             error: e instanceof Error ? e.message : i18n.t('failedToLoadAlbums'),
