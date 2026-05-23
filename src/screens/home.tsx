@@ -49,6 +49,13 @@ import { searchStore } from '../store/searchStore';
 import { absoluteFill } from '../utils/styles';
 const CARD_WIDTH = 150;
 const CARD_GAP = 12;
+// Render off-screen items eagerly so horizontal FlashLists nested below the
+// vertical home-screen ScrollView paint before the user scrolls them into
+// view. Without this, FlashList v2's lazy viewport measurement under the
+// New Architecture leaves the cards blank until a scroll event triggers a
+// re-measure (kill + restart was the only way to recover). Matches the
+// 300px used by AlbumListView / PlaylistListView / ArtistListView.
+const HORIZONTAL_DRAW_DISTANCE = 300;
 
 const SECTION_CONFIG: Record<
   AlbumListType,
@@ -201,6 +208,7 @@ function AlbumSection({
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.horizontalList}
           ItemSeparatorComponent={() => <View style={{ width: CARD_GAP }} />}
+          drawDistance={HORIZONTAL_DRAW_DISTANCE}
         />
       )}
     </View>
@@ -239,6 +247,7 @@ function DownloadedAlbumSection({
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.horizontalList}
           ItemSeparatorComponent={() => <View style={{ width: CARD_GAP }} />}
+          drawDistance={HORIZONTAL_DRAW_DISTANCE}
         />
       )}
     </View>
@@ -277,6 +286,7 @@ function PlaylistSection({
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.horizontalList}
           ItemSeparatorComponent={() => <View style={{ width: CARD_GAP }} />}
+          drawDistance={HORIZONTAL_DRAW_DISTANCE}
         />
       )}
     </View>
