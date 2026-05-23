@@ -16,10 +16,14 @@ import { useTheme } from '../hooks/useTheme';
 import { useThemedAlert } from '../hooks/useThemedAlert';
 import { ThemedAlert } from '../components/ThemedAlert';
 import {
+  cancelImageRefreshCycle,
   clearImageCache,
   enqueueImageRefreshCycle,
+  pauseImageQueue,
   reconcileImageCacheAsync,
   repairIncompleteImagesAsync,
+  resumeImageQueue,
+  retryFailedImages,
 } from '../services/imageCacheService';
 import { clearMusicCache } from '../services/musicCacheService';
 import { clearQueue } from '../services/playerService';
@@ -76,14 +80,38 @@ export function SettingsStorageScreen() {
   const maxConcurrentImageDownloads = imageCacheStore((s) => s.maxConcurrentImageDownloads);
 
   const recacheCycleId = imageDownloadQueueStore((s) => s.cycleId);
+  const recacheScope = imageDownloadQueueStore((s) => s.cycleScope);
   const recacheTotal = imageDownloadQueueStore((s) => s.cycleTotal);
   const recacheProcessed = imageDownloadQueueStore((s) => s.cycleProcessed);
-  const recacheRunning = recacheCycleId !== null && recacheTotal > 0;
+  const recacheFailed = imageDownloadQueueStore((s) => s.cycleFailed);
+  const recachePaused = imageDownloadQueueStore((s) => s.isPaused);
+  const recacheActive = recacheCycleId !== null && recacheTotal > 0;
 
   const handleRefreshDownloadedCovers = useCallback(() => {
-    if (recacheRunning) return;
+    if (recacheActive) return;
     void enqueueImageRefreshCycle('refresh-downloads');
-  }, [recacheRunning]);
+  }, [recacheActive]);
+
+  const handleRefreshAllCovers = useCallback(() => {
+    if (recacheActive) return;
+    void enqueueImageRefreshCycle('refresh-all');
+  }, [recacheActive]);
+
+  const handlePauseRefresh = useCallback(() => {
+    pauseImageQueue();
+  }, []);
+
+  const handleResumeRefresh = useCallback(() => {
+    resumeImageQueue();
+  }, []);
+
+  const handleCancelRefresh = useCallback(() => {
+    cancelImageRefreshCycle();
+  }, []);
+
+  const handleRetryFailedRefresh = useCallback(() => {
+    retryFailedImages();
+  }, []);
   const cachedAlbumCount = albumDetailStore((s) => Object.keys(s.albums).length);
   const cachedArtistCount = artistDetailStore((s) => Object.keys(s.artists).length);
   const cachedPlaylistCount = playlistDetailStore((s) => Object.keys(s.playlists).length);
@@ -500,27 +528,27 @@ export function SettingsStorageScreen() {
                 {t('scan')}
               </Text>
             </Pressable>
-            {incompleteCount > 0 && (
-              <Pressable
-                onPress={handleImageRepair}
-                disabled={offlineMode || imageRepairing}
-                style={({ pressed }) => [
-                  settingsStyles.actionRowButton,
-                  { backgroundColor: colors.primary },
-                  pressed && !offlineMode && !imageRepairing && settingsStyles.pressed,
-                  (offlineMode || imageRepairing) && settingsStyles.disabled,
-                ]}
-              >
-                {imageRepairing ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Ionicons name="build-outline" size={18} color="#fff" />
-                )}
-                <Text style={[settingsStyles.actionRowButtonText, { color: '#fff' }]}>
-                  {t('repair')}
-                </Text>
-              </Pressable>
-            )}
+            <Pressable
+              onPress={handleImageRepair}
+              disabled={offlineMode || imageRepairing || incompleteCount === 0}
+              style={({ pressed }) => [
+                settingsStyles.actionRowButton,
+                { backgroundColor: colors.primary },
+                pressed && !offlineMode && !imageRepairing && incompleteCount > 0
+                  && settingsStyles.pressed,
+                (offlineMode || imageRepairing || incompleteCount === 0)
+                  && settingsStyles.disabled,
+              ]}
+            >
+              {imageRepairing ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Ionicons name="build-outline" size={18} color="#fff" />
+              )}
+              <Text style={[settingsStyles.actionRowButtonText, { color: '#fff' }]}>
+                {t('repair')}
+              </Text>
+            </Pressable>
           </View>
           {offlineMode && incompleteCount > 0 && (
             <View style={styles.offlineNotice}>
@@ -530,33 +558,113 @@ export function SettingsStorageScreen() {
               </Text>
             </View>
           )}
-          <View style={settingsStyles.actionRow}>
-            <Pressable
-              onPress={handleRefreshDownloadedCovers}
-              disabled={recacheRunning || offlineMode}
-              style={({ pressed }) => [
-                settingsStyles.actionRowButton,
-                { backgroundColor: colors.primary },
-                pressed && !recacheRunning && !offlineMode && settingsStyles.pressed,
-                (recacheRunning || offlineMode) && settingsStyles.disabled,
-              ]}
-            >
-              {recacheRunning ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <Ionicons name="refresh-outline" size={18} color="#fff" />
-              )}
-              <Text style={[settingsStyles.actionRowButtonText, { color: '#fff' }]}>
-                {recacheRunning
-                  ? t('refreshDownloadedCoversProgress', {
-                      defaultValue: 'Refreshing… {{processed}}/{{total}}',
+          {recacheActive ? (
+            <View style={styles.refreshCycleContainer}>
+              <Text style={[styles.refreshCycleHeader, { color: colors.textPrimary }]}>
+                {recachePaused
+                  ? t('imageCachePausedProgress', {
                       processed: recacheProcessed,
                       total: recacheTotal,
                     })
-                  : t('refreshDownloadedCovers', 'Refresh Downloaded Covers')}
+                  : recacheScope === 'refresh-all'
+                  ? t('refreshingAllCachedCovers', {
+                      processed: recacheProcessed,
+                      total: recacheTotal,
+                    })
+                  : t('refreshingDownloadedMusicCovers', {
+                      processed: recacheProcessed,
+                      total: recacheTotal,
+                    })}
               </Text>
-            </Pressable>
-          </View>
+              <View style={settingsStyles.actionRow}>
+                <Pressable
+                  onPress={recachePaused ? handleResumeRefresh : handlePauseRefresh}
+                  style={({ pressed }) => [
+                    settingsStyles.actionRowButton,
+                    { borderColor: colors.border, borderWidth: StyleSheet.hairlineWidth },
+                    pressed && settingsStyles.pressed,
+                  ]}
+                >
+                  <Ionicons
+                    name={recachePaused ? 'play' : 'pause'}
+                    size={18}
+                    color={colors.textPrimary}
+                  />
+                  <Text style={[settingsStyles.actionRowButtonText, { color: colors.textPrimary }]}>
+                    {recachePaused ? t('resume') : t('pause')}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={handleCancelRefresh}
+                  style={({ pressed }) => [
+                    settingsStyles.actionRowButton,
+                    { borderColor: colors.border, borderWidth: StyleSheet.hairlineWidth },
+                    pressed && settingsStyles.pressed,
+                  ]}
+                >
+                  <Ionicons name="close" size={18} color={colors.textPrimary} />
+                  <Text style={[settingsStyles.actionRowButtonText, { color: colors.textPrimary }]}>
+                    {t('cancel')}
+                  </Text>
+                </Pressable>
+              </View>
+              {recacheFailed > 0 && (
+                <Pressable
+                  onPress={handleRetryFailedRefresh}
+                  style={({ pressed }) => [
+                    styles.retryFailedRow,
+                    pressed && settingsStyles.pressed,
+                  ]}
+                >
+                  <Ionicons name="reload-outline" size={16} color={colors.primary} />
+                  <Text style={[styles.retryFailedText, { color: colors.primary }]}>
+                    {t('retryFailedCount', { count: recacheFailed })}
+                  </Text>
+                </Pressable>
+              )}
+            </View>
+          ) : (
+            <View style={styles.refreshIdleContainer}>
+              <Pressable
+                onPress={handleRefreshDownloadedCovers}
+                disabled={offlineMode}
+                style={({ pressed }) => [
+                  settingsStyles.actionRowButton,
+                  styles.refreshIdleButton,
+                  { backgroundColor: colors.primary },
+                  pressed && !offlineMode && settingsStyles.pressed,
+                  offlineMode && settingsStyles.disabled,
+                ]}
+              >
+                <Ionicons name="refresh-outline" size={18} color="#fff" />
+                <Text style={[settingsStyles.actionRowButtonText, { color: '#fff' }]}>
+                  {t('refreshDownloadedMusicCovers')}
+                </Text>
+              </Pressable>
+              <Text style={[styles.refreshHint, { color: colors.textSecondary }]}>
+                {t('refreshDownloadedMusicCoversHint')}
+              </Text>
+              <Pressable
+                onPress={handleRefreshAllCovers}
+                disabled={offlineMode}
+                style={({ pressed }) => [
+                  settingsStyles.actionRowButton,
+                  styles.refreshIdleButton,
+                  { borderColor: colors.border, borderWidth: StyleSheet.hairlineWidth },
+                  pressed && !offlineMode && settingsStyles.pressed,
+                  offlineMode && settingsStyles.disabled,
+                ]}
+              >
+                <Ionicons name="refresh-outline" size={18} color={colors.textPrimary} />
+                <Text style={[settingsStyles.actionRowButtonText, { color: colors.textPrimary }]}>
+                  {t('refreshAllCachedCovers')}
+                </Text>
+              </Pressable>
+              <Text style={[styles.refreshHint, { color: colors.textSecondary }]}>
+                {t('refreshAllCachedCoversHint')}
+              </Text>
+            </View>
+          )}
         </View>
       </View>
 
@@ -771,6 +879,39 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     flex: 1,
+  },
+  refreshIdleContainer: {
+    marginTop: 12,
+    gap: 6,
+  },
+  refreshIdleButton: {
+    width: '100%',
+  },
+  refreshHint: {
+    fontSize: 12,
+    lineHeight: 16,
+    paddingHorizontal: 4,
+    marginBottom: 4,
+  },
+  refreshCycleContainer: {
+    marginTop: 12,
+    gap: 10,
+  },
+  refreshCycleHeader: {
+    fontSize: 14,
+    fontWeight: '600',
+    paddingHorizontal: 4,
+  },
+  retryFailedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+  },
+  retryFailedText: {
+    fontSize: 13,
+    fontWeight: '500',
   },
   clearCacheButton: {
     flexDirection: 'row',
