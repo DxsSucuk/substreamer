@@ -189,6 +189,55 @@ const originalHandler = (globalThis as any).ErrorUtils?.getGlobalHandler?.();
   originalHandler?.(error, isFatal);
 });
 
+// Runs the post-login deferred startup chain. Each stage executes in its own
+// try/catch so one non-critical failure (image cache disk error, backup
+// permission denied, etc.) no longer suppresses unrelated stages like storage
+// checks, backup, or sync recovery. Cancellation is checked between stages so
+// logout-during-startup still bails cleanly.
+async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
+  const stage = async (name: string, fn: () => Promise<void> | void) => {
+    try {
+      await fn();
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[layout][${name}] failed:`,
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  };
+
+  await stage('deferredImageCacheInit', () => deferredImageCacheInit());
+  if (getCancelled()) return;
+  await stage('deferredMusicCacheInit', () => deferredMusicCacheInit());
+  if (getCancelled()) return;
+
+  // imageCacheStore aggregates come from SQL now (via `rehydrateAllStores`
+  // at splash and `reconcileImageCacheAsync` inside `deferredImageCacheInit`),
+  // so the one-time recalculate-from-stats call is gone.
+  await stage('musicCacheStats', async () => {
+    musicCacheStore.getState().recalculate(await getMusicCacheStats());
+  });
+  if (getCancelled()) return;
+
+  await stage('checkStorageLimit', () => { checkStorageLimit(); });
+  if (getCancelled()) return;
+
+  await stage('runAutoBackupIfNeeded', () => runAutoBackupIfNeeded());
+  if (getCancelled()) return;
+
+  // Resume any stalled album-detail walk from a previous session. Runs
+  // after the image/music cache init so the walk doesn't race with
+  // their synchronous SQLite setup.
+  await stage('deferredDataSyncInit', () => deferredDataSyncInit());
+  if (getCancelled()) return;
+
+  // Kick the post-Migration-22 cover-art recache if pending. Idempotent
+  // — bails out cleanly if the migration's already done or there are
+  // no downloaded items to refresh.
+  await stage('triggerCoverArtRecache', () => triggerCoverArtRecache('auto'));
+}
+
 export default function RootLayout() {
   const [splashVisible, setSplashVisible] = useState(true);
   const rehydrated = authStore((s) => s.rehydrated);
@@ -285,25 +334,7 @@ export default function RootLayout() {
   useEffect(() => {
     if (!isLoggedIn) return;
     let cancelled = false;
-    (async () => {
-      await deferredImageCacheInit();
-      await deferredMusicCacheInit();
-      if (cancelled) return;
-      // imageCacheStore aggregates come from SQL now (via `rehydrateAllStores`
-      // at splash and `reconcileImageCacheAsync` inside `deferredImageCacheInit`),
-      // so the one-time recalculate-from-stats call is gone.
-      musicCacheStore.getState().recalculate(await getMusicCacheStats());
-      checkStorageLimit();
-      await runAutoBackupIfNeeded();
-      // Resume any stalled album-detail walk from a previous session. Runs
-      // after the image/music cache init so the walk doesn't race with
-      // their synchronous SQLite setup.
-      if (!cancelled) await deferredDataSyncInit();
-      // Kick the post-Migration-22 cover-art recache if pending. Idempotent
-      // — bails out cleanly if the migration's already done or there are
-      // no downloaded items to refresh.
-      if (!cancelled) void triggerCoverArtRecache('auto');
-    })();
+    void runDeferredStartup(() => cancelled);
     return () => { cancelled = true; };
   }, [isLoggedIn]);
 
