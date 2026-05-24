@@ -354,46 +354,42 @@ function shouldAttemptStaleIdRecovery(): boolean {
 }
 
 /**
- * Attempt to swap the current track for a freshly-fetched one when its
- * server ID has gone stale (#146). Returns true if a swap-and-retry was
- * actually performed (caller should NOT fall through to the standard
- * auto-retry); false if nothing changed (caller continues normally).
+ * Attempt to swap the current track (and any other queued tracks from
+ * the same album) when the server ID has gone stale (#146). Recovery
+ * service handles SQL/disk persistence and the album-wide refresh;
+ * this function only deals with the in-memory queue + native RNTP
+ * queue swap-and-resume.
  *
- * Triggered from the PlaybackError listener for failures at/near
- * position 0 — i.e. the song never started, which is consistent with
- * a 404/error-70 from the server but distinct from mid-stream failures
- * (those are handled by the transcoded/raw recovery paths).
+ * Returns true if a swap-and-retry was performed (caller should NOT
+ * fall through to the standard auto-retry); false if nothing changed.
  *
- * Callers must gate this on `shouldAttemptStaleIdRecovery()` first so
- * we don't await for tracks that are clearly not recoverable.
+ * Callers must gate on `shouldAttemptStaleIdRecovery()` first so we
+ * don't await for tracks that are clearly not recoverable.
  */
 async function performStaleIdSwap(): Promise<boolean> {
   const store = playerStore.getState();
   const current = store.currentTrack;
   const idx = store.currentTrackIndex;
-  // Re-check after the await boundary the caller crossed — state may
-  // have shifted (next track loaded, user navigated away, offline mode
-  // flipped) between shouldAttempt and us actually running.
   if (!current || idx === null) return false;
 
   isRecoveringStaleId = true;
   try {
-    const fresh = await recoverStaleSongId(current);
-    if (!fresh || fresh.id === current.id) return false;
+    const result = await recoverStaleSongId(current);
+    if (!result) return false;
 
-    const newTrack = childToTrack(fresh);
-    if (!newTrack) return false;
-
-    // Mirror the swap into playerStore.queue so subsequent navigation
-    // (next/prev, "go to song") sees the fresh ID, not the dead one.
-    const updatedQueue = [...store.queue];
-    updatedQueue[idx] = fresh;
+    // Walk the queue and swap in every fresh Child for any stale id in
+    // the recovery's album-wide map. Cheap O(n) over a typical queue.
+    const updatedQueue = store.queue.map((song) =>
+      result.swaps.get(song.id) ?? song,
+    );
     playerStore.getState().setQueue(updatedQueue);
-    playerStore.getState().setCurrentTrack(fresh, idx);
+    playerStore.getState().setCurrentTrack(result.current, idx);
 
     // Swap in the native queue: remove the dead track, insert the fresh
     // one at the same index, jump to it. We can't use updateMetadataForTrack
     // because the URL changes — the native player needs a full reload.
+    const newTrack = childToTrack(result.current);
+    if (!newTrack) return false;
     await TrackPlayer.remove(idx);
     await TrackPlayer.add(newTrack, idx);
     await TrackPlayer.skip(idx);
@@ -403,7 +399,8 @@ async function performStaleIdSwap(): Promise<boolean> {
       '[Player] Stale-ID recovery: swapped',
       current.id,
       '→',
-      fresh.id,
+      result.current.id,
+      `(${result.swaps.size} album-wide swaps)`,
     );
     return true;
   } catch (e) {

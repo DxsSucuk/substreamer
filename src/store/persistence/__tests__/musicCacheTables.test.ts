@@ -21,6 +21,7 @@ import {
   countSongRefs,
   deleteCachedItem,
   deleteCachedSong,
+  remapCachedSongId,
   findOrphanSongs,
   getItemIdsForSong,
   getSongIdsForItem,
@@ -292,6 +293,27 @@ function makeFakeDb() {
       edges.delete(edgeKey(item_id, position));
       return;
     }
+    // remapCachedSongId — repoint every edge that references the old
+    // song id. `OR IGNORE` would skip rows that would conflict with an
+    // existing (item_id, song_id) unique index; in the fake we just
+    // perform the update unconditionally and let the follow-up
+    // DELETE FROM ... WHERE song_id = ? clean up anything that wasn't
+    // touched (matches the production behaviour closely enough for the
+    // remap test).
+    if (s.startsWith('UPDATE OR IGNORE cached_item_songs SET song_id = ? WHERE song_id = ?')) {
+      const [newSongId, oldSongId] = params as [string, string];
+      for (const edge of edges.values()) {
+        if (edge.song_id === oldSongId) edge.song_id = newSongId;
+      }
+      return;
+    }
+    if (s.startsWith('DELETE FROM cached_item_songs WHERE song_id = ?')) {
+      const [songId] = params as [string];
+      for (const [k, edge] of edges) {
+        if (edge.song_id === songId) edges.delete(k);
+      }
+      return;
+    }
     // Order of these branches matters — the forward-reorder SQL's prefix
     // matches the removeCachedItemSong SQL's prefix, so check the more
     // specific one (with the extra `AND position <= ?` clause) first.
@@ -543,6 +565,13 @@ function makeFakeDb() {
         for (const edge of edges.values()) if (edge.song_id === songId) c += 1;
         return { c } as T;
       }
+      // Used by remapCachedSongId to confirm the old row exists before
+      // swapping. Fake returns the existence sentinel when the song is
+      // in the in-memory map.
+      if (s === 'SELECT 1 FROM cached_songs WHERE song_id = ? LIMIT 1;') {
+        const songId = params[0] as string;
+        return songs.has(songId) ? ({ '1': 1 } as T) : undefined;
+      }
       return undefined;
     },
 
@@ -743,6 +772,39 @@ describe('musicCacheTables — cached_songs', () => {
     upsertCachedSong(makeSong());
     deleteCachedSong('s1');
     expect(countCachedSongs()).toBe(0);
+  });
+
+  // #146 — remapCachedSongId swaps a song's id atomically with its
+  // cached_item_songs edges. Used by the stale-ID recovery flow when
+  // the server reindexes a downloaded track.
+  describe('remapCachedSongId', () => {
+    it('rewrites the row and repoints junction edges to the new id', () => {
+      upsertCachedSong(makeSong({ id: 'old', albumId: 'alb-1', title: 'T' }));
+      upsertCachedItem(makeItem({ itemId: 'alb-1' }));
+      insertCachedItemSong('alb-1', 1, 'old');
+
+      const ok = remapCachedSongId('old', makeSong({ id: 'new', albumId: 'alb-1', title: 'T' }));
+      expect(ok).toBe(true);
+      // Old row is gone, new row is in place.
+      const songs = hydrateCachedSongs();
+      expect(songs.old).toBeUndefined();
+      expect(songs.new).toBeDefined();
+      // Junction edge now references the new id.
+      const items = hydrateCachedItems();
+      expect(items['alb-1'].songIds).toEqual(['new']);
+    });
+
+    it('no-ops on identity (oldId === newSong.id)', () => {
+      upsertCachedSong(makeSong({ id: 'same' }));
+      const ok = remapCachedSongId('same', makeSong({ id: 'same' }));
+      expect(ok).toBe(false);
+    });
+
+    it('no-ops when the old id has no cached_songs row', () => {
+      const ok = remapCachedSongId('never-existed', makeSong({ id: 'fresh' }));
+      expect(ok).toBe(false);
+      expect(countCachedSongs()).toBe(0);
+    });
   });
 
   it('findOrphanSongs returns songs without any edges', () => {

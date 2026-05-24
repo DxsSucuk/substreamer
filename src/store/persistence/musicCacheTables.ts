@@ -465,6 +465,55 @@ export function deleteCachedSong(songId: string): void {
 }
 
 /**
+ * Atomically swap one downloaded song's row to a new song_id, repointing
+ * the `cached_item_songs` junction edges in lock-step.
+ *
+ * Used by the stale-ID recovery flow (#146): when an album is reindexed
+ * server-side and a downloaded song's ID changes underneath us, this
+ * keeps the local cache pointing at the right thing.
+ *
+ * No-op (returns false) if:
+ *   - oldId == newSong.id (identity — caller should pre-filter for clarity)
+ *   - oldId has no row in cached_songs (nothing downloaded under that id)
+ *
+ * The transaction inserts the new song row, repoints the junction with
+ * `UPDATE OR IGNORE` (to avoid UNIQUE violations if `newSong.id` is
+ * already referenced for the same item — that row already won, the old
+ * junction edge is redundant), then deletes the stale row.
+ */
+export function remapCachedSongId(
+  oldId: string,
+  newSong: CachedSongRow,
+): boolean {
+  const db = getDb();
+  if (db === null) return false;
+  if (oldId === newSong.id) return false;
+  try {
+    let didRemap = false;
+    db.withTransactionSync(() => {
+      const exists = db.getFirstSync(
+        'SELECT 1 FROM cached_songs WHERE song_id = ? LIMIT 1;',
+        [oldId],
+      );
+      if (!exists) return;
+      upsertCachedSongInternal(db, newSong);
+      db.runSync(
+        'UPDATE OR IGNORE cached_item_songs SET song_id = ? WHERE song_id = ?;',
+        [newSong.id, oldId],
+      );
+      // Clear any junction rows that survived UPDATE OR IGNORE (i.e.
+      // ones that conflicted because the new id was already wired up).
+      db.runSync('DELETE FROM cached_item_songs WHERE song_id = ?;', [oldId]);
+      db.runSync('DELETE FROM cached_songs WHERE song_id = ?;', [oldId]);
+      didRemap = true;
+    });
+    return didRemap;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Return all song_ids that have zero cached_item_songs edges — songs whose
  * files are on disk but no item references them any more.
  */
