@@ -134,7 +134,7 @@ function hasTrackDetails(entity: MoreOptionsEntity): boolean {
 }
 
 function canShare(entity: MoreOptionsEntity): boolean {
-  return entity.type === 'album' || entity.type === 'playlist';
+  return entity.type === 'song' || entity.type === 'album' || entity.type === 'playlist';
 }
 
 function canDownload(entity: MoreOptionsEntity): boolean {
@@ -432,6 +432,18 @@ export function MoreOptionsSheet() {
       createShareStore.getState().showAlbum(entity.item.id, entity.item.name, entity.item.artist, entity.item.coverArt);
     } else if (entity.type === 'playlist') {
       createShareStore.getState().showPlaylist(entity.item.id, entity.item.name, entity.item.coverArt);
+    } else if (entity.type === 'song') {
+      // #151 — Subsonic createShare accepts a single song/mediafile id.
+      // Navidrome maps it to ResourceType="media_file"; other Subsonic
+      // servers behave the same. The existing CreateShareSheet handles
+      // the rest (expiry, description, copy/share-sheet output).
+      const song = entity.item;
+      createShareStore.getState().showSong(
+        song.id,
+        song.title,
+        song.artist ?? undefined,
+        song.coverArt ?? undefined,
+      );
     }
   }, [entity]);
 

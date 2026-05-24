@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-export type ShareTargetType = 'album' | 'playlist' | 'queue';
+export type ShareTargetType = 'album' | 'playlist' | 'queue' | 'song';
 
 interface CreateShareState {
   visible: boolean;
@@ -14,6 +14,7 @@ interface CreateShareState {
   showAlbum: (albumId: string, albumName: string, artistName?: string, coverArtId?: string) => void;
   showPlaylist: (playlistId: string, playlistName: string, coverArtId?: string) => void;
   showQueue: (songIds: string[]) => void;
+  showSong: (songId: string, songName: string, artistName?: string, coverArtId?: string) => void;
   hide: () => void;
 }
 
@@ -57,6 +58,17 @@ export const createShareStore = create<CreateShareState>()((set) => ({
       itemName: 'Current Queue',
       artistName: null,
       coverArtId: null,
+    }),
+
+  showSong: (songId, songName, artistName, coverArtId) =>
+    set({
+      visible: true,
+      shareType: 'song',
+      itemId: songId,
+      songIds: [],
+      itemName: songName,
+      artistName: artistName ?? null,
+      coverArtId: coverArtId ?? null,
     }),
 
   hide: () =>

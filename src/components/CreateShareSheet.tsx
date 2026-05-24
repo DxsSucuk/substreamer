@@ -103,7 +103,11 @@ export function CreateShareSheet() {
   }, [shareUrl]);
 
   const displayName = shareType === 'queue' ? t('queue') : itemName;
-  const typeLabel = shareType === 'queue' ? t('queue') : shareType === 'playlist' ? t('playlist') : t('album');
+  const typeLabel =
+    shareType === 'queue' ? t('queue')
+    : shareType === 'playlist' ? t('playlist')
+    : shareType === 'song' ? t('song')
+    : t('album');
 
   const handleShare = useCallback(async () => {
     if (!shareUrl) return;
@@ -112,6 +116,10 @@ export function CreateShareSheet() {
       text = t('shareMessageQueue');
     } else if (shareType === 'playlist') {
       text = t('shareMessagePlaylist', { playlist: itemName });
+    } else if (shareType === 'song') {
+      text = artistName
+        ? t('shareMessageSongWithArtist', { song: itemName, artist: artistName })
+        : t('shareMessageSong', { song: itemName });
     } else if (artistName) {
       text = t('shareMessageAlbumWithArtist', { album: itemName, artist: artistName });
     } else {

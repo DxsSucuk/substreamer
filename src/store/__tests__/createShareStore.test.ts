@@ -60,6 +60,29 @@ describe('createShareStore', () => {
     expect(state.coverArtId).toBeNull();
   });
 
+  // #151 — Subsonic createShare accepts a single song id (mediafile);
+  // we ship it via the same sheet as albums/playlists.
+  it('showSong sets song share state with the song id as itemId', () => {
+    createShareStore.getState().showSong('song-1', 'My Song', 'The Artist', 'cover-3');
+    const state = createShareStore.getState();
+    expect(state.visible).toBe(true);
+    expect(state.shareType).toBe('song');
+    expect(state.itemId).toBe('song-1');
+    expect(state.itemName).toBe('My Song');
+    expect(state.artistName).toBe('The Artist');
+    expect(state.coverArtId).toBe('cover-3');
+    expect(state.songIds).toEqual([]);
+  });
+
+  it('showSong leaves artistName and coverArtId null when omitted', () => {
+    createShareStore.getState().showSong('song-2', 'Just A Song');
+    const state = createShareStore.getState();
+    expect(state.shareType).toBe('song');
+    expect(state.itemId).toBe('song-2');
+    expect(state.artistName).toBeNull();
+    expect(state.coverArtId).toBeNull();
+  });
+
   it('hide resets state including artistName and coverArtId', () => {
     createShareStore.getState().showAlbum('a1', 'My Album', 'The Artist', 'cover-1');
     createShareStore.getState().hide();

@@ -688,6 +688,8 @@
   "shareMessageAlbum": "Check out \"{{album}}\"",
   "shareMessagePlaylist": "Check out my playlist \"{{playlist}}\"",
   "shareMessageQueue": "Check out what I'm listening to",
+  "shareMessageSongWithArtist": "Check out \"{{song}}\" by {{artist}}",
+  "shareMessageSong": "Check out \"{{song}}\"",
   "copied": "Copied!",
   "copyToClipboard": "Copy to Clipboard",
   "done": "Done",
