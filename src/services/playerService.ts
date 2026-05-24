@@ -387,6 +387,11 @@ async function performStaleIdSwap(): Promise<boolean> {
     );
     playerStore.getState().setQueue(updatedQueue);
     playerStore.getState().setCurrentTrack(result.current, idx);
+    // Persist the swap so the next app open's queue restore doesn't
+    // bring back the dead id and force another reactive recovery on
+    // first play — see #146 follow-up analysis.
+    persistQueue(updatedQueue, idx);
+    currentChildQueue = updatedQueue;
 
     // Swap in the native queue: remove the dead track, insert the fresh
     // one at the same index, jump to it. We can't use updateMetadataForTrack
