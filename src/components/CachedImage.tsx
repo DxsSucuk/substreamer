@@ -54,6 +54,7 @@ import {
 import { logImageCache } from '../services/imageCacheLogger';
 import { STARRED_COVER_ART_ID } from '../services/musicCacheService';
 import { getCoverArtUrl, VARIOUS_ARTISTS_COVER_ART_ID } from '../services/subsonicService';
+import { connectivityStore } from '../store/connectivityStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 
 import { absoluteFill } from '../utils/styles';
@@ -282,6 +283,25 @@ export const CachedImage = memo(function CachedImage({
       // Reset retry state so a freshly-online network failure doesn't
       // count against the budget consumed offline; bump reloadNonce so
       // the debounced fetch effect re-evaluates and can set remoteUri.
+      retriedRef.current = false;
+      setErrorSuppress(false);
+      setReloadNonce((n) => n + 1);
+    });
+  }, []);
+
+  /* ---- recover when server becomes reachable ---------------------- */
+  // After an image-cache wipe (Migration 25) or any boot-time race
+  // between auth rehydration and the initial fetch effect, the
+  // debounced fetch can land while connectivity / auth isn't quite
+  // ready, leaving the card on the placeholder. Subscribing to
+  // connectivityStore unsticks every CachedImage as soon as the server
+  // is confirmed reachable, without the user having to toggle offline
+  // mode. Same pattern as the offline subscriber above; both kick
+  // reloadNonce so the debounced fetch effect re-runs.
+  useEffect(() => {
+    return connectivityStore.subscribe((state, prev) => {
+      if (state.isServerReachable === prev.isServerReachable) return;
+      if (!state.isServerReachable) return; // only act on unreachable → reachable
       retriedRef.current = false;
       setErrorSuppress(false);
       setReloadNonce((n) => n + 1);
