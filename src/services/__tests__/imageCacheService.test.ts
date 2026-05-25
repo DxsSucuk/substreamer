@@ -57,6 +57,10 @@ jest.mock('expo-file-system', () => {
       mockFileExistsMap.set(dest._name, true);
       mockFileExistsMap.delete(this._name);
     });
+    moveSync = jest.fn((dest: MockFile) => {
+      mockFileExistsMap.set(dest._name, true);
+      mockFileExistsMap.delete(this._name);
+    });
   }
   class MockDirectory {
     uri: string;

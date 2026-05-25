@@ -369,7 +369,7 @@ async function migrateFsHostileCacheDirs(): Promise<void> {
         try { srcFile.delete(); } catch { /* best-effort */ }
         continue;
       }
-      try { srcFile.move(dstFile); } catch { /* best-effort */ }
+      try { srcFile.moveSync(dstFile); } catch { /* best-effort */ }
     }
 
     // Attempt to remove the now-empty src dir.
@@ -1206,7 +1206,7 @@ async function downloadSourceImage(
     if (dest.exists) {
       try { dest.delete(); } catch { /* best-effort */ }
     }
-    tmpFile.move(dest);
+    tmpFile.moveSync(dest);
 
     // DB row is written strictly after the successful rename. Any failure
     // before this point leaves the disk clean of the finalised file and
@@ -1277,10 +1277,17 @@ async function generateResizedVariant(
   try {
     await resizeImageToFileAsync(sourceUri, tmpFile.uri, size, RESIZE_COMPRESS);
 
+    // Capture the size off tmpFile BEFORE the move. Reading dest.size
+    // after move worked OK with the sync moveSync, but capturing here
+    // is robust to either move/moveSync ordering and survives a
+    // refactor that swaps the sync variant for the async one (the bug
+    // that produced 0-byte upserts pre-fix).
+    const fileBytes = tmpFile.size;
+
     if (dest.exists) {
       try { dest.delete(); } catch { /* best-effort */ }
     }
-    tmpFile.move(dest);
+    tmpFile.moveSync(dest);
 
     // DB row after rename — mirrors the source-download pattern. A crash
     // between two variants leaves the DB missing the unfinished ones so
@@ -1289,14 +1296,14 @@ async function generateResizedVariant(
       coverArtId,
       size,
       ext: 'jpg', // every derived variant is JPEG
-      bytes: dest.size ?? 0,
+      bytes: fileBytes,
       cachedAt: Date.now(),
     });
     uriCache.set(uriCacheKey(coverArtId, size), dest.uri);
 
     // Success — reset any accumulated failures for this cover.
     variantFailureCount.delete(coverArtId);
-    logImageCache(`resize id=${coverArtId} size=${size} ok bytes=${dest.size ?? 0}`);
+    logImageCache(`resize id=${coverArtId} size=${size} ok bytes=${fileBytes}`);
     notifyImageCacheUpdate(coverArtId);
   } catch (e) {
     const next = (variantFailureCount.get(coverArtId) ?? 0) + 1;
