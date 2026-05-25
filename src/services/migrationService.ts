@@ -2250,6 +2250,49 @@ const MIGRATION_TASKS: MigrationTask[] = [
     },
   },
 
+  {
+    id: 24,
+    name: 'Backfill primary server URL for failover schema',
+    run: async (log) => {
+      // The auth schema gained primaryServerUrl / secondaryServerUrl /
+      // activeServer / serverSwitchMode for the primary+secondary
+      // failover feature. Existing users have only serverUrl populated;
+      // backfill primaryServerUrl from it so failover code paths can
+      // treat primaryServerUrl as authoritative. Other new fields take
+      // their schema defaults (secondaryServerUrl=null, activeServer=
+      // 'primary', serverSwitchMode='manual').
+      try {
+        const raw = await kvStorage.getItem('substreamer-auth');
+        if (!raw) {
+          log('[m24] no auth blob — nothing to migrate');
+          return;
+        }
+        const parsed = JSON.parse(raw) as { state?: Record<string, unknown> };
+        const state = parsed.state;
+        if (!state) {
+          log('[m24] auth blob missing state — nothing to migrate');
+          return;
+        }
+        if (state.primaryServerUrl) {
+          log('[m24] primaryServerUrl already set — skipping');
+          return;
+        }
+        if (typeof state.serverUrl !== 'string' || !state.serverUrl) {
+          log('[m24] no serverUrl to copy — skipping');
+          return;
+        }
+        state.primaryServerUrl = state.serverUrl;
+        state.activeServer = 'primary';
+        // Don't touch secondaryServerUrl / serverSwitchMode — defaults
+        // apply on next Zustand rehydrate.
+        await kvStorage.setItem('substreamer-auth', JSON.stringify(parsed));
+        log(`[m24] backfilled primaryServerUrl from serverUrl`);
+      } catch (e) {
+        log(`[m24] backfill failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+  },
+
   // -------------------------------------------------------------------
   // TEMPLATE – How to add a new migration task:
   //

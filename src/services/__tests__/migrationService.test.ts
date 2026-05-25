@@ -1707,6 +1707,70 @@ describe('Task 15 – Move pending scrobbles to per-row SQLite table', () => {
   });
 });
 
+describe('Task 24 – Backfill primary server URL for failover schema', () => {
+  beforeEach(() => {
+    kvStorage.removeItem('substreamer-auth');
+  });
+
+  it('copies serverUrl into primaryServerUrl when only the old field is set', async () => {
+    kvStorage.setItem(
+      'substreamer-auth',
+      JSON.stringify({
+        state: {
+          serverUrl: 'https://music.example.com',
+          username: 'user',
+          password: 'pass',
+        },
+        version: 0,
+      }),
+    );
+
+    await runMigrations(23);
+
+    const restored = JSON.parse(kvStorage.getItem('substreamer-auth') as string);
+    expect(restored.state.primaryServerUrl).toBe('https://music.example.com');
+    expect(restored.state.activeServer).toBe('primary');
+    // serverUrl is preserved unchanged.
+    expect(restored.state.serverUrl).toBe('https://music.example.com');
+  });
+
+  it('is idempotent when primaryServerUrl is already set', async () => {
+    kvStorage.setItem(
+      'substreamer-auth',
+      JSON.stringify({
+        state: {
+          serverUrl: 'https://primary.example.com',
+          primaryServerUrl: 'https://primary.example.com',
+          activeServer: 'primary',
+        },
+      }),
+    );
+
+    await runMigrations(23);
+
+    const restored = JSON.parse(kvStorage.getItem('substreamer-auth') as string);
+    expect(restored.state.primaryServerUrl).toBe('https://primary.example.com');
+  });
+
+  it('skips when serverUrl is missing (fresh install)', async () => {
+    // No auth blob at all — migration must not throw.
+    await expect(runMigrations(23)).resolves.toBeGreaterThan(23);
+    expect(kvStorage.getItem('substreamer-auth')).toBeNull();
+  });
+
+  it('skips when serverUrl is empty string', async () => {
+    kvStorage.setItem(
+      'substreamer-auth',
+      JSON.stringify({ state: { serverUrl: '' } }),
+    );
+
+    await runMigrations(23);
+
+    const restored = JSON.parse(kvStorage.getItem('substreamer-auth') as string);
+    expect(restored.state.primaryServerUrl).toBeUndefined();
+  });
+});
+
 describe('runMigrations resilience', () => {
   it('breaks loop and persists partial progress when a task throws', async () => {
     // Seed unparseable shares so Task 4 doesn't throw (it catches JSON errors),
