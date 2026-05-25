@@ -6,7 +6,37 @@ import { authStore } from '../store/authStore';
 import { certPromptStore } from '../store/certPromptStore';
 import { connectivityStore } from '../store/connectivityStore';
 import { sslCertStore } from '../store/sslCertStore';
+import { fireAndForget } from '../utils/fireAndForget';
 import { getApiUnchecked } from './subsonicService';
+
+/**
+ * Higher-level services (failoverService) register hooks here at boot so
+ * connectivityService can notify them at the appropriate event without
+ * importing them directly. Direct imports were creating a transitive
+ * chain — connectivityService → failoverService → playerService → RNTP
+ * — that broke every unrelated test which touched imageCacheService.
+ */
+type ConnectivityHook = () => unknown;
+let onServerDownHook: ConnectivityHook | null = null;
+let onConnectivityRestoredHook: ConnectivityHook | null = null;
+
+export function setServerDownHook(hook: ConnectivityHook | null): void {
+  onServerDownHook = hook;
+}
+export function setConnectivityRestoredHook(hook: ConnectivityHook | null): void {
+  onConnectivityRestoredHook = hook;
+}
+
+function invokeHook(hook: ConnectivityHook | null, tag: string): void {
+  if (!hook) return;
+  try {
+    const result = hook();
+    if (result instanceof Promise) fireAndForget(result, tag);
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn(`[connectivityService:${tag}]`, e instanceof Error ? e.message : String(e));
+  }
+}
 
 const PING_INTERVAL_REACHABLE_MS = 10_000;
 const PING_INTERVAL_UNREACHABLE_MS = 5_000;
@@ -158,6 +188,11 @@ function handleServerResult(reachable: boolean): void {
       store.setServerReachable(false);
       clearReconnectedTimer();
       store.setBannerState('unreachable');
+      // Trigger auto-failover via the registered hook (failoverService).
+      // Gated internally by mode + slot + secondary configured + min-dwell.
+      // Manual-mode users see the unreachable banner as today; auto-mode
+      // users get a transparent switch to secondary on the next event loop tick.
+      invokeHook(onServerDownHook, 'failover');
     }
   }
 
@@ -212,6 +247,13 @@ function handleNetInfoChange(state: NetInfoState): void {
     clearPingTimer();
     pingServer();
   }
+
+  // Network restored AND user is in auto mode on secondary → eagerly
+  // probe primary so we switch back as soon as it's reachable, without
+  // waiting for the next 60s recovery tick.
+  if (reachable) {
+    invokeHook(onConnectivityRestoredHook, 'probe-primary');
+  }
 }
 
 export function startMonitoring(): void {
@@ -228,6 +270,10 @@ export function startMonitoring(): void {
     if (next === 'active') {
       clearPingTimer();
       pingServer();
+      // Eagerly probe primary on foreground if we're stuck on secondary
+      // in auto mode — saves up to a full recovery interval if the user
+      // returned to a network where primary is reachable.
+      invokeHook(onConnectivityRestoredHook, 'probe-primary');
     }
   });
 }

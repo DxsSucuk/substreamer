@@ -33,6 +33,7 @@
 
 import { authStore, type ServerSlot } from '../store/authStore';
 import { failoverStatusStore, type SwitchCause } from '../store/failoverStatusStore';
+import { setConnectivityRestoredHook, setServerDownHook } from './connectivityService';
 import { rebuildQueueForServerSwitch } from './playerService';
 import { buildPingApi, clearApiCache } from './subsonicService';
 
@@ -170,6 +171,61 @@ export function stopRecoveryPoll(): void {
 }
 
 /**
+ * Subscribe to authStore for the recovery-poller lifecycle. Idempotent;
+ * calling more than once is a no-op (the previous subscription stays).
+ *
+ * Should-poll truth table:
+ *   - activeServer === 'secondary' AND mode === 'automatic' AND primary URL exists
+ *     → poll
+ *   - anything else → stop
+ *
+ * Driven by store mutations (mode toggle in Settings → Connectivity,
+ * switchToServer outcomes, primary URL changes via login) so the
+ * poller's state always reflects the latest auth state without an
+ * explicit lifecycle call from every consumer.
+ */
+let authUnsubscribe: (() => void) | null = null;
+let didCheckInitialState = false;
+
+export function initFailover(): void {
+  if (authUnsubscribe != null) return;
+
+  const evaluate = () => {
+    const auth = authStore.getState();
+    const shouldPoll =
+      auth.activeServer === 'secondary' &&
+      auth.serverSwitchMode === 'automatic' &&
+      auth.primaryServerUrl != null;
+    if (shouldPoll) {
+      startRecoveryPoll();
+    } else {
+      stopRecoveryPoll();
+    }
+  };
+
+  authUnsubscribe = authStore.subscribe(evaluate);
+
+  // Register hooks with connectivityService so it can notify us at the
+  // 2-fail threshold (failover trigger) and on connectivity-restored
+  // events (eager primary probe). Inverting this dependency keeps
+  // connectivityService free of any RNTP-touching imports — tests that
+  // transitively reach connectivityService no longer need to mock the
+  // native player module.
+  setServerDownHook(handleActiveServerDown);
+  setConnectivityRestoredHook(probePrimaryNow);
+
+  // Resume the poller on cold start when the persisted auth state already
+  // wants it (user was on secondary + auto mode at last app close — the
+  // boot reset in onRehydrateStorage forces back to primary for auto
+  // mode, so in practice this kicks in for the rarer manual-mode-then-
+  // toggled-back-to-auto-via-rehydration case).
+  if (!didCheckInitialState) {
+    didCheckInitialState = true;
+    evaluate();
+  }
+}
+
+/**
  * Eagerly probe primary on user-facing wake-ups (AppState→active,
  * connectivity restored) without waiting for the next 60s tick. Safe
  * to call even when not on secondary — it bails on the mode/slot check.
@@ -190,6 +246,13 @@ export function _resetForTest(): void {
   stopRecoveryPoll();
   lastSwitchAt = 0;
   switchInFlight = false;
+  if (authUnsubscribe != null) {
+    authUnsubscribe();
+    authUnsubscribe = null;
+  }
+  didCheckInitialState = false;
+  setServerDownHook(null);
+  setConnectivityRestoredHook(null);
 }
 
 /* ------------------------------------------------------------------ */

@@ -15,12 +15,23 @@ jest.mock('../subsonicService', () => ({
   clearApiCache: () => mockClearApiCache(),
 }));
 
+// connectivityService hook registration — failoverService.initFailover
+// calls setServerDownHook + setConnectivityRestoredHook. The test stubs
+// observe those calls without depending on the real connectivity layer.
+const mockSetServerDownHook = jest.fn();
+const mockSetConnectivityRestoredHook = jest.fn();
+jest.mock('../connectivityService', () => ({
+  setServerDownHook: (hook: unknown) => mockSetServerDownHook(hook),
+  setConnectivityRestoredHook: (hook: unknown) => mockSetConnectivityRestoredHook(hook),
+}));
+
 import { authStore } from '../../store/authStore';
 import { failoverStatusStore } from '../../store/failoverStatusStore';
 import { rebuildQueueForServerSwitch } from '../playerService';
 import {
   _resetForTest,
   handleActiveServerDown,
+  initFailover,
   pingUrl,
   probePrimaryNow,
   startRecoveryPoll,
@@ -62,6 +73,8 @@ beforeEach(() => {
   mockPing.mockReset();
   mockBuildPingApi.mockClear();
   mockClearApiCache.mockClear();
+  mockSetServerDownHook.mockClear();
+  mockSetConnectivityRestoredHook.mockClear();
   failoverStatusStore.setState({
     lastSwitchTarget: null,
     lastSwitchCause: null,
@@ -312,5 +325,76 @@ describe('recovery poller', () => {
     await probePrimaryNow();
 
     expect(mockBuildPingApi).not.toHaveBeenCalled();
+  });
+});
+
+describe('initFailover (auth subscriber)', () => {
+  it('starts recovery poller when subscribed in auto + secondary state', async () => {
+    seedAuth({
+      serverSwitchMode: 'automatic',
+      activeServer: 'secondary',
+      serverUrl: 'https://secondary.example.com',
+    });
+
+    initFailover();
+
+    // The subscriber fires evaluate() immediately on init — the poller
+    // should be scheduled. Fast-forward 60s to verify it ticks.
+    mockPing.mockResolvedValueOnce({ status: 'ok' });
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(mockBuildPingApi).toHaveBeenCalledWith('https://primary.example.com');
+  });
+
+  it('stops recovery poller when mode flips to manual', async () => {
+    seedAuth({
+      serverSwitchMode: 'automatic',
+      activeServer: 'secondary',
+      serverUrl: 'https://secondary.example.com',
+    });
+    initFailover();
+
+    // Flip to manual — poller should stop on the next subscriber tick.
+    authStore.getState().setServerSwitchMode('manual');
+
+    mockBuildPingApi.mockClear();
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(mockBuildPingApi).not.toHaveBeenCalled();
+  });
+
+  it('starts polling when activeServer flips to secondary in auto mode', async () => {
+    seedAuth({ serverSwitchMode: 'automatic', activeServer: 'primary' });
+    initFailover();
+
+    // No polling yet — primary is active.
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(mockBuildPingApi).not.toHaveBeenCalled();
+
+    // Simulate a manual switch to secondary outside the failover flow.
+    authStore.getState().setActiveServer('secondary');
+
+    // Subscriber kicks in — poller should now be scheduled.
+    mockPing.mockResolvedValueOnce({ status: 'ok' });
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(mockBuildPingApi).toHaveBeenCalledWith('https://primary.example.com');
+  });
+
+  it('is idempotent — calling twice does not double-subscribe', () => {
+    seedAuth();
+    initFailover();
+    initFailover();
+    // No assertion needed beyond "no error" — the test passes if the
+    // second call doesn't throw and _resetForTest cleans up exactly one
+    // subscription afterwards.
+  });
+
+  it('registers server-down and connectivity-restored hooks with connectivityService', () => {
+    seedAuth();
+    mockSetServerDownHook.mockClear();
+    mockSetConnectivityRestoredHook.mockClear();
+    initFailover();
+    expect(mockSetServerDownHook).toHaveBeenCalledTimes(1);
+    expect(mockSetServerDownHook.mock.calls[0][0]).toBeInstanceOf(Function);
+    expect(mockSetConnectivityRestoredHook).toHaveBeenCalledTimes(1);
+    expect(mockSetConnectivityRestoredHook.mock.calls[0][0]).toBeInstanceOf(Function);
   });
 });

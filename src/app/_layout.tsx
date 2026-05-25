@@ -70,6 +70,7 @@ import { checkStorageLimit } from '../services/storageService';
 import { initPlayer, removeNonDownloadedTracks } from '../services/playerService';
 import NetInfo from '@react-native-community/netinfo';
 import { startMonitoring, stopMonitoring } from '../services/connectivityService';
+import { initFailover } from '../services/failoverService';
 import { initScrobbleService } from '../services/scrobbleService';
 import { initSslTrustStore, trustCertificateForHost } from '../services/sslTrustService';
 import { runAutoBackupIfNeeded } from '../services/backupService';
@@ -433,6 +434,7 @@ export default function RootLayout() {
     rehydrateAllStores();
     initPlayer();
     initScrobbleService();
+    initFailover();
 
     const offline = offlineModeStore.getState().offlineMode;
 
