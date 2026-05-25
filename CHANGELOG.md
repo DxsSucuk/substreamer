@@ -1,5 +1,28 @@
 # Changelog
 
+## [8.0.65] - 2026-05-25
+
+- ci: update coverage badge [skip ci]
+- feat(more-options): Play Next action for songs (#149)
+- ci: update coverage badge [skip ci]
+- fix(expo-screen-orientation): silence iOS 16+ deprecated-API warning
+- fix(settings-server): align Log out button width with Change Password
+- feat(failover): transient banner for auto-failover switches
+- feat(failover): wire connectivityService → failoverService via hooks
+- feat(failover): Settings → Connectivity — Server Failover card
+- feat(failover): Settings → Server & Account — Secondary URL field
+- feat(failover): failoverService — switchToServer + pingUrl + recovery poller
+- feat(failover): rebuildQueueForServerSwitch in playerService
+- feat(failover): authStore schema for primary + secondary server URLs
+- ci: update coverage badge [skip ci]
+- fix(more-options): unblock chained-modal opens on android
+- fix(streak): align timeAgo "yesterday" + daily-activity chart with calendar dates
+- feat(my-listening): make items tappable to play / navigate (#102)
+- ci: update coverage badge [skip ci]
+- fix(cover-art): fall back to parent ID for per-track _N coverArt variants
+- fix(cover-art): reactive cache subscription + 600px source-size fallback in CachedImage
+- fix(image-cache): native sanitisation pipeline + drop dead format=jpg recovery
+- ci: update coverage badge [skip ci]
 ## [8.0.64] - 2026-05-24
 
 - fix(detail): unify hero positioning on paddingTop, drop iOS contentOffset
