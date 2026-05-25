@@ -901,6 +901,36 @@ export function getCachedImageUri(
 ): string | null {
   if (!coverArtId) return null;
 
+  const literal = lookupLiteralCachedUri(coverArtId, size);
+  if (literal) return literal;
+
+  // Per-track variant fallback. Subsonic-compatible servers (Navidrome,
+  // OpenSubsonic) emit a `<albumCoverId>_<trackIndex>` cover ID for each
+  // track even when the actual artwork is the album's. If the per-track
+  // variant isn't cached, fall back to the parent so display surfaces
+  // (MiniPlayer, lock-screen, queue rows) render the album cover
+  // instead of the placeholder. Fallback result is intentionally NOT
+  // memoised under the literal key — if the per-track variant later
+  // downloads, the literal-key lookup must win without an explicit
+  // eviction step.
+  const parentMatch = coverArtId.match(/^(.+)_\d+$/);
+  if (parentMatch) {
+    const parent = lookupLiteralCachedUri(parentMatch[1], size);
+    if (parent) return parent;
+  }
+
+  return null;
+}
+
+/**
+ * Resolve a cached URI for the exact `coverArtId` — no fallback. Shared
+ * by `getCachedImageUri` so the per-track parent fallback can reuse the
+ * same uriCache + filesystem-walk logic without re-entering it.
+ */
+function lookupLiteralCachedUri(
+  coverArtId: string,
+  size: number,
+): string | null {
   const key = uriCacheKey(coverArtId, size);
   const cached = uriCache.get(key);
   if (cached) return cached;

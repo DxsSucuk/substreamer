@@ -649,6 +649,69 @@ describe('getCachedImageUri — directory-does-not-exist branch', () => {
   });
 });
 
+describe('getCachedImageUri — per-track _N parent fallback', () => {
+  it('returns null when neither the per-track variant nor its parent are cached', () => {
+    const perTrack = 'al-fallback-none_0';
+    const parent = 'al-fallback-none';
+    mockDirExistsMap.set(subDirName(perTrack), false);
+    mockDirExistsMap.set(subDirName(parent), false);
+
+    expect(getCachedImageUri(perTrack, 300)).toBeNull();
+  });
+
+  it('returns the parent URI when only the parent is cached', () => {
+    const perTrack = 'al-fallback-parent_0';
+    const parent = 'al-fallback-parent';
+    // Per-track subdir absent.
+    mockDirExistsMap.set(subDirName(perTrack), false);
+    // Parent subdir + 300.jpg present.
+    mockDirExistsMap.set(subDirName(parent), true);
+    mockFileExistsMap.set(fileMockName(parent, '300.jpg'), true);
+
+    const uri = getCachedImageUri(perTrack, 300);
+    expect(uri).not.toBeNull();
+    // The returned URI is the parent's file, not the per-track's.
+    expect(uri).toContain(parent);
+    expect(uri).not.toContain(perTrack);
+  });
+
+  it('returns the per-track URI when both are cached (literal wins)', () => {
+    const perTrack = 'al-fallback-both_0';
+    const parent = 'al-fallback-both';
+    mockDirExistsMap.set(subDirName(perTrack), true);
+    mockFileExistsMap.set(fileMockName(perTrack, '300.jpg'), true);
+    mockDirExistsMap.set(subDirName(parent), true);
+    mockFileExistsMap.set(fileMockName(parent, '300.jpg'), true);
+
+    const uri = getCachedImageUri(perTrack, 300);
+    expect(uri).not.toBeNull();
+    // Literal per-track URI wins — fallback never consulted.
+    expect(uri).toContain(perTrack);
+  });
+
+  it('does not fall back across sibling per-track variants', () => {
+    const askedFor = 'al-fallback-sibling_0';
+    const sibling = 'al-fallback-sibling_1';
+    const parent = 'al-fallback-sibling';
+    // Asked-for variant absent, parent absent, sibling cached.
+    mockDirExistsMap.set(subDirName(askedFor), false);
+    mockDirExistsMap.set(subDirName(parent), false);
+    mockDirExistsMap.set(subDirName(sibling), true);
+    mockFileExistsMap.set(fileMockName(sibling, '300.jpg'), true);
+
+    // Stripping `_0` off `al-fallback-sibling_0` yields `al-fallback-sibling`,
+    // which is the parent — not `_1`. Sibling must not satisfy the lookup.
+    expect(getCachedImageUri(askedFor, 300)).toBeNull();
+  });
+
+  it('does not attempt fallback for IDs without a _N suffix', () => {
+    const id = 'mf-no-suffix';
+    mockDirExistsMap.set(subDirName(id), false);
+
+    expect(getCachedImageUri(id, 300)).toBeNull();
+  });
+});
+
 describe('download pipeline — cacheAllSizes + processQueue', () => {
   it('downloads source image and generates resized variants', async () => {
     const id = 'download-full';
