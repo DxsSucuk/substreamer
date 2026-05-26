@@ -106,13 +106,14 @@ export function upsertSongsForAlbum(albumId: string, songs: Child[]): void {
         if (!song.id) continue;
         db.runSync(
           `INSERT OR REPLACE INTO song_index
-             (id, albumId, title, artist, duration, coverArt, userRating, starred, year, track, disc)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+             (id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
           [
             song.id,
             albumId,
             song.title ?? null,
             song.artist ?? null,
+            song.album ?? null,
             song.duration ?? null,
             song.coverArt ?? null,
             song.userRating ?? null,
@@ -153,6 +154,72 @@ export function countSongIndex(): number {
     return row?.c ?? 0;
   } catch {
     return 0;
+  }
+}
+
+interface SongIndexRow {
+  id: string;
+  albumId: string;
+  title: string | null;
+  artist: string | null;
+  album: string | null;
+  duration: number | null;
+  coverArt: string | null;
+  userRating: number | null;
+  starred: number | null;
+  year: number | null;
+  track: number | null;
+  disc: number | null;
+}
+
+/**
+ * Read every song row sorted alphabetically by title (case-insensitive),
+ * with optional downloadedOnly / favoritesOnly filters. Used by the Songs
+ * library segment. Backed by `idx_song_index_title` so the sort is free.
+ * NULL titles sort to the end and `id` is the stable tie-breaker.
+ */
+export function fetchAllSongsByTitle(
+  opts: { downloadedOnly?: boolean; favoritesOnly?: boolean } = {},
+): Child[] {
+  const db = getDb();
+  if (db === null) return [];
+  const useJoin = opts.downloadedOnly === true;
+  const wantFavorites = opts.favoritesOnly === true;
+  const prefix = useJoin ? 's.' : '';
+  const sql =
+    `SELECT ${prefix}id AS id, ${prefix}albumId AS albumId, ${prefix}title AS title,` +
+    ` ${prefix}artist AS artist, ${prefix}album AS album,` +
+    ` ${prefix}duration AS duration, ${prefix}coverArt AS coverArt,` +
+    ` ${prefix}userRating AS userRating, ${prefix}starred AS starred, ${prefix}year AS year,` +
+    ` ${prefix}track AS track, ${prefix}disc AS disc` +
+    ` FROM song_index${useJoin ? ' s INNER JOIN cached_songs c ON c.song_id = s.id' : ''}` +
+    (wantFavorites ? ` WHERE ${prefix}starred = 1` : '') +
+    ` ORDER BY (${prefix}title IS NULL), lower(${prefix}title), ${prefix}id;`;
+  try {
+    const rows = db.getAllSync<SongIndexRow>(sql);
+    const out: Child[] = new Array(rows.length);
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const child: Child = {
+        id: r.id,
+        albumId: r.albumId,
+        title: r.title ?? '',
+        artist: r.artist ?? undefined,
+        album: r.album ?? undefined,
+        duration: r.duration ?? undefined,
+        coverArt: r.coverArt ?? undefined,
+        userRating: r.userRating ?? undefined,
+        starred: r.starred ? new Date(0) : undefined,
+        year: r.year ?? undefined,
+        track: r.track ?? undefined,
+        discNumber: r.disc ?? undefined,
+        isDir: false,
+      } as Child;
+      out[i] = child;
+    }
+    return out;
+  } catch {
+    return [];
   }
 }
 

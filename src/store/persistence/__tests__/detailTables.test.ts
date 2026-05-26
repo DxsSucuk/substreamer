@@ -18,6 +18,7 @@ import {
   countSongIndex,
   deleteAlbumDetail,
   deleteSongsForAlbums,
+  fetchAllSongsByTitle,
   hydrateAlbumDetails,
   upsertAlbumDetail,
   upsertSongsForAlbum,
@@ -33,6 +34,7 @@ function makeFakeDb() {
       albumId: string;
       title: string | null;
       artist: string | null;
+      album: string | null;
       duration: number | null;
       coverArt: string | null;
       userRating: number | null;
@@ -49,10 +51,10 @@ function makeFakeDb() {
       const [id, json, retrievedAt] = params as [string, string, number];
       albumDetails.set(id, { id, json, retrievedAt });
     } else if (s.startsWith('INSERT OR REPLACE INTO song_index')) {
-      const [id, albumId, title, artist, duration, coverArt, userRating, starred, year, track, disc] =
-        params as [string, string, string | null, string | null, number | null, string | null,
+      const [id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc] =
+        params as [string, string, string | null, string | null, string | null, number | null, string | null,
           number | null, number | null, number | null, number | null, number | null];
-      songIndex.set(id, { id, albumId, title, artist, duration, coverArt, userRating, starred, year, track, disc });
+      songIndex.set(id, { id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc });
     } else if (s.startsWith('DELETE FROM album_details WHERE id = ?')) {
       albumDetails.delete(params[0] as string);
     } else if (s.startsWith('DELETE FROM album_details')) {
@@ -69,9 +71,15 @@ function makeFakeDb() {
     }
   };
 
+  // Independent fake of `cached_songs` so we can exercise the downloadedOnly
+  // JOIN path in fetchAllSongsByTitle without dragging in the music-cache
+  // helpers. Only the song_id column matters for the join.
+  const cachedSongs = new Set<string>();
+
   return {
     albumDetails,
     songIndex,
+    cachedSongs,
     getFirstSync<T>(sql: string): T | undefined {
       const s = sql.replace(/\s+/g, ' ').trim();
       if (s.includes('COUNT(*) AS c FROM album_details')) {
@@ -86,6 +94,25 @@ function makeFakeDb() {
       const s = sql.replace(/\s+/g, ' ').trim();
       if (s.startsWith('SELECT id, json, retrievedAt FROM album_details')) {
         return Array.from(albumDetails.values()) as T[];
+      }
+      // fetchAllSongsByTitle — detect by the multi-alias SELECT and the
+      // FROM song_index clause; honor optional JOIN + WHERE starred = 1.
+      if (/SELECT .*AS id, .*AS albumId, .*AS title.*FROM song_index/.test(s)) {
+        const join = /INNER JOIN cached_songs/.test(s);
+        const onlyStarred = /WHERE .*starred = 1/.test(s);
+        let rows = Array.from(songIndex.values());
+        if (join) rows = rows.filter((r) => cachedSongs.has(r.id));
+        if (onlyStarred) rows = rows.filter((r) => r.starred === 1);
+        rows.sort((a, b) => {
+          const aNull = a.title == null;
+          const bNull = b.title == null;
+          if (aNull !== bNull) return aNull ? 1 : -1;
+          const at = (a.title ?? '').toLowerCase();
+          const bt = (b.title ?? '').toLowerCase();
+          if (at !== bt) return at < bt ? -1 : 1;
+          return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+        });
+        return rows as T[];
       }
       return [];
     },
@@ -222,6 +249,7 @@ describe('detailTables — song_index', () => {
     const row = fakeDb.songIndex.get('s1');
     expect(row?.title).toBe(null);
     expect(row?.artist).toBe(null);
+    expect(row?.album).toBe(null);
     expect(row?.duration).toBe(null);
     expect(row?.coverArt).toBe(null);
     expect(row?.userRating).toBe(null);
@@ -251,6 +279,89 @@ describe('detailTables — song_index', () => {
     upsertSongsForAlbum('a1', makeAlbum('a1', [{ id: 's1' }]).song);
     deleteSongsForAlbums([]);
     expect(countSongIndex()).toBe(1);
+  });
+});
+
+describe('detailTables — fetchAllSongsByTitle', () => {
+  it('returns empty array when song_index is empty', () => {
+    expect(fetchAllSongsByTitle()).toEqual([]);
+  });
+
+  it('returns one Child per row sorted alphabetically (case-insensitive)', () => {
+    upsertSongsForAlbum('a1', [
+      { id: 's3', title: 'cherry' },
+      { id: 's1', title: 'Apple' },
+      { id: 's2', title: 'banana' },
+    ].map((s) => ({ ...s, artist: 'A', duration: 1, discNumber: 1 })) as any);
+    const out = fetchAllSongsByTitle();
+    expect(out.map((s) => s.title)).toEqual(['Apple', 'banana', 'cherry']);
+  });
+
+  it('NULL titles sort to the end and id is the stable tie-breaker', () => {
+    upsertSongsForAlbum('a1', [
+      { id: 'zzz' }, // null title
+      { id: 'bbb', title: 'dup' },
+      { id: 'aaa', title: 'dup' },
+    ] as any);
+    const out = fetchAllSongsByTitle();
+    expect(out.map((s) => s.id)).toEqual(['aaa', 'bbb', 'zzz']);
+  });
+
+  it('downloadedOnly JOINs cached_songs and excludes non-downloaded rows', () => {
+    upsertSongsForAlbum('a1', [
+      { id: 's1', title: 'aaa' },
+      { id: 's2', title: 'bbb' },
+      { id: 's3', title: 'ccc' },
+    ] as any);
+    fakeDb.cachedSongs.add('s1');
+    fakeDb.cachedSongs.add('s3');
+    const out = fetchAllSongsByTitle({ downloadedOnly: true });
+    expect(out.map((s) => s.id)).toEqual(['s1', 's3']);
+  });
+
+  it('favoritesOnly filters to starred rows', () => {
+    upsertSongsForAlbum('a1', [
+      { id: 's1', title: 'aaa', starred: '2020' },
+      { id: 's2', title: 'bbb' },
+      { id: 's3', title: 'ccc', starred: '2020' },
+    ] as any);
+    const out = fetchAllSongsByTitle({ favoritesOnly: true });
+    expect(out.map((s) => s.id)).toEqual(['s1', 's3']);
+  });
+
+  it('both filters combine (AND)', () => {
+    upsertSongsForAlbum('a1', [
+      { id: 's1', title: 'aaa', starred: '2020' }, // starred + downloaded
+      { id: 's2', title: 'bbb', starred: '2020' }, // starred only
+      { id: 's3', title: 'ccc' },                  // neither
+      { id: 's4', title: 'ddd' },                  // downloaded only
+    ] as any);
+    fakeDb.cachedSongs.add('s1');
+    fakeDb.cachedSongs.add('s4');
+    const out = fetchAllSongsByTitle({ downloadedOnly: true, favoritesOnly: true });
+    expect(out.map((s) => s.id)).toEqual(['s1']);
+  });
+
+  it('preserves Child-shape fields (id/albumId/title/artist/album/duration/coverArt/discNumber)', () => {
+    upsertSongsForAlbum('a1', [
+      { id: 's1', title: 't1', artist: 'A', album: 'Alpha', duration: 200, coverArt: 'ca1', discNumber: 2, track: 7 },
+    ] as any);
+    const [song] = fetchAllSongsByTitle();
+    expect(song.id).toBe('s1');
+    expect(song.albumId).toBe('a1');
+    expect(song.title).toBe('t1');
+    expect(song.artist).toBe('A');
+    expect(song.album).toBe('Alpha');
+    expect(song.duration).toBe(200);
+    expect(song.coverArt).toBe('ca1');
+    expect(song.discNumber).toBe(2);
+    expect(song.track).toBe(7);
+  });
+
+  it('returns [] when db is unavailable', () => {
+    __setDbForTests(null);
+    expect(fetchAllSongsByTitle()).toEqual([]);
+    expect(fetchAllSongsByTitle({ downloadedOnly: true })).toEqual([]);
   });
 });
 

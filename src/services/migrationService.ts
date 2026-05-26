@@ -2323,6 +2323,53 @@ const MIGRATION_TASKS: MigrationTask[] = [
     },
   },
 
+  {
+    id: 26,
+    name: 'Backfill song_index.album from album_details',
+    run: async (log) => {
+      // The `album` column on `song_index` was added in v8.0.61 alongside
+      // the Library → Songs segment. Pre-existing rows have NULL; without
+      // backfill, every existing song would display "Unknown album" until
+      // the next natural runFullAlbumDetailSync overwrites them. Use the
+      // cached `album_details.json` (parsed AlbumWithSongsID3 envelope) to
+      // derive the album name per albumId — no network required.
+      try {
+        const { getDb } = require('./../store/persistence/db') as {
+          getDb: () => any;
+        };
+        const db = getDb();
+        if (db === null) {
+          log('[m26] db unavailable — skipping');
+          return;
+        }
+        const rows = db.getAllSync(
+          'SELECT id, json FROM album_details;',
+        ) as { id: string; json: string }[];
+        let updated = 0;
+        db.withTransactionSync(() => {
+          for (const row of rows) {
+            let name: string | null = null;
+            try {
+              const parsed = JSON.parse(row.json);
+              if (parsed && typeof parsed.name === 'string') name = parsed.name;
+            } catch {
+              continue;
+            }
+            if (!name) continue;
+            const res = db.runSync(
+              'UPDATE song_index SET album = ? WHERE albumId = ? AND (album IS NULL OR album = "");',
+              [name, row.id],
+            );
+            updated += res.changes ?? 0;
+          }
+        });
+        log(`[m26] backfilled album name on ${updated} song_index rows`);
+      } catch (e) {
+        log(`[m26] backfill failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+  },
+
   // -------------------------------------------------------------------
   // TEMPLATE – How to add a new migration task:
   //

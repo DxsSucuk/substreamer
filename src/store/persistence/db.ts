@@ -96,6 +96,7 @@ try {
        albumId TEXT NOT NULL,
        title TEXT,
        artist TEXT,
+       album TEXT,
        duration INTEGER,
        coverArt TEXT,
        userRating INTEGER,
@@ -105,6 +106,13 @@ try {
        disc INTEGER
      );`,
   );
+  // Forward-compat: add `album` column to pre-existing installs.
+  // SQLite's ADD COLUMN is non-destructive and idempotent via the try/catch.
+  try {
+    db.execSync('ALTER TABLE song_index ADD COLUMN album TEXT;');
+  } catch {
+    /* column already exists */
+  }
   db.execSync(
     'CREATE INDEX IF NOT EXISTS idx_song_index_albumId ON song_index (albumId);',
   );
