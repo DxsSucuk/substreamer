@@ -29,10 +29,8 @@ import { fetch } from 'expo/fetch';
 import { listDirectoryAsync } from 'expo-async-fs';
 import { resizeImageToFileAsync } from 'expo-image-resize';
 import {
-  getFsKeyMigrationDone,
   getLastReconcileMs,
   imageCacheStore,
-  markFsKeyMigrationDone,
   markReconcileRan,
 } from '../store/imageCacheStore';
 import { authStore } from '../store/authStore';
@@ -305,80 +303,6 @@ function purgeCoverArtRows(coverArtId: string): { files: number } {
  * Returns the number of sentinel coverArtIds that had rows (0–2). Safe
  * to call multiple times — idempotent after the first run.
  */
-/**
- * One-shot migration: rename any `{image-cache}/*` subdirectory whose
- * name contains a filesystem-hostile char (`:` etc.) to the sanitised
- * form produced by {@link coverArtPathKey}. If a sanitised sibling dir
- * already exists, move the raw-form's variant files into it (skipping
- * collisions) before deleting the now-empty original.
- *
- * Gated by the `fsKeyMigrationV1Done` flag in the image-cache settings
- * blob so it runs at most once per install. No-op on a fresh install
- * (no raw-form dirs exist).
- */
-async function migrateFsHostileCacheDirs(): Promise<void> {
-  if (getFsKeyMigrationDone()) return;
-  let dir: Directory;
-  try {
-    dir = ensureCacheDir();
-  } catch {
-    return;
-  }
-  if (!dir.exists) {
-    markFsKeyMigrationDone();
-    return;
-  }
-
-  let topLevel: string[];
-  try {
-    topLevel = await listDirectoryAsync(dir.uri);
-  } catch {
-    // Can't enumerate — leave the flag unset so a later session can retry.
-    return;
-  }
-
-  for (const name of topLevel) {
-    if (!name) continue;
-    const sanitised = coverArtPathKey(name);
-    if (sanitised === name) continue; // nothing to do
-
-    const src = new Directory(dir, name);
-    if (!src.exists) continue;
-
-    const dst = new Directory(dir, sanitised);
-    if (!dst.exists) {
-      // Simple rename — delete/create isn't exposed; copy each file
-      // across then remove the source dir.
-      try { dst.create(); } catch { continue; }
-    }
-
-    let fileNames: string[] = [];
-    try {
-      fileNames = await listDirectoryAsync(src.uri);
-    } catch {
-      continue;
-    }
-    for (const fileName of fileNames) {
-      const srcFile = new File(src, fileName);
-      if (!srcFile.exists) continue;
-      const dstFile = new File(dst, fileName);
-      if (dstFile.exists) {
-        // Collision — the sanitised dir already had this variant. Keep
-        // the existing file (it's newer or at least already indexed by
-        // SQL) and drop the raw-form's copy.
-        try { srcFile.delete(); } catch { /* best-effort */ }
-        continue;
-      }
-      try { srcFile.moveSync(dstFile); } catch { /* best-effort */ }
-    }
-
-    // Attempt to remove the now-empty src dir.
-    try { src.delete(); } catch { /* best-effort */ }
-  }
-
-  markFsKeyMigrationDone();
-}
-
 function sweepSentinelRows(): number {
   let cleared = 0;
   let totalFiles = 0;
@@ -495,11 +419,6 @@ export function deferredImageCacheInit(): Promise<void> {
   return new Promise((resolve) => {
     requestIdleCallback(async () => {
       try {
-        // One-shot migration: rename any cache subdirs containing FS-
-        // hostile chars (e.g. Navidrome disc IDs like `dc-xxxx:1`) to
-        // the sanitised form before reconcile walks the tree.
-        await migrateFsHostileCacheDirs();
-
         // Always sweep sentinel rows, even offline — it's a pure SQL +
         // local-file cleanup and prevents the Settings "Incomplete"
         // count from permanently including rows the download pipeline
@@ -605,29 +524,14 @@ export async function reconcileImageCacheAsync(source: string = 'auto'): Promise
   const seenOnDisk = new Set<string>();
   const diskKey = (coverArtId: string, size: number) => `${coverArtId}::${size}`;
 
-  // Reverse-map from the on-disk (sanitised) directory name back to the
-  // SQL-canonical coverArtId so Pass 1 doesn't fork a duplicate row when
-  // a pre-existing SQL entry (e.g. `dc-abc:1`) lives under the migrated
-  // dir `dc-abc_1`. Built once from the current SQL view.
-  const sqlIdByDirName = new Map<string, string>();
-  for (const entry of listCachedImagesForBrowser('all')) {
-    const dirName = coverArtPathKey(entry.coverArtId);
-    // If two SQL ids collide on the same sanitised dir (should be rare),
-    // prefer one that contains FS-unsafe chars — it's the "original" form.
-    const existing = sqlIdByDirName.get(dirName);
-    if (!existing || existing === dirName) {
-      sqlIdByDirName.set(dirName, entry.coverArtId);
-    }
-  }
-
   // --- Pass 1: FS -> SQL (discover missing rows) ---
   for (const dirName of topLevelNames) {
     if (!dirName) continue;
     const subDir = new Directory(dir, dirName);
     if (!subDir.exists) continue;
-    // Resolve the dir name back to its SQL-canonical coverArtId so we
-    // upsert into the existing row family rather than a parallel one.
-    const coverArtId = sqlIdByDirName.get(dirName) ?? dirName;
+    // Post-Migration-25, every on-disk dir was written under the
+    // sanitised entity-ID scheme, so the dir name IS the SQL coverArtId.
+    const coverArtId = dirName;
     let fileNames: string[] = [];
     try {
       fileNames = await listDirectoryAsync(subDir.uri);

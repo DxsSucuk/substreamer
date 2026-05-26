@@ -119,12 +119,6 @@ const mockReset = jest.fn();
 const mockRecalculateFromDb = jest.fn();
 const mockGetLastReconcileMs = jest.fn(() => undefined as number | undefined);
 const mockMarkReconcileRan = jest.fn();
-// Default: migration already done, so existing tests don't re-trigger the
-// FS-rename pass. Tests that specifically exercise the migration override
-// this with mockReturnValueOnce(false).
-const mockGetFsKeyMigrationDone = jest.fn(() => true);
-const mockMarkFsKeyMigrationDone = jest.fn();
-
 const mockOfflineMode = { offlineMode: false };
 jest.mock('../../store/offlineModeStore', () => ({
   offlineModeStore: {
@@ -188,8 +182,6 @@ jest.mock('../../store/imageCacheStore', () => ({
   },
   getLastReconcileMs: () => mockGetLastReconcileMs(),
   markReconcileRan: (ts: number) => mockMarkReconcileRan(ts),
-  getFsKeyMigrationDone: () => mockGetFsKeyMigrationDone(),
-  markFsKeyMigrationDone: () => mockMarkFsKeyMigrationDone(),
 }));
 
 // The service now reads stats + browser listings from `cached_images` via
