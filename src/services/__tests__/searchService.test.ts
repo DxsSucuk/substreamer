@@ -6,11 +6,8 @@ jest.mock('../imageCacheService', () => ({
 }));
 
 import { ensureCoverArtAuth, search3 } from '../subsonicService';
-import { albumDetailStore } from '../../store/albumDetailStore';
 import { albumLibraryStore } from '../../store/albumLibraryStore';
-import { favoritesStore } from '../../store/favoritesStore';
 import { musicCacheStore } from '../../store/musicCacheStore';
-import { playlistDetailStore } from '../../store/playlistDetailStore';
 import { playlistLibraryStore } from '../../store/playlistLibraryStore';
 import {
   performOnlineSearch,
@@ -24,19 +21,17 @@ const mockEnsureCoverArtAuth = ensureCoverArtAuth as jest.MockedFunction<typeof 
 function resetStores() {
   musicCacheStore.setState({ cachedItems: {}, cachedSongs: {} } as any);
   albumLibraryStore.setState({ albums: [] });
-  albumDetailStore.setState({ albums: {} });
   playlistLibraryStore.setState({ playlists: [] });
-  playlistDetailStore.setState({ playlists: {} });
-  favoritesStore.setState({ songs: [], albums: [], artists: [] } as any);
 }
 
 /**
- * Translate a v1-shape {cachedItems: { id: { ..., tracks: [...] } }} seed
- * into the v2 shape {cachedItems: { id: { ..., songIds: [...] } }, cachedSongs}.
- * Keeps the existing tests' per-seed song metadata identical; only restructures.
+ * Seed `musicCacheStore` from a compact {itemId: {name, tracks: [...]}}
+ * description. Each track may carry genre / genres which get serialised
+ * into the rawJson envelope so the production path can read them via
+ * `getSongEnvelope()` exactly as it does at runtime.
  */
 function seedCache(
-  oldItems: Record<string, { name: string; coverArtId?: string; tracks: any[] }>,
+  oldItems: Record<string, { name: string; tracks: any[] }>,
 ) {
   const cachedItems: Record<string, any> = {};
   const cachedSongs: Record<string, any> = {};
@@ -45,13 +40,29 @@ function seedCache(
     for (const t of item.tracks) {
       if (!t?.id) continue;
       if (!songIds.includes(t.id)) songIds.push(t.id);
-      // First occurrence wins for duplicate IDs (matches real-world dedup).
-      if (!cachedSongs[t.id]) cachedSongs[t.id] = { ...t };
+      if (!cachedSongs[t.id]) {
+        cachedSongs[t.id] = {
+          id: t.id,
+          title: t.title,
+          artist: t.artist,
+          albumId: t.albumId ?? itemId,
+          duration: t.duration ?? 0,
+          rawJson: JSON.stringify({
+            id: t.id,
+            title: t.title,
+            artist: t.artist,
+            albumId: t.albumId ?? itemId,
+            duration: t.duration ?? 0,
+            isDir: false,
+            ...(t.genre ? { genre: t.genre } : {}),
+            ...(t.genres ? { genres: t.genres } : {}),
+          }),
+        };
+      }
     }
     cachedItems[itemId] = {
       itemId,
       name: item.name,
-      coverArtId: item.coverArtId,
       songIds,
     };
   }
@@ -87,9 +98,7 @@ describe('performOnlineSearch', () => {
 
 describe('performOfflineSearch', () => {
   it('searches cached albums by name', () => {
-    seedCache({
-        a1: { name: 'Test Album', coverArtId: 'c1', tracks: [] },
-    });
+    seedCache({ a1: { name: 'Test Album', tracks: [] } });
     albumLibraryStore.setState({
       albums: [{ id: 'a1', name: 'Test Album', artist: 'Artist' }] as any,
     });
@@ -101,55 +110,42 @@ describe('performOfflineSearch', () => {
   });
 
   it('searches cached albums by artist name', () => {
-    seedCache({
-        a1: { name: 'Album', coverArtId: 'c1', tracks: [] },
-    });
+    seedCache({ a1: { name: 'Album', tracks: [] } });
     albumLibraryStore.setState({
       albums: [{ id: 'a1', name: 'Album', artist: 'Radiohead' }] as any,
     });
 
-    const result = performOfflineSearch('radiohead');
-
-    expect(result.albums).toHaveLength(1);
+    expect(performOfflineSearch('radiohead').albums).toHaveLength(1);
   });
 
   it('excludes non-cached albums', () => {
-    musicCacheStore.setState({ cachedItems: {}, cachedSongs: {} } as any);
     albumLibraryStore.setState({
       albums: [{ id: 'a1', name: 'Test Album', artist: 'Artist' }] as any,
     });
 
-    const result = performOfflineSearch('test');
-
-    expect(result.albums).toHaveLength(0);
+    expect(performOfflineSearch('test').albums).toHaveLength(0);
   });
 
   it('includes cached playlists as album-shaped results', () => {
-    seedCache({
-        p1: { name: 'My Playlist', coverArtId: 'c1', tracks: [] },
-    });
-    albumLibraryStore.setState({ albums: [] });
+    seedCache({ p1: { name: 'My Playlist', tracks: [] } });
     playlistLibraryStore.setState({
       playlists: [
         { id: 'p1', name: 'My Playlist', owner: 'user', coverArt: 'c1', songCount: 5, duration: 1000, created: '2024-01-01' },
       ] as any,
     });
 
-    const result = performOfflineSearch('my');
-
-    expect(result.albums.some((a) => a.id === 'p1')).toBe(true);
+    expect(performOfflineSearch('my').albums.some((a) => a.id === 'p1')).toBe(true);
   });
 
   it('searches cached songs by title', () => {
     seedCache({
-        a1: {
-          name: 'Album',
-          coverArtId: 'c1',
-          tracks: [
-            { id: 't1', title: 'Matching Song', artist: 'Artist', duration: 200 },
-            { id: 't2', title: 'Other', artist: 'Nobody', duration: 180 },
-          ],
-        },
+      a1: {
+        name: 'Album',
+        tracks: [
+          { id: 't1', title: 'Matching Song', artist: 'Artist', duration: 200 },
+          { id: 't2', title: 'Other', artist: 'Nobody', duration: 180 },
+        ],
+      },
     });
 
     const result = performOfflineSearch('matching');
@@ -160,135 +156,78 @@ describe('performOfflineSearch', () => {
 
   it('searches cached songs by artist', () => {
     seedCache({
-        a1: {
-          name: 'Album',
-          coverArtId: 'c1',
-          tracks: [
-            { id: 't1', title: 'Song', artist: 'Radiohead', duration: 200 },
-          ],
-        },
+      a1: { name: 'Album', tracks: [{ id: 't1', title: 'Song', artist: 'Radiohead', duration: 200 }] },
     });
 
-    const result = performOfflineSearch('radiohead');
-
-    expect(result.songs).toHaveLength(1);
+    expect(performOfflineSearch('radiohead').songs).toHaveLength(1);
   });
 
-  it('deduplicates songs by id', () => {
+  it('deduplicates songs by id across multiple cached items', () => {
     seedCache({
-        a1: {
-          name: 'Album',
-          coverArtId: 'c1',
-          tracks: [
-            { id: 't1', title: 'Dup Song', artist: 'A', duration: 200 },
-            { id: 't1', title: 'Dup Song', artist: 'A', duration: 200 },
-          ],
-        },
+      a1: { name: 'Album', tracks: [{ id: 't1', title: 'Dup Song', artist: 'A', duration: 200 }] },
+      p1: { name: 'Playlist', tracks: [{ id: 't1', title: 'Dup Song', artist: 'A', duration: 200 }] },
     });
 
-    const result = performOfflineSearch('dup');
-
-    expect(result.songs).toHaveLength(1);
+    expect(performOfflineSearch('dup').songs).toHaveLength(1);
   });
 
-  it('uses cover art from playlistDetail over fallback', () => {
+  it('populates albumId on returned songs so cover-art lookup resolves via entity ID', () => {
     seedCache({
-        a1: {
-          name: 'Album',
-          coverArtId: 'fallback-cover',
-          tracks: [
-            { id: 't1', title: 'Track One', artist: 'A', duration: 200 },
-          ],
-        },
-    });
-    playlistDetailStore.setState({
-      playlists: {
-        p1: { playlist: { entry: [{ id: 't1', coverArt: 'playlist-cover' }] } },
+      a1: {
+        name: 'Album',
+        tracks: [{ id: 't1', title: 'Track', artist: 'A', duration: 200, albumId: 'parent-album' }],
       },
-    } as any);
-
-    const result = performOfflineSearch('track');
-
-    expect(result.songs[0].coverArt).toBe('playlist-cover');
-  });
-
-  it('falls back to cachedItem coverArtId when no detail cover art', () => {
-    seedCache({
-        a1: {
-          name: 'Album',
-          coverArtId: 'fallback-cover',
-          tracks: [
-            { id: 't1', title: 'Track', artist: 'A', duration: 200 },
-          ],
-        },
     });
 
-    const result = performOfflineSearch('track');
+    expect(performOfflineSearch('track').songs[0].albumId).toBe('parent-album');
+  });
 
-    expect(result.songs[0].coverArt).toBe('fallback-cover');
+  it('populates album name from parent item', () => {
+    seedCache({
+      a1: { name: 'Parent Item Name', tracks: [{ id: 't1', title: 'Track', artist: 'A', duration: 200 }] },
+    });
+
+    expect(performOfflineSearch('track').songs[0].album).toBe('Parent Item Name');
   });
 
   it('always returns empty artists array', () => {
-    const result = performOfflineSearch('anything');
-    expect(result.artists).toEqual([]);
+    expect(performOfflineSearch('anything').artists).toEqual([]);
   });
 
   it('returns empty results for no matches', () => {
     seedCache({
-        a1: {
-          name: 'Album',
-          coverArtId: 'c1',
-          tracks: [
-            { id: 't1', title: 'Song', artist: 'Artist', duration: 200 },
-          ],
-        },
+      a1: { name: 'Album', tracks: [{ id: 't1', title: 'Song', artist: 'Artist', duration: 200 }] },
     });
     albumLibraryStore.setState({
       albums: [{ id: 'a1', name: 'Album', artist: 'Artist' }] as any,
     });
 
     const result = performOfflineSearch('zzzznotfound');
-
     expect(result.albums).toHaveLength(0);
     expect(result.songs).toHaveLength(0);
   });
 
   it('handles album with undefined artist gracefully', () => {
-    seedCache({
-        a1: { name: 'Album', coverArtId: 'c1', tracks: [] },
-    });
+    seedCache({ a1: { name: 'Album', tracks: [] } });
     albumLibraryStore.setState({
       albums: [{ id: 'a1', name: 'Album' }] as any,
     });
 
-    const result = performOfflineSearch('someartist');
-
-    expect(result.albums).toHaveLength(0);
+    expect(performOfflineSearch('someartist').albums).toHaveLength(0);
   });
 });
 
 describe('getOfflineSongsByGenre', () => {
-  it('returns songs matching genre from album detail', () => {
+  it('returns cached songs matching genre (via genre field)', () => {
     seedCache({
-        a1: {
-          name: 'Album',
-          coverArtId: 'c1',
-          tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200 }],
-        },
-    });
-    albumDetailStore.setState({
-      albums: {
-        a1: {
-          album: {
-            id: 'a1',
-            song: [
-              { id: 't1', title: 'Song', artist: 'A', genre: 'Rock', isDir: false },
-              { id: 't2', title: 'Other', artist: 'B', genre: 'Jazz', isDir: false },
-            ],
-          },
-        },
+      a1: {
+        name: 'Album',
+        tracks: [
+          { id: 't1', title: 'Song', artist: 'A', duration: 200, genre: 'Rock' },
+          { id: 't2', title: 'Other', artist: 'B', duration: 180, genre: 'Jazz' },
+        ],
       },
-    } as any);
+    });
 
     const result = getOfflineSongsByGenre('Rock');
 
@@ -298,309 +237,78 @@ describe('getOfflineSongsByGenre', () => {
 
   it('matches genre case-insensitively', () => {
     seedCache({
-        a1: {
-          name: 'Album',
-          coverArtId: 'c1',
-          tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200 }],
-        },
+      a1: { name: 'Album', tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200, genre: 'ROCK' }] },
     });
-    albumDetailStore.setState({
-      albums: {
-        a1: {
-          album: {
-            id: 'a1',
-            song: [{ id: 't1', title: 'Song', artist: 'A', genre: 'ROCK', isDir: false }],
-          },
-        },
-      },
-    } as any);
 
-    const result = getOfflineSongsByGenre('rock');
-
-    expect(result).toHaveLength(1);
+    expect(getOfflineSongsByGenre('rock')).toHaveLength(1);
   });
 
   it('matches via genres array with {name} objects (OpenSubsonic)', () => {
     seedCache({
-        a1: {
-          name: 'Album',
-          coverArtId: 'c1',
-          tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200 }],
-        },
-    });
-    albumDetailStore.setState({
-      albums: {
-        a1: {
-          album: {
-            id: 'a1',
-            song: [
-              { id: 't1', title: 'Song', artist: 'A', genres: [{ name: 'Electronic' }, { name: 'Ambient' }], isDir: false },
-            ],
-          },
-        },
+      a1: {
+        name: 'Album',
+        tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200, genres: [{ name: 'Electronic' }, { name: 'Ambient' }] }],
       },
-    } as any);
+    });
 
-    const result = getOfflineSongsByGenre('ambient');
-
-    expect(result).toHaveLength(1);
+    expect(getOfflineSongsByGenre('ambient')).toHaveLength(1);
   });
 
   it('matches via genres array with plain strings (defensive)', () => {
     seedCache({
-        a1: {
-          name: 'Album',
-          coverArtId: 'c1',
-          tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200 }],
-        },
-    });
-    albumDetailStore.setState({
-      albums: {
-        a1: {
-          album: {
-            id: 'a1',
-            song: [
-              { id: 't1', title: 'Song', artist: 'A', genres: ['Electronic', 'Ambient'], isDir: false },
-            ],
-          },
-        },
+      a1: {
+        name: 'Album',
+        tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200, genres: ['Electronic', 'Ambient'] }],
       },
-    } as any);
+    });
 
-    const result = getOfflineSongsByGenre('ambient');
-
-    expect(result).toHaveLength(1);
+    expect(getOfflineSongsByGenre('ambient')).toHaveLength(1);
   });
 
-  it('excludes songs not in music cache', () => {
+  it('only includes songs present in cachedSongs', () => {
     seedCache({
-        a1: {
-          name: 'Album',
-          coverArtId: 'c1',
-          tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200 }],
-        },
+      a1: { name: 'Album', tracks: [{ id: 't1', title: 'Cached', artist: 'A', duration: 200, genre: 'Rock' }] },
     });
-    albumDetailStore.setState({
-      albums: {
-        a1: {
-          album: {
-            id: 'a1',
-            song: [
-              { id: 't1', title: 'Cached', artist: 'A', genre: 'Rock', isDir: false },
-              { id: 't99', title: 'Not Cached', artist: 'B', genre: 'Rock', isDir: false },
-            ],
-          },
-        },
+    // Stamp a stray songId onto the cached item that has no matching cachedSongs row.
+    const state = musicCacheStore.getState();
+    musicCacheStore.setState({
+      ...state,
+      cachedItems: {
+        ...state.cachedItems,
+        a1: { ...state.cachedItems.a1, songIds: ['t1', 't99'] },
       },
     } as any);
 
     const result = getOfflineSongsByGenre('Rock');
-
-    expect(result).toHaveLength(1);
-    expect(result[0].id).toBe('t1');
+    expect(result.map((s) => s.id)).toEqual(['t1']);
   });
 
-  it('deduplicates songs across stores', () => {
+  it('deduplicates songs across multiple cached items', () => {
     seedCache({
-        a1: {
-          name: 'Album',
-          coverArtId: 'c1',
-          tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200 }],
-        },
+      a1: { name: 'Album', tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200, genre: 'Rock' }] },
+      p1: { name: 'Playlist', tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200, genre: 'Rock' }] },
     });
-    albumDetailStore.setState({
-      albums: {
-        a1: {
-          album: {
-            id: 'a1',
-            song: [{ id: 't1', title: 'Song', artist: 'A', genre: 'Rock', isDir: false, coverArt: 'ca1' }],
-          },
-        },
-      },
-    } as any);
-    favoritesStore.setState({
-      songs: [{ id: 't1', title: 'Song', artist: 'A', genre: 'Rock', isDir: false, coverArt: 'ca2' }],
-    } as any);
 
-    const result = getOfflineSongsByGenre('Rock');
-
-    expect(result).toHaveLength(1);
-  });
-
-  it('includes songs from cached playlists', () => {
-    seedCache({
-        p1: {
-          name: 'Playlist',
-          coverArtId: 'c1',
-          tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200 }],
-        },
-    });
-    playlistDetailStore.setState({
-      playlists: {
-        p1: {
-          playlist: {
-            id: 'p1',
-            entry: [{ id: 't1', title: 'Song', artist: 'A', genre: 'Pop', isDir: false }],
-          },
-        },
-      },
-    } as any);
-
-    const result = getOfflineSongsByGenre('Pop');
-
-    expect(result).toHaveLength(1);
-  });
-
-  it('includes starred songs that are cached', () => {
-    seedCache({
-        a1: {
-          name: 'Album',
-          coverArtId: 'c1',
-          tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200 }],
-        },
-    });
-    favoritesStore.setState({
-      songs: [{ id: 't1', title: 'Song', artist: 'A', genre: 'Blues', isDir: false }],
-    } as any);
-
-    const result = getOfflineSongsByGenre('Blues');
-
-    expect(result).toHaveLength(1);
+    expect(getOfflineSongsByGenre('Rock')).toHaveLength(1);
   });
 
   it('returns empty array when no songs match genre', () => {
     seedCache({
-        a1: {
-          name: 'Album',
-          coverArtId: 'c1',
-          tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200 }],
-        },
+      a1: { name: 'Album', tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200, genre: 'Rock' }] },
     });
-    albumDetailStore.setState({
-      albums: {
-        a1: {
-          album: {
-            id: 'a1',
-            song: [{ id: 't1', title: 'Song', artist: 'A', genre: 'Rock', isDir: false }],
-          },
-        },
-      },
-    } as any);
 
-    const result = getOfflineSongsByGenre('Classical');
-
-    expect(result).toHaveLength(0);
+    expect(getOfflineSongsByGenre('Classical')).toHaveLength(0);
   });
 
   it('returns empty array when no cached items', () => {
-    const result = getOfflineSongsByGenre('Rock');
-    expect(result).toHaveLength(0);
-  });
-
-  it('only includes songs from cached album items', () => {
-    seedCache({
-        a1: {
-          name: 'Cached Album',
-          coverArtId: 'c1',
-          tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200 }],
-        },
-    });
-    albumDetailStore.setState({
-      albums: {
-        a1: {
-          album: {
-            id: 'a1',
-            song: [{ id: 't1', title: 'Song', artist: 'A', genre: 'Rock', isDir: false }],
-          },
-        },
-        a2: {
-          album: {
-            id: 'a2',
-            song: [{ id: 't2', title: 'Other Song', artist: 'B', genre: 'Rock', isDir: false }],
-          },
-        },
-      },
-    } as any);
-
-    const result = getOfflineSongsByGenre('Rock');
-
-    expect(result).toHaveLength(1);
-    expect(result[0].id).toBe('t1');
-  });
-
-  it('uses cover art from song when available', () => {
-    seedCache({
-        a1: {
-          name: 'Album',
-          coverArtId: 'c1',
-          tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200 }],
-        },
-    });
-    albumDetailStore.setState({
-      albums: {
-        a1: {
-          album: {
-            id: 'a1',
-            song: [{ id: 't1', title: 'Song', artist: 'A', genre: 'Rock', isDir: false, coverArt: 'song-cover' }],
-          },
-        },
-      },
-    } as any);
-
-    const result = getOfflineSongsByGenre('Rock');
-
-    expect(result[0].coverArt).toBe('song-cover');
-  });
-
-  it('falls back to trackCoverArtMap when song has no coverArt', () => {
-    seedCache({
-        a1: {
-          name: 'Album',
-          coverArtId: 'c1',
-          tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200 }],
-        },
-    });
-    albumDetailStore.setState({
-      albums: {
-        a1: {
-          album: {
-            id: 'a1',
-            song: [{ id: 't1', title: 'Song', artist: 'A', genre: 'Rock', isDir: false }],
-          },
-        },
-      },
-    } as any);
-    // The favorites store has cover art for t1
-    favoritesStore.setState({
-      songs: [{ id: 't1', coverArt: 'fav-cover' }],
-    } as any);
-
-    const result = getOfflineSongsByGenre('Rock');
-
-    expect(result[0].coverArt).toBe('fav-cover');
+    expect(getOfflineSongsByGenre('Rock')).toHaveLength(0);
   });
 
   it('does not match songs without genre or genres field', () => {
     seedCache({
-        a1: {
-          name: 'Album',
-          coverArtId: 'c1',
-          tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200 }],
-        },
+      a1: { name: 'Album', tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200 }] },
     });
-    albumDetailStore.setState({
-      albums: {
-        a1: {
-          album: {
-            id: 'a1',
-            song: [{ id: 't1', title: 'Song', artist: 'A', isDir: false }],
-          },
-        },
-      },
-    } as any);
 
-    const result = getOfflineSongsByGenre('Rock');
-
-    expect(result).toHaveLength(0);
+    expect(getOfflineSongsByGenre('Rock')).toHaveLength(0);
   });
 });
