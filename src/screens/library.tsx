@@ -15,10 +15,12 @@ import {
 import { AlbumLibraryListScreen } from './album-library-list';
 import { ArtistListScreen } from './artist-list';
 import { PlaylistListScreen } from './playlist-list';
+import { SongLibraryListScreen } from './song-library-list';
 
-type LibrarySegment = 'albums' | 'artists' | 'playlists';
+type LibrarySegment = 'albums' | 'artists' | 'playlists' | 'songs';
 
 const SEGMENT_KEYS = [
+  { key: 'songs', labelKey: 'songs' },
   { key: 'albums', labelKey: 'albums' },
   { key: 'artists', labelKey: 'artists' },
   { key: 'playlists', labelKey: 'playlists' },
@@ -42,9 +44,11 @@ export function LibraryScreen() {
   const albumLayout = layoutPreferencesStore((s) => s.albumLayout);
   const artistLayout = layoutPreferencesStore((s) => s.artistLayout);
   const playlistLayout = layoutPreferencesStore((s) => s.playlistLayout);
+  const songLayout = layoutPreferencesStore((s) => s.songLayout);
   const setAlbumLayout = layoutPreferencesStore((s) => s.setAlbumLayout);
   const setArtistLayout = layoutPreferencesStore((s) => s.setArtistLayout);
   const setPlaylistLayout = layoutPreferencesStore((s) => s.setPlaylistLayout);
+  const setSongLayout = layoutPreferencesStore((s) => s.setSongLayout);
 
   const toggleAlbumLayout = useCallback(() => {
     setAlbumLayout(albumLayout === 'list' ? 'grid' : 'list');
@@ -58,6 +62,10 @@ export function LibraryScreen() {
     setPlaylistLayout(playlistLayout === 'list' ? 'grid' : 'list');
   }, [playlistLayout, setPlaylistLayout]);
 
+  const toggleSongLayout = useCallback(() => {
+    setSongLayout(songLayout === 'list' ? 'grid' : 'list');
+  }, [songLayout, setSongLayout]);
+
   useEffect(() => {
     if (!isFocused) return;
 
@@ -65,6 +73,7 @@ export function LibraryScreen() {
       albums: { layout: albumLayout, toggle: toggleAlbumLayout },
       artists: { layout: artistLayout, toggle: toggleArtistLayout },
       playlists: { layout: playlistLayout, toggle: togglePlaylistLayout },
+      songs: { layout: songLayout, toggle: toggleSongLayout },
     };
 
     const current = layoutMap[activeSegment];
@@ -82,9 +91,11 @@ export function LibraryScreen() {
     albumLayout,
     artistLayout,
     playlistLayout,
+    songLayout,
     toggleAlbumLayout,
     toggleArtistLayout,
     togglePlaylistLayout,
+    toggleSongLayout,
   ]);
 
   const downloadedOnly = filterBarStore((s) => s.downloadedOnly);
@@ -127,6 +138,14 @@ export function LibraryScreen() {
           <PlaylistListScreen
             layout={playlistLayout}
             downloadedOnly={downloadedOnly}
+            contentInsetTop={contentInsetTop}
+          />
+        )}
+        {activeSegment === 'songs' && (
+          <SongLibraryListScreen
+            layout={songLayout}
+            downloadedOnly={downloadedOnly}
+            favoritesOnly={favoritesOnly}
             contentInsetTop={contentInsetTop}
           />
         )}

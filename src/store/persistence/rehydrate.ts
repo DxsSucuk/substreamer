@@ -62,5 +62,19 @@ export function rehydrateAllStores(): RehydrationResult {
     // eslint-disable-next-line no-console
     console.warn('[rehydrateAllStores] partial failure', result.failed);
   }
+  // Defer the songs-library cache warm-up to a microtask. The first tap on
+  // the Songs library segment otherwise pays a 100-300ms SQL + JS-mapping
+  // cost during render. Lazy-required to avoid pulling React into the
+  // persistence layer.
+  queueMicrotask(() => {
+    try {
+      const { warmSongLibraryCache } = require('../../hooks/useAllSongsByTitle') as {
+        warmSongLibraryCache: () => void;
+      };
+      warmSongLibraryCache();
+    } catch {
+      /* non-critical */
+    }
+  });
   return result;
 }

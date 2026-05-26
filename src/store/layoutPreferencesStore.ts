@@ -15,6 +15,7 @@ export interface LayoutPreferencesState {
   albumLayout: ItemLayout;
   artistLayout: ItemLayout;
   playlistLayout: ItemLayout;
+  songLayout: ItemLayout;
   favSongLayout: ItemLayout;
   favAlbumLayout: ItemLayout;
   favArtistLayout: ItemLayout;
@@ -26,6 +27,7 @@ export interface LayoutPreferencesState {
   setAlbumLayout: (layout: ItemLayout) => void;
   setArtistLayout: (layout: ItemLayout) => void;
   setPlaylistLayout: (layout: ItemLayout) => void;
+  setSongLayout: (layout: ItemLayout) => void;
   setFavSongLayout: (layout: ItemLayout) => void;
   setFavAlbumLayout: (layout: ItemLayout) => void;
   setFavArtistLayout: (layout: ItemLayout) => void;
@@ -44,6 +46,7 @@ export const layoutPreferencesStore = create<LayoutPreferencesState>()(
       albumLayout: 'list',
       artistLayout: 'list',
       playlistLayout: 'list',
+      songLayout: 'list',
       favSongLayout: 'list',
       favAlbumLayout: 'list',
       favArtistLayout: 'list',
@@ -55,6 +58,7 @@ export const layoutPreferencesStore = create<LayoutPreferencesState>()(
       setAlbumLayout: (albumLayout) => set({ albumLayout }),
       setArtistLayout: (artistLayout) => set({ artistLayout }),
       setPlaylistLayout: (playlistLayout) => set({ playlistLayout }),
+      setSongLayout: (songLayout) => set({ songLayout }),
       setFavSongLayout: (favSongLayout) => set({ favSongLayout }),
       setFavAlbumLayout: (favAlbumLayout) => set({ favAlbumLayout }),
       setFavArtistLayout: (favArtistLayout) => set({ favArtistLayout }),
@@ -73,6 +77,7 @@ export const layoutPreferencesStore = create<LayoutPreferencesState>()(
         albumLayout: state.albumLayout,
         artistLayout: state.artistLayout,
         playlistLayout: state.playlistLayout,
+        songLayout: state.songLayout,
         favSongLayout: state.favSongLayout,
         favAlbumLayout: state.favAlbumLayout,
         favArtistLayout: state.favArtistLayout,

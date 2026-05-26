@@ -40,7 +40,8 @@ const ARTIST_PLAY_MODE_OPTIONS: { value: ArtistPlayMode; labelKey: string }[] = 
   { value: 'allSongs', labelKey: 'allSongs' },
 ];
 
-const LAYOUT_ROWS: { key: 'albumLayout' | 'artistLayout' | 'playlistLayout'; labelKey: string }[] = [
+const LAYOUT_ROWS: { key: 'albumLayout' | 'artistLayout' | 'playlistLayout' | 'songLayout'; labelKey: string }[] = [
+  { key: 'songLayout', labelKey: 'songs' },
   { key: 'albumLayout', labelKey: 'albums' },
   { key: 'artistLayout', labelKey: 'artists' },
   { key: 'playlistLayout', labelKey: 'playlists' },
@@ -109,9 +110,11 @@ export function SettingsAppearanceScreen() {
   const albumLayout = layoutPreferencesStore((s) => s.albumLayout);
   const artistLayout = layoutPreferencesStore((s) => s.artistLayout);
   const playlistLayout = layoutPreferencesStore((s) => s.playlistLayout);
+  const songLayout = layoutPreferencesStore((s) => s.songLayout);
   const setAlbumLayout = layoutPreferencesStore((s) => s.setAlbumLayout);
   const setArtistLayout = layoutPreferencesStore((s) => s.setArtistLayout);
   const setPlaylistLayout = layoutPreferencesStore((s) => s.setPlaylistLayout);
+  const setSongLayout = layoutPreferencesStore((s) => s.setSongLayout);
 
   const albumSortOrder = layoutPreferencesStore((s) => s.albumSortOrder);
   const setAlbumSortOrder = layoutPreferencesStore((s) => s.setAlbumSortOrder);
@@ -168,12 +171,14 @@ export function SettingsAppearanceScreen() {
   );
 
   const layoutValues: Record<string, ItemLayout> = {
+    songLayout,
     albumLayout,
     artistLayout,
     playlistLayout,
   };
 
   const layoutSetters: Record<string, (l: ItemLayout) => void> = {
+    songLayout: setSongLayout,
     albumLayout: setAlbumLayout,
     artistLayout: setArtistLayout,
     playlistLayout: setPlaylistLayout,

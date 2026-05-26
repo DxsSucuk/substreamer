@@ -183,6 +183,7 @@ export function PlaylistListView({
         numColumns={isGrid ? gridColumns : 1}
         contentContainerStyle={[
           styles.listContent,
+          isGrid && styles.listContentGrid,
           scrollerVisible && styles.listContentWithScroller,
           playlists.length === 0 && styles.emptyListContent,
         ]}
@@ -242,8 +243,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   listContent: {
-    padding: LIST_PADDING,
+    paddingVertical: LIST_PADDING,
     paddingBottom: 32,
+  },
+  listContentGrid: {
+    paddingHorizontal: LIST_PADDING,
   },
   listContentWithScroller: {
     paddingRight: LIST_PADDING + 20,
