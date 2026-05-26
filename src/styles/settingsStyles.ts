@@ -118,6 +118,21 @@ export const settingsStyles = StyleSheet.create({
   },
   sheetOptionLabel: { fontSize: 16, fontWeight: '500' },
 
+  // Small "this won't work offline" notice — icon + hint text, sits below
+  // an action row. Used by the OfflineNotice component.
+  offlineNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 10,
+    paddingHorizontal: 4,
+  },
+  offlineNoticeText: {
+    fontSize: 13,
+    lineHeight: 18,
+    flex: 1,
+  },
+
   // Filter pill (cache browsers)
   filterContainer: { paddingVertical: 8 },
   filterPill: {
