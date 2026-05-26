@@ -146,6 +146,35 @@ function exclusionsFileName(stem: string): string {
   return `${stem}.exclusions.gz`;
 }
 
+/**
+ * Compress + write one dataset to backupDir under `filename`. Writes to a
+ * `.tmp` sibling first, deletes any existing dest, then moves into place —
+ * so a crash between rename and content arrival can't leave a half-written
+ * final file. On any error, the tmp is best-effort cleaned up and the
+ * caller sees the original throw.
+ */
+async function writeBackupDataset(
+  filename: string,
+  data: unknown,
+  itemCount: number,
+): Promise<BackupDatasetMeta> {
+  const tmpFile = new File(backupDir, filename + '.tmp');
+  const destFile = new File(backupDir, filename);
+  try {
+    const { bytes } = await compressToFile(JSON.stringify(data), tmpFile.uri);
+    if (destFile.exists) {
+      try { destFile.delete(); } catch { /* best-effort */ }
+    }
+    tmpFile.move(destFile);
+    return { itemCount, sizeBytes: bytes };
+  } catch (e) {
+    if (tmpFile.exists) {
+      try { tmpFile.delete(); } catch { /* best-effort */ }
+    }
+    throw e;
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /*  Identity helpers                                                   */
 /* ------------------------------------------------------------------ */
@@ -197,41 +226,13 @@ export async function createBackup(): Promise<void> {
 
   const scrobbles = completedScrobbleStore.getState().completedScrobbles;
   if (scrobbles.length > 0) {
-    const tmpFile = new File(backupDir, scrobblesFileName(stem) + '.tmp');
-    const destFile = new File(backupDir, scrobblesFileName(stem));
-    try {
-      const { bytes } = await compressToFile(JSON.stringify(scrobbles), tmpFile.uri);
-      if (destFile.exists) {
-        try { destFile.delete(); } catch { /* best-effort */ }
-      }
-      tmpFile.move(destFile);
-      scrobblesMeta = { itemCount: scrobbles.length, sizeBytes: bytes };
-    } catch (e) {
-      if (tmpFile.exists) {
-        try { tmpFile.delete(); } catch { /* best-effort */ }
-      }
-      throw e;
-    }
+    scrobblesMeta = await writeBackupDataset(scrobblesFileName(stem), scrobbles, scrobbles.length);
   }
 
   const overrides = mbidOverrideStore.getState().overrides;
   const overrideCount = Object.keys(overrides).length;
   if (overrideCount > 0) {
-    const tmpFile = new File(backupDir, mbidFileName(stem) + '.tmp');
-    const destFile = new File(backupDir, mbidFileName(stem));
-    try {
-      const { bytes } = await compressToFile(JSON.stringify(overrides), tmpFile.uri);
-      if (destFile.exists) {
-        try { destFile.delete(); } catch { /* best-effort */ }
-      }
-      tmpFile.move(destFile);
-      mbidMeta = { itemCount: overrideCount, sizeBytes: bytes };
-    } catch (e) {
-      if (tmpFile.exists) {
-        try { tmpFile.delete(); } catch { /* best-effort */ }
-      }
-      throw e;
-    }
+    mbidMeta = await writeBackupDataset(mbidFileName(stem), overrides, overrideCount);
   }
 
   const { excludedAlbums, excludedArtists, excludedPlaylists } = scrobbleExclusionStore.getState();
@@ -241,21 +242,7 @@ export async function createBackup(): Promise<void> {
     Object.keys(excludedArtists).length +
     Object.keys(excludedPlaylists).length;
   if (exclusionCount > 0) {
-    const tmpFile = new File(backupDir, exclusionsFileName(stem) + '.tmp');
-    const destFile = new File(backupDir, exclusionsFileName(stem));
-    try {
-      const { bytes } = await compressToFile(JSON.stringify(exclusionsData), tmpFile.uri);
-      if (destFile.exists) {
-        try { destFile.delete(); } catch { /* best-effort */ }
-      }
-      tmpFile.move(destFile);
-      exclusionsMeta = { itemCount: exclusionCount, sizeBytes: bytes };
-    } catch (e) {
-      if (tmpFile.exists) {
-        try { tmpFile.delete(); } catch { /* best-effort */ }
-      }
-      throw e;
-    }
+    exclusionsMeta = await writeBackupDataset(exclusionsFileName(stem), exclusionsData, exclusionCount);
   }
 
   if (!scrobblesMeta && !mbidMeta && !exclusionsMeta) return;
