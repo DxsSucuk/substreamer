@@ -65,12 +65,11 @@ const SUCCESS_DELAY_MS = 600;
 const ERROR_DELAY_MS = 2000;
 
 const METADATA_REFRESH_OPTIONS: { value: MetadataRefreshThreshold; labelKey: string }[] = [
-  { value: 'always', labelKey: 'metadataRefreshAlways' },
-  { value: '1hour', labelKey: 'metadataRefresh1hour' },
-  { value: '1day', labelKey: 'metadataRefresh1day' },
-  { value: '1week', labelKey: 'metadataRefresh1week' },
-  { value: '1month', labelKey: 'metadataRefresh1month' },
-  { value: 'never', labelKey: 'metadataRefreshNever' },
+  { value: 'always', labelKey: 'albumCacheRefreshAlways' },
+  { value: '1day', labelKey: 'albumCacheRefresh1day' },
+  { value: '1week', labelKey: 'albumCacheRefresh1week' },
+  { value: '1month', labelKey: 'albumCacheRefresh1month' },
+  { value: 'never', labelKey: 'albumCacheRefreshNever' },
 ];
 
 type RestoreState = 'idle' | 'restoring' | 'success' | 'error';
@@ -117,6 +116,14 @@ export function SettingsLibraryDataScreen() {
   const setMetadataRefreshThreshold = playbackSettingsStore(
     (s) => s.setMetadataRefreshThreshold,
   );
+  const [albumCacheRefreshOpen, setAlbumCacheRefreshOpen] = useState(false);
+
+  // Normalise any pre-existing '1hour' value (option removed) to '1day'.
+  useEffect(() => {
+    if (metadataRefreshThreshold === '1hour') {
+      setMetadataRefreshThreshold('1day');
+    }
+  }, [metadataRefreshThreshold, setMetadataRefreshThreshold]);
 
   // --- Listening History state ---
   const pendingScrobbleCount = pendingScrobbleStore((s) => s.pendingScrobbles.length);
@@ -484,37 +491,66 @@ export function SettingsLibraryDataScreen() {
         </View>
       </View>
 
-      {/* Metadata Freshness */}
+      {/* Album cache refresh */}
       <View style={settingsStyles.section}>
         <Text style={[settingsStyles.sectionTitle, dynamicStyles.sectionTitle]}>
-          {t('metadataRefresh')}
+          {t('albumCacheRefresh')}
         </Text>
         <View style={[settingsStyles.card, dynamicStyles.card]}>
-          {METADATA_REFRESH_OPTIONS.map((opt, index) => {
-            const isActive = metadataRefreshThreshold === opt.value;
-            const isLast = index === METADATA_REFRESH_OPTIONS.length - 1;
-            return (
-              <Pressable
-                key={opt.value}
-                onPress={() => setMetadataRefreshThreshold(opt.value)}
-                style={({ pressed }) => [
-                  styles.radioRow,
-                  !isLast && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
-                  pressed && settingsStyles.pressed,
-                ]}
-              >
-                <Text style={[styles.radioLabel, { color: colors.textPrimary }]}>
-                  {t(opt.labelKey)}
-                </Text>
-                {isActive && (
-                  <Ionicons name="checkmark" size={20} color={colors.primary} />
-                )}
-              </Pressable>
-            );
-          })}
+          <Pressable
+            onPress={() => setAlbumCacheRefreshOpen((prev) => !prev)}
+            style={({ pressed }) => [
+              styles.dropdownHeader,
+              pressed && settingsStyles.pressed,
+            ]}
+          >
+            <Text
+              style={[styles.dropdownLabel, { color: colors.textPrimary, flex: 1 }]}
+              numberOfLines={1}
+            >
+              {t(
+                METADATA_REFRESH_OPTIONS.find((o) => o.value === metadataRefreshThreshold)
+                  ?.labelKey ?? 'albumCacheRefresh1week',
+              )}
+            </Text>
+            <Ionicons
+              name={albumCacheRefreshOpen ? 'chevron-up' : 'chevron-down'}
+              size={20}
+              color={colors.textSecondary}
+            />
+          </Pressable>
+          {albumCacheRefreshOpen && (
+            <View style={[styles.dropdownOptionList, { borderTopColor: colors.border }]}>
+              {METADATA_REFRESH_OPTIONS.map((opt, index) => {
+                const isActive = metadataRefreshThreshold === opt.value;
+                const isLast = index === METADATA_REFRESH_OPTIONS.length - 1;
+                return (
+                  <Pressable
+                    key={opt.value}
+                    onPress={() => {
+                      setMetadataRefreshThreshold(opt.value);
+                      setAlbumCacheRefreshOpen(false);
+                    }}
+                    style={({ pressed }) => [
+                      styles.dropdownOption,
+                      !isLast && { borderBottomColor: colors.border },
+                      pressed && settingsStyles.pressed,
+                    ]}
+                  >
+                    <Text style={[styles.dropdownLabel, { color: colors.textPrimary }]}>
+                      {t(opt.labelKey)}
+                    </Text>
+                    {isActive && (
+                      <Ionicons name="checkmark" size={20} color={colors.primary} />
+                    )}
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
         </View>
         <Text style={[settingsStyles.sectionHint, { color: colors.textSecondary }]}>
-          {t('metadataRefreshDescription')}
+          {t('albumCacheRefreshDescription')}
         </Text>
       </View>
 
@@ -1005,15 +1041,31 @@ export function SettingsLibraryDataScreen() {
 }
 
 const styles = StyleSheet.create({
-  radioRow: {
+  dropdownHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
     paddingVertical: 14,
+    paddingHorizontal: 16,
   },
-  radioLabel: {
-    fontSize: 15,
+  dropdownRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  dropdownOptionList: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  dropdownOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  dropdownLabel: {
+    fontSize: 16,
   },
   offlineNotice: {
     flexDirection: 'row',
