@@ -38,6 +38,15 @@ import { fetchServerInfo, getRecentlyAddedAlbums, type AlbumID3 } from './subson
 const WALK_CONCURRENCY = 4;
 /** Skip the walk entirely on tiny libraries — not worth the startup cost. */
 const MIN_LIBRARY_FOR_WALK = 1;
+/**
+ * Delay after the JS thread reports idle before kicking off deferred
+ * startup prefetches (library lists, genres, detail walk). Empirically
+ * chosen — at ~1.5s the first paint has settled, hydration is done, and
+ * the initial network/auth handshakes have either landed or timed out
+ * locally. Shorter values stutter the splash; longer values delay the
+ * library appearing on screen.
+ */
+const STARTUP_PREFETCH_SETTLE_MS = 1500;
 
 /**
  * True when there's library work to do — either the album list hasn't been
@@ -234,11 +243,9 @@ async function startupOrResumeFlow(): Promise<void> {
   // Startup sync — metadata only, art pre-caches on user-initiated views.
   favoritesStore.getState().fetchStarred({ prefetchCovers: false });
 
-  // Deferred library prefetches — mirrors _layout.tsx:341-354. Uses the same
-  // requestIdleCallback + 1500ms settling pattern to avoid a thundering herd
-  // on the JS thread at launch. The detail-walk fires only after the library
-  // prefetch has actually returned data — running against a stale or empty
-  // library snapshot would do nothing useful.
+  // Deferred library prefetches. requestIdleCallback waits for the JS
+  // thread to settle; the STARTUP_PREFETCH_SETTLE_MS delay then keeps
+  // network fan-out off the splash → first-paint critical path.
   requestIdleCallback(() => {
     setTimeout(async () => {
       const libPromise = albumLibraryStore.getState().albums.length === 0
@@ -279,7 +286,7 @@ async function startupOrResumeFlow(): Promise<void> {
         // Fire-and-forget — walk progress is visible via the pill banner.
         fireAndForget(runFullAlbumDetailSync(), 'sync.runFullAlbumDetailSync');
       }
-    }, 1500);
+    }, STARTUP_PREFETCH_SETTLE_MS);
   });
 }
 

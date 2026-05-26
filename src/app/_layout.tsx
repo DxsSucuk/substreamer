@@ -446,7 +446,8 @@ export default function RootLayout() {
     if (!offline) {
       startMonitoring();
       // dataSyncService owns the prefetch fan-out (immediate chain +
-      // requestIdleCallback + setTimeout(1500) deferred library prefetches).
+      // requestIdleCallback + STARTUP_PREFETCH_SETTLE_MS deferred library
+      // prefetches).
       onStartup();
     }
 
