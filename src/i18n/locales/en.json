@@ -74,7 +74,7 @@
   "onboardingCustomiseBody": "Head to Settings to choose your streaming and download quality, set storage limits, and pick your preferred theme and accent colour.",
   "helpWelcomeGuide": "Help & Welcome Guide",
   "helpWelcomeGuideSubtitle": "Learn about gestures, offline mode, and settings",
-  "audioDiagnostics": "Audio Diagnostics",
+  "audioDiagnostics": "Player Logging",
   "diagnosticLogging": "Diagnostic Logging",
   "diagnosticLoggingHint": "Logs audio playback events to a file for debugging.",
   "remoteControlDiagnostics": "Remote Control Diagnostics",
