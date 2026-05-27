@@ -23,7 +23,6 @@ import { useTranslation } from 'react-i18next';
 
 import AnimatedWaveformLogo, { type WaveformHandle } from './AnimatedWaveformLogo';
 import {
-  applyOneShotResetForUnshippedCleanup,
   getPendingTasks,
   runMigrations,
 } from '../services/migrationService';
@@ -207,10 +206,6 @@ export default function AnimatedSplashScreen({ onFinish }: Props) {
         completedVersion = parsed?.state?.completedVersion ?? 0;
       }
     } catch { /* fall back to 0 — migrations will re-run safely */ }
-    // TEMPORARY: one-shot reset for dev devices that ran unshipped 22/23.
-    // Safe to remove (along with the function it calls) after the next
-    // testflight confirms the migration set is sound on dev devices.
-    completedVersion = applyOneShotResetForUnshippedCleanup(completedVersion);
     const pending = getPendingTasks(completedVersion);
 
     if (pending.length === 0) {

@@ -2005,59 +2005,6 @@ const MIGRATION_TASKS: MigrationTask[] = [
 /*  Public API                                                         */
 /* ------------------------------------------------------------------ */
 
-const PRE_RELEASE_RESET_FLAG_KEY = 'substreamer-migration-reset-v1';
-
-/**
- * TEMPORARY: one-shot clamp of `completedVersion` back to 20 for dev
- * devices that ran the now-consolidated unshipped Migrations 22 and 23.
- *
- * Background: production currently ships 8.0.56 with migrations 1-20.
- * Migrations 22 and 23 were authored in master but consolidated away
- * (M22 → superseded by M25; M23 → folded into M25) before any release.
- * Dev devices that ran the pre-consolidation master have completedVersion
- * up to 26, so the cleaned-up M25 (which now also handles the M23
- * kvStorage cleanup) won't re-run on those devices unless we clamp.
- *
- * Production users on 8.0.56 have completedVersion=20, so the clamp is
- * a no-op for them (20 > 20 is false).
- *
- * Gated by a kvStorage flag so M25 doesn't re-wipe the image cache on
- * every subsequent launch. Once dev devices have run the next release
- * and confirmed the migration set is sound, this entire function and
- * its call site in `AnimatedSplashScreen` can be deleted (the flag key
- * will linger in kvStorage but is harmless).
- */
-export function applyOneShotResetForUnshippedCleanup(
-  completedVersion: number,
-): number {
-  try {
-    if (kvStorage.getItem(PRE_RELEASE_RESET_FLAG_KEY) === 'done') {
-      return completedVersion;
-    }
-    kvStorage.setItem(PRE_RELEASE_RESET_FLAG_KEY, 'done');
-    if (completedVersion <= 20) return completedVersion;
-
-    // Write the reset back to the migrationStore's kvStorage blob so
-    // hydration on this launch (and any subsequent persist write from
-    // the runner) starts from 20.
-    const raw = kvStorage.getItem('substreamer-migration') as string | null;
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw);
-        if (parsed?.state) {
-          parsed.state.completedVersion = 20;
-          kvStorage.setItem('substreamer-migration', JSON.stringify(parsed));
-        }
-      } catch {
-        /* swallow — return value is still 20 below */
-      }
-    }
-    return 20;
-  } catch {
-    return completedVersion;
-  }
-}
-
 /**
  * Returns tasks that have not yet been completed.
  */
