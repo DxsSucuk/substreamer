@@ -95,6 +95,7 @@ let mockRunMigrations = jest.fn().mockResolvedValue(0);
 jest.mock('../../services/migrationService', () => ({
   getPendingTasks: () => mockPendingTasks,
   runMigrations: (...args: any[]) => mockRunMigrations(...args),
+  applyOneShotResetForUnshippedCleanup: (v: number) => v,
 }));
 
 const mockSetCompletedVersion = jest.fn();

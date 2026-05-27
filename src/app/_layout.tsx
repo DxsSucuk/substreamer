@@ -369,9 +369,9 @@ export default function RootLayout() {
   }, [isLoggedIn]);
 
   // --- Cover-art recache resumption on connectivity restoration ---
-  // After Migration 22 the recache pass refreshes downloaded items'
-  // covers under the new canonical IDs. If the user was offline at
-  // first launch, kick the worker as soon as the server becomes
+  // The image-cache refresh-queue worker picks up cover art for
+  // downloaded items under the entity-ID model. If the user was offline
+  // at first launch, kick the worker as soon as the server becomes
   // reachable. Also covers mid-pass connectivity drops.
   useEffect(() => {
     if (!isLoggedIn) return;
