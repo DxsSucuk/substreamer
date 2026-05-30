@@ -75,6 +75,10 @@ export function SearchableHeader({ route }: BottomTabHeaderProps) {
   }, []);
 
   const handleClear = useCallback(() => {
+    if (debounceTimer.current) {
+      clearTimeout(debounceTimer.current);
+      debounceTimer.current = null;
+    }
     setQuery('');
     hideOverlay();
     inputRef.current?.blur();

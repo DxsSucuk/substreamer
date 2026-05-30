@@ -52,24 +52,41 @@ export const searchStore = create<SearchState>()((set, get) => ({
   isOverlayVisible: false,
   headerHeight: 0,
 
-  setQuery: (query) => set({ query }),
+  setQuery: (query) => {
+    // Flip `loading` on as soon as the text changes so the overlay can
+    // show a "searching" indicator during the debounce + network window,
+    // not just after performSearch fires ~300ms later. For empty input
+    // we explicitly set false — the overlay early-returns on empty
+    // query anyway, but this keeps the flag honest if the overlay is
+    // reopened later.
+    set({ query, loading: query.trim() !== '', error: null });
+  },
 
   performSearch: async () => {
-    const { query } = get();
-    if (!query.trim()) {
+    const requestQuery = get().query;
+    if (!requestQuery.trim()) {
       set({ results: EMPTY_RESULTS, loading: false, error: null });
       return;
     }
 
     if (offlineModeStore.getState().offlineMode) {
-      const results = performOfflineSearch(query.trim());
+      const results = performOfflineSearch(requestQuery.trim());
+      // Stale-result guard: another keystroke may have landed between
+      // the debounce timer firing and this synchronous compute. Don't
+      // overwrite a newer query's state with this one's results.
+      if (get().query !== requestQuery) return;
       set({ results, loading: false, error: null });
       return;
     }
 
     set({ loading: true, error: null });
     try {
-      const results = await performOnlineSearch(query);
+      const results = await performOnlineSearch(requestQuery);
+      // Stale-result guard: the user typed further while we were
+      // fetching. A newer performSearch is in flight; let it land and
+      // ignore this stale response so the displayed list always
+      // matches the latest typed query.
+      if (get().query !== requestQuery) return;
       const ratingEntries: Array<{ id: string; serverRating: number }> = [
         ...results.albums.map((a) => ({ id: a.id, serverRating: a.userRating ?? 0 })),
         ...results.artists.map((a) => ({ id: a.id, serverRating: a.userRating ?? 0 })),
@@ -78,6 +95,7 @@ export const searchStore = create<SearchState>()((set, get) => ({
       ratingStore.getState().reconcileRatings(ratingEntries);
       set({ results, loading: false });
     } catch (e) {
+      if (get().query !== requestQuery) return;
       set({
         loading: false,
         error: e instanceof Error ? e.message : 'Search failed',

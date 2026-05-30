@@ -546,6 +546,7 @@
   "albumCount_many": "{{count}} albums",
   "albumCount_other": "{{count}} albums",
   "seeMoreResults": "See more results",
+  "searching": "Searching…",
   "discNumber": "Disc {{number}}",
   "noTracksFound": "No tracks found",
   "noTracksFoundSubtitle": "Please check your server is online and reachable, then pull to refresh",
