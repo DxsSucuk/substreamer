@@ -62,7 +62,9 @@ const HERO_PADDING = 24;
 const HERO_COVER_SIZE = 600;
 const HEADER_BAR_HEIGHT = Platform.OS === 'ios' ? 44 : 56;
 const STRIP_HEIGHT = 112;
-const PEEK_HEIGHT = 132;
+const COLUMN_GAP = 24;
+const LOW_PEEK_HEIGHT = 160; // collapsed sheet — handle + toggle only
+const ART_MAX = 440;
 
 /**
  * Tablet-portrait full-screen Now Playing. A large hero + controls up top with
@@ -152,15 +154,25 @@ export function TabletPortraitPlayer() {
     });
   }, [currentTrack, navigation, onClose, colors.textPrimary]);
 
-  /* ---- Drag detents ---- */
+  /* ---- Layout: a horizontal band (art left, controls right) centered in the
+     space above the sheet. Three detents: low (pulled down) / default / full
+     (band collapses into the strip). ---- */
   const headerSpace = insets.top + HEADER_BAR_HEIGHT;
-  const fullHeight = Math.max(Math.round(screenH - headerSpace - STRIP_HEIGHT), 320);
-  const halfHeight = Math.min(
-    Math.max(Math.round(screenH * 0.46), PEEK_HEIGHT + 120),
+
+  // Prominent square art on the left, capped so the right column keeps room for
+  // the controls on narrower tablets.
+  const artSize = Math.min(
+    Math.round((screenW - 2 * HERO_PADDING - COLUMN_GAP) * 0.5),
+    ART_MAX,
+  );
+
+  const fullHeight = Math.max(screenH - headerSpace - STRIP_HEIGHT, 320);
+  const defaultHeight = Math.min(
+    Math.max(Math.round(screenH * 0.44), LOW_PEEK_HEIGHT + 120),
     fullHeight - 80,
   );
 
-  const panelHeight = useSharedValue(halfHeight);
+  const panelHeight = useSharedValue(defaultHeight);
   const startHeight = useSharedValue(0);
 
   const panGesture = useMemo(
@@ -173,52 +185,46 @@ export function TabletPortraitPlayer() {
         .onUpdate((e) => {
           'worklet';
           const next = startHeight.value - e.translationY;
-          panelHeight.value = Math.min(fullHeight, Math.max(PEEK_HEIGHT, next));
+          panelHeight.value = Math.min(fullHeight, Math.max(LOW_PEEK_HEIGHT, next));
         })
         .onEnd((e) => {
           'worklet';
           const projected = panelHeight.value - e.velocityY * 0.08;
-          const dPeek = Math.abs(projected - PEEK_HEIGHT);
-          const dHalf = Math.abs(projected - halfHeight);
+          const dLow = Math.abs(projected - LOW_PEEK_HEIGHT);
+          const dDef = Math.abs(projected - defaultHeight);
           const dFull = Math.abs(projected - fullHeight);
-          let target = PEEK_HEIGHT;
-          if (dHalf <= dPeek && dHalf <= dFull) target = halfHeight;
-          else if (dFull <= dPeek && dFull <= dHalf) target = fullHeight;
+          let target = LOW_PEEK_HEIGHT;
+          if (dDef <= dLow && dDef <= dFull) target = defaultHeight;
+          else if (dFull <= dLow && dFull <= dDef) target = fullHeight;
           panelHeight.value = withSpring(target, { damping: 28, stiffness: 220, mass: 0.9 });
         }),
-    [fullHeight, halfHeight, panelHeight, startHeight],
+    [defaultHeight, fullHeight, panelHeight, startHeight],
   );
 
+  // Band fades out as the sheet expands to full; it also rides to stay
+  // vertically centered in the (shrinking/growing) space above the sheet.
   const fullContentStyle = useAnimatedStyle(() => {
-    const c = interpolate(panelHeight.value, [halfHeight, fullHeight], [0, 1], Extrapolation.CLAMP);
+    const c = interpolate(panelHeight.value, [defaultHeight, fullHeight], [0, 1], Extrapolation.CLAMP);
+    const centerY = (headerSpace - panelHeight.value) / 2;
     return {
       opacity: 1 - c,
-      transform: [{ translateY: -24 * c }, { scale: 1 - 0.04 * c }],
+      transform: [{ translateY: centerY - 16 * c }],
       pointerEvents: c < 0.5 ? ('auto' as const) : ('none' as const),
     };
-  }, [halfHeight, fullHeight]);
+  }, [defaultHeight, fullHeight, headerSpace]);
 
   const stripStyle = useAnimatedStyle(() => {
-    const c = interpolate(panelHeight.value, [halfHeight, fullHeight], [0, 1], Extrapolation.CLAMP);
+    const c = interpolate(panelHeight.value, [defaultHeight, fullHeight], [0, 1], Extrapolation.CLAMP);
     return {
       opacity: c,
       pointerEvents: c > 0.5 ? ('auto' as const) : ('none' as const),
     };
-  }, [halfHeight, fullHeight]);
+  }, [defaultHeight, fullHeight]);
 
   const queueColors = useMemo(
     () => ({ ...colors, primary: mixHexColors(colors.primary, colors.textPrimary, 0.45) }),
     [colors],
   );
-
-  // Size the hero so the controls stay visible above the panel at its HALF
-  // detent — everything below the panel's top edge is covered by the panel.
-  const heroSize = useMemo(() => {
-    const NON_HERO_CHROME = 286; // track info + progress + 2 control rows + hero padding
-    const verticalBudget = screenH - halfHeight - headerSpace - 8 - NON_HERO_CHROME;
-    const widthBudget = screenW - 2 * HERO_PADDING;
-    return Math.max(Math.min(widthBudget, 420, verticalBudget), 140);
-  }, [screenW, screenH, halfHeight, headerSpace]);
 
   if (!currentTrack) {
     return (
@@ -254,12 +260,11 @@ export function TabletPortraitPlayer() {
           <LinearGradient colors={gradientColors} locations={gradientLocations} style={absoluteFill} />
         </Animated.View>
 
-        {/* Full hero + controls (collapses as the panel expands) */}
-        <Animated.View
-          style={[styles.fullContent, { paddingTop: headerSpace + 8 }, fullContentStyle]}
-        >
-          <View style={styles.hero}>
-            <View style={[styles.heroImageWrap, { width: heroSize, height: heroSize }]}>
+        {/* Top band: cover art (left) + info/progress/controls (right).
+            Collapses into the compact strip as the panel expands. */}
+        <Animated.View style={[styles.fullContent, fullContentStyle]}>
+          <View style={styles.band}>
+            <View style={[styles.heroImageWrap, { width: artSize, height: artSize }]}>
               <CachedImage
                 coverArtId={currentTrack.albumId ?? currentTrack.id}
                 size={HERO_COVER_SIZE}
@@ -270,32 +275,32 @@ export function TabletPortraitPlayer() {
                 <SleepTimerCapsule />
               </View>
             </View>
-          </View>
 
-          <View style={styles.trackInfo}>
-            <View style={styles.trackInfoRow}>
-              <View style={styles.trackInfoText}>
-                <MarqueeText style={[styles.trackTitle, { color: colors.textPrimary }]}>
-                  {currentTrack.title}
-                </MarqueeText>
-                <Text style={[styles.trackArtist, { color: colors.textSecondary }]} numberOfLines={1}>
-                  {currentTrack.artist ?? t('unknownArtist')}
-                </Text>
+            <View style={styles.bandContent}>
+              <View style={styles.trackInfoRow}>
+                <View style={styles.trackInfoText}>
+                  <MarqueeText style={[styles.trackTitle, { color: colors.textPrimary }]}>
+                    {currentTrack.title}
+                  </MarqueeText>
+                  <Text style={[styles.trackArtist, { color: colors.textSecondary }]} numberOfLines={1}>
+                    {currentTrack.artist ?? t('unknownArtist')}
+                  </Text>
+                </View>
+                <FavoriteButton trackId={currentTrack.id} style={styles.favoriteButton} />
               </View>
-              <FavoriteButton trackId={currentTrack.id} style={styles.favoriteButton} />
+
+              <View style={styles.progressSection}>
+                <ProgressBar colors={colors} handleSeek={handleSeek} />
+              </View>
+
+              <PlaybackControls
+                colors={colors}
+                shuffling={shuffling}
+                handleShuffle={handleShuffle}
+                queueLength={queue.length}
+              />
             </View>
           </View>
-
-          <View style={styles.progressSection}>
-            <ProgressBar colors={colors} handleSeek={handleSeek} />
-          </View>
-
-          <PlaybackControls
-            colors={colors}
-            shuffling={shuffling}
-            handleShuffle={handleShuffle}
-            queueLength={queue.length}
-          />
         </Animated.View>
 
         {/* Compact strip — fades in when the panel is full */}
@@ -532,12 +537,16 @@ const styles = StyleSheet.create({
   fullContent: {
     ...absoluteFill,
     paddingHorizontal: HERO_PADDING,
+    justifyContent: 'center',
   },
-  hero: {
-    width: '100%',
+  band: {
+    flexDirection: 'row',
     alignItems: 'center',
-    paddingTop: 8,
-    paddingBottom: 24,
+    gap: COLUMN_GAP,
+  },
+  bandContent: {
+    flex: 1,
+    justifyContent: 'center',
   },
   heroImageWrap: {
     borderRadius: 14,
@@ -561,15 +570,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  trackInfo: {
-    width: '100%',
-    maxWidth: 520,
-    alignSelf: 'center',
-    marginBottom: 16,
-  },
   trackInfoRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    marginBottom: 12,
   },
   trackInfoText: {
     flex: 1,
@@ -589,8 +593,6 @@ const styles = StyleSheet.create({
   },
   progressSection: {
     width: '100%',
-    maxWidth: 520,
-    alignSelf: 'center',
     marginBottom: 8,
   },
   controls: {
@@ -598,8 +600,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 8,
-    maxWidth: 520,
     width: '100%',
+    maxWidth: 420,
     alignSelf: 'center',
   },
   controlSideLeft: {
@@ -616,19 +618,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-evenly',
-    width: 260,
+    width: 248,
   },
   secondaryControls: {
     flexDirection: 'row',
     alignItems: 'center',
     height: 40,
     marginTop: 20,
-    maxWidth: 520,
     width: '100%',
+    maxWidth: 420,
     alignSelf: 'center',
   },
   secondaryCenter: {
-    width: 260,
+    width: 248,
   },
   secondaryCenterRow: {
     flexDirection: 'row',
