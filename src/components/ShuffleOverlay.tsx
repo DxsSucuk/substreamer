@@ -1,16 +1,16 @@
 import Ionicons from "@react-native-vector-icons/ionicons/static";
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
-import Animated from 'react-native-reanimated';
+import { StyleSheet, Text, View, type ViewStyle } from 'react-native';
+import Animated, { type AnimatedStyle } from 'react-native-reanimated';
 
 import { type ThemeColors } from '../constants/theme';
 import { absoluteFill } from '../utils/styles';
 
 export interface ShuffleOverlayProps {
   visible: boolean;
-  overlayStyle: StyleProp<ViewStyle>;
-  spinStyle: StyleProp<ViewStyle>;
+  overlayStyle: AnimatedStyle<ViewStyle>;
+  spinStyle: AnimatedStyle<ViewStyle>;
   colors: ThemeColors;
 }
 

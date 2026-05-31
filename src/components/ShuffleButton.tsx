@@ -8,11 +8,13 @@ import { useTheme } from '../hooks/useTheme';
 export interface ShuffleButtonProps {
   onPress: () => void;
   disabled?: boolean;
+  size?: number;
 }
 
 export const ShuffleButton = memo(function ShuffleButton({
   onPress,
   disabled = false,
+  size = 20,
 }: ShuffleButtonProps) {
   const { t } = useTranslation();
   const { colors } = useTheme();
@@ -29,7 +31,7 @@ export const ShuffleButton = memo(function ShuffleButton({
         (pressed || disabled) && styles.pressed,
       ]}
     >
-      <Ionicons name="shuffle" size={20} color={colors.textPrimary} />
+      <Ionicons name="shuffle" size={size} color={colors.textPrimary} />
     </Pressable>
   );
 });

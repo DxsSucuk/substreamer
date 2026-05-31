@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react';
+import { type ViewStyle } from 'react-native';
 import {
   Easing,
   cancelAnimation,
@@ -22,11 +23,11 @@ export function useShuffleOverlay() {
   const overlayOpacity = useSharedValue(0);
   const spinAnim = useSharedValue(0);
 
-  const overlayStyle = useAnimatedStyle(() => ({
+  const overlayStyle = useAnimatedStyle<ViewStyle>(() => ({
     opacity: overlayOpacity.value,
   }));
 
-  const spinStyle = useAnimatedStyle(() => ({
+  const spinStyle = useAnimatedStyle<ViewStyle>(() => ({
     transform: [{ rotate: `${interpolate(spinAnim.value, [0, 1], [0, 360])}deg` }],
   }));
 
