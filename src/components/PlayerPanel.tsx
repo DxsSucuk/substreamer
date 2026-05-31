@@ -1,6 +1,6 @@
 import Ionicons from "@react-native-vector-icons/ionicons/static";
 import { FlashList } from '@shopify/flash-list';
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ActivityIndicator,
@@ -9,16 +9,6 @@ import {
   Text,
   View,
 } from 'react-native';
-import Animated, {
-  Easing,
-  cancelAnimation,
-  interpolate,
-  useAnimatedStyle,
-  useSharedValue,
-  withRepeat,
-  withTiming,
-  runOnJS,
-} from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { GradientBackground } from './GradientBackground';
@@ -30,43 +20,35 @@ import { PlayerProgressBar } from './PlayerProgressBar';
 import { QueueItemRow } from './QueueItemRow';
 import { RepeatButton } from './RepeatButton';
 import { ShuffleButton } from './ShuffleButton';
-import { SkipIntervalButton } from './SkipIntervalButton';
-import { SleepTimerButton } from './SleepTimerButton';
+import { ShuffleOverlay } from './ShuffleOverlay';
 import { SleepTimerCapsule } from './SleepTimerCapsule';
 import { closeOpenRow } from './SwipeableRow';
 import { type ThemeColors } from '../constants/theme';
 import { useCanSkip } from '../hooks/useCanSkip';
 import { useIsStarred } from '../hooks/useIsStarred';
 import { mixHexColors } from '../utils/colors';
+import { usePlayerActions } from '../hooks/usePlayerActions';
+import { useShuffleOverlay } from '../hooks/useShuffleOverlay';
 import { useTheme } from '../hooks/useTheme';
-import { useThemedAlert } from '../hooks/useThemedAlert';
 import { toggleStar } from '../services/moreOptionsService';
 import {
-  clearQueue,
   retryPlayback,
-  seekTo,
-  shuffleQueue,
   skipToNext,
   skipToPrevious,
-  skipToTrack,
   togglePlayPause,
 } from '../services/playerService';
 import { type Child } from '../services/subsonicService';
-import { playbackSettingsStore } from '../store/playbackSettingsStore';
-import { createShareStore } from '../store/createShareStore';
 import { moreOptionsStore } from '../store/moreOptionsStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { playerStore } from '../store/playerStore';
 import { tabletLayoutStore } from '../store/tabletLayoutStore';
 
-import { absoluteFill } from '../utils/styles';
 const COVER_SIZE = 300;
 const PADDING = 16;
 
 export function PlayerPanel() {
   const { t } = useTranslation();
   const { colors } = useTheme();
-  const { alert } = useThemedAlert();
   const insets = useSafeAreaInsets();
   const queueContentContainerStyle = useMemo(
     () => ({ paddingBottom: insets.bottom + 16 }),
@@ -77,75 +59,24 @@ export function PlayerPanel() {
   const queue = playerStore((s) => s.queue);
   const queueLoading = playerStore((s) => s.queueLoading);
 
-  const handleSeek = useCallback((seconds: number) => {
-    seekTo(seconds);
-  }, []);
-
-  const handleQueueItemPress = useCallback((index: number) => {
-    skipToTrack(index);
-  }, []);
-
-  const handleQueueItemLongPress = useCallback((track: Child) => {
-    moreOptionsStore.getState().show({ type: 'song', item: track }, 'playerpanel');
-  }, []);
-
-  const handleClearQueue = useCallback(() => {
-    alert(
-      t('clearQueue'),
-      t('clearQueueMessage'),
-      [
-        { text: t('cancel'), style: 'cancel' },
-        { text: t('clear'), style: 'destructive', onPress: clearQueue },
-      ],
-    );
-  }, []);
-
-  const handleShareQueue = useCallback(() => {
-    const ids = queue.map((t) => t.id);
-    if (ids.length > 0) {
-      createShareStore.getState().showQueue(ids);
-    }
-  }, [queue]);
+  const {
+    handleSeek,
+    handleQueueItemPress,
+    handleQueueItemLongPress,
+    handleShareQueue,
+    handleClearQueue,
+  } = usePlayerActions({ source: 'playerpanel' });
 
   const handleExpand = useCallback(() => {
     tabletLayoutStore.getState().setPlayerExpanded(true);
   }, []);
 
-  // --- Shuffle overlay state ---
-  const [shuffling, setShuffling] = useState(false);
-  const overlayOpacity = useSharedValue(0);
-  const spinAnim = useSharedValue(0);
-
-  const overlayAnimatedStyle = useAnimatedStyle(() => ({
-    opacity: overlayOpacity.value,
-  }));
-
-  const spinStyle = useAnimatedStyle(() => ({
-    transform: [{ rotate: `${interpolate(spinAnim.value, [0, 1], [0, 360])}deg` }],
-  }));
-
-  const handleShuffle = useCallback(async () => {
-    if (shuffling) return;
-    setShuffling(true);
-    spinAnim.value = 0;
-
-    overlayOpacity.value = withTiming(1, { duration: 250 });
-    spinAnim.value = withRepeat(
-      withTiming(1, { duration: 800, easing: Easing.linear }),
-      -1,
-    );
-
-    const MIN_DISPLAY = 2000;
-    await Promise.all([
-      shuffleQueue(),
-      new Promise<void>((r) => setTimeout(r, MIN_DISPLAY)),
-    ]);
-
-    cancelAnimation(spinAnim);
-    overlayOpacity.value = withTiming(0, { duration: 300 }, (finished) => {
-      if (finished) runOnJS(setShuffling)(false);
-    });
-  }, [shuffling, overlayOpacity, spinAnim]);
+  const {
+    shuffling,
+    handleShuffle,
+    overlayStyle,
+    spinStyle,
+  } = useShuffleOverlay();
 
   // Muted primary for active queue item highlight
   const queueColors = useMemo(() => ({
@@ -258,21 +189,12 @@ export function PlayerPanel() {
       </View>
 
       {/* Shuffle overlay */}
-      {shuffling && (
-        <Animated.View
-          style={[styles.shuffleOverlay, overlayAnimatedStyle]}
-          pointerEvents="auto"
-        >
-          <View style={[styles.shuffleCard, { backgroundColor: colors.card }]}>
-            <Animated.View style={spinStyle}>
-              <Ionicons name="shuffle" size={32} color={colors.primary} />
-            </Animated.View>
-            <Text style={[styles.shuffleText, { color: colors.textPrimary }]}>
-              Shuffling…
-            </Text>
-          </View>
-        </Animated.View>
-      )}
+      <ShuffleOverlay
+        visible={shuffling}
+        overlayStyle={overlayStyle}
+        spinStyle={spinStyle}
+        colors={colors}
+      />
     </GradientBackground>
   );
 }
@@ -343,8 +265,6 @@ const PanelHeader = memo(function PanelHeader({
   const error = playerStore((s) => s.error);
   const retrying = playerStore((s) => s.retrying);
 
-  const showSkipInterval = playbackSettingsStore((s) => s.showSkipIntervalButtons);
-  const showSleepTimer = playbackSettingsStore((s) => s.showSleepTimerButton);
   const { canSkipNext, canSkipPrevious } = useCanSkip();
 
   const isPlaying =
@@ -444,10 +364,6 @@ const PanelHeader = memo(function PanelHeader({
                 <Ionicons name="play-back" size={24} color={canSkipPrevious ? colors.textPrimary : colors.textSecondary} />
               </Pressable>
 
-              {showSkipInterval && (
-                <SkipIntervalButton direction="backward" size={22} />
-              )}
-
               <Pressable
                 onPress={togglePlayPause}
                 style={({ pressed }) => [
@@ -468,10 +384,6 @@ const PanelHeader = memo(function PanelHeader({
                 )}
               </Pressable>
 
-              {showSkipInterval && (
-                <SkipIntervalButton direction="forward" size={22} />
-              )}
-
               <Pressable
                 onPress={skipToNext}
                 hitSlop={12}
@@ -486,17 +398,6 @@ const PanelHeader = memo(function PanelHeader({
               <RepeatButton />
             </View>
           </View>
-
-          {/* Secondary controls row — sleep timer button */}
-          {showSleepTimer && (
-            <View style={styles.secondaryControls}>
-              <View style={styles.controlSideLeft}>
-                <SleepTimerButton />
-              </View>
-              <View style={styles.secondaryCenter} />
-              <View style={styles.controlSideRight} />
-            </View>
-          )}
 
     </View>
   );
@@ -595,16 +496,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: PADDING,
     marginBottom: 8,
   },
-  secondaryControls: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    height: 36,
-    paddingHorizontal: PADDING,
-    marginBottom: 8,
-  },
-  secondaryCenter: {
-    width: 190,
-  },
   controlSideLeft: {
     flex: 1,
     alignItems: 'flex-start',
@@ -668,24 +559,6 @@ const styles = StyleSheet.create({
   },
   clearButtonText: {
     fontSize: 12,
-    fontWeight: '600',
-  },
-  shuffleOverlay: {
-    ...absoluteFill,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 20,
-  },
-  shuffleCard: {
-    borderRadius: 16,
-    paddingHorizontal: 32,
-    paddingVertical: 24,
-    alignItems: 'center',
-    gap: 12,
-  },
-  shuffleText: {
-    fontSize: 16,
     fontWeight: '600',
   },
 });
