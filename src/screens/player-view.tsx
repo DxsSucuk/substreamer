@@ -617,7 +617,7 @@ const PlayerContent = memo(function PlayerContent({
       {/* Secondary controls row — mirrors primary controls layout. Skip-interval
           buttons sit under prev/next with the playback rate between them. */}
       <View style={styles.secondaryControls}>
-        <View style={styles.controlSideLeft}>
+        <View style={[styles.controlSideLeft, styles.secondaryLeftInset]}>
           {showSleepTimer && <SleepTimerButton />}
         </View>
         <View style={[styles.secondaryCenter, styles.secondaryCenterRow]}>
@@ -888,6 +888,9 @@ const styles = StyleSheet.create({
   favoriteButton: {
     paddingLeft: 12,
     paddingVertical: 4,
+  },
+  secondaryLeftInset: {
+    paddingLeft: 4,
   },
   progressSection: {
     paddingHorizontal: HERO_PADDING,

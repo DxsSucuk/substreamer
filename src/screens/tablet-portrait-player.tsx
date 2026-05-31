@@ -480,7 +480,7 @@ const PlaybackControls = memo(function PlaybackControls({
       </View>
 
       <View style={styles.secondaryControls}>
-        <View style={styles.controlSideLeft}>
+        <View style={[styles.controlSideLeft, styles.secondaryLeftInset]}>
           {showSleepTimer && <SleepTimerButton />}
         </View>
         <View style={[styles.secondaryCenter, styles.secondaryCenterRow]}>
@@ -590,6 +590,9 @@ const styles = StyleSheet.create({
   favoriteButton: {
     paddingLeft: 12,
     paddingVertical: 4,
+  },
+  secondaryLeftInset: {
+    paddingLeft: 4,
   },
   progressSection: {
     width: '100%',

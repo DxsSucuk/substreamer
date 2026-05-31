@@ -433,7 +433,7 @@ export function ExpandedPlayerView({
               {/* Secondary controls row — sleep timer, then skip-interval
                   buttons under prev/next with the playback rate between them */}
               <View style={styles.secondaryControls}>
-                <View style={styles.controlSideLeft}>
+                <View style={[styles.controlSideLeft, styles.secondaryLeftInset]}>
                   {showSleepTimer && <SleepTimerButton />}
                 </View>
                 <View style={[styles.secondaryCenter, styles.secondaryCenterRow]}>
@@ -448,7 +448,7 @@ export function ExpandedPlayerView({
                   )}
                 </View>
                 <View style={styles.controlSideRight}>
-                  <BookmarkButton style={styles.favoriteButton} />
+                  <BookmarkButton style={styles.bookmarkButton} />
                 </View>
               </View>
 
@@ -775,6 +775,12 @@ const styles = StyleSheet.create({
 
   favoriteButton: {
     padding: 4,
+  },
+  bookmarkButton: {
+    paddingVertical: 4,
+  },
+  secondaryLeftInset: {
+    paddingLeft: 4,
   },
   qualityBadge: {
     fontSize: 12,
