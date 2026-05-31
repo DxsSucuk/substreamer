@@ -1,5 +1,14 @@
 # Changelog
 
+## [8.0.68] - 2026-05-31
+
+- ci: update coverage badge [skip ci]
+- Merge pull request #161 from ghenry22/crowdin-translations
+- i18n: update translations from Crowdin
+- feat(bookmarks): capture & restore play-queue bookmarks
+- fix(downloads): authoritative expectedSongCount; classify singles correctly (#159)
+- feat(search-overlay): dynamic sizing, pinned see-more, unified loading
+- chore(migrations): drop one-shot pre-release reset
 ## [8.0.67] - 2026-05-27
 
 - docs(migration-25): refresh comment for post-refactor image cache
