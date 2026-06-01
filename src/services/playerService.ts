@@ -526,7 +526,7 @@ export async function initPlayer(): Promise<void> {
       // finishes (polling cadence), so without this write the store can be
       // left at e.g. 150/200 when the track ends — a visible ~75% progress
       // bar instead of a full one. Using the Subsonic metadata duration
-      // (authoritative) keeps MiniPlayer and PlayerProgressBar in lockstep.
+      // (authoritative) keeps mini player and PlayerProgressBar in lockstep.
       const endDuration = trackThatEnded.duration ?? 0;
       if (endDuration > 0) {
         playerStore.getState().setProgress(endDuration, endDuration, endDuration);
@@ -669,7 +669,7 @@ export async function initPlayer(): Promise<void> {
   // --- Restore persisted queue from previous session ---
   //
   // restorePersistedQueue() populates the Zustand store synchronously so the
-  // MiniPlayer can render immediately. If it returns true, a previously
+  // mini player can render immediately. If it returns true, a previously
   // active queue exists; kick off the async hydration sequence which loads
   // tracks into RNTP in a muted, paused, seek-positioned state so the first
   // user tap plays without negotiating any native-layer uncertainty.
@@ -735,7 +735,7 @@ async function syncStoreFromNative(): Promise<void> {
  * Restore the persisted queue from a previous session.
  *
  * Called once during initPlayer(). Populates the Zustand store and
- * module-level currentChildQueue so the MiniPlayer renders immediately.
+ * module-level currentChildQueue so the mini player renders immediately.
  * Does NOT touch RNTP — that's the job of the async hydrateRestoredQueue()
  * that initPlayer() kicks off next.
  *
@@ -829,7 +829,7 @@ async function hydrateRestoredQueue(): Promise<void> {
     if (rnTracks.length === 0) {
       // Nothing in the restored queue is playable right now (offline + no
       // cached files). Surface a toast and clear the stale queue so the
-      // MiniPlayer doesn't linger on an unplayable track. Call the
+      // mini player doesn't linger on an unplayable track. Call the
       // internal helper — clearQueue() would deadlock awaiting us.
       playbackToastStore.getState().fail(i18n.t('noOfflineTracksInQueue'));
       await clearPlayerStateInternal();
@@ -1257,7 +1257,7 @@ async function clearPlayerStateInternal(): Promise<void> {
  * Stop playback, clear the queue, and reset all player state to defaults.
  *
  * Resets both the native RNTP player and the Zustand store so the UI
- * returns to its idle state (MiniPlayer hidden, no current track).
+ * returns to its idle state (mini player hidden, no current track).
  */
 export async function clearQueue(): Promise<void> {
   // Wait for any in-flight cold-start hydration so its mid-sequence

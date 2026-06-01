@@ -1,6 +1,6 @@
 import FontAwesome5 from "@react-native-vector-icons/fontawesome5/static";
 import Ionicons from "@react-native-vector-icons/ionicons/static";
-import { memo, useCallback, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Linking,
   Pressable,
@@ -10,12 +10,19 @@ import {
   Text,
   View,
 } from 'react-native';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withSequence,
+  withTiming,
+} from 'react-native-reanimated';
 import i18next from 'i18next';
 import { useTranslation } from 'react-i18next';
 
 import { FormatBadge } from './FormatBadge';
 import { useRefreshControlKey } from '../hooks/useRefreshControlKey';
-import { type Child } from '../services/subsonicService';
+import { isVariousArtists, type Child } from '../services/subsonicService';
 import { hexWithAlpha } from '../utils/colors';
 import { getEffectiveFormat } from '../utils/effectiveFormat';
 import { getGenreNames } from '../utils/genreHelpers';
@@ -115,15 +122,26 @@ export const AlbumInfoContent = memo(function AlbumInfoContent({
     return phrases;
   }, [track, t]);
 
-  // Build credit rows (album artist if different, composer)
+  // Compilation = album credited to "Various Artists" (any casing). This is how
+  // Navidrome/OpenSubsonic surfaces compilations; the per-album `isCompilation`
+  // flag only rides on AlbumID3 (getAlbum), which the player never fetches.
+  const isCompilation = isVariousArtists(track.displayAlbumArtist ?? track.artist);
+
+  // Build credit rows (album artist if different, composer). For compilations
+  // the "Various Artists" album-artist row is redundant with the placeholder, so
+  // skip it.
   const credits = useMemo(() => {
     const rows: { label: string; value: string }[] = [];
-    if (track.displayAlbumArtist && track.displayAlbumArtist !== track.artist) {
+    if (
+      !isCompilation &&
+      track.displayAlbumArtist &&
+      track.displayAlbumArtist !== track.artist
+    ) {
       rows.push({ label: t('detailAlbumArtist'), value: track.displayAlbumArtist });
     }
     if (track.displayComposer) rows.push({ label: t('detailComposer'), value: track.displayComposer });
     return rows;
-  }, [track, t]);
+  }, [track, t, isCompilation]);
 
   const handleLastFm = useCallback(() => {
     if (albumInfo?.lastFmUrl) Linking.openURL(albumInfo.lastFmUrl);
@@ -187,51 +205,7 @@ export const AlbumInfoContent = memo(function AlbumInfoContent({
           )}
         </View>
       ) : (albumInfoLoading || refreshing) ? (
-        /* Skeleton placeholder — mirrors the real layout */
-        ((() => {
-          // Theme-aware skeleton fill: derives from `textSecondary` so light
-          // mode gets a dark-gray bar (visible on white) and dark mode gets
-          // a light-gray bar (visible on black). The hardcoded white-alpha
-          // previously used was invisible on light backgrounds.
-          const skeletonFill = { backgroundColor: hexWithAlpha(colors.textSecondary, 0.2) };
-          return (
-            <View>
-              {/* Hero block */}
-              <View style={styles.heroBlock}>
-                <View style={[styles.skeletonBar, styles.skeletonAlbumTitle, skeletonFill]} />
-                <View style={[styles.skeletonBar, styles.skeletonArtistSubtitle, skeletonFill]} />
-                <View style={[styles.skeletonBar, styles.skeletonFormatBadge, skeletonFill]} />
-                <View style={styles.skeletonGenrePillRow}>
-                  {[72, 96, 60, 84].map((w, i) => (
-                    <View key={i} style={[styles.skeletonBar, styles.skeletonGenrePill, skeletonFill, { width: w }]} />
-                  ))}
-                </View>
-              </View>
-
-              {/* Inline metadata strip */}
-              <View style={[styles.skeletonBar, styles.skeletonMetaStrip, skeletonFill]} />
-
-              {/* Description */}
-              <View style={[styles.divider, { backgroundColor: colors.textSecondary }]} />
-              <View style={styles.descriptionSection}>
-                {[1, 0.97, 1, 0.95, 0.98, 1, 0.93, 0.96, 1, 0.6].map((w, i) => (
-                  <View
-                    key={i}
-                    style={[styles.skeletonBar, styles.skeletonTextLine, skeletonFill, { width: `${w * 100}%` }]}
-                  />
-                ))}
-              </View>
-
-              {/* External links */}
-              <View style={[styles.divider, { backgroundColor: colors.textSecondary }]} />
-              <View style={styles.skeletonLinksRow}>
-                {[90, 110, 95].map((w, i) => (
-                  <View key={i} style={[styles.skeletonBar, styles.skeletonChip, skeletonFill, { width: w }]} />
-                ))}
-              </View>
-            </View>
-          );
-        })())
+        <AlbumInfoSkeleton colors={colors} />
       ) : (
         <>
           {/* ── Hero header block (centered) ── */}
@@ -334,7 +308,25 @@ export const AlbumInfoContent = memo(function AlbumInfoContent({
                 </Pressable>
               )}
             </View>
-          ) : null}
+          ) : (
+            /* No description — show a friendly placeholder in the bio slot,
+               styled like the "no lyrics available" empty state for
+               consistency across player segments. */
+            <View style={styles.placeholderBlock}>
+              <View style={[styles.divider, { backgroundColor: colors.textSecondary }]} />
+              <View style={styles.placeholderInner}>
+                <Ionicons
+                  name={isCompilation ? 'albums-outline' : 'information-circle-outline'}
+                  size={36}
+                  color={colors.textSecondary}
+                  style={styles.errorIcon}
+                />
+                <Text style={[styles.errorText, { color: colors.textSecondary }]}>
+                  {isCompilation ? t('albumDetailsCompilation') : t('albumDetailsNotFound')}
+                </Text>
+              </View>
+            </View>
+          )}
         </>
       )}
       {/* ── External links (centered) ── */}
@@ -382,6 +374,76 @@ export const AlbumInfoContent = memo(function AlbumInfoContent({
         </View>
       )}
     </ScrollView>
+  );
+});
+
+/* ------------------------------------------------------------------ */
+/*  Skeleton placeholder — mirrors the real layout, with a looping     */
+/*  opacity pulse so it reads as "loading" rather than a frozen frame. */
+/* ------------------------------------------------------------------ */
+
+const AlbumInfoSkeleton = memo(function AlbumInfoSkeleton({
+  colors,
+}: {
+  colors: AlbumInfoContentProps['colors'];
+}) {
+  // Theme-aware skeleton fill: derives from `textSecondary` so light mode gets
+  // a dark-gray bar (visible on white) and dark mode a light-gray bar (visible
+  // on black).
+  const skeletonFill = { backgroundColor: hexWithAlpha(colors.textSecondary, 0.2) };
+
+  // Looping pulse. Starts at 1 (never 0) and breathes between 0.4 and 1 — the
+  // mount-and-repeat shape used elsewhere (e.g. tuned-in) so it can't get stuck
+  // invisible. Only mounted while loading, so it stops on unmount.
+  const pulse = useSharedValue(1);
+  useEffect(() => {
+    pulse.value = withRepeat(
+      withSequence(
+        withTiming(0.4, { duration: 700 }),
+        withTiming(1, { duration: 700 }),
+      ),
+      -1,
+    );
+  }, [pulse]);
+
+  const pulseStyle = useAnimatedStyle(() => ({ opacity: pulse.value }));
+
+  return (
+    <Animated.View style={pulseStyle}>
+      {/* Hero block */}
+      <View style={styles.heroBlock}>
+        <View style={[styles.skeletonBar, styles.skeletonAlbumTitle, skeletonFill]} />
+        <View style={[styles.skeletonBar, styles.skeletonArtistSubtitle, skeletonFill]} />
+        <View style={[styles.skeletonBar, styles.skeletonFormatBadge, skeletonFill]} />
+        <View style={styles.skeletonGenrePillRow}>
+          {[72, 96, 60, 84].map((w, i) => (
+            <View key={i} style={[styles.skeletonBar, styles.skeletonGenrePill, skeletonFill, { width: w }]} />
+          ))}
+        </View>
+      </View>
+
+      {/* Inline metadata strip */}
+      <View style={[styles.skeletonBar, styles.skeletonMetaStrip, skeletonFill]} />
+
+      {/* Description */}
+      <View style={[styles.divider, { backgroundColor: colors.textSecondary }]} />
+      <View style={styles.descriptionSection}>
+        {[1, 0.97, 1, 0.95, 0.98, 1, 0.93, 0.96, 1, 0.6].map((w, i) => (
+          <View
+            key={i}
+            style={[styles.skeletonBar, styles.skeletonTextLine, skeletonFill, { width: `${w * 100}%` }]}
+          />
+        ))}
+      </View>
+
+      {/* External links */}
+      <View style={[styles.divider, { backgroundColor: colors.textSecondary }]} />
+      <View style={styles.skeletonLinksRow}>
+        {[90, 110, 95].map((w, i) => (
+          <View key={i} style={[styles.skeletonBar, styles.skeletonChip, skeletonFill, { width: w }]} />
+        ))}
+      </View>
+    </Animated.View>
   );
 });
 
@@ -468,6 +530,17 @@ const styles = StyleSheet.create({
     fontWeight: '400',
     flexShrink: 1,
     textAlign: 'right',
+  },
+
+  /* No-description placeholder (compilation / not found) */
+  placeholderBlock: {
+    marginBottom: 4,
+  },
+  placeholderInner: {
+    alignItems: 'center',
+    paddingVertical: 28,
+    paddingHorizontal: 32,
+    gap: 12,
   },
 
   /* Album description */

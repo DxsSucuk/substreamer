@@ -13,6 +13,19 @@ jest.mock('react-native-svg', () => {
   return { __esModule: true, default: View, Path: View };
 });
 
+jest.mock('react-native-reanimated', () => {
+  const { View } = require('react-native');
+  return {
+    __esModule: true,
+    default: { View },
+    useSharedValue: (init: number) => ({ value: init }),
+    useAnimatedStyle: (fn: () => object) => fn(),
+    withRepeat: (val: any) => val,
+    withSequence: (...args: any[]) => args[args.length - 1],
+    withTiming: (val: number) => val,
+  };
+});
+
 import React from 'react';
 import { render, fireEvent } from '@testing-library/react-native';
 import { Linking } from 'react-native';
@@ -344,7 +357,7 @@ describe('AlbumInfoContent', () => {
   it('renders displayAlbumArtist when different from artist', () => {
     const trackWithAlbumArtist = {
       ...MOCK_TRACK,
-      displayAlbumArtist: 'Various Artists',
+      displayAlbumArtist: 'The Producers',
     } as Child;
 
     const { getByText } = render(
@@ -362,7 +375,50 @@ describe('AlbumInfoContent', () => {
     );
 
     expect(getByText('Album Artist')).toBeTruthy();
-    expect(getByText('Various Artists')).toBeTruthy();
+    expect(getByText('The Producers')).toBeTruthy();
+  });
+
+  it('shows the compilation placeholder and hides the VA credit row for Various Artists', () => {
+    const compilationTrack = {
+      ...MOCK_TRACK,
+      displayAlbumArtist: 'Various Artists',
+    } as Child;
+
+    const { getByText, queryByText } = render(
+      <AlbumInfoContent
+        track={compilationTrack}
+        albumInfo={null}
+        overrideMbid={null}
+        sanitizedNotes={null}
+        notesAttributionUrl={null}
+        albumInfoLoading={false}
+        refreshing={false}
+        onRefresh={jest.fn()}
+        colors={COLORS}
+      />,
+    );
+
+    expect(getByText("Album details aren't available for compilations.")).toBeTruthy();
+    // The redundant "Album Artist: Various Artists" credit row is suppressed.
+    expect(queryByText('Album Artist')).toBeNull();
+  });
+
+  it('shows the not-found placeholder when no notes are available', () => {
+    const { getByText } = render(
+      <AlbumInfoContent
+        track={MOCK_TRACK}
+        albumInfo={null}
+        overrideMbid={null}
+        sanitizedNotes={null}
+        notesAttributionUrl={null}
+        albumInfoLoading={false}
+        refreshing={false}
+        onRefresh={jest.fn()}
+        colors={COLORS}
+      />,
+    );
+
+    expect(getByText('No album details available for this track.')).toBeTruthy();
   });
 
   it('does not render album artist row when same as artist', () => {

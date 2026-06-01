@@ -71,7 +71,12 @@ import { logImageCache } from './imageCacheLogger';
 import {
   ensureCoverArtAuth,
   getCoverArtUrl,
+  type AlbumID3,
+  type ArtistID3,
+  type Child,
+  type Playlist,
 } from './subsonicService';
+import { coverArtIdForEntity } from '../utils/coverArtId';
 
 // Sentinel cover-art IDs rendered from bundled assets via
 // `CachedImage.tsx`, never downloaded. Inlined here (not imported)
@@ -219,6 +224,27 @@ function notifyImageCacheUpdate(coverArtId: string): void {
   if (!listeners || listeners.size === 0) return;
   for (const listener of listeners) {
     try { listener(); } catch { /* swallow */ }
+  }
+}
+
+/**
+ * Drop ALL remote-failed markers and notify every affected CachedImage so it
+ * re-derives its URI on the next render. Used by the coarse recovery paths
+ * (offline→online toggle, app foreground, server-reachable-again) so a cover
+ * that hit a transient remote error self-heals WITHOUT an app restart — even
+ * when `offlineMode` never flipped (a brief server blip while online).
+ */
+function clearFailedRemoteIds(reason: string): void {
+  if (failedRemoteIds.size === 0) return;
+  const ids = Array.from(failedRemoteIds);
+  failedRemoteIds.clear();
+  logImageCache(`clearFailedRemoteIds reason=${reason} count=${ids.length}`);
+  for (const id of ids) {
+    const listeners = cacheUpdateListeners.get(id);
+    if (!listeners) continue;
+    for (const listener of listeners) {
+      try { listener(); } catch { /* swallow */ }
+    }
   }
 }
 
@@ -372,6 +398,11 @@ export function initImageCache(): void {
               if (offlineModeStore.getState().offlineMode) return;
               await awaitFirstPing();
               if (offlineModeStore.getState().offlineMode) return;
+              // Foreground recovery: a remote load that failed while the app
+              // was backgrounded (or during a transient blip) stays in
+              // failedRemoteIds until something clears it. The offline→online
+              // toggle didn't fire if offlineMode never flipped, so clear here.
+              clearFailedRemoteIds('appstate-active');
               await repairIncompleteImages('appstate-active');
             })(),
             'imageCache.appStateActive',
@@ -481,20 +512,8 @@ offlineModeStore.subscribe((state, prev) => {
   if (state.offlineMode) return;
   // Coming back online: drop every remote-failed marker so CachedImage
   // instances get a fresh shot at the server URL while the repair pass
-  // works in the background. We notify the listener set per id so any
-  // mounted CachedImages re-derive immediately rather than waiting for
-  // the next render.
-  if (failedRemoteIds.size > 0) {
-    const ids = Array.from(failedRemoteIds);
-    failedRemoteIds.clear();
-    for (const id of ids) {
-      const listeners = cacheUpdateListeners.get(id);
-      if (!listeners) continue;
-      for (const listener of listeners) {
-        try { listener(); } catch { /* swallow */ }
-      }
-    }
-  }
+  // works in the background.
+  clearFailedRemoteIds('offline-online');
   if (imageCacheStore.getState().incompleteCount <= 0) return;
   // _layout.tsx restarts connectivity monitoring on offline→online; wait
   // for the first post-resume ping so the repair pass acts on confirmed
@@ -507,6 +526,18 @@ offlineModeStore.subscribe((state, prev) => {
     })(),
     'imageCache.offlineResume',
   );
+});
+
+// In-foreground transient blips: the connectivity layer flips
+// `isServerReachable` without `offlineMode` ever changing (a brief server
+// outage while the app stays foregrounded and online). When the server comes
+// back, drop remote-failed markers so covers recover without a restart or an
+// offline toggle — the user's "should recover when the server is available
+// again" requirement.
+connectivityStore.subscribe((state, prev) => {
+  if (!state.isServerReachable || prev.isServerReachable) return;
+  if (offlineModeStore.getState().offlineMode) return;
+  clearFailedRemoteIds('server-reachable');
 });
 
 /**
@@ -1677,16 +1708,22 @@ export async function clearImageCache(
 }
 
 /**
- * Proactively cache cover art for a list of entities (songs, albums, etc.).
- * Deduplicates by coverArt ID and skips entries already in cache.
+ * Proactively cache cover art for a list of entities (songs, albums,
+ * artists, playlists). Keys off the canonical entity ID via
+ * `coverArtIdForEntity` (NOT the server `coverArt` field) so the warmed
+ * file matches what the render side reads. Deduplicates by resolved ID
+ * and skips entries already in cache.
  */
-export function prefetchCoverArt(entities: Array<{ coverArt?: string }>): void {
+export function prefetchCoverArt(
+  entities: Array<AlbumID3 | ArtistID3 | Playlist | Child>,
+): void {
   const seen = new Set<string>();
   for (const entity of entities) {
-    if (entity.coverArt && !seen.has(entity.coverArt)) {
-      seen.add(entity.coverArt);
-      if (!getCachedImageUri(entity.coverArt, 300)) {
-        cacheAllSizes(entity.coverArt).catch(() => { /* non-critical */ });
+    const id = coverArtIdForEntity(entity);
+    if (id && !seen.has(id)) {
+      seen.add(id);
+      if (!getCachedImageUri(id, 300)) {
+        cacheAllSizes(id).catch(() => { /* non-critical */ });
       }
     }
   }

@@ -23,50 +23,50 @@ import { Pressable as GHPressable } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 
-import { AlbumInfoContent } from '../components/AlbumInfoContent';
-import { LyricsContent } from '../components/LyricsContent';
-import { BookmarkButton } from '../components/BookmarkButton';
-import { CachedImage } from '../components/CachedImage';
-import { FavoriteButton } from '../components/FavoriteButton';
-import { EmptyState } from '../components/EmptyState';
-import { MarqueeText } from '../components/MarqueeText';
-import { MoreOptionsButton } from '../components/MoreOptionsButton';
-import { PlaybackRateButton } from '../components/PlaybackRateButton';
-import { PlayerProgressBar } from '../components/PlayerProgressBar';
-import { PlayerTabBar, type PlayerTab } from '../components/PlayerTabBar';
-import { RepeatButton } from '../components/RepeatButton';
-import { ShuffleButton } from '../components/ShuffleButton';
-import { ShuffleOverlay } from '../components/ShuffleOverlay';
-import { SkipIntervalButton } from '../components/SkipIntervalButton';
-import { SleepTimerButton } from '../components/SleepTimerButton';
-import { SleepTimerCapsule } from '../components/SleepTimerCapsule';
-import { QueueItemRow } from '../components/QueueItemRow';
-import { closeOpenRow } from '../components/SwipeableRow';
-import { type ThemeColors } from '../constants/theme';
-import { useCanSkip } from '../hooks/useCanSkip';
-import { useImagePalette } from '../hooks/useImagePalette';
-import { usePlayerActions } from '../hooks/usePlayerActions';
-import { useShuffleOverlay } from '../hooks/useShuffleOverlay';
-import { useTheme } from '../hooks/useTheme';
-import { offlineModeStore } from '../store/offlineModeStore';
+import { AlbumInfoContent } from '@/components/AlbumInfoContent';
+import { LyricsContent } from '@/components/LyricsContent';
+import { BookmarkButton } from '@/components/BookmarkButton';
+import { CachedImage } from '@/components/CachedImage';
+import { FavoriteButton } from '@/components/FavoriteButton';
+import { EmptyState } from '@/components/EmptyState';
+import { MarqueeText } from '@/components/MarqueeText';
+import { MoreOptionsButton } from '@/components/MoreOptionsButton';
+import { PlaybackRateButton } from '@/components/PlaybackRateButton';
+import { PlayerProgressBar } from '@/components/PlayerProgressBar';
+import { PlayerTabBar, type PlayerTab } from '@/components/PlayerTabBar';
+import { RepeatButton } from '@/components/RepeatButton';
+import { ShuffleButton } from '@/components/ShuffleButton';
+import { ShuffleOverlay } from '@/components/ShuffleOverlay';
+import { SkipIntervalButton } from '@/components/SkipIntervalButton';
+import { SleepTimerButton } from '@/components/SleepTimerButton';
+import { SleepTimerCapsule } from '@/components/SleepTimerCapsule';
+import { QueueItemRow } from '@/components/QueueItemRow';
+import { closeOpenRow } from '@/components/SwipeableRow';
+import { type ThemeColors } from '@/constants/theme';
+import { useCanSkip } from '@/hooks/useCanSkip';
+import { useImagePalette } from '@/hooks/useImagePalette';
+import { usePlayerActions } from '@/hooks/usePlayerActions';
+import { useShuffleOverlay } from '@/hooks/useShuffleOverlay';
+import { useTheme } from '@/hooks/useTheme';
+import { offlineModeStore } from '@/store/offlineModeStore';
 import {
   clearQueue,
   retryPlayback,
   skipToNext,
   skipToPrevious,
   togglePlayPause,
-} from '../services/playerService';
-import { sanitizeBiographyText } from '../utils/formatters';
-import { type Child } from '../services/subsonicService';
-import { usePlayerAlbumInfo } from '../hooks/usePlayerAlbumInfo';
-import { usePlayerLyrics } from '../hooks/usePlayerLyrics';
-import { playbackSettingsStore } from '../store/playbackSettingsStore';
-import { moreOptionsStore } from '../store/moreOptionsStore';
-import { playerStore } from '../store/playerStore';
-import { mixHexColors } from '../utils/colors';
+} from '@/services/playerService';
+import { sanitizeBiographyText } from '@/utils/formatters';
+import { type Child } from '@/services/subsonicService';
+import { usePlayerAlbumInfo } from '@/hooks/usePlayerAlbumInfo';
+import { usePlayerLyrics } from '@/hooks/usePlayerLyrics';
+import { playbackSettingsStore } from '@/store/playbackSettingsStore';
+import { moreOptionsStore } from '@/store/moreOptionsStore';
+import { playerStore } from '@/store/playerStore';
+import { mixHexColors } from '@/utils/colors';
 
 
-import { absoluteFill } from '../utils/styles';
+import { absoluteFill } from '@/utils/styles';
 const HERO_PADDING = 32;
 const HERO_COVER_SIZE = 600;
 const HEADER_BAR_HEIGHT = Platform.OS === 'ios' ? 44 : 56;
@@ -79,7 +79,7 @@ const TAB_SLIDE_DISTANCE = 12;
  *  handed a fresh object on every parent re-render. */
 const QUEUE_CONTENT_CONTAINER_STYLE = { paddingBottom: 12 } as const;
 
-export function PlayerView() {
+export function PlayerPhonePortrait() {
   const { colors } = useTheme();
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
@@ -205,7 +205,7 @@ export function PlayerView() {
         currentTrack ? (
           <MoreOptionsButton
             onPress={() =>
-              moreOptionsStore.getState().show({ type: 'song', item: currentTrack }, 'player')
+              moreOptionsStore.getState().show({ type: 'song', item: currentTrack }, 'player-phone-portrait')
             }
             color={colors.textPrimary}
           />
@@ -224,7 +224,7 @@ export function PlayerView() {
     handleQueueItemLongPress,
     handleShareQueue,
     handleClearQueue,
-  } = usePlayerActions({ source: 'player', onClearConfirmed });
+  } = usePlayerActions({ source: 'player-phone-portrait', onClearConfirmed });
 
   const {
     shuffling,
@@ -302,7 +302,7 @@ export function PlayerView() {
           <Stack.Toolbar placement="right">
             <Stack.Toolbar.Button
               icon="ellipsis"
-              onPress={() => moreOptionsStore.getState().show({ type: 'song', item: currentTrack! }, 'player')}
+              onPress={() => moreOptionsStore.getState().show({ type: 'song', item: currentTrack! }, 'player-phone-portrait')}
               hidden={!currentTrack}
             />
           </Stack.Toolbar>

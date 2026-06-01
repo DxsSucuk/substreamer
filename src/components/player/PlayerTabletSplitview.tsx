@@ -11,40 +11,40 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { GradientBackground } from './GradientBackground';
-import { CachedImage } from './CachedImage';
-import { FavoriteButton } from './FavoriteButton';
-import { MarqueeText } from './MarqueeText';
-import { MoreOptionsButton } from './MoreOptionsButton';
-import { PlaybackRateButton } from './PlaybackRateButton';
-import { PlayerProgressBar } from './PlayerProgressBar';
-import { QueueItemRow } from './QueueItemRow';
-import { RepeatButton } from './RepeatButton';
-import { ShuffleButton } from './ShuffleButton';
-import { ShuffleOverlay } from './ShuffleOverlay';
-import { SleepTimerCapsule } from './SleepTimerCapsule';
-import { closeOpenRow } from './SwipeableRow';
-import { type ThemeColors } from '../constants/theme';
-import { useCanSkip } from '../hooks/useCanSkip';
-import { mixHexColors } from '../utils/colors';
-import { usePlayerActions } from '../hooks/usePlayerActions';
-import { useShuffleOverlay } from '../hooks/useShuffleOverlay';
-import { useTheme } from '../hooks/useTheme';
+import { GradientBackground } from '@/components/GradientBackground';
+import { CachedImage } from '@/components/CachedImage';
+import { FavoriteButton } from '@/components/FavoriteButton';
+import { MarqueeText } from '@/components/MarqueeText';
+import { MoreOptionsButton } from '@/components/MoreOptionsButton';
+import { PlaybackRateButton } from '@/components/PlaybackRateButton';
+import { PlayerProgressBar } from '@/components/PlayerProgressBar';
+import { QueueItemRow } from '@/components/QueueItemRow';
+import { RepeatButton } from '@/components/RepeatButton';
+import { ShuffleButton } from '@/components/ShuffleButton';
+import { ShuffleOverlay } from '@/components/ShuffleOverlay';
+import { SleepTimerCapsule } from '@/components/SleepTimerCapsule';
+import { closeOpenRow } from '@/components/SwipeableRow';
+import { type ThemeColors } from '@/constants/theme';
+import { useCanSkip } from '@/hooks/useCanSkip';
+import { mixHexColors } from '@/utils/colors';
+import { usePlayerActions } from '@/hooks/usePlayerActions';
+import { useShuffleOverlay } from '@/hooks/useShuffleOverlay';
+import { useTheme } from '@/hooks/useTheme';
 import {
   retryPlayback,
   skipToNext,
   skipToPrevious,
   togglePlayPause,
-} from '../services/playerService';
-import { type Child } from '../services/subsonicService';
-import { moreOptionsStore } from '../store/moreOptionsStore';
-import { playerStore } from '../store/playerStore';
-import { tabletLayoutStore } from '../store/tabletLayoutStore';
+} from '@/services/playerService';
+import { type Child } from '@/services/subsonicService';
+import { moreOptionsStore } from '@/store/moreOptionsStore';
+import { playerStore } from '@/store/playerStore';
+import { tabletLayoutStore } from '@/store/tabletLayoutStore';
 
 const COVER_SIZE = 300;
 const PADDING = 16;
 
-export function PlayerPanel() {
+export function PlayerTabletSplitview() {
   const { t } = useTranslation();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -63,7 +63,7 @@ export function PlayerPanel() {
     handleQueueItemLongPress,
     handleShareQueue,
     handleClearQueue,
-  } = usePlayerActions({ source: 'playerpanel' });
+  } = usePlayerActions({ source: 'player-tablet-splitview' });
 
   const handleExpand = useCallback(() => {
     tabletLayoutStore.getState().setPlayerExpanded(true);
@@ -251,7 +251,7 @@ const PanelHeader = memo(function PanelHeader({
             </Pressable>
             <MoreOptionsButton
               onPress={() =>
-                moreOptionsStore.getState().show({ type: 'song', item: currentTrack }, 'playerpanel')
+                moreOptionsStore.getState().show({ type: 'song', item: currentTrack }, 'player-tablet-splitview')
               }
               color={colors.textPrimary}
             />

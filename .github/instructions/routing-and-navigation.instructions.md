@@ -47,7 +47,7 @@ router.replace('/login');
 ## Layout Files
 
 - `app/_layout.tsx` – Root Stack with auth guard, splash screen, and theme-aware header styles.
-- `app/(tabs)/_layout.tsx` – Tab navigator with `MiniPlayer` above the tab bar and `SearchableHeader` as custom header.
+- `app/(tabs)/_layout.tsx` – Tab navigator with `PlayerPhoneMini` (via `BottomChrome`) above the tab bar and `SearchableHeader` as custom header.
 
 ## Auth Guard
 

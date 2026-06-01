@@ -860,6 +860,8 @@
   "failedToLoad": "Failed to load",
   "albumInfoFailedToLoad": "Couldn't load album info.",
   "albumInfoTimedOut": "Couldn't load album info — the server took too long to respond.",
+  "albumDetailsNotFound": "No album details available for this track.",
+  "albumDetailsCompilation": "Album details aren't available for compilations.",
   "buildAMix": "Build a Mix",
   "pickGenresDecadesMore": "Pick genres, decades & more",
   "searchGenresPlaceholder": "Search genres...",

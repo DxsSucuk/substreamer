@@ -37,8 +37,8 @@ import { mixHexColors } from '../utils/colors';
 import AnimatedSplashScreen from '../components/AnimatedSplashScreen';
 import { CertificatePromptModal } from '../components/CertificatePromptModal';
 import { CreateShareSheet } from '../components/CreateShareSheet';
-import { ExpandedPlayerView } from '../components/ExpandedPlayerView';
-import { PlayerPanel } from '../components/PlayerPanel';
+import { PlayerTabletLandscape } from '../components/player/PlayerTabletLandscape';
+import { PlayerTabletSplitview } from '../components/player/PlayerTabletSplitview';
 import { SplitLayout } from '../components/SplitLayout';
 import { MbidSearchSheet } from '../components/MbidSearchSheet';
 import { MoreOptionsSheet } from '../components/MoreOptionsSheet';
@@ -725,13 +725,13 @@ export default function RootLayout() {
             </Stack>
           </View>
         }
-        panel={showPanel ? <PlayerPanel /> : null}
+        panel={showPanel ? <PlayerTabletSplitview /> : null}
         panelPlaceholder={<GradientBackground style={{ flex: 1 }}>{null}</GradientBackground>}
       />
 
       {/* Full-screen expanded player — covers everything including SplitLayout */}
       {showPanel && (
-        <ExpandedPlayerView expandProgress={expandProgress} />
+        <PlayerTabletLandscape expandProgress={expandProgress} />
       )}
 
       {/* Global more-options bottom sheet driven by moreOptionsStore */}
@@ -777,7 +777,7 @@ export default function RootLayout() {
       {/* Global error pill. Used by `playerService.fail(...)` to surface
           genuine playback failures (offline + no cached tracks, RNTP
           errors). Lifts itself above the BottomChrome (DownloadBanner +
-          MiniPlayer) when present so it doesn't stack on top. */}
+          mini player) when present so it doesn't stack on top. */}
       <PlaybackToast />
 
 

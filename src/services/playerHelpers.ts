@@ -14,6 +14,7 @@ import { offlineModeStore } from '../store/offlineModeStore';
 import { playbackSettingsStore, type RepeatModeSetting } from '../store/playbackSettingsStore';
 import { type PlaybackStatus } from '../store/playerStore';
 import { resolveEffectiveFormat } from '../utils/effectiveFormat';
+import { coverArtIdForSong } from '../utils/coverArtId';
 import { getCachedImageUri } from './imageCacheService';
 import { getLocalTrackUri } from './musicCacheService';
 import { getCoverArtUrl, getStreamUrl, type Child } from './subsonicService';
@@ -116,9 +117,10 @@ export function childToTrack(child: Child): Track | null {
 
   // Cover-art lookup keys off the parent album's ID (see
   // src/utils/coverArtId.ts) so every track in an album shares one
-  // cached file — fixes the MiniPlayer / lock-screen placeholder
+  // cached file — fixes the mini player / lock-screen placeholder
   // problem caused by Navidrome-style per-track coverArt variants.
-  const coverArtId = child.albumId ?? child.id;
+  // `child.id` is always present, so the result is a defined string.
+  const coverArtId = coverArtIdForSong(child) ?? child.id;
   const cachedArt = getCachedImageUri(coverArtId, 600);
   const contentType = localUri ? mimeFromUri(localUri) : undefined;
   // In offline mode drop any server-only artwork so RNTP's lock-screen

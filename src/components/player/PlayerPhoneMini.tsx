@@ -6,21 +6,21 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-nati
 import { useTranslation } from 'react-i18next';
 import Animated, { useAnimatedStyle } from 'react-native-reanimated';
 
-import { CachedImage } from './CachedImage';
-import { MarqueeText } from './MarqueeText';
-import WaveformLogo from './WaveformLogo';
-import { useImagePalette } from '../hooks/useImagePalette';
-import { useTheme } from '../hooks/useTheme';
-import { skipToNext, togglePlayPause } from '../services/playerService';
-import { playbackSettingsStore } from '../store/playbackSettingsStore';
-import { playerStore } from '../store/playerStore';
+import { CachedImage } from '@/components/CachedImage';
+import { MarqueeText } from '@/components/MarqueeText';
+import WaveformLogo from '@/components/WaveformLogo';
+import { useImagePalette } from '@/hooks/useImagePalette';
+import { useTheme } from '@/hooks/useTheme';
+import { skipToNext, togglePlayPause } from '@/services/playerService';
+import { playbackSettingsStore } from '@/store/playbackSettingsStore';
+import { playerStore } from '@/store/playerStore';
 
-import { absoluteFill } from '../utils/styles';
+import { absoluteFill } from '@/utils/styles';
 const MINI_PLAYER_HEIGHT = 56;
 /** Matches the placeholder cover art background (rgb 150,150,150). */
 const PLACEHOLDER_BG = '#969696';
 
-export function MiniPlayer() {
+export function PlayerPhoneMini() {
   const { colors } = useTheme();
   const { t } = useTranslation();
   const currentTrack = playerStore((s) => s.currentTrack);

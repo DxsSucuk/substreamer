@@ -125,7 +125,7 @@ describe('PlaybackToast bottom offset', () => {
     expect(renderToast()).toBe(SAFE_AREA_BOTTOM + BOTTOM_OFFSET);
   });
 
-  it('MiniPlayer only (track playing, no downloads): adds MiniPlayer height', () => {
+  it('mini player only (track playing, no downloads): adds mini player height', () => {
     playerStore.setState({ currentTrack: { id: 't1' } as any });
     expect(renderToast()).toBe(SAFE_AREA_BOTTOM + BOTTOM_OFFSET + MINI_PLAYER_HEIGHT);
   });
@@ -137,7 +137,7 @@ describe('PlaybackToast bottom offset', () => {
     expect(renderToast()).toBe(SAFE_AREA_BOTTOM + BOTTOM_OFFSET + BANNER_HEIGHT);
   });
 
-  it('both visible: adds banner + MiniPlayer heights', () => {
+  it('both visible: adds banner + mini player heights', () => {
     playerStore.setState({ currentTrack: { id: 't1' } as any });
     musicCacheStore.setState({
       downloadQueue: [makeQueueItem({ status: 'downloading' })],
@@ -147,17 +147,17 @@ describe('PlaybackToast bottom offset', () => {
     );
   });
 
-  it('wide layout: MiniPlayer is hidden so its height is NOT added', () => {
+  it('wide layout: mini player is hidden so its height is NOT added', () => {
     mockLayoutMode = 'wide';
     playerStore.setState({ currentTrack: { id: 't1' } as any });
     musicCacheStore.setState({
       downloadQueue: [makeQueueItem({ status: 'downloading' })],
     });
-    // Banner still on, MiniPlayer suppressed by isWide.
+    // Banner still on, mini player suppressed by isWide.
     expect(renderToast()).toBe(SAFE_AREA_BOTTOM + BOTTOM_OFFSET + BANNER_HEIGHT);
   });
 
-  it('logged out: MiniPlayer is hidden so its height is NOT added', () => {
+  it('logged out: mini player is hidden so its height is NOT added', () => {
     authStore.setState({ isLoggedIn: false });
     playerStore.setState({ currentTrack: { id: 't1' } as any });
     expect(renderToast()).toBe(SAFE_AREA_BOTTOM + BOTTOM_OFFSET);

@@ -1,6 +1,6 @@
-jest.mock('../../store/persistence/kvStorage', () => require('../../store/persistence/__mocks__/kvStorage'));
+jest.mock('@/store/persistence/kvStorage', () => require('@/store/persistence/__mocks__/kvStorage'));
 
-jest.mock('../../hooks/useTheme', () => ({
+jest.mock('@/hooks/useTheme', () => ({
   useTheme: () => ({
     theme: 'dark',
     colors: {
@@ -17,7 +17,7 @@ jest.mock('../../hooks/useTheme', () => ({
   }),
 }));
 
-jest.mock('../../hooks/useImagePalette', () => ({
+jest.mock('@/hooks/useImagePalette', () => ({
   useImagePalette: () => ({
     primary: '#333333',
     secondary: null,
@@ -25,15 +25,15 @@ jest.mock('../../hooks/useImagePalette', () => ({
   }),
 }));
 
-jest.mock('../../hooks/useCanSkip', () => ({
+jest.mock('@/hooks/useCanSkip', () => ({
   useCanSkip: () => ({ canSkipNext: true, canSkipPrevious: true }),
 }));
 
-jest.mock('../../hooks/useIsStarred', () => ({
+jest.mock('@/hooks/useIsStarred', () => ({
   useIsStarred: () => false,
 }));
 
-jest.mock('../../hooks/useThemedAlert', () => ({
+jest.mock('@/hooks/useThemedAlert', () => ({
   useThemedAlert: () => ({
     alert: jest.fn(),
   }),
@@ -84,76 +84,76 @@ jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 44, bottom: 34, left: 0, right: 0 }),
 }));
 
-jest.mock('../../components/CachedImage', () => {
+jest.mock('@/components/CachedImage', () => {
   const { View } = require('react-native');
   return { CachedImage: (props: { coverArtId?: string }) => <View testID={`cover-${props.coverArtId}`} /> };
 });
 
-jest.mock('../../components/MarqueeText', () => {
+jest.mock('@/components/MarqueeText', () => {
   const { Text } = require('react-native');
   return { MarqueeText: ({ children, style }: { children: React.ReactNode; style?: object }) => <Text style={style}>{children}</Text> };
 });
 
-jest.mock('../../components/PlayerProgressBar', () => {
+jest.mock('@/components/PlayerProgressBar', () => {
   const { View } = require('react-native');
   return { PlayerProgressBar: () => <View testID="progress-bar" /> };
 });
 
-jest.mock('../../components/PlaybackRateButton', () => {
+jest.mock('@/components/PlaybackRateButton', () => {
   const { View } = require('react-native');
   return { PlaybackRateButton: () => <View testID="rate-button" /> };
 });
 
-jest.mock('../../components/RepeatButton', () => {
+jest.mock('@/components/RepeatButton', () => {
   const { View } = require('react-native');
   return { RepeatButton: () => <View testID="repeat-button" /> };
 });
 
-jest.mock('../../components/ShuffleButton', () => {
+jest.mock('@/components/ShuffleButton', () => {
   const { View } = require('react-native');
   return { ShuffleButton: () => <View testID="shuffle-button" /> };
 });
 
-jest.mock('../../components/SkipIntervalButton', () => {
+jest.mock('@/components/SkipIntervalButton', () => {
   const { View } = require('react-native');
   return { SkipIntervalButton: () => <View testID="skip-interval" /> };
 });
 
-jest.mock('../../components/QueueItemRow', () => {
+jest.mock('@/components/QueueItemRow', () => {
   const { Text } = require('react-native');
   return { QueueItemRow: ({ track }: { track: { title: string } }) => <Text>{track.title}</Text> };
 });
 
-jest.mock('../../components/SwipeableRow', () => ({
+jest.mock('@/components/SwipeableRow', () => ({
   closeOpenRow: jest.fn(),
 }));
 
-jest.mock('../../components/MoreOptionsButton', () => {
+jest.mock('@/components/MoreOptionsButton', () => {
   const { View } = require('react-native');
   return { MoreOptionsButton: () => <View testID="more-options" /> };
 });
 
-jest.mock('../../components/ThemedAlert', () => {
+jest.mock('@/components/ThemedAlert', () => {
   const { View } = require('react-native');
   return { ThemedAlert: () => <View testID="themed-alert" /> };
 });
 
-jest.mock('../../components/EmptyState', () => {
+jest.mock('@/components/EmptyState', () => {
   const { Text } = require('react-native');
   return { EmptyState: ({ title }: { title: string }) => <Text>{title}</Text> };
 });
 
-jest.mock('../../components/AlbumInfoContent', () => {
+jest.mock('@/components/AlbumInfoContent', () => {
   const { Text } = require('react-native');
   return { AlbumInfoContent: () => <Text>AlbumInfoContent</Text> };
 });
 
-jest.mock('../../components/LyricsContent', () => {
+jest.mock('@/components/LyricsContent', () => {
   const { Text } = require('react-native');
   return { LyricsContent: () => <Text>LyricsContent</Text> };
 });
 
-jest.mock('../../store/lyricsStore', () => {
+jest.mock('@/store/lyricsStore', () => {
   const fetchLyrics = jest.fn();
   const state = {
     entries: {},
@@ -168,7 +168,7 @@ jest.mock('../../store/lyricsStore', () => {
   return { lyricsStore: store };
 });
 
-jest.mock('../../services/playerService', () => ({
+jest.mock('@/services/playerService', () => ({
   clearQueue: jest.fn(),
   retryPlayback: jest.fn(),
   seekTo: jest.fn(),
@@ -179,15 +179,15 @@ jest.mock('../../services/playerService', () => ({
   togglePlayPause: jest.fn(),
 }));
 
-jest.mock('../../services/moreOptionsService', () => ({
+jest.mock('@/services/moreOptionsService', () => ({
   toggleStar: jest.fn(),
 }));
 
-jest.mock('../../utils/formatters', () => ({
+jest.mock('@/utils/formatters', () => ({
   sanitizeBiographyText: jest.fn((text: string) => text),
 }));
 
-jest.mock('../../utils/stringHelpers', () => ({
+jest.mock('@/utils/stringHelpers', () => ({
   minDelay: () => Promise.resolve(),
 }));
 
@@ -221,11 +221,11 @@ jest.mock('@shopify/flash-list', () => {
 import React from 'react';
 import { render, fireEvent, act } from '@testing-library/react-native';
 
-import { playerStore } from '../../store/playerStore';
-import { type Child } from '../../services/subsonicService';
+import { playerStore } from '@/store/playerStore';
+import { type Child } from '@/services/subsonicService';
 
 // Must import after mocks
-const { PlayerView } = require('../player-view');
+const { PlayerPhonePortrait } = require('@/screens/player/player-phone-portrait');
 
 const MOCK_TRACK: Child = {
   id: 'track-1',
@@ -259,15 +259,15 @@ beforeEach(() => {
   });
 });
 
-describe('PlayerView', () => {
+describe('PlayerPhonePortrait', () => {
   it('renders empty state when no current track', () => {
     playerStore.setState({ currentTrack: null });
-    const { getByText } = render(<PlayerView />);
+    const { getByText } = render(<PlayerPhonePortrait />);
     expect(getByText('Nothing Playing')).toBeTruthy();
   });
 
   it('renders player content by default (player tab)', () => {
-    const { getByText, queryByText } = render(<PlayerView />);
+    const { getByText, queryByText } = render(<PlayerPhonePortrait />);
 
     // Hero player content visible
     expect(getByText('Test Song')).toBeTruthy();
@@ -283,7 +283,7 @@ describe('PlayerView', () => {
   });
 
   it('switches to queue tab when queue icon pressed', () => {
-    const { getByLabelText, getByText } = render(<PlayerView />);
+    const { getByLabelText, getByText } = render(<PlayerPhonePortrait />);
 
     act(() => {
       fireEvent.press(getByLabelText('Queue'));
@@ -295,7 +295,7 @@ describe('PlayerView', () => {
   });
 
   it('shows queue header with shuffle, share, clear actions', () => {
-    const { getByLabelText } = render(<PlayerView />);
+    const { getByLabelText } = render(<PlayerPhonePortrait />);
 
     act(() => {
       fireEvent.press(getByLabelText('Queue'));
@@ -306,7 +306,7 @@ describe('PlayerView', () => {
   });
 
   it('switches to lyrics tab and mounts LyricsContent', () => {
-    const { getByLabelText, getByText } = render(<PlayerView />);
+    const { getByLabelText, getByText } = render(<PlayerPhonePortrait />);
 
     act(() => {
       fireEvent.press(getByLabelText('Lyrics'));
@@ -316,7 +316,7 @@ describe('PlayerView', () => {
   });
 
   it('switches to info tab showing album info', () => {
-    const { getByLabelText, getByText } = render(<PlayerView />);
+    const { getByLabelText, getByText } = render(<PlayerPhonePortrait />);
 
     act(() => {
       fireEvent.press(getByLabelText('Album Info'));
@@ -326,7 +326,7 @@ describe('PlayerView', () => {
   });
 
   it('returns to player tab when Now Playing pressed', () => {
-    const { getByLabelText, getAllByText } = render(<PlayerView />);
+    const { getByLabelText, getAllByText } = render(<PlayerPhonePortrait />);
 
     // Switch to queue
     act(() => {
@@ -344,12 +344,12 @@ describe('PlayerView', () => {
 
   it('renders loading state when queue is loading', () => {
     playerStore.setState({ queueLoading: true });
-    const { getByText } = render(<PlayerView />);
+    const { getByText } = render(<PlayerPhonePortrait />);
     expect(getByText('Loading\u2026')).toBeTruthy();
   });
 
   it('renders transport control buttons', () => {
-    const { getByText } = render(<PlayerView />);
+    const { getByText } = render(<PlayerPhonePortrait />);
 
     expect(getByText('play-back')).toBeTruthy();
     expect(getByText('pause')).toBeTruthy(); // playing state shows pause
@@ -358,24 +358,24 @@ describe('PlayerView', () => {
 
   it('renders play icon when paused', () => {
     playerStore.setState({ playbackState: 'paused' });
-    const { getByText } = render(<PlayerView />);
+    const { getByText } = render(<PlayerPhonePortrait />);
     expect(getByText('play')).toBeTruthy();
   });
 
   it('renders favorite button', () => {
-    const { getByLabelText } = render(<PlayerView />);
+    const { getByLabelText } = render(<PlayerPhonePortrait />);
     expect(getByLabelText('Add to Favorites')).toBeTruthy();
   });
 
   it('presses favorite button without error', () => {
-    const { getByLabelText } = render(<PlayerView />);
+    const { getByLabelText } = render(<PlayerPhonePortrait />);
     fireEvent.press(getByLabelText('Add to Favorites'));
-    const { toggleStar } = require('../../services/moreOptionsService');
+    const { toggleStar } = require('@/services/moreOptionsService');
     expect(toggleStar).toHaveBeenCalledWith('song', 'track-1');
   });
 
   it('presses play/pause button', () => {
-    const { getByText } = render(<PlayerView />);
+    const { getByText } = render(<PlayerPhonePortrait />);
     // Find the pause icon (since state is 'playing')
     const pauseIcon = getByText('pause');
     // The icon is inside a Pressable; fire on the closest pressable parent
@@ -383,22 +383,22 @@ describe('PlayerView', () => {
   });
 
   it('presses skip forward button', () => {
-    const { getByText } = render(<PlayerView />);
+    const { getByText } = render(<PlayerPhonePortrait />);
     fireEvent.press(getByText('play-forward'));
-    const { skipToNext } = require('../../services/playerService');
+    const { skipToNext } = require('@/services/playerService');
     expect(skipToNext).toHaveBeenCalled();
   });
 
   it('presses skip backward button', () => {
-    const { getByText } = render(<PlayerView />);
+    const { getByText } = render(<PlayerPhonePortrait />);
     fireEvent.press(getByText('play-back'));
-    const { skipToPrevious } = require('../../services/playerService');
+    const { skipToPrevious } = require('@/services/playerService');
     expect(skipToPrevious).toHaveBeenCalled();
   });
 
   it('renders queue empty state when queue has no items', () => {
     playerStore.setState({ queue: [] });
-    const { getByLabelText, queryByLabelText } = render(<PlayerView />);
+    const { getByLabelText, queryByLabelText } = render(<PlayerPhonePortrait />);
 
     act(() => {
       fireEvent.press(getByLabelText('Queue'));
@@ -410,14 +410,14 @@ describe('PlayerView', () => {
 
   it('shows buffering indicator when buffering', () => {
     playerStore.setState({ playbackState: 'buffering' });
-    const { queryByText } = render(<PlayerView />);
+    const { queryByText } = render(<PlayerPhonePortrait />);
     // In buffering state, the play icon should not be shown (ActivityIndicator shows instead)
     expect(queryByText('play')).toBeNull();
     expect(queryByText('pause')).toBeNull();
   });
 
   it('mounts info tab lazily on first selection', () => {
-    const { getByLabelText, queryByText, getByText } = render(<PlayerView />);
+    const { getByLabelText, queryByText, getByText } = render(<PlayerPhonePortrait />);
 
     // Info tab should not be mounted initially
     expect(queryByText('AlbumInfoContent')).toBeNull();
@@ -432,7 +432,7 @@ describe('PlayerView', () => {
   });
 
   it('renders shuffle button in queue tab', () => {
-    const { getByLabelText, getAllByTestId } = render(<PlayerView />);
+    const { getByLabelText, getAllByTestId } = render(<PlayerPhonePortrait />);
 
     act(() => {
       fireEvent.press(getByLabelText('Queue'));
@@ -443,7 +443,7 @@ describe('PlayerView', () => {
   });
 
   it('calls share queue when share button pressed', () => {
-    const { getByLabelText } = render(<PlayerView />);
+    const { getByLabelText } = render(<PlayerPhonePortrait />);
 
     act(() => {
       fireEvent.press(getByLabelText('Queue'));
@@ -453,7 +453,7 @@ describe('PlayerView', () => {
   });
 
   it('calls clear queue when clear button pressed', () => {
-    const { getByLabelText, getByText } = render(<PlayerView />);
+    const { getByLabelText, getByText } = render(<PlayerPhonePortrait />);
 
     act(() => {
       fireEvent.press(getByLabelText('Queue'));
@@ -463,7 +463,7 @@ describe('PlayerView', () => {
   });
 
   it('renders all queue items in queue tab', () => {
-    const { getByLabelText, getByText, getAllByText } = render(<PlayerView />);
+    const { getByLabelText, getByText, getAllByText } = render(<PlayerPhonePortrait />);
 
     act(() => {
       fireEvent.press(getByLabelText('Queue'));
@@ -479,7 +479,7 @@ describe('PlayerView', () => {
     const routerBack = jest.fn();
     jest.spyOn(require('expo-router'), 'useRouter').mockReturnValue({ back: routerBack });
 
-    render(<PlayerView />);
+    render(<PlayerPhonePortrait />);
 
     // Simulate track being cleared after being populated
     act(() => {
@@ -490,7 +490,7 @@ describe('PlayerView', () => {
   });
 
   it('invokes skipToTrack when queue item pressed', () => {
-    const { getByLabelText, getByText } = render(<PlayerView />);
+    const { getByLabelText, getByText } = render(<PlayerPhonePortrait />);
 
     act(() => {
       fireEvent.press(getByLabelText('Queue'));
@@ -501,14 +501,14 @@ describe('PlayerView', () => {
   });
 
   it('invokes seekTo when progress bar seeks', () => {
-    // This exercises the handleSeek callback defined in PlayerView
+    // This exercises the handleSeek callback defined in PlayerPhonePortrait
     // The progress bar is mocked, so we verify it renders without error
-    const { getByTestId } = render(<PlayerView />);
+    const { getByTestId } = render(<PlayerPhonePortrait />);
     expect(getByTestId('progress-bar')).toBeTruthy();
   });
 
   it('preserves mounted tabs when switching between them', () => {
-    const { getByLabelText, getByText } = render(<PlayerView />);
+    const { getByLabelText, getByText } = render(<PlayerPhonePortrait />);
 
     // Mount queue tab
     act(() => {

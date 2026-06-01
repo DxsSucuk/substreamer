@@ -58,6 +58,11 @@ import {
   ensureCached,
   prefetchCoverArt,
 } from './imageCacheService';
+import {
+  coverArtIdForAlbum,
+  coverArtIdForPlaylist,
+  coverArtIdForSong,
+} from '../utils/coverArtId';
 
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
@@ -755,9 +760,10 @@ export async function enqueueAlbumDownload(albumId: string): Promise<void> {
       });
     }
 
-    if (album.coverArt) {
-      ensureCached(album.coverArt).catch(() => { /* non-critical */ });
-    }
+    // Cover art keys off the album ID, never the server `coverArt` field
+    // (see src/utils/coverArtId.ts) — so the warmed/stored key matches what
+    // the grid renders. The raw `coverArt` is retained in the song envelopes.
+    ensureCached(albumId).catch(() => { /* non-critical */ });
     cacheTrackCoverArt(missingSongs);
 
     musicCacheStore.getState().enqueueTopUp({
@@ -765,7 +771,7 @@ export async function enqueueAlbumDownload(albumId: string): Promise<void> {
       type: 'album',
       name: album.name,
       artist: album.artist ?? album.displayArtist,
-      coverArtId: album.coverArt,
+      coverArtId: albumId,
       totalSongs: missingSongs.length,
       songsJson: JSON.stringify(missingSongs),
     });
@@ -774,9 +780,7 @@ export async function enqueueAlbumDownload(albumId: string): Promise<void> {
     return;
   }
 
-  if (album.coverArt) {
-    ensureCached(album.coverArt).catch(() => { /* non-critical */ });
-  }
+  ensureCached(albumId).catch(() => { /* non-critical */ });
   cacheTrackCoverArt(album.song);
 
   musicCacheStore.getState().enqueue({
@@ -784,7 +788,7 @@ export async function enqueueAlbumDownload(albumId: string): Promise<void> {
     type: 'album',
     name: album.name,
     artist: album.artist ?? album.displayArtist,
-    coverArtId: album.coverArt,
+    coverArtId: albumId,
     totalSongs: album.song.length,
     songsJson: JSON.stringify(album.song),
   });
@@ -802,16 +806,15 @@ export async function enqueuePlaylistDownload(playlistId: string): Promise<void>
   const playlist = await playlistDetailStore.getState().fetchPlaylist(playlistId);
   if (!playlist?.entry?.length) return;
 
-  if (playlist.coverArt) {
-    ensureCached(playlist.coverArt).catch(() => { /* non-critical */ });
-  }
+  // Cover art keys off the playlist ID (see src/utils/coverArtId.ts).
+  ensureCached(playlistId).catch(() => { /* non-critical */ });
   cacheTrackCoverArt(playlist.entry);
 
   musicCacheStore.getState().enqueue({
     itemId: playlistId,
     type: 'playlist',
     name: playlist.name,
-    coverArtId: playlist.coverArt,
+    coverArtId: playlistId,
     totalSongs: playlist.entry.length,
     songsJson: JSON.stringify(playlist.entry),
   });
@@ -854,7 +857,7 @@ export async function enqueueSongDownload(song: Child): Promise<void> {
         type: 'song',
         name: song.title ?? existing.title,
         artist: song.artist ?? existing.artist,
-        coverArtId: song.coverArt ?? existing.coverArt,
+        coverArtId: coverArtIdForSong(song),
         expectedSongCount: 1,
         parentAlbumId: song.albumId ?? existing.albumId,
         lastSyncAt: Date.now(),
@@ -875,7 +878,7 @@ export async function enqueueSongDownload(song: Child): Promise<void> {
     type: 'song',
     name: song.title ?? 'Unknown',
     artist: song.artist,
-    coverArtId: song.coverArt,
+    coverArtId: coverArtIdForSong(song),
     totalSongs: 1,
     songsJson: JSON.stringify([song]),
   });
@@ -1053,7 +1056,8 @@ async function ensurePartialAlbumEdge(
       type: 'album',
       name: song.album ?? cachedAlbum?.album?.name ?? 'Unknown',
       artist: song.artist ?? cachedAlbum?.album?.artist,
-      coverArtId: song.coverArt ?? cachedAlbum?.album?.coverArt,
+      // Album item — cover art keys off the album ID (see coverArtId.ts).
+      coverArtId: albumId,
       expectedSongCount,
       parentAlbumId: undefined,
       lastSyncAt: now,

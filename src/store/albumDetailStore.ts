@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 
 import { ensureCached, prefetchCoverArt } from '../services/imageCacheService';
+import { coverArtIdForAlbum } from '../utils/coverArtId';
 import {
   ensureCoverArtAuth,
   getAlbum,
@@ -86,7 +87,8 @@ export const albumDetailStore = create<AlbumDetailState>()((set, get) => ({
         // Proactively cache cover art for new IDs so they survive offline.
         // Skipped during bulk sync — see prefetchCovers contract above.
         if (prefetchCovers) {
-          if (data.coverArt) ensureCached(data.coverArt).catch(() => { /* non-critical */ });
+          const albumArtId = coverArtIdForAlbum(data);
+          if (albumArtId) ensureCached(albumArtId).catch(() => { /* non-critical */ });
           if (data.song?.length) prefetchCoverArt(data.song);
         }
       }

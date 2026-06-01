@@ -202,7 +202,11 @@ function AlbumSection({
         <SectionPlaceholder message={t(config.emptyMessageKey)} colors={colors} />
       ) : (
         <FlashList
-          data={albums.slice(0, LIST_LENGTH_DISPLAY_CAP)}
+          // Guard against entries with a falsy id: keyExtractor returns
+          // `item.id`, so an id-less item yields an `undefined` key that
+          // corrupts FlashList recycling (a stuck-placeholder vector). Such a
+          // card can't render art, cache, or navigate anyway — drop it.
+          data={albums.filter((a) => a.id).slice(0, LIST_LENGTH_DISPLAY_CAP)}
           renderItem={renderItem}
           keyExtractor={keyExtractor}
           horizontal

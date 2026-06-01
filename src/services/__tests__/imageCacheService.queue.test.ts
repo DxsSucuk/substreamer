@@ -54,7 +54,10 @@ jest.mock('../../store/offlineModeStore', () => ({
 
 const mockConnectivity = { isInternetReachable: true, isServerReachable: true };
 jest.mock('../../store/connectivityStore', () => ({
-  connectivityStore: { getState: () => mockConnectivity },
+  connectivityStore: {
+    getState: () => mockConnectivity,
+    subscribe: jest.fn(() => () => {}),
+  },
 }));
 
 jest.mock('../connectivityService', () => ({

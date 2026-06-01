@@ -345,7 +345,7 @@ describe('playTrack', () => {
     expect(mockTP.skip).toHaveBeenCalledWith(1);
     expect(mockTP.play).toHaveBeenCalled();
     // No "Starting playback" / "Now Playing" pill — those routine
-    // acknowledgements were removed; the MiniPlayer + DownloadBanner
+    // acknowledgements were removed; the mini player + DownloadBanner
     // chrome is the persistent confirmation.
     expect(mockToastShow).not.toHaveBeenCalled();
     expect(mockToastSucceed).not.toHaveBeenCalled();
@@ -1403,7 +1403,7 @@ describe('PlaybackEndedWithReason event handler', () => {
 
     endedHandler({ reason: 'playedUntilEnd', track: 't1', position: 150 });
 
-    // MiniPlayer and PlayerProgressBar read the same store — this write
+    // mini player and PlayerProgressBar read the same store — this write
     // ensures both show 100% when a track finishes naturally.
     expect(mockSetProgress).toHaveBeenCalledWith(200, 200, 200);
   });

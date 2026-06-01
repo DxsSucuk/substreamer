@@ -236,7 +236,17 @@ export const CachedImage = memo(function CachedImage({
   // One log line per state transition. Kept minimal so user logs are
   // scannable; the service has its own logs for downloads/retries.
   useEffect(() => {
-    if (!coverArtId) return;
+    if (!coverArtId) {
+      // No usable id AND no bundled fallback → a genuine missing-id
+      // placeholder: the parent handed us an entity with no id. This is the
+      // otherwise-silent stuck case (every other branch is gated on a truthy
+      // id), so log it to make recurrence diagnosable. Sentinels render a
+      // bundled fallbackUri and are intentionally skipped.
+      if (!fallbackUri) {
+        logImageCache(`CachedImage placeholder id-missing size=${size}`);
+      }
+      return;
+    }
     const where = cachedUri && !localErroredRef.current
       ? 'local'
       : isRemote
@@ -245,7 +255,7 @@ export const CachedImage = memo(function CachedImage({
     logImageCache(
       `CachedImage state id=${coverArtId} size=${size} ${where} remoteFailed=${remoteFailed}`,
     );
-  }, [coverArtId, size, cachedUri, isRemote, remoteFailed]);
+  }, [coverArtId, size, cachedUri, isRemote, remoteFailed, fallbackUri]);
 
   const flatStyle = StyleSheet.flatten(style) as (ImageStyle & ViewStyle) | undefined;
   const logoSize = computeLogoSize(

@@ -134,6 +134,7 @@ const mockConnectivity = {
 jest.mock('../../store/connectivityStore', () => ({
   connectivityStore: {
     getState: jest.fn(() => mockConnectivity),
+    subscribe: jest.fn(() => () => {}), // no-op unsubscribe
   },
 }));
 
@@ -284,6 +285,7 @@ import {
   refreshCoverArt,
   reconcileImageCache,
   repairIncompleteImages,
+  prefetchCoverArt,
   __resetRetryStateForTest,
 } from '../imageCacheService';
 
@@ -679,6 +681,29 @@ describe('download pipeline — cacheAllSizes + processQueue', () => {
 
     // Should not throw; the promise resolves after the failed download
     await expect(ensureCached(id)).resolves.toBeUndefined();
+  });
+});
+
+describe('prefetchCoverArt — keys off entity ID, not the coverArt field', () => {
+  it('warms the cache for the album id, never the server coverArt value', async () => {
+    const { getCoverArtUrl: mockGetCoverArtUrl } = jest.requireMock(
+      '../subsonicService',
+    ) as { getCoverArtUrl: jest.Mock };
+    mockGetCoverArtUrl.mockReturnValue('https://example.com/cover.jpg');
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      headers: { get: () => 'image/jpeg' },
+      arrayBuffer: () => Promise.resolve(new ArrayBuffer(1024)),
+    });
+
+    // id and coverArt deliberately differ (Navidrome `al-<id>` style).
+    prefetchCoverArt([{ id: 'al-key', coverArt: 'cover-other' } as any]);
+    await new Promise((r) => setTimeout(r, 0));
+
+    const calledIds = mockGetCoverArtUrl.mock.calls.map((c) => c[0]);
+    expect(calledIds).toContain('al-key');
+    expect(calledIds).not.toContain('cover-other');
+    mockGetCoverArtUrl.mockReturnValue(null);
   });
 });
 

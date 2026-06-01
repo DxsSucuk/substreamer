@@ -22,6 +22,7 @@ import { useDownloadStatus, type DownloadStatus } from '../hooks/useDownloadStat
 import { useIsStarred } from '../hooks/useIsStarred';
 import { useRating } from '../hooks/useRating';
 import { useTheme } from '../hooks/useTheme';
+import { coverArtIdForEntity } from '../utils/coverArtId';
 import { tabletLayoutStore } from '../store/tabletLayoutStore';
 import {
   addAlbumToQueue,
@@ -103,13 +104,9 @@ function getSubtitle(entity: MoreOptionsEntity, t: (key: string, options?: Recor
 }
 
 function getCoverArtId(entity: MoreOptionsEntity): string | undefined {
-  // Cover-art lookups key off the entity ID, not the server's
-  // `coverArt` field. Same canonical ID for every track in an album so
-  // MiniPlayer / lock-screen / queue rows all share one cached file.
-  if (entity.type === 'song') {
-    return (entity.item as Child).albumId ?? entity.item.id;
-  }
-  return entity.item.id;
+  // Cover-art lookups key off the entity ID, not the server's `coverArt`
+  // field — the single rule lives in src/utils/coverArtId.ts.
+  return coverArtIdForEntity(entity.item);
 }
 
 function isStarrable(entity: MoreOptionsEntity): boolean {
@@ -193,7 +190,7 @@ export function MoreOptionsSheet() {
   const entity = moreOptionsStore((s) => s.entity);
   const source = moreOptionsStore((s) => s.source);
   const hide = moreOptionsStore((s) => s.hide);
-  const isPlayerSource = source === 'player' || source === 'playerpanel' || source === 'playerexpanded';
+  const isPlayerSource = source !== 'default';
 
   const starType: 'song' | 'album' | 'artist' =
     entity?.type === 'album' || entity?.type === 'artist' ? entity.type : 'song';
@@ -358,7 +355,7 @@ export function MoreOptionsSheet() {
   const handleGoToArtist = useCallback(() => {
     if (!entity) return;
     handleClose();
-    if (source === 'playerexpanded') {
+    if (source === 'player-tablet-landscape') {
       tabletLayoutStore.getState().setPlayerExpanded(false);
     }
     const artistId =
@@ -375,7 +372,7 @@ export function MoreOptionsSheet() {
   const handleGoToAlbum = useCallback(() => {
     if (!entity || entity.type !== 'song') return;
     handleClose();
-    if (source === 'playerexpanded') {
+    if (source === 'player-tablet-landscape') {
       tabletLayoutStore.getState().setPlayerExpanded(false);
     }
     const albumId = (entity.item as Child).albumId;
@@ -466,10 +463,8 @@ export function MoreOptionsSheet() {
   const handleSetRating = useCallback(async () => {
     if (!entity || !isRatable(entity)) return;
     // Entity-ID based cover art (see src/utils/coverArtId.ts) — songs key
-    // off the parent album so MiniPlayer / rating sheet share one cache.
-    const coverArtId = entity.type === 'song'
-      ? ((entity.item as Child).albumId ?? entity.item.id)
-      : entity.item.id;
+    // off the parent album so mini player / rating sheet share one cache.
+    const coverArtId = coverArtIdForEntity(entity.item);
     await moreOptionsStore.getState().hideAndAwait();
     setRatingStore.getState().show(
       entity.type as 'song' | 'album' | 'artist',

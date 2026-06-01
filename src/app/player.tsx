@@ -1,8 +1,8 @@
 import { useIsTabletPortrait } from '@/hooks/useIsTabletPortrait';
-import { PlayerView } from '@/screens/player-view';
-import { TabletPortraitPlayer } from '@/screens/tablet-portrait-player';
+import { PlayerPhonePortrait } from '@/screens/player/player-phone-portrait';
+import { PlayerTabletPortrait } from '@/screens/player/player-tablet-portrait';
 
 export default function PlayerRoute() {
   const tabletPortrait = useIsTabletPortrait();
-  return tabletPortrait ? <TabletPortraitPlayer /> : <PlayerView />;
+  return tabletPortrait ? <PlayerTabletPortrait /> : <PlayerPhonePortrait />;
 }

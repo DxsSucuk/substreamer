@@ -384,7 +384,7 @@ export function MyListeningScreen() {
               subtitle={item.artist}
               count={item.count}
               maxCount={analytics.topAlbums[0].count}
-              coverArtId={item.albumId ?? item.coverArt}
+              coverArtId={item.albumId}
               colors={colors}
               index={i}
               onPress={onOpenAlbum(item.albumId)}

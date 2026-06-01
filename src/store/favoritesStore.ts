@@ -6,6 +6,7 @@ import i18n from '../i18n/i18n';
 import { kvStorage } from './persistence';
 
 import { ensureCached, prefetchCoverArt } from '../services/imageCacheService';
+import { coverArtIdForAlbum, coverArtIdForArtist } from '../utils/coverArtId';
 import {
   ensureCoverArtAuth,
   getStarred2,
@@ -94,10 +95,12 @@ export const favoritesStore = create<FavoritesState>()(
           if (prefetchCovers) {
             prefetchCoverArt(songs);
             for (const a of albums) {
-              if (a.coverArt) ensureCached(a.coverArt).catch(() => { /* non-critical */ });
+              const albumArtId = coverArtIdForAlbum(a);
+              if (albumArtId) ensureCached(albumArtId).catch(() => { /* non-critical */ });
             }
             for (const a of artists) {
-              if (a.coverArt) ensureCached(a.coverArt).catch(() => { /* non-critical */ });
+              const artistArtId = coverArtIdForArtist(a);
+              if (artistArtId) ensureCached(artistArtId).catch(() => { /* non-critical */ });
             }
           }
         } catch (e) {

@@ -20,57 +20,57 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { AlbumInfoContent } from './AlbumInfoContent';
-import { LyricsContent } from './LyricsContent';
-import { BookmarkButton } from './BookmarkButton';
-import { CachedImage } from './CachedImage';
-import { FavoriteButton } from './FavoriteButton';
-import { MarqueeText } from './MarqueeText';
-import { MoreOptionsButton } from './MoreOptionsButton';
-import { PlaybackRateButton } from './PlaybackRateButton';
-import { PlayerProgressBar } from './PlayerProgressBar';
-import { QueueItemRow } from './QueueItemRow';
-import { RepeatButton } from './RepeatButton';
-import { ShuffleButton } from './ShuffleButton';
-import { ShuffleOverlay } from './ShuffleOverlay';
-import { SkipIntervalButton } from './SkipIntervalButton';
-import { SleepTimerButton } from './SleepTimerButton';
-import { SleepTimerCapsule } from './SleepTimerCapsule';
-import { closeOpenRow } from './SwipeableRow';
-import { useCanSkip } from '../hooks/useCanSkip';
-import { useImagePalette } from '../hooks/useImagePalette';
-import { mixHexColors } from '../utils/colors';
-import { usePlayerActions } from '../hooks/usePlayerActions';
-import { useShuffleOverlay } from '../hooks/useShuffleOverlay';
-import { useTheme } from '../hooks/useTheme';
+import { AlbumInfoContent } from '@/components/AlbumInfoContent';
+import { LyricsContent } from '@/components/LyricsContent';
+import { BookmarkButton } from '@/components/BookmarkButton';
+import { CachedImage } from '@/components/CachedImage';
+import { FavoriteButton } from '@/components/FavoriteButton';
+import { MarqueeText } from '@/components/MarqueeText';
+import { MoreOptionsButton } from '@/components/MoreOptionsButton';
+import { PlaybackRateButton } from '@/components/PlaybackRateButton';
+import { PlayerProgressBar } from '@/components/PlayerProgressBar';
+import { QueueItemRow } from '@/components/QueueItemRow';
+import { RepeatButton } from '@/components/RepeatButton';
+import { ShuffleButton } from '@/components/ShuffleButton';
+import { ShuffleOverlay } from '@/components/ShuffleOverlay';
+import { SkipIntervalButton } from '@/components/SkipIntervalButton';
+import { SleepTimerButton } from '@/components/SleepTimerButton';
+import { SleepTimerCapsule } from '@/components/SleepTimerCapsule';
+import { closeOpenRow } from '@/components/SwipeableRow';
+import { useCanSkip } from '@/hooks/useCanSkip';
+import { useImagePalette } from '@/hooks/useImagePalette';
+import { mixHexColors } from '@/utils/colors';
+import { usePlayerActions } from '@/hooks/usePlayerActions';
+import { useShuffleOverlay } from '@/hooks/useShuffleOverlay';
+import { useTheme } from '@/hooks/useTheme';
 import {
   retryPlayback,
   skipToNext,
   skipToPrevious,
   togglePlayPause,
-} from '../services/playerService';
-import { sanitizeBiographyText } from '../utils/formatters';
-import { type Child } from '../services/subsonicService';
-import { usePlayerAlbumInfo } from '../hooks/usePlayerAlbumInfo';
-import { usePlayerLyrics } from '../hooks/usePlayerLyrics';
-import { playbackSettingsStore } from '../store/playbackSettingsStore';
-import { moreOptionsStore } from '../store/moreOptionsStore';
-import { offlineModeStore } from '../store/offlineModeStore';
-import { playerStore } from '../store/playerStore';
-import { tabletLayoutStore } from '../store/tabletLayoutStore';
+} from '@/services/playerService';
+import { sanitizeBiographyText } from '@/utils/formatters';
+import { type Child } from '@/services/subsonicService';
+import { usePlayerAlbumInfo } from '@/hooks/usePlayerAlbumInfo';
+import { usePlayerLyrics } from '@/hooks/usePlayerLyrics';
+import { playbackSettingsStore } from '@/store/playbackSettingsStore';
+import { moreOptionsStore } from '@/store/moreOptionsStore';
+import { offlineModeStore } from '@/store/offlineModeStore';
+import { playerStore } from '@/store/playerStore';
+import { tabletLayoutStore } from '@/store/tabletLayoutStore';
 
-import { absoluteFill } from '../utils/styles';
+import { absoluteFill } from '@/utils/styles';
 const HERO_COVER_SIZE = 600;
 const CONTENT_PADDING = 40;
 const COLUMN_GAP = 32;
 
-interface ExpandedPlayerViewProps {
+interface PlayerTabletLandscapeProps {
   expandProgress: SharedValue<number>;
 }
 
-export function ExpandedPlayerView({
+export function PlayerTabletLandscape({
   expandProgress,
-}: ExpandedPlayerViewProps) {
+}: PlayerTabletLandscapeProps) {
   const { t } = useTranslation();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -210,7 +210,7 @@ export function ExpandedPlayerView({
     handleQueueItemLongPress,
     handleShareQueue,
     handleClearQueue,
-  } = usePlayerActions({ source: 'playerexpanded' });
+  } = usePlayerActions({ source: 'player-tablet-landscape' });
 
   const {
     shuffling,
@@ -338,7 +338,7 @@ export function ExpandedPlayerView({
                   </View>
                   <MoreOptionsButton
                     onPress={() =>
-                      moreOptionsStore.getState().show({ type: 'song', item: currentTrack }, 'playerexpanded')
+                      moreOptionsStore.getState().show({ type: 'song', item: currentTrack }, 'player-tablet-landscape')
                     }
                     color={colors.textPrimary}
                   />

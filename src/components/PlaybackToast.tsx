@@ -31,7 +31,7 @@ const CAPSULE_BORDER_RADIUS = CAPSULE_HEIGHT / 2;
 const SUCCESS_DISPLAY_MS = 1400;
 const ERROR_DISPLAY_MS = 2200;
 const BOTTOM_OFFSET = 24;
-/** Keep in sync with MINI_PLAYER_HEIGHT in `MiniPlayer.tsx`. */
+/** Keep in sync with MINI_PLAYER_HEIGHT in `PlayerPhoneMini.tsx`. */
 const MINI_PLAYER_HEIGHT = 56;
 
 const SPRING_CONFIG = { damping: 14, stiffness: 200, mass: 0.8 };
@@ -45,11 +45,11 @@ export function PlaybackToast() {
   const hide = playbackToastStore((s) => s.hide);
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
-  // Lift the pill above the bottom chrome (DownloadBanner + MiniPlayer)
+  // Lift the pill above the bottom chrome (DownloadBanner + mini player)
   // when either is rendered so they don't stack. The chrome lives in
   // `BottomChrome` (per-screen and inside the tabs `renderTabBar`); its
   // visibility rules must match this predicate so the offsets align.
-  // Banner visibility is independent of MiniPlayer visibility — the banner
+  // Banner visibility is independent of mini player visibility — the banner
   // can be on screen with no track playing (downloads queued, queue
   // cleared while downloading, etc.), so it gets its own offset term.
   const isLoggedIn = authStore((s) => s.isLoggedIn);

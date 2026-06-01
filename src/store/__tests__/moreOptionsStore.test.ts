@@ -19,22 +19,22 @@ describe('moreOptionsStore', () => {
   });
 
   it('show with explicit source sets source', () => {
-    moreOptionsStore.getState().show({ type: 'album', item: mockAlbum }, 'player');
-    expect(moreOptionsStore.getState().source).toBe('player');
+    moreOptionsStore.getState().show({ type: 'album', item: mockAlbum }, 'player-phone-portrait');
+    expect(moreOptionsStore.getState().source).toBe('player-phone-portrait');
   });
 
   it('show with playerpanel source sets source', () => {
-    moreOptionsStore.getState().show({ type: 'song', item: mockSong }, 'playerpanel');
-    expect(moreOptionsStore.getState().source).toBe('playerpanel');
+    moreOptionsStore.getState().show({ type: 'song', item: mockSong }, 'player-tablet-splitview');
+    expect(moreOptionsStore.getState().source).toBe('player-tablet-splitview');
   });
 
   it('show with playerexpanded source sets source', () => {
-    moreOptionsStore.getState().show({ type: 'song', item: mockSong }, 'playerexpanded');
-    expect(moreOptionsStore.getState().source).toBe('playerexpanded');
+    moreOptionsStore.getState().show({ type: 'song', item: mockSong }, 'player-tablet-landscape');
+    expect(moreOptionsStore.getState().source).toBe('player-tablet-landscape');
   });
 
   it('hide resets all fields including source', () => {
-    moreOptionsStore.getState().show({ type: 'song', item: mockSong }, 'player');
+    moreOptionsStore.getState().show({ type: 'song', item: mockSong }, 'player-phone-portrait');
     moreOptionsStore.getState().hide();
     const state = moreOptionsStore.getState();
     expect(state.visible).toBe(false);
@@ -48,7 +48,7 @@ describe('moreOptionsStore', () => {
   // chained modal mounts AFTER the sheet's native Modal is fully gone.
   describe('hideAndAwait + _signalCloseComplete', () => {
     it('hideAndAwait resets state and waits for the signal to resolve', async () => {
-      moreOptionsStore.getState().show({ type: 'song', item: mockSong }, 'player');
+      moreOptionsStore.getState().show({ type: 'song', item: mockSong }, 'player-phone-portrait');
 
       const promise = moreOptionsStore.getState().hideAndAwait();
       // State is already cleared synchronously

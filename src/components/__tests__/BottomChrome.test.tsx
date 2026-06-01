@@ -1,8 +1,8 @@
 jest.mock('../../store/persistence/kvStorage', () => require('../../store/persistence/__mocks__/kvStorage'));
 
-jest.mock('../MiniPlayer', () => {
+jest.mock('../player/PlayerPhoneMini', () => {
   const { View } = require('react-native');
-  return { MiniPlayer: () => <View testID="mini-player" /> };
+  return { PlayerPhoneMini: () => <View testID="mini-player" /> };
 });
 
 jest.mock('../DownloadBanner', () => {
@@ -67,7 +67,7 @@ beforeEach(() => {
 describe('BottomChrome', () => {
   /* ---- visibility table ---- */
 
-  it('compact + has-track + no-downloads → MiniPlayer only, banner unmounted', () => {
+  it('compact + has-track + no-downloads → mini player only, banner unmounted', () => {
     playerStore.setState({ currentTrack: TRACK });
     const { getByTestId, queryByTestId } = render(<BottomChrome />);
     expect(getByTestId('mini-player')).toBeTruthy();
@@ -76,7 +76,7 @@ describe('BottomChrome', () => {
     expect(queryByTestId('download-banner')).toBeNull();
   });
 
-  it('compact + no-track + has-downloads → banner only, MiniPlayer absent', () => {
+  it('compact + no-track + has-downloads → banner only, mini player absent', () => {
     musicCacheStore.setState({
       downloadQueue: [makeQueueItem({ status: 'downloading' })],
     });
@@ -107,7 +107,7 @@ describe('BottomChrome', () => {
     expect(toJSON()).toBeNull();
   });
 
-  it('wide + has-downloads → banner only (no MiniPlayer on wide)', () => {
+  it('wide + has-downloads → banner only (no mini player on wide)', () => {
     mockUseLayoutMode.mockReturnValue('wide');
     playerStore.setState({ currentTrack: TRACK });
     musicCacheStore.setState({

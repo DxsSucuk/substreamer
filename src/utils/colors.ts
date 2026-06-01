@@ -4,7 +4,7 @@
  * Palette extraction itself now lives in the native `expo-image-colors`
  * module (see `useImagePalette`). These helpers remain for gradient-stop
  * alpha composition and theme-mix blending in `GradientBackground`,
- * `ExpandedPlayerView`, and friends.
+ * `PlayerTabletLandscape`, and friends.
  */
 
 /**
