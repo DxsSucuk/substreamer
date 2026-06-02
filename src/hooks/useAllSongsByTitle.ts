@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react';
-import { InteractionManager } from 'react-native';
 
 import { getLocalTrackUri } from '../services/musicCacheService';
 import { favoritesStore } from '../store/favoritesStore';
@@ -219,14 +218,17 @@ export function startSongLibraryCacheAutoWarm(): () => void {
     if (warmDebounce) clearTimeout(warmDebounce);
     warmDebounce = setTimeout(() => {
       warmDebounce = null;
-      InteractionManager.runAfterInteractions(() => {
+      // requestIdleCallback is RN-polyfilled (used in dataSyncService,
+      // imageCacheService, useTransitionComplete); runs the warm on an idle
+      // window so it doesn't compete with rendering/animations.
+      requestIdleCallback(() => {
         void warmSongLibraryCache();
       });
     }, WARM_DEBOUNCE_MS);
   };
 
-  // Initial warm once startup interactions have settled.
-  InteractionManager.runAfterInteractions(() => {
+  // Initial warm once the JS thread goes idle after startup.
+  requestIdleCallback(() => {
     void warmSongLibraryCache();
   });
 
