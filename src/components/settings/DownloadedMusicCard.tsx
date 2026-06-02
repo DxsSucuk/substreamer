@@ -1,16 +1,28 @@
 import Ionicons from '@react-native-vector-icons/ionicons/static';
 import { useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
+import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 
 import { useTheme } from '../../hooks/useTheme';
+import { useThemedAlert } from '../../hooks/useThemedAlert';
 import { settingsStyles } from '../../styles/settingsStyles';
+import { albumLibraryStore } from '../../store/albumLibraryStore';
+import { connectivityStore } from '../../store/connectivityStore';
+import { fullLibraryDownloadStore } from '../../store/fullLibraryDownloadStore';
 import {
   musicCacheStore,
   type MaxConcurrentDownloads,
 } from '../../store/musicCacheStore';
+import { offlineModeStore } from '../../store/offlineModeStore';
+import { playlistLibraryStore } from '../../store/playlistLibraryStore';
+import {
+  canDownloadFullLibrary,
+  enqueueFullLibraryDownload,
+} from '../../services/fullLibraryDownloadService';
+import { clearDownloadQueue } from '../../services/musicCacheService';
+import { fireAndForget } from '../../utils/fireAndForget';
 import { formatBytes } from '../../utils/formatters';
 import { SettingsSectionTitle } from './SettingsSectionTitle';
 
@@ -19,6 +31,7 @@ const CONCURRENT_OPTIONS: MaxConcurrentDownloads[] = [1, 3, 5];
 export function DownloadedMusicCard() {
   const { t } = useTranslation();
   const { colors } = useTheme();
+  const { alert } = useThemedAlert();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const [sheetVisible, setSheetVisible] = useState(false);
@@ -29,10 +42,67 @@ export function DownloadedMusicCard() {
   const musicQueueCount = musicCacheStore((s) => s.downloadQueue.length);
   const maxConcurrentDownloads = musicCacheStore((s) => s.maxConcurrentDownloads);
 
+  // Full-library download progress / availability.
+  const fullLib = fullLibraryDownloadStore();
+  const online =
+    !offlineModeStore((s) => s.offlineMode) && connectivityStore((s) => s.isServerReachable);
+
   const handleSelect = useCallback((value: MaxConcurrentDownloads) => {
     musicCacheStore.getState().setMaxConcurrentDownloads(value);
     setSheetVisible(false);
   }, []);
+
+  const handleDownloadFullLibrary = useCallback(() => {
+    if (!canDownloadFullLibrary()) {
+      alert(t('downloadFullLibrary'), t('downloadFullLibraryOffline'));
+      return;
+    }
+    // The full-library download needs a clean queue to track its own progress.
+    // If anything is queued (in-progress, errored, or waiting), tell the user to
+    // clear it themselves first and stop here.
+    if (musicQueueCount > 0) {
+      alert(
+        t('downloadFullLibraryQueueNotEmptyTitle'),
+        t('downloadFullLibraryQueueNotEmptyBody'),
+      );
+      return;
+    }
+
+    const albums = albumLibraryStore.getState().albums.length;
+    const playlists = playlistLibraryStore.getState().playlists.length;
+    alert(
+      t('downloadFullLibraryConfirmTitle'),
+      t('downloadFullLibraryConfirmBody', { albums, playlists }),
+      [
+        { text: t('cancel'), style: 'cancel' },
+        {
+          text: t('downloadFullLibraryConfirm'),
+          style: 'default',
+          onPress: () => fireAndForget(enqueueFullLibraryDownload(), 'fullLibraryDownload'),
+        },
+      ],
+    );
+  }, [alert, t, musicQueueCount]);
+
+  // Cancelling stops adding more AND clears whatever was queued so far.
+  const handleCancelFullLibrary = useCallback(() => {
+    fullLibraryDownloadStore.getState().cancel();
+    clearDownloadQueue();
+  }, []);
+
+  // Surface preparing/queueing failures to the user, then clear the flag.
+  useEffect(() => {
+    if (fullLib.error) {
+      alert(t('downloadFullLibrary'), fullLib.error);
+      fullLibraryDownloadStore.getState().clearError();
+    }
+  }, [fullLib.error, alert, t]);
+
+  const fullLibProgressLabel = fullLib.phase === 'preparing'
+    ? t('preparingFullLibrary')
+    : fullLib.albumsQueued < fullLib.albumsTotal
+      ? t('addingAlbumsToQueue', { queued: fullLib.albumsQueued, total: fullLib.albumsTotal })
+      : t('addingPlaylistsToQueue', { queued: fullLib.playlistsQueued, total: fullLib.playlistsTotal });
 
   return (
     <>
@@ -100,6 +170,49 @@ export function DownloadedMusicCard() {
             </View>
             <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
           </Pressable>
+
+          {/* Download Full Library — one-shot that queues every album + playlist */}
+          {fullLib.active ? (
+            <>
+              <View style={settingsStyles.offlineNotice}>
+                <ActivityIndicator size="small" color={colors.primary} />
+                <Text style={[settingsStyles.offlineNoticeText, { color: colors.textSecondary }]}>
+                  {fullLibProgressLabel}
+                </Text>
+              </View>
+              <View style={settingsStyles.actionRow}>
+                <Pressable
+                  onPress={handleCancelFullLibrary}
+                  style={({ pressed }) => [
+                    settingsStyles.actionRowButton,
+                    { borderColor: colors.border, borderWidth: StyleSheet.hairlineWidth },
+                    pressed && settingsStyles.pressed,
+                  ]}
+                >
+                  <Text style={[settingsStyles.actionRowButtonText, { color: colors.textPrimary }]}>
+                    {t('cancel')}
+                  </Text>
+                </Pressable>
+              </View>
+            </>
+          ) : (
+            <View style={settingsStyles.actionRow}>
+              <Pressable
+                onPress={handleDownloadFullLibrary}
+                disabled={!online}
+                style={({ pressed }) => [
+                  settingsStyles.actionRowButton,
+                  { backgroundColor: colors.primary },
+                  (!online || pressed) && settingsStyles.pressed,
+                ]}
+              >
+                <Ionicons name="cloud-download-outline" size={18} color="#fff" />
+                <Text style={[settingsStyles.actionRowButtonText, { color: '#fff' }]}>
+                  {t('downloadFullLibrary')}
+                </Text>
+              </Pressable>
+            </View>
+          )}
         </View>
       </View>
 
