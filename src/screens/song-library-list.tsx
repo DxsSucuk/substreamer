@@ -20,7 +20,7 @@ export function SongLibraryListScreen({
   contentInsetTop?: number;
 }) {
   const { t } = useTranslation();
-  const { songs, refresh } = useAllSongsByTitle({
+  const { songs, refresh, loading } = useAllSongsByTitle({
     downloadedOnly,
     favoritesOnly,
   });
@@ -54,7 +54,7 @@ export function SongLibraryListScreen({
       <SongListView
         songs={songs}
         layout={layout}
-        loading={!hasHydrated}
+        loading={!hasHydrated || loading}
         onRefresh={handleRefresh}
         refreshing={refreshing}
         onSongPress={handleSongPress}

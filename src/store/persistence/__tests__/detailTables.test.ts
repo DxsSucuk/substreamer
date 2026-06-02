@@ -19,6 +19,7 @@ import {
   deleteAlbumDetail,
   deleteSongsForAlbums,
   fetchAllSongsByTitle,
+  fetchAllSongsByTitleAsync,
   hydrateAlbumDetails,
   upsertAlbumDetail,
   upsertSongsForAlbum,
@@ -115,6 +116,9 @@ function makeFakeDb() {
         return rows as T[];
       }
       return [];
+    },
+    getAllAsync<T>(sql: string): Promise<T[]> {
+      return Promise.resolve(this.getAllSync<T>(sql));
     },
     runSync,
     execSync: () => {},
@@ -362,6 +366,28 @@ describe('detailTables — fetchAllSongsByTitle', () => {
     __setDbForTests(null);
     expect(fetchAllSongsByTitle()).toEqual([]);
     expect(fetchAllSongsByTitle({ downloadedOnly: true })).toEqual([]);
+  });
+});
+
+describe('detailTables — fetchAllSongsByTitleAsync', () => {
+  it('returns the same sorted Child list as the sync variant', async () => {
+    upsertSongsForAlbum('a1', [
+      { id: 's3', title: 'cherry' },
+      { id: 's1', title: 'Apple' },
+      { id: 's2', title: 'banana' },
+    ].map((s) => ({ ...s, artist: 'A', duration: 1, discNumber: 1 })) as any);
+    const out = await fetchAllSongsByTitleAsync();
+    expect(out.map((s) => s.title)).toEqual(['Apple', 'banana', 'cherry']);
+  });
+
+  it('honors filters and returns [] when db is unavailable', async () => {
+    upsertSongsForAlbum('a1', [
+      { id: 's1', title: 'aaa', starred: '2020' },
+      { id: 's2', title: 'bbb' },
+    ] as any);
+    expect((await fetchAllSongsByTitleAsync({ favoritesOnly: true })).map((s) => s.id)).toEqual(['s1']);
+    __setDbForTests(null);
+    expect(await fetchAllSongsByTitleAsync()).toEqual([]);
   });
 });
 

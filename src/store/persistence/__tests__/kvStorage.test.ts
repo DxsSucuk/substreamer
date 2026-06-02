@@ -15,6 +15,7 @@ describe('kvStorage (happy path)', () => {
     __setDbForTests({
       getFirstSync: mockGetFirstSync,
       getAllSync: jest.fn(),
+      getAllAsync: jest.fn(),
       runSync: mockRunSync,
       execSync: jest.fn(),
       withTransactionSync: jest.fn(),

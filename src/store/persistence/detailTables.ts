@@ -172,21 +172,17 @@ interface SongIndexRow {
   disc: number | null;
 }
 
-/**
- * Read every song row sorted alphabetically by title (case-insensitive),
- * with optional downloadedOnly / favoritesOnly filters. Used by the Songs
- * library segment. Backed by `idx_song_index_title` so the sort is free.
- * NULL titles sort to the end and `id` is the stable tie-breaker.
- */
-export function fetchAllSongsByTitle(
-  opts: { downloadedOnly?: boolean; favoritesOnly?: boolean } = {},
-): Child[] {
-  const db = getDb();
-  if (db === null) return [];
+interface SongsByTitleOpts {
+  downloadedOnly?: boolean;
+  favoritesOnly?: boolean;
+}
+
+/** Build the songs-library SELECT, honoring the downloaded/favorites filters. */
+function buildSongsByTitleSql(opts: SongsByTitleOpts): string {
   const useJoin = opts.downloadedOnly === true;
   const wantFavorites = opts.favoritesOnly === true;
   const prefix = useJoin ? 's.' : '';
-  const sql =
+  return (
     `SELECT ${prefix}id AS id, ${prefix}albumId AS albumId, ${prefix}title AS title,` +
     ` ${prefix}artist AS artist, ${prefix}album AS album,` +
     ` ${prefix}duration AS duration, ${prefix}coverArt AS coverArt,` +
@@ -194,28 +190,76 @@ export function fetchAllSongsByTitle(
     ` ${prefix}track AS track, ${prefix}disc AS disc` +
     ` FROM song_index${useJoin ? ' s INNER JOIN cached_songs c ON c.song_id = s.id' : ''}` +
     (wantFavorites ? ` WHERE ${prefix}starred = 1` : '') +
-    ` ORDER BY (${prefix}title IS NULL), lower(${prefix}title), ${prefix}id;`;
+    ` ORDER BY (${prefix}title IS NULL), lower(${prefix}title), ${prefix}id;`
+  );
+}
+
+/** Map one `song_index` row to the `Child` shape used by the library list. */
+function mapSongRow(r: SongIndexRow): Child {
+  return {
+    id: r.id,
+    albumId: r.albumId,
+    title: r.title ?? '',
+    artist: r.artist ?? undefined,
+    album: r.album ?? undefined,
+    duration: r.duration ?? undefined,
+    coverArt: r.coverArt ?? undefined,
+    userRating: r.userRating ?? undefined,
+    starred: r.starred ? new Date(0) : undefined,
+    year: r.year ?? undefined,
+    track: r.track ?? undefined,
+    discNumber: r.disc ?? undefined,
+    isDir: false,
+  } as Child;
+}
+
+/**
+ * Read every song row sorted alphabetically by title (case-insensitive),
+ * with optional downloadedOnly / favoritesOnly filters. Used by the Songs
+ * library segment. Backed by `idx_song_index_title` so the sort is free.
+ * NULL titles sort to the end and `id` is the stable tie-breaker.
+ *
+ * **Synchronous** — blocks the JS thread for the read + mapping. Prefer
+ * `fetchAllSongsByTitleAsync` for the library pre-warm / cold path so a big
+ * library doesn't freeze the UI; this variant remains for sync callers/tests.
+ */
+export function fetchAllSongsByTitle(opts: SongsByTitleOpts = {}): Child[] {
+  const db = getDb();
+  if (db === null) return [];
   try {
-    const rows = db.getAllSync<SongIndexRow>(sql);
+    const rows = db.getAllSync<SongIndexRow>(buildSongsByTitleSql(opts));
+    const out: Child[] = new Array(rows.length);
+    for (let i = 0; i < rows.length; i++) out[i] = mapSongRow(rows[i]);
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/** Rows mapped per macrotask yield, keeping the JS thread responsive. */
+const SONG_MAP_CHUNK = 2000;
+
+/**
+ * Async counterpart of `fetchAllSongsByTitle`. The SQLite read runs on
+ * expo-sqlite's background thread (`getAllAsync`), and the JS row→`Child`
+ * mapping is chunked with `setTimeout(0)` yields so neither stage blocks the
+ * JS thread for long — even on a large library. Used by the pre-warm and the
+ * Songs segment's cold path.
+ */
+export async function fetchAllSongsByTitleAsync(
+  opts: SongsByTitleOpts = {},
+): Promise<Child[]> {
+  const db = getDb();
+  if (db === null) return [];
+  try {
+    const rows = await db.getAllAsync<SongIndexRow>(buildSongsByTitleSql(opts));
     const out: Child[] = new Array(rows.length);
     for (let i = 0; i < rows.length; i++) {
-      const r = rows[i];
-      const child: Child = {
-        id: r.id,
-        albumId: r.albumId,
-        title: r.title ?? '',
-        artist: r.artist ?? undefined,
-        album: r.album ?? undefined,
-        duration: r.duration ?? undefined,
-        coverArt: r.coverArt ?? undefined,
-        userRating: r.userRating ?? undefined,
-        starred: r.starred ? new Date(0) : undefined,
-        year: r.year ?? undefined,
-        track: r.track ?? undefined,
-        discNumber: r.disc ?? undefined,
-        isDir: false,
-      } as Child;
-      out[i] = child;
+      out[i] = mapSongRow(rows[i]);
+      if (i > 0 && i % SONG_MAP_CHUNK === 0) {
+        // Yield to the event loop so touches/animations aren't starved.
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
     }
     return out;
   } catch {

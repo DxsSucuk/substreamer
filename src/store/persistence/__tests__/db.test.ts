@@ -130,6 +130,7 @@ describe('persistence/db (happy path)', () => {
       const fake = {
         getFirstSync: jest.fn(),
         getAllSync: jest.fn(),
+        getAllAsync: jest.fn(),
         runSync: jest.fn(),
         execSync: jest.fn(),
         withTransactionSync: jest.fn(),

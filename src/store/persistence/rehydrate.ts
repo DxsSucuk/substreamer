@@ -62,19 +62,10 @@ export function rehydrateAllStores(): RehydrationResult {
     // eslint-disable-next-line no-console
     console.warn('[rehydrateAllStores] partial failure', result.failed);
   }
-  // Defer the songs-library cache warm-up to a microtask. The first tap on
-  // the Songs library segment otherwise pays a 100-300ms SQL + JS-mapping
-  // cost during render. Lazy-required to avoid pulling React into the
-  // persistence layer.
-  queueMicrotask(() => {
-    try {
-      const { warmSongLibraryCache } = require('../../hooks/useAllSongsByTitle') as {
-        warmSongLibraryCache: () => void;
-      };
-      warmSongLibraryCache();
-    } catch {
-      /* non-critical */
-    }
-  });
+  // The songs-library cache warm-up is owned by `startSongLibraryCacheAutoWarm`
+  // (started from the deferred-startup chain). A one-shot warm here was
+  // invalidated by the post-startup album-detail sync advancing
+  // `songIndexStore.mutationCounter`, so it's been moved to a resilient
+  // debounced auto-warmer that survives that churn.
   return result;
 }

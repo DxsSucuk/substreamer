@@ -40,6 +40,12 @@ export interface RunResult {
 export interface InternalDb {
   getFirstSync<T>(sql: string, params?: readonly unknown[]): T | undefined;
   getAllSync<T>(sql: string, params?: readonly unknown[]): T[];
+  /**
+   * Async row read. expo-sqlite runs this on a background native thread, so
+   * the SQLite IO does not block the JS thread (unlike `getAllSync`). Used by
+   * the songs-library pre-warm / cold fetch — see `fetchAllSongsByTitleAsync`.
+   */
+  getAllAsync<T>(sql: string, params?: readonly unknown[]): Promise<T[]>;
   runSync(sql: string, params?: readonly unknown[]): RunResult;
   execSync(sql: string): void;
   withTransactionSync(fn: () => void): void;

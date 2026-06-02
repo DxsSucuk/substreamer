@@ -47,6 +47,7 @@ import { SetRatingSheet } from '../components/SetRatingSheet';
 import { SleepTimerSheet } from '../components/SleepTimerSheet';
 import { PlaybackToast } from '../components/PlaybackToast';
 import { ProcessingOverlay } from '../components/ProcessingOverlay';
+import { startSongLibraryCacheAutoWarm } from '../hooks/useAllSongsByTitle';
 import { useDownloadBackgroundNotification } from '../hooks/useDownloadBackgroundNotification';
 import { useDownloadKeepAwake } from '../hooks/useDownloadKeepAwake';
 import { useLayoutMode } from '../hooks/useLayoutMode';
@@ -239,6 +240,12 @@ async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
   // after the image/music cache init so the walk doesn't race with
   // their synchronous SQLite setup.
   await stage('deferredDataSyncInit', () => deferredDataSyncInit());
+  if (getCancelled()) return;
+
+  // Keep the songs-library cache warm so the first tap on the Songs segment is
+  // an instant hit. Starts the initial warm + a debounced re-warm on every
+  // song-index mutation (the album-detail sync above churns the counter).
+  await stage('startSongLibraryCacheAutoWarm', () => { startSongLibraryCacheAutoWarm(); });
   if (getCancelled()) return;
 
   // Recover any image-download-queue rows left stalled by a previous
