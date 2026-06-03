@@ -3,7 +3,6 @@ import { create } from 'zustand';
 import {
   clearPendingScrobbles,
   deletePendingScrobble,
-  hydratePendingScrobbles,
   hydratePendingScrobblesAsync,
   insertPendingScrobble,
 } from './persistence/pendingScrobbleTable';
@@ -28,8 +27,6 @@ export interface PendingScrobbleState {
   removeScrobble: (id: string) => void;
   clearAll: () => void;
   /** Called once at app start to load persisted rows into memory. */
-  hydrateFromDb: () => void;
-  /** Async boot-path twin of {@link hydrateFromDb}. */
   hydrateFromDbAsync: () => Promise<void>;
 }
 
@@ -59,11 +56,6 @@ export const pendingScrobbleStore = create<PendingScrobbleState>()((set, get) =>
   clearAll: () => {
     clearPendingScrobbles();
     set({ pendingScrobbles: [] });
-  },
-
-  hydrateFromDb: () => {
-    const restored = hydratePendingScrobbles();
-    set({ pendingScrobbles: restored, hasHydrated: true });
   },
 
   hydrateFromDbAsync: async () => {

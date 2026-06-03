@@ -8,6 +8,7 @@ jest.mock('../persistence/scrobbleTable', () => ({
   mergeScrobbles: jest.fn(() => ({ added: 0, skipped: 0 })),
   clearScrobbles: jest.fn(),
   hydrateScrobbles: jest.fn(() => []),
+  hydrateScrobblesAsync: jest.fn(async () => []),
 }));
 
 import {
@@ -20,11 +21,13 @@ import {
 import {
   clearScrobbles,
   hydrateScrobbles,
+  hydrateScrobblesAsync,
   insertScrobble,
   mergeScrobbles,
   replaceAllScrobbles,
 } from '../persistence/scrobbleTable';
 
+const mockHydrateScrobblesAsync = hydrateScrobblesAsync as jest.Mock;
 const mockInsertScrobble = insertScrobble as jest.Mock;
 const mockReplaceAllScrobbles = replaceAllScrobbles as jest.Mock;
 const mockMergeScrobbles = mergeScrobbles as jest.Mock;
@@ -71,6 +74,8 @@ beforeEach(() => {
   mockClearScrobbles.mockClear();
   mockHydrateScrobbles.mockReset();
   mockHydrateScrobbles.mockReturnValue([]);
+  mockHydrateScrobblesAsync.mockReset();
+  mockHydrateScrobblesAsync.mockResolvedValue([]);
 });
 
 describe('addCompleted', () => {
@@ -401,8 +406,8 @@ describe('rebuildAggregates', () => {
   });
 });
 
-describe('hydrateFromDb', () => {
-  it('loads scrobbles from SQL, rebuilds derived state, and flips hasHydrated', () => {
+describe('hydrateFromDbAsync', () => {
+  it('loads scrobbles from SQL, rebuilds derived state, and flips hasHydrated', async () => {
     const rows: CompletedScrobble[] = [
       validScrobble({
         id: 'a',
@@ -415,9 +420,9 @@ describe('hydrateFromDb', () => {
         time: new Date(2025, 0, 15, 14).getTime(),
       }),
     ];
-    mockHydrateScrobbles.mockReturnValue(rows);
+    mockHydrateScrobblesAsync.mockResolvedValue(rows);
 
-    completedScrobbleStore.getState().hydrateFromDb();
+    await completedScrobbleStore.getState().hydrateFromDbAsync();
 
     const state = completedScrobbleStore.getState();
     expect(state.hasHydrated).toBe(true);
@@ -428,29 +433,29 @@ describe('hydrateFromDb', () => {
     expect(state.aggregates.dayCounts['2025-01-15']).toBe(2);
   });
 
-  it('is idempotent — second call re-reads and produces the same state', () => {
-    mockHydrateScrobbles.mockReturnValue([
+  it('is idempotent — second call re-reads and produces the same state', async () => {
+    mockHydrateScrobblesAsync.mockResolvedValue([
       validScrobble({ id: 'a', song: { id: 's1', title: 'A', artist: 'Art', duration: 100 } as any }),
     ]);
 
-    completedScrobbleStore.getState().hydrateFromDb();
+    await completedScrobbleStore.getState().hydrateFromDbAsync();
     const firstState = completedScrobbleStore.getState();
     expect(firstState.hasHydrated).toBe(true);
     expect(firstState.completedScrobbles).toHaveLength(1);
 
-    completedScrobbleStore.getState().hydrateFromDb();
+    await completedScrobbleStore.getState().hydrateFromDbAsync();
     // Hydrate is intentionally re-callable (e.g. once from the auth-
     // rehydrated useEffect, once from the splash post-migration callback).
     // The SQL re-read is cheap; the end state is identical.
-    expect(mockHydrateScrobbles).toHaveBeenCalledTimes(2);
+    expect(mockHydrateScrobblesAsync).toHaveBeenCalledTimes(2);
     const secondState = completedScrobbleStore.getState();
     expect(secondState.hasHydrated).toBe(true);
     expect(secondState.completedScrobbles).toHaveLength(1);
   });
 
-  it('hydrates empty when SQL returns no rows', () => {
-    mockHydrateScrobbles.mockReturnValue([]);
-    completedScrobbleStore.getState().hydrateFromDb();
+  it('hydrates empty when SQL returns no rows', async () => {
+    mockHydrateScrobblesAsync.mockResolvedValue([]);
+    await completedScrobbleStore.getState().hydrateFromDbAsync();
     const state = completedScrobbleStore.getState();
     expect(state.hasHydrated).toBe(true);
     expect(state.completedScrobbles).toEqual([]);

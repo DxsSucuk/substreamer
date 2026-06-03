@@ -4,7 +4,7 @@
  *
  * The old version of this store persisted its own totalBytes/fileCount
  * aggregates via `persist(createJSONStorage(kvStorage))`. Those are now
- * derived from SQL on every launch via `hydrateFromDb()` and kept in sync
+ * derived from SQL on every launch via `hydrateFromDbAsync()` and kept in sync
  * by service-layer callers invoking `recalculateFromDb()` after any
  * variant write or delete. `fileCount` used to double as both "files on
  * disk" and "logical images" — we now expose both explicitly plus a
@@ -16,10 +16,7 @@
  */
 import { create } from 'zustand';
 
-import {
-  hydrateImageCacheAggregates,
-  hydrateImageCacheAggregatesAsync,
-} from './persistence/imageCacheTable';
+import { hydrateImageCacheAggregatesAsync } from './persistence/imageCacheTable';
 // Synchronous adapter: the settings blob is read via a synchronous helper;
 // the aggregates hydrate via async SQL (see hydrateFromDbAsync).
 import { kvStorageSync as kvStorage } from './persistence';
@@ -114,10 +111,8 @@ export interface ImageCacheState {
    *  Fire-and-forget; overlapping calls are reconciled latest-wins. */
   recalculateFromDb: () => Promise<void>;
   /** Called once at app start via `rehydrateAllStores()`. Pulls aggregates
-   *  from SQL and reads the maxConcurrent setting from the KV blob. */
-  hydrateFromDb: () => void;
-  /** Async boot-path twin of {@link hydrateFromDb} — aggregates read on a
-   *  background thread. */
+   *  from SQL (background thread) and reads the maxConcurrent setting from the
+   *  KV blob. */
   hydrateFromDbAsync: () => Promise<void>;
   /** Zero every aggregate in memory. Used by `clearImageCache` /
    *  `resetAllStores` after the underlying rows are dropped. */
@@ -145,19 +140,6 @@ export const imageCacheStore = create<ImageCacheState>()((set) => ({
       fileCount: agg.fileCount,
       imageCount: agg.imageCount,
       incompleteCount: agg.incompleteCount,
-    });
-  },
-
-  hydrateFromDb: () => {
-    const agg = hydrateImageCacheAggregates();
-    const { maxConcurrentImageDownloads } = readSettingsBlob();
-    set({
-      totalBytes: agg.totalBytes,
-      fileCount: agg.fileCount,
-      imageCount: agg.imageCount,
-      incompleteCount: agg.incompleteCount,
-      maxConcurrentImageDownloads,
-      hasHydrated: true,
     });
   },
 

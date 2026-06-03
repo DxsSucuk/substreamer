@@ -84,11 +84,9 @@ export interface CompletedScrobbleState {
    * inserted and `skipped` covers duplicates + invalid inputs.
    */
   mergeAll: (scrobbles: CompletedScrobble[]) => { added: number; skipped: number };
-  /** Called once at app start to load persisted rows into memory. */
-  hydrateFromDb: () => void;
-  /** Async boot-path twin of {@link hydrateFromDb} — background read + chunked
-   * JSON.parse. Aggregates/stats are still built synchronously afterwards
-   * (single pass, needed before My Listening renders). */
+  /** Called once at app start to load persisted rows into memory — background
+   * read + chunked JSON.parse. Aggregates/stats are still built synchronously
+   * afterwards (single pass, needed before My Listening renders). */
   hydrateFromDbAsync: () => Promise<void>;
 }
 
@@ -303,18 +301,8 @@ export const completedScrobbleStore = create<CompletedScrobbleState>()((set, get
     return result;
   },
 
-  hydrateFromDb: () => {
-    // Idempotent re-read — see `albumDetailStore.hydrateFromDb` for rationale.
-    const restored = hydrateScrobbles();
-    set({
-      completedScrobbles: restored,
-      stats: buildStats(restored),
-      aggregates: buildAggregates(restored),
-      hasHydrated: true,
-    });
-  },
-
   hydrateFromDbAsync: async () => {
+    // Idempotent re-read; the per-row table is the source of truth.
     const restored = await hydrateScrobblesAsync();
     set({
       completedScrobbles: restored,

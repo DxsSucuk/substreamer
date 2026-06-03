@@ -31,7 +31,7 @@ export interface RehydrationResult {
  * Called from exactly two sites: the `rehydrated && isLoggedIn` useEffect
  * in `src/app/_layout.tsx` and the splash post-migration callback in
  * `src/components/AnimatedSplashScreen.tsx`. Both calls are idempotent —
- * each store's `hydrateFromDb()` re-reads the current SQL state and
+ * each store's `hydrateFromDbAsync()` re-reads the current SQL state and
  * replaces its in-memory mirror, safe under our write-through semantics.
  *
  * Each store hydrates independently — no FK-style dependency between them —

@@ -195,13 +195,13 @@ describe('albumDetailStore', () => {
     });
   });
 
-  describe('hydrateFromDb', () => {
-    it('marks hasHydrated true and is idempotent', () => {
+  describe('hydrateFromDbAsync', () => {
+    it('marks hasHydrated true and is idempotent', async () => {
       expect(albumDetailStore.getState().hasHydrated).toBe(false);
-      albumDetailStore.getState().hydrateFromDb();
+      await albumDetailStore.getState().hydrateFromDbAsync();
       expect(albumDetailStore.getState().hasHydrated).toBe(true);
       // Second call should not throw or duplicate work.
-      albumDetailStore.getState().hydrateFromDb();
+      await albumDetailStore.getState().hydrateFromDbAsync();
       expect(albumDetailStore.getState().hasHydrated).toBe(true);
     });
   });

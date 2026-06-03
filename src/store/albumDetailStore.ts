@@ -11,7 +11,6 @@ import { withTimeout } from '../utils/withTimeout';
 import {
   clearDetailTables,
   deleteAlbumDetail,
-  hydrateAlbumDetails,
   hydrateAlbumDetailsAsync,
   upsertAlbumDetailAsync,
 } from './persistence/detailTables';
@@ -51,11 +50,9 @@ export interface AlbumDetailState {
   removeEntries: (ids: readonly string[]) => void;
   /** Clear all cached album details (logout, force-resync). */
   clearAlbums: () => void;
-  /** Called once at app start to load persisted rows into memory. */
-  hydrateFromDb: () => void;
-  /** Async boot-path twin of {@link hydrateFromDb} — reads on a background
-   * thread and chunks the per-row JSON.parse so a large detail cache doesn't
-   * block the JS thread. Used by `rehydrateAllStores`. */
+  /** Called once at app start to load persisted rows into memory. Reads on a
+   * background thread and chunks the per-row JSON.parse so a large detail
+   * cache doesn't block the JS thread. Used by `rehydrateAllStores`. */
   hydrateFromDbAsync: () => Promise<void>;
 }
 
@@ -176,16 +173,11 @@ export const albumDetailStore = create<AlbumDetailState>()((set, get) => ({
     songIndexStore.getState().refreshCount();
   },
 
-  hydrateFromDb: () => {
+  hydrateFromDbAsync: async () => {
     // Idempotent re-read. Can be called multiple times (e.g. once at the
     // auth-rehydrated useEffect, once after migrations complete on splash)
     // without losing data — every write path is write-through so the SQL
     // table is the canonical source of truth.
-    const restored = hydrateAlbumDetails();
-    set({ albums: restored, hasHydrated: true });
-  },
-
-  hydrateFromDbAsync: async () => {
     const restored = await hydrateAlbumDetailsAsync();
     set({ albums: restored, hasHydrated: true });
   },

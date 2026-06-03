@@ -5,7 +5,7 @@ jest.mock('../persistence/pendingScrobbleTable', () => ({
   insertPendingScrobble: jest.fn(),
   deletePendingScrobble: jest.fn(),
   clearPendingScrobbles: jest.fn(),
-  hydratePendingScrobbles: jest.fn(() => []),
+  hydratePendingScrobblesAsync: jest.fn(async () => []),
 }));
 jest.mock('../../services/subsonicService');
 
@@ -17,14 +17,14 @@ import {
 import {
   clearPendingScrobbles,
   deletePendingScrobble,
-  hydratePendingScrobbles,
+  hydratePendingScrobblesAsync,
   insertPendingScrobble,
 } from '../persistence/pendingScrobbleTable';
 
 const mockInsert = insertPendingScrobble as jest.Mock;
 const mockDelete = deletePendingScrobble as jest.Mock;
 const mockClear = clearPendingScrobbles as jest.Mock;
-const mockHydrate = hydratePendingScrobbles as jest.Mock;
+const mockHydrate = hydratePendingScrobblesAsync as jest.Mock;
 
 beforeEach(() => {
   pendingScrobbleStore.setState({ pendingScrobbles: [], hasHydrated: false });
@@ -32,6 +32,7 @@ beforeEach(() => {
   mockDelete.mockClear();
   mockClear.mockClear();
   mockHydrate.mockReset();
+  mockHydrate.mockResolvedValue([]);
   mockHydrate.mockReturnValue([]);
 });
 
@@ -132,37 +133,37 @@ describe('clearAll', () => {
   });
 });
 
-describe('hydrateFromDb', () => {
-  it('loads rows from SQL and flips hasHydrated', () => {
+describe('hydrateFromDbAsync', () => {
+  it('loads rows from SQL and flips hasHydrated', async () => {
     const rows: PendingScrobble[] = [
       { id: 'a', song: { id: 's1', title: 'A' } as any, time: 1 },
       { id: 'b', song: { id: 's2', title: 'B' } as any, time: 2 },
     ];
-    mockHydrate.mockReturnValue(rows);
+    mockHydrate.mockResolvedValue(rows);
 
-    pendingScrobbleStore.getState().hydrateFromDb();
+    await pendingScrobbleStore.getState().hydrateFromDbAsync();
 
     const state = pendingScrobbleStore.getState();
     expect(state.hasHydrated).toBe(true);
     expect(state.pendingScrobbles).toEqual(rows);
   });
 
-  it('is idempotent — second call re-reads and produces the same state', () => {
-    mockHydrate.mockReturnValue([
+  it('is idempotent — second call re-reads and produces the same state', async () => {
+    mockHydrate.mockResolvedValue([
       { id: 'a', song: { id: 's1', title: 'A' } as any, time: 1 },
     ]);
 
-    pendingScrobbleStore.getState().hydrateFromDb();
-    pendingScrobbleStore.getState().hydrateFromDb();
+    await pendingScrobbleStore.getState().hydrateFromDbAsync();
+    await pendingScrobbleStore.getState().hydrateFromDbAsync();
 
     expect(mockHydrate).toHaveBeenCalledTimes(2);
     expect(pendingScrobbleStore.getState().pendingScrobbles).toHaveLength(1);
     expect(pendingScrobbleStore.getState().hasHydrated).toBe(true);
   });
 
-  it('hydrates empty when SQL returns no rows', () => {
-    mockHydrate.mockReturnValue([]);
-    pendingScrobbleStore.getState().hydrateFromDb();
+  it('hydrates empty when SQL returns no rows', async () => {
+    mockHydrate.mockResolvedValue([]);
+    await pendingScrobbleStore.getState().hydrateFromDbAsync();
     const state = pendingScrobbleStore.getState();
     expect(state.hasHydrated).toBe(true);
     expect(state.pendingScrobbles).toEqual([]);

@@ -58,8 +58,9 @@ function mapRow(row: RawImageQueueRow): ImageDownloadQueueRow {
 /* ------------------------------------------------------------------ */
 
 /**
- * Read the full queue in oldest-first order. Used at launch (via
- * `imageDownloadQueueStore.hydrateFromDb()`) and after worker batches.
+ * Read the full queue in oldest-first order. Synchronous read primitive used
+ * by table tests; the boot/refresh path uses
+ * {@link hydrateImageDownloadQueueAsync}.
  */
 export function hydrateImageDownloadQueue(): ImageDownloadQueueRow[] {
   const db = getDb();

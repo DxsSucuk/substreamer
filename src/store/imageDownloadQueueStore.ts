@@ -6,7 +6,7 @@
  * cycle summary).
  *
  * The full queue array is rebuilt from SQL on demand via
- * `hydrateFromDb()`. Cycle metadata (cycleId, scope, total, isPaused)
+ * `hydrateFromDbAsync()`. Cycle metadata (cycleId, scope, total, isPaused)
  * is owned by the service-layer kvStorage blob (`substreamer-image-queue-meta`)
  * and re-read on every subscription tick — the store is a thin reactive
  * mirror, not the source of truth.
@@ -18,7 +18,6 @@ import { create } from 'zustand';
 import {
   type ImageDownloadQueueRow,
   type ImageDownloadQueueScope,
-  hydrateImageDownloadQueue,
   hydrateImageDownloadQueueAsync,
 } from './persistence/imageDownloadQueueTable';
 import {
@@ -35,10 +34,8 @@ export interface ImageDownloadQueueState {
   cycleFailed: number;
   isPaused: boolean;
 
-  /** Re-read the SQL queue + cycle meta into the store. Safe to call repeatedly. */
-  hydrateFromDb: () => void;
-  /** Async boot-path twin of {@link hydrateFromDb} — queue read on a
-   * background thread. */
+  /** Re-read the SQL queue + cycle meta into the store (queue read on a
+   * background thread). Safe to call repeatedly. */
   hydrateFromDbAsync: () => Promise<void>;
   /** Update only the derived progress fields without re-querying the queue array. */
   refreshProgress: () => void;
@@ -52,20 +49,6 @@ export const imageDownloadQueueStore = create<ImageDownloadQueueState>()((set) =
   cycleProcessed: 0,
   cycleFailed: 0,
   isPaused: false,
-
-  hydrateFromDb: () => {
-    const queue = hydrateImageDownloadQueue();
-    const s = getImageQueueState();
-    set({
-      queue,
-      cycleId: s.cycleId,
-      cycleScope: s.cycleScope,
-      cycleTotal: s.cycleTotal,
-      cycleProcessed: s.processed,
-      cycleFailed: s.failed,
-      isPaused: s.isPaused,
-    });
-  },
 
   hydrateFromDbAsync: async () => {
     const queue = await hydrateImageDownloadQueueAsync();

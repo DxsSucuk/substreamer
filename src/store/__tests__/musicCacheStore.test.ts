@@ -6,6 +6,9 @@ jest.mock('../persistence/musicCacheTables', () => ({
   hydrateCachedSongs: jest.fn(() => ({})),
   hydrateCachedItems: jest.fn(() => ({})),
   hydrateDownloadQueue: jest.fn(() => []),
+  hydrateCachedSongsAsync: jest.fn(async () => ({})),
+  hydrateCachedItemsAsync: jest.fn(async () => ({})),
+  hydrateDownloadQueueAsync: jest.fn(async () => []),
   insertDownloadQueueItem: jest.fn(),
   removeDownloadQueueItem: jest.fn(),
   updateDownloadQueueItem: jest.fn(),
@@ -29,8 +32,11 @@ import {
   deleteCachedItem,
   deleteCachedSong,
   hydrateCachedItems,
+  hydrateCachedItemsAsync,
   hydrateCachedSongs,
+  hydrateCachedSongsAsync,
   hydrateDownloadQueue,
+  hydrateDownloadQueueAsync,
   insertDownloadQueueItem,
   markDownloadComplete,
   removeCachedItemSong,
@@ -58,6 +64,9 @@ import { kvStorage } from '../persistence';
 const mockHydrateCachedSongs = hydrateCachedSongs as jest.Mock;
 const mockHydrateCachedItems = hydrateCachedItems as jest.Mock;
 const mockHydrateDownloadQueue = hydrateDownloadQueue as jest.Mock;
+const mockHydrateCachedSongsAsync = hydrateCachedSongsAsync as jest.Mock;
+const mockHydrateCachedItemsAsync = hydrateCachedItemsAsync as jest.Mock;
+const mockHydrateDownloadQueueAsync = hydrateDownloadQueueAsync as jest.Mock;
 const mockInsertDownloadQueueItem = insertDownloadQueueItem as jest.Mock;
 const mockRemoveDownloadQueueItem = removeDownloadQueueItem as jest.Mock;
 const mockUpdateDownloadQueueItem = updateDownloadQueueItem as jest.Mock;
@@ -153,6 +162,9 @@ beforeEach(() => {
   mockHydrateCachedSongs.mockReturnValue({});
   mockHydrateCachedItems.mockReturnValue({});
   mockHydrateDownloadQueue.mockReturnValue([]);
+  mockHydrateCachedSongsAsync.mockResolvedValue({});
+  mockHydrateCachedItemsAsync.mockResolvedValue({});
+  mockHydrateDownloadQueueAsync.mockResolvedValue([]);
   mockCountSongRefs.mockReturnValue(0);
   // Wipe the in-memory kvStorage mock between tests.
   kvStorage.removeItem(SETTINGS_KEY);
@@ -801,11 +813,11 @@ describe('reset', () => {
 });
 
 /* ------------------------------------------------------------------ */
-/*  hydrateFromDb                                                      */
+/*  hydrateFromDbAsync                                                      */
 /* ------------------------------------------------------------------ */
 
-describe('hydrateFromDb', () => {
-  it('loads songs, items, queue, and settings; computes totals; flips hasHydrated', () => {
+describe('hydrateFromDbAsync', () => {
+  it('loads songs, items, queue, and settings; computes totals; flips hasHydrated', async () => {
     const songs: Record<string, CachedSongRow> = {
       s1: makeSongRow('s1'),
       s2: { ...makeSongRow('s2'), bytes: 2500 },
@@ -828,12 +840,12 @@ describe('hydrateFromDb', () => {
       },
     ];
 
-    mockHydrateCachedSongs.mockReturnValue(songs);
-    mockHydrateCachedItems.mockReturnValue(items);
-    mockHydrateDownloadQueue.mockReturnValue(queue);
+    mockHydrateCachedSongsAsync.mockResolvedValue(songs);
+    mockHydrateCachedItemsAsync.mockResolvedValue(items);
+    mockHydrateDownloadQueueAsync.mockResolvedValue(queue);
     kvStorage.setItem(SETTINGS_KEY, JSON.stringify({ maxConcurrentDownloads: 5 }));
 
-    musicCacheStore.getState().hydrateFromDb();
+    await musicCacheStore.getState().hydrateFromDbAsync();
 
     const s = musicCacheStore.getState();
     expect(s.cachedSongs).toEqual(songs);
@@ -845,41 +857,41 @@ describe('hydrateFromDb', () => {
     expect(s.hasHydrated).toBe(true);
   });
 
-  it('is idempotent -- second call re-reads and produces the same state', () => {
-    mockHydrateCachedSongs.mockReturnValue({ s: makeSong('s') });
-    musicCacheStore.getState().hydrateFromDb();
-    expect(mockHydrateCachedSongs).toHaveBeenCalledTimes(1);
+  it('is idempotent -- second call re-reads and produces the same state', async () => {
+    mockHydrateCachedSongsAsync.mockResolvedValue({ s: makeSong('s') });
+    await musicCacheStore.getState().hydrateFromDbAsync();
+    expect(mockHydrateCachedSongsAsync).toHaveBeenCalledTimes(1);
     const first = musicCacheStore.getState();
     expect(first.hasHydrated).toBe(true);
-    musicCacheStore.getState().hydrateFromDb();
+    await musicCacheStore.getState().hydrateFromDbAsync();
     // Hydrate is re-callable by design (see `rehydrateAllStores.ts`).
     // Second call re-reads SQL and produces the same state.
-    expect(mockHydrateCachedSongs).toHaveBeenCalledTimes(2);
+    expect(mockHydrateCachedSongsAsync).toHaveBeenCalledTimes(2);
     const second = musicCacheStore.getState();
     expect(second.hasHydrated).toBe(true);
   });
 
-  it('defaults maxConcurrentDownloads=3 when settings blob is absent', () => {
+  it('defaults maxConcurrentDownloads=3 when settings blob is absent', async () => {
     // Ensure no settings row exists.
     kvStorage.removeItem(SETTINGS_KEY);
-    musicCacheStore.getState().hydrateFromDb();
+    await musicCacheStore.getState().hydrateFromDbAsync();
     expect(musicCacheStore.getState().maxConcurrentDownloads).toBe(3);
   });
 
-  it('defaults maxConcurrentDownloads=3 when settings blob is malformed JSON', () => {
+  it('defaults maxConcurrentDownloads=3 when settings blob is malformed JSON', async () => {
     kvStorage.setItem(SETTINGS_KEY, 'not-json{');
-    musicCacheStore.getState().hydrateFromDb();
+    await musicCacheStore.getState().hydrateFromDbAsync();
     expect(musicCacheStore.getState().maxConcurrentDownloads).toBe(3);
   });
 
-  it('defaults maxConcurrentDownloads=3 when blob has an invalid value', () => {
+  it('defaults maxConcurrentDownloads=3 when blob has an invalid value', async () => {
     kvStorage.setItem(SETTINGS_KEY, JSON.stringify({ maxConcurrentDownloads: 9 }));
-    musicCacheStore.getState().hydrateFromDb();
+    await musicCacheStore.getState().hydrateFromDbAsync();
     expect(musicCacheStore.getState().maxConcurrentDownloads).toBe(3);
   });
 
-  it('hydrates empty when all sources are empty', () => {
-    musicCacheStore.getState().hydrateFromDb();
+  it('hydrates empty when all sources are empty', async () => {
+    await musicCacheStore.getState().hydrateFromDbAsync();
     const s = musicCacheStore.getState();
     expect(s.cachedSongs).toEqual({});
     expect(s.cachedItems).toEqual({});

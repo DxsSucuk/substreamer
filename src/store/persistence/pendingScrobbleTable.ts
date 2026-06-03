@@ -14,10 +14,10 @@ import { type PendingScrobble } from '../pendingScrobbleStore';
 /* ------------------------------------------------------------------ */
 
 /**
- * Read every pending scrobble row in time order. Called once on app
- * start to hydrate `pendingScrobbleStore.pendingScrobbles`. Unparseable
- * rows are skipped; invalid rows (missing id / song.id / song.title)
- * are filtered so the store never sees garbage.
+ * Read every pending scrobble row in time order. Unparseable rows are skipped;
+ * invalid rows (missing id / song.id / song.title) are filtered so the store
+ * never sees garbage. Synchronous read primitive — used by table tests and any
+ * sync caller; the boot path uses {@link hydratePendingScrobblesAsync}.
  */
 export function hydratePendingScrobbles(): PendingScrobble[] {
   const db = getDb();
@@ -57,10 +57,10 @@ export function hydratePendingScrobbles(): PendingScrobble[] {
 const PENDING_PARSE_CHUNK = 1000;
 
 /**
- * Async counterpart of {@link hydratePendingScrobbles}. Read on the
- * background thread + chunked `JSON.parse` with `setTimeout(0)` yields so the
- * boot path doesn't block the JS thread. setTimeout, not rAF (rAF can stall
- * on RN 0.85/Fabric).
+ * Async counterpart of {@link hydratePendingScrobbles} — read on the background
+ * thread + chunked `JSON.parse` with `setTimeout(0)` yields so the boot path
+ * doesn't block the JS thread. setTimeout, not rAF (rAF can stall on RN
+ * 0.85/Fabric). Used by `rehydrateAllStores`.
  */
 export async function hydratePendingScrobblesAsync(): Promise<PendingScrobble[]> {
   const db = getDb();

@@ -43,10 +43,10 @@ beforeEach(() => {
   kvStorage.removeItem('substreamer-image-cache-settings');
 });
 
-describe('imageCacheStore — hydrateFromDb', () => {
-  it('pulls the four aggregates from SQL and marks hasHydrated', () => {
+describe('imageCacheStore — hydrateFromDbAsync', () => {
+  it('pulls the four aggregates from SQL and marks hasHydrated', async () => {
     mockAggregates = { totalBytes: 12000, fileCount: 17, imageCount: 5, incompleteCount: 1 };
-    imageCacheStore.getState().hydrateFromDb();
+    await imageCacheStore.getState().hydrateFromDbAsync();
     const state = imageCacheStore.getState();
     expect(state.totalBytes).toBe(12000);
     expect(state.fileCount).toBe(17);
@@ -55,39 +55,39 @@ describe('imageCacheStore — hydrateFromDb', () => {
     expect(state.hasHydrated).toBe(true);
   });
 
-  it('defaults maxConcurrentImageDownloads=5 when no settings blob is persisted', () => {
-    imageCacheStore.getState().hydrateFromDb();
+  it('defaults maxConcurrentImageDownloads=5 when no settings blob is persisted', async () => {
+    await imageCacheStore.getState().hydrateFromDbAsync();
     expect(imageCacheStore.getState().maxConcurrentImageDownloads).toBe(5);
   });
 
-  it('loads maxConcurrentImageDownloads from the persisted settings blob', () => {
+  it('loads maxConcurrentImageDownloads from the persisted settings blob', async () => {
     kvStorage.setItem(
       'substreamer-image-cache-settings',
       JSON.stringify({ maxConcurrentImageDownloads: 10 }),
     );
-    imageCacheStore.getState().hydrateFromDb();
+    await imageCacheStore.getState().hydrateFromDbAsync();
     expect(imageCacheStore.getState().maxConcurrentImageDownloads).toBe(10);
   });
 
-  it('ignores invalid persisted settings values', () => {
+  it('ignores invalid persisted settings values', async () => {
     kvStorage.setItem(
       'substreamer-image-cache-settings',
       JSON.stringify({ maxConcurrentImageDownloads: 99 }),
     );
-    imageCacheStore.getState().hydrateFromDb();
+    await imageCacheStore.getState().hydrateFromDbAsync();
     expect(imageCacheStore.getState().maxConcurrentImageDownloads).toBe(5);
   });
 
-  it('falls back to default on unparseable settings blob', () => {
+  it('falls back to default on unparseable settings blob', async () => {
     kvStorage.setItem('substreamer-image-cache-settings', 'not-json{');
-    imageCacheStore.getState().hydrateFromDb();
+    await imageCacheStore.getState().hydrateFromDbAsync();
     expect(imageCacheStore.getState().maxConcurrentImageDownloads).toBe(5);
   });
 
-  it('is idempotent — a second call re-reads and produces the same state', () => {
+  it('is idempotent — a second call re-reads and produces the same state', async () => {
     mockAggregates = { totalBytes: 500, fileCount: 4, imageCount: 1, incompleteCount: 0 };
-    imageCacheStore.getState().hydrateFromDb();
-    imageCacheStore.getState().hydrateFromDb();
+    await imageCacheStore.getState().hydrateFromDbAsync();
+    await imageCacheStore.getState().hydrateFromDbAsync();
     expect(imageCacheStore.getState().totalBytes).toBe(500);
     expect(imageCacheStore.getState().hasHydrated).toBe(true);
   });

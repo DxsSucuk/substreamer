@@ -43,12 +43,12 @@ describe('songIndexStore', () => {
     });
   });
 
-  describe('hydrateFromDb', () => {
-    it('marks hasHydrated true and is idempotent', () => {
+  describe('hydrateFromDbAsync', () => {
+    it('marks hasHydrated true and is idempotent', async () => {
       expect(songIndexStore.getState().hasHydrated).toBe(false);
-      songIndexStore.getState().hydrateFromDb();
+      await songIndexStore.getState().hydrateFromDbAsync();
       expect(songIndexStore.getState().hasHydrated).toBe(true);
-      songIndexStore.getState().hydrateFromDb();
+      await songIndexStore.getState().hydrateFromDbAsync();
       expect(songIndexStore.getState().hasHydrated).toBe(true);
     });
   });
