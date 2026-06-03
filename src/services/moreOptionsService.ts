@@ -325,6 +325,13 @@ async function fetchAllArtistSongs(
   artistId: string,
   artistName: string,
 ): Promise<Child[] | null> {
+  // Both callers show the processing overlay, then immediately await this
+  // function. Yield one tick so that overlay frame paints before the
+  // synchronous offline flatMap/filter (or the online flat().filter()) below
+  // blocks the JS thread on a prolific artist's discography. setTimeout, not
+  // rAF — rAF can stall on RN 0.85/Fabric.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
   const offline = offlineModeStore.getState().offlineMode;
 
   if (offline) {

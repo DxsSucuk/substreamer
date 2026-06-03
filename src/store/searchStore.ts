@@ -70,10 +70,15 @@ export const searchStore = create<SearchState>()((set, get) => ({
     }
 
     if (offlineModeStore.getState().offlineMode) {
-      const results = performOfflineSearch(requestQuery.trim());
-      // Stale-result guard: another keystroke may have landed between
-      // the debounce timer firing and this synchronous compute. Don't
-      // overwrite a newer query's state with this one's results.
+      // The offline scan is async + chunked; pass a stale-check so it can
+      // bail mid-scan once the user types further (this query is no longer
+      // current), avoiding wasted work on a superseded search.
+      const results = await performOfflineSearch(
+        requestQuery.trim(),
+        () => get().query !== requestQuery,
+      );
+      // Stale-result guard: another keystroke may have landed while the
+      // chunked scan was running. Don't overwrite a newer query's state.
       if (get().query !== requestQuery) return;
       set({ results, loading: false, error: null });
       return;

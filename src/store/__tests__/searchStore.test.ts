@@ -105,13 +105,13 @@ describe('searchStore', () => {
         artists: [],
         songs: [{ id: 't1', title: 'Cached Song' }],
       };
-      mockPerformOfflineSearch.mockReturnValue(offlineResults as any);
+      mockPerformOfflineSearch.mockResolvedValue(offlineResults as any);
       searchStore.setState({ query: 'cached' });
 
       await searchStore.getState().performSearch();
 
       expect(mockPerformOnlineSearch).not.toHaveBeenCalled();
-      expect(mockPerformOfflineSearch).toHaveBeenCalledWith('cached');
+      expect(mockPerformOfflineSearch).toHaveBeenCalledWith('cached', expect.any(Function));
       expect(searchStore.getState().results).toEqual(offlineResults);
     });
   });

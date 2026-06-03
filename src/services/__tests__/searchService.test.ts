@@ -97,36 +97,36 @@ describe('performOnlineSearch', () => {
 });
 
 describe('performOfflineSearch', () => {
-  it('searches cached albums by name', () => {
+  it('searches cached albums by name', async () => {
     seedCache({ a1: { name: 'Test Album', tracks: [] } });
     albumLibraryStore.setState({
       albums: [{ id: 'a1', name: 'Test Album', artist: 'Artist' }] as any,
     });
 
-    const result = performOfflineSearch('test');
+    const result = await performOfflineSearch('test');
 
     expect(result.albums).toHaveLength(1);
     expect(result.albums[0].id).toBe('a1');
   });
 
-  it('searches cached albums by artist name', () => {
+  it('searches cached albums by artist name', async () => {
     seedCache({ a1: { name: 'Album', tracks: [] } });
     albumLibraryStore.setState({
       albums: [{ id: 'a1', name: 'Album', artist: 'Radiohead' }] as any,
     });
 
-    expect(performOfflineSearch('radiohead').albums).toHaveLength(1);
+    expect((await performOfflineSearch('radiohead')).albums).toHaveLength(1);
   });
 
-  it('excludes non-cached albums', () => {
+  it('excludes non-cached albums', async () => {
     albumLibraryStore.setState({
       albums: [{ id: 'a1', name: 'Test Album', artist: 'Artist' }] as any,
     });
 
-    expect(performOfflineSearch('test').albums).toHaveLength(0);
+    expect((await performOfflineSearch('test')).albums).toHaveLength(0);
   });
 
-  it('includes cached playlists as album-shaped results', () => {
+  it('includes cached playlists as album-shaped results', async () => {
     seedCache({ p1: { name: 'My Playlist', tracks: [] } });
     playlistLibraryStore.setState({
       playlists: [
@@ -134,10 +134,10 @@ describe('performOfflineSearch', () => {
       ] as any,
     });
 
-    expect(performOfflineSearch('my').albums.some((a) => a.id === 'p1')).toBe(true);
+    expect((await performOfflineSearch('my')).albums.some((a) => a.id === 'p1')).toBe(true);
   });
 
-  it('searches cached songs by title', () => {
+  it('searches cached songs by title', async () => {
     seedCache({
       a1: {
         name: 'Album',
@@ -148,30 +148,30 @@ describe('performOfflineSearch', () => {
       },
     });
 
-    const result = performOfflineSearch('matching');
+    const result = await performOfflineSearch('matching');
 
     expect(result.songs).toHaveLength(1);
     expect(result.songs[0].title).toBe('Matching Song');
   });
 
-  it('searches cached songs by artist', () => {
+  it('searches cached songs by artist', async () => {
     seedCache({
       a1: { name: 'Album', tracks: [{ id: 't1', title: 'Song', artist: 'Radiohead', duration: 200 }] },
     });
 
-    expect(performOfflineSearch('radiohead').songs).toHaveLength(1);
+    expect((await performOfflineSearch('radiohead')).songs).toHaveLength(1);
   });
 
-  it('deduplicates songs by id across multiple cached items', () => {
+  it('deduplicates songs by id across multiple cached items', async () => {
     seedCache({
       a1: { name: 'Album', tracks: [{ id: 't1', title: 'Dup Song', artist: 'A', duration: 200 }] },
       p1: { name: 'Playlist', tracks: [{ id: 't1', title: 'Dup Song', artist: 'A', duration: 200 }] },
     });
 
-    expect(performOfflineSearch('dup').songs).toHaveLength(1);
+    expect((await performOfflineSearch('dup')).songs).toHaveLength(1);
   });
 
-  it('populates albumId on returned songs so cover-art lookup resolves via entity ID', () => {
+  it('populates albumId on returned songs so cover-art lookup resolves via entity ID', async () => {
     seedCache({
       a1: {
         name: 'Album',
@@ -179,22 +179,22 @@ describe('performOfflineSearch', () => {
       },
     });
 
-    expect(performOfflineSearch('track').songs[0].albumId).toBe('parent-album');
+    expect((await performOfflineSearch('track')).songs[0].albumId).toBe('parent-album');
   });
 
-  it('populates album name from parent item', () => {
+  it('populates album name from parent item', async () => {
     seedCache({
       a1: { name: 'Parent Item Name', tracks: [{ id: 't1', title: 'Track', artist: 'A', duration: 200 }] },
     });
 
-    expect(performOfflineSearch('track').songs[0].album).toBe('Parent Item Name');
+    expect((await performOfflineSearch('track')).songs[0].album).toBe('Parent Item Name');
   });
 
-  it('always returns empty artists array', () => {
-    expect(performOfflineSearch('anything').artists).toEqual([]);
+  it('always returns empty artists array', async () => {
+    expect((await performOfflineSearch('anything')).artists).toEqual([]);
   });
 
-  it('returns empty results for no matches', () => {
+  it('returns empty results for no matches', async () => {
     seedCache({
       a1: { name: 'Album', tracks: [{ id: 't1', title: 'Song', artist: 'Artist', duration: 200 }] },
     });
@@ -202,18 +202,18 @@ describe('performOfflineSearch', () => {
       albums: [{ id: 'a1', name: 'Album', artist: 'Artist' }] as any,
     });
 
-    const result = performOfflineSearch('zzzznotfound');
+    const result = await performOfflineSearch('zzzznotfound');
     expect(result.albums).toHaveLength(0);
     expect(result.songs).toHaveLength(0);
   });
 
-  it('handles album with undefined artist gracefully', () => {
+  it('handles album with undefined artist gracefully', async () => {
     seedCache({ a1: { name: 'Album', tracks: [] } });
     albumLibraryStore.setState({
       albums: [{ id: 'a1', name: 'Album' }] as any,
     });
 
-    expect(performOfflineSearch('someartist').albums).toHaveLength(0);
+    expect((await performOfflineSearch('someartist')).albums).toHaveLength(0);
   });
 });
 

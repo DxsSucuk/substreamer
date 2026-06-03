@@ -152,6 +152,12 @@ export function MyListeningScreen() {
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     const delay = minDelay();
+    // Let the refresh spinner paint before the O(n) aggregate rebuild
+    // (`buildAggregates` is a single pass over the full scrobble history,
+    // which can be 10k+ rows) blocks the JS thread. Without this yield the
+    // spinner is frozen for the entire rebuild. setTimeout, not rAF — rAF
+    // can stall on RN 0.85/Fabric.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     completedScrobbleStore.getState().rebuildAggregates();
     await delay;
     setRefreshing(false);

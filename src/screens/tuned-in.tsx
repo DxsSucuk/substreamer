@@ -854,25 +854,37 @@ export function TunedInScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
-  // Compute smart mixes — refreshKey forces re-roll of weighted random picks
-  const mixes = useMemo(() => {
-    void refreshKey;
-    const scrobbles = completedScrobbles.map((s) => ({
-      time: s.time,
-      song: s.song as { genre?: string; genres?: unknown[]; artist?: string; artistId?: string },
-    }));
-
-    return generateMixes({
-      hourBuckets: aggregates.hourBuckets,
-      genreCounts: aggregates.genreCounts,
-      songCounts: aggregates.songCounts,
-      artistCounts: aggregates.artistCounts,
-      scrobbles,
-      starredSongs,
-      isOnline: online,
-      listLength: layoutPreferencesStore.getState().listLength,
-    });
-  }, [aggregates, completedScrobbles, starredSongs, online, refreshKey]);
+  // Smart mixes are computed off the render path. `generateMixes` is an O(n)
+  // pass over the full scrobble history (can be 10k+), so running it inside a
+  // synchronous `useMemo` blocked the navigation transition on mount — the
+  // memo runs before the `!transitionComplete` early return below, so the
+  // heavy work landed on the very frame the transition needed. Instead we
+  // gate on `transitionComplete`, then defer the compute one tick with
+  // `setTimeout(0)` (not rAF — rAF can stall on RN 0.85/Fabric) so the
+  // transition's final frame paints first. `refreshKey` re-rolls the picks.
+  const [mixes, setMixes] = useState<ReturnType<typeof generateMixes>>([]);
+  useEffect(() => {
+    if (!transitionComplete) return;
+    const handle = setTimeout(() => {
+      const scrobbles = completedScrobbles.map((s) => ({
+        time: s.time,
+        song: s.song as { genre?: string; genres?: unknown[]; artist?: string; artistId?: string },
+      }));
+      setMixes(
+        generateMixes({
+          hourBuckets: aggregates.hourBuckets,
+          genreCounts: aggregates.genreCounts,
+          songCounts: aggregates.songCounts,
+          artistCounts: aggregates.artistCounts,
+          scrobbles,
+          starredSongs,
+          isOnline: online,
+          listLength: layoutPreferencesStore.getState().listLength,
+        }),
+      );
+    }, 0);
+    return () => clearTimeout(handle);
+  }, [transitionComplete, aggregates, completedScrobbles, starredSongs, online, refreshKey]);
 
   // Available genres for the builder
   const builderGenres = useMemo(() => {

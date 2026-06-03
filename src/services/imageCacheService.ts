@@ -1347,7 +1347,7 @@ async function downloadSourceImage(
     if (dest.exists) {
       try { dest.delete(); } catch { /* best-effort */ }
     }
-    tmpFile.moveSync(dest);
+    await tmpFile.move(dest);
 
     // DB row is written strictly after the successful rename. Any failure
     // before this point leaves the disk clean of the finalised file and
@@ -1428,7 +1428,7 @@ async function generateResizedVariant(
     if (dest.exists) {
       try { dest.delete(); } catch { /* best-effort */ }
     }
-    tmpFile.moveSync(dest);
+    await tmpFile.move(dest);
 
     // DB row after rename — mirrors the source-download pattern. A crash
     // between two variants leaves the DB missing the unfinished ones so

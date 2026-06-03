@@ -43,7 +43,24 @@ function childFromCachedSong(
   };
 }
 
-export function performOfflineSearch(query: string): SearchResults {
+/**
+ * Offline search over the cached library.
+ *
+ * The per-song scan can sweep the entire downloaded catalog (tens of
+ * thousands of rows on a heavily-cached device), so it runs as an async,
+ * chunked loop that yields the JS thread every {@link OFFLINE_SCAN_CHUNK}
+ * song iterations — without this, typing in the search box on a large
+ * offline library froze the UI for the whole scan. `shouldAbort` lets the
+ * caller cancel a superseded scan early when the user has typed further
+ * (the keystroke that started this scan is no longer the current query).
+ * setTimeout, not rAF — rAF can stall on RN 0.85/Fabric.
+ */
+const OFFLINE_SCAN_CHUNK = 1024;
+
+export async function performOfflineSearch(
+  query: string,
+  shouldAbort?: () => boolean,
+): Promise<SearchResults> {
   const q = query.toLowerCase();
   const { cachedItems, cachedSongs } = musicCacheStore.getState();
   const cachedIds = new Set(Object.keys(cachedItems));
@@ -75,8 +92,17 @@ export function performOfflineSearch(query: string): SearchResults {
 
   const songs: Child[] = [];
   const seen = new Set<string>();
+  let ops = 0;
   for (const item of Object.values(cachedItems)) {
     for (const songId of item.songIds) {
+      // Yield + abort check on a fixed iteration budget, counting every
+      // song examined (including skips) so even a single huge item still
+      // yields mid-scan.
+      if (++ops % OFFLINE_SCAN_CHUNK === 0) {
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (shouldAbort?.()) return { albums: [], artists: [], songs: [] };
+      }
       if (seen.has(songId)) continue;
       const track = cachedSongs[songId];
       if (!track) continue;
