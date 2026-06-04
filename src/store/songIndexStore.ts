@@ -3,8 +3,8 @@ import { create } from 'zustand';
 import {
   countSongIndex,
   countSongIndexAsync,
-  deleteSongsForAlbums as dbDeleteSongsForAlbums,
-  upsertSongsForAlbum as dbUpsertSongsForAlbum,
+  deleteSongsForAlbumsAsync as dbDeleteSongsForAlbumsAsync,
+  upsertSongsForAlbumAsync as dbUpsertSongsForAlbumAsync,
 } from './persistence/detailTables';
 import { songLibraryStore } from './songLibraryStore';
 import type { Child } from '../services/subsonicService';
@@ -43,24 +43,28 @@ export const songIndexStore = create<SongIndexState>()((set, get) => ({
   hasHydrated: false,
 
   upsertSongsForAlbum: (albumId, songs) => {
-    dbUpsertSongsForAlbum(albumId, songs);
-    // Optimistically patch the in-memory songs list instead of forcing a full
-    // rebuild — keeps the Songs segment fresh without re-reading the table.
+    // Optimistically patch the in-memory songs list + bump the counter
+    // synchronously so the UI updates immediately; the SQL write runs
+    // off-thread. song_index is write-through and idempotent (DELETE + INSERT
+    // OR REPLACE in one async transaction), so a fire-and-forget write is safe
+    // — a late/partial write self-heals on the next fetch. The totalCount
+    // (settings-only) refreshes when the async write resolves.
     songLibraryStore.getState().patchAlbum(albumId, songs);
-    set({
-      totalCount: countSongIndex(),
-      mutationCounter: get().mutationCounter + 1,
-    });
+    set({ mutationCounter: get().mutationCounter + 1 });
+    void (async () => {
+      await dbUpsertSongsForAlbumAsync(albumId, songs);
+      set({ totalCount: await countSongIndexAsync() });
+    })();
   },
 
   deleteSongsForAlbums: (albumIds) => {
     if (albumIds.length === 0) return;
-    dbDeleteSongsForAlbums(albumIds);
     songLibraryStore.getState().removeAlbums(albumIds);
-    set({
-      totalCount: countSongIndex(),
-      mutationCounter: get().mutationCounter + 1,
-    });
+    set({ mutationCounter: get().mutationCounter + 1 });
+    void (async () => {
+      await dbDeleteSongsForAlbumsAsync(albumIds);
+      set({ totalCount: await countSongIndexAsync() });
+    })();
   },
 
   hydrateFromDbAsync: async () => {

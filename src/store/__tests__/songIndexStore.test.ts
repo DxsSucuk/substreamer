@@ -20,11 +20,13 @@ describe('songIndexStore', () => {
       expect(songIndexStore.getState().mutationCounter).toBe(2);
     });
 
-    it('keeps the totalCount in sync with the (disabled) DB — 0 here', () => {
+    it('keeps the totalCount in sync with the (disabled) DB — 0 here', async () => {
       songIndexStore.getState().upsertSongsForAlbum('a1', [{ id: 's1' } as any]);
-      // With DB disabled, countSongIndex() returns 0 — the store accepts the
-      // live DB count regardless of what we pushed. This is the intended
-      // contract: the DB is the source of truth.
+      // The DB write + count refresh are now fire-and-forget async; flush a
+      // macrotask so the async countSongIndexAsync result is applied. With DB
+      // disabled it returns 0 — the store accepts the live DB count regardless
+      // of what we pushed (the DB is the source of truth).
+      await new Promise((resolve) => setTimeout(resolve, 0));
       expect(songIndexStore.getState().totalCount).toBe(0);
     });
   });

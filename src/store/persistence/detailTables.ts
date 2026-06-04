@@ -195,6 +195,48 @@ export function upsertSongsForAlbum(albumId: string, songs: Child[]): void {
   }
 }
 
+/**
+ * Async counterpart of {@link upsertSongsForAlbum}. The DELETE + N INSERTs run
+ * in one `withTransactionAsync` on expo-sqlite's background thread, so a large
+ * album's song-index write doesn't block the JS thread on album-open. Used by
+ * `songIndexStore.upsertSongsForAlbum` (fire-and-forget after the in-memory
+ * patch). Atomic, like the sync version.
+ */
+export async function upsertSongsForAlbumAsync(albumId: string, songs: Child[]): Promise<void> {
+  const db = getDb();
+  if (db === null) return;
+  try {
+    await db.withTransactionAsync(async () => {
+      await db.runAsync('DELETE FROM song_index WHERE albumId = ?;', [albumId]);
+      for (const song of songs) {
+        if (!song.id) continue;
+        // eslint-disable-next-line no-await-in-loop
+        await db.runAsync(
+          `INSERT OR REPLACE INTO song_index
+             (id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+          [
+            song.id,
+            albumId,
+            song.title ?? null,
+            song.artist ?? null,
+            song.album ?? null,
+            song.duration ?? null,
+            song.coverArt ?? null,
+            song.userRating ?? null,
+            song.starred ? 1 : 0,
+            song.year ?? null,
+            song.track ?? null,
+            song.discNumber ?? null,
+          ],
+        );
+      }
+    });
+  } catch {
+    /* dropped */
+  }
+}
+
 /** Remove song_index rows for a set of album IDs. Used by orphan reaping. */
 export function deleteSongsForAlbums(albumIds: readonly string[]): void {
   const db = getDb();
@@ -203,6 +245,23 @@ export function deleteSongsForAlbums(albumIds: readonly string[]): void {
     db.withTransactionSync(() => {
       for (const id of albumIds) {
         db.runSync('DELETE FROM song_index WHERE albumId = ?;', [id]);
+      }
+    });
+  } catch {
+    /* dropped */
+  }
+}
+
+/** Async counterpart of {@link deleteSongsForAlbums} — DELETEs run on the
+ * background thread in one transaction. Used by `songIndexStore` reaping. */
+export async function deleteSongsForAlbumsAsync(albumIds: readonly string[]): Promise<void> {
+  const db = getDb();
+  if (db === null || albumIds.length === 0) return;
+  try {
+    await db.withTransactionAsync(async () => {
+      for (const id of albumIds) {
+        // eslint-disable-next-line no-await-in-loop
+        await db.runAsync('DELETE FROM song_index WHERE albumId = ?;', [id]);
       }
     });
   } catch {

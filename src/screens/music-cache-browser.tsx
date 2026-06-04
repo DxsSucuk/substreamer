@@ -196,14 +196,16 @@ const CacheRow = memo(function CacheRow({
   const fullAlbumSongs = albumDetail?.album?.song;
   const [fetchingFullList, setFetchingFullList] = useState(false);
 
-  // Defer track list rendering by one frame so the chevron flip and row
-  // expansion feel instant before mounting potentially many TrackFileRows.
+  // Defer track list rendering a tick so the chevron flip and row expansion
+  // feel instant before mounting potentially many TrackFileRows. setTimeout,
+  // not requestAnimationFrame — rAF can stall indefinitely on RN 0.85/Fabric
+  // when no render is in flight, which would leave the expanded album empty.
   const [tracksReady, setTracksReady] = useState(false);
-  const rafRef = useRef<number | null>(null);
+  const deferRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (expanded) {
-      rafRef.current = requestAnimationFrame(() => setTracksReady(true));
+      deferRef.current = setTimeout(() => setTracksReady(true), 0);
       // Lazy-fetch the full album detail when expanding a partial album
       // that isn't yet cached. The fetch is best-effort — offline or
       // server-unreachable falls back to the "downloaded tracks only"
@@ -223,10 +225,10 @@ const CacheRow = memo(function CacheRow({
       }
     } else {
       setTracksReady(false);
-      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+      if (deferRef.current != null) clearTimeout(deferRef.current);
     }
     return () => {
-      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+      if (deferRef.current != null) clearTimeout(deferRef.current);
     };
   }, [expanded, isPartial, fullAlbumSongs, fetchingFullList, offlineMode, item.type, item.itemId]);
 

@@ -61,6 +61,13 @@ export interface InternalDb {
   runAsync(sql: string, params?: readonly unknown[]): Promise<RunResult>;
   execSync(sql: string): void;
   withTransactionSync(fn: () => void): void;
+  /**
+   * Async transaction. The callback's `runAsync` calls execute on expo-sqlite's
+   * background thread within one transaction, so a multi-statement write
+   * (e.g. DELETE + N INSERTs) is atomic without blocking the JS thread (unlike
+   * `withTransactionSync`).
+   */
+  withTransactionAsync(task: () => Promise<void>): Promise<void>;
 }
 
 const DB_NAME = 'substreamer7.db';

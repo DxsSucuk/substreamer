@@ -192,7 +192,7 @@ async function writeBackupDataset(
     if (destFile.exists) {
       try { destFile.delete(); } catch { /* best-effort */ }
     }
-    tmpFile.move(destFile);
+    await tmpFile.move(destFile);
     return { itemCount, sizeBytes: bytes };
   } catch (e) {
     if (tmpFile.exists) {
@@ -404,6 +404,12 @@ export async function restoreBackup(
   let scrobbleExclusionSkipped = 0;
   let bookmarkCount = 0;
   let bookmarkSkipped = 0;
+
+  // Yield once so the caller's "restoring" spinner paints a frame before the
+  // synchronous JSON.parse of the (potentially multi-MB) scrobble blob and the
+  // O(n) buildAggregates/buildStats inside replaceAll/mergeAll block the JS
+  // thread. setTimeout, not rAF (rAF can stall on RN 0.85/Fabric).
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
   if (entry.scrobbleCount > 0) {
     const dataFile = new File(backupDir, scrobblesFileName(entry.stem));
