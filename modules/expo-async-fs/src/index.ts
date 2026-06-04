@@ -2,7 +2,7 @@ import ExpoAsyncFsModule from './ExpoAsyncFsModule';
 
 import { type EventSubscription } from 'expo-modules-core';
 
-export { type DownloadProgressEvent, type DirectoryEntry } from './ExpoAsyncFsModule';
+export { type DownloadProgressEvent, type DirectoryEntry, type StatResult } from './ExpoAsyncFsModule';
 
 /**
  * List directory contents asynchronously on a native background thread.
@@ -22,6 +22,25 @@ export function listDirectoryWithSizesAsync(
   uri: string,
 ): Promise<import('./ExpoAsyncFsModule').DirectoryEntry[]> {
   return ExpoAsyncFsModule.listDirectoryWithSizesAsync(uri);
+}
+
+/**
+ * Stat a path on a native background thread: existence, byte size, and whether
+ * it's a directory, in one off-thread call. `size` is 0 for missing entries and
+ * directories. Use this instead of expo-file-system's sync `File.exists` /
+ * `.size` on hot/interactive paths — those block the JS thread.
+ */
+export function statAsync(
+  uri: string,
+): Promise<import('./ExpoAsyncFsModule').StatResult> {
+  return ExpoAsyncFsModule.statAsync(uri);
+}
+
+/**
+ * Convenience over {@link statAsync}: resolves true when the path exists.
+ */
+export function existsAsync(uri: string): Promise<boolean> {
+  return ExpoAsyncFsModule.statAsync(uri).then((r) => r.exists);
 }
 
 /**

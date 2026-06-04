@@ -2,6 +2,8 @@ import ExpoAsyncFsModule from '../ExpoAsyncFsModule';
 import {
   listDirectoryAsync,
   getDirectorySizeAsync,
+  statAsync,
+  existsAsync,
   downloadFileAsyncWithProgress,
   addDownloadProgressListener,
 } from '../index';
@@ -57,6 +59,35 @@ describe('getDirectorySizeAsync', () => {
     mockModule.getDirectorySizeAsync.mockRejectedValue(new Error('Not found'));
 
     await expect(getDirectorySizeAsync('file:///nonexistent')).rejects.toThrow('Not found');
+  });
+});
+
+describe('statAsync', () => {
+  it('delegates to native and returns the stat result', async () => {
+    const expected = { exists: true, size: 2048, isDirectory: false };
+    mockModule.statAsync.mockResolvedValue(expected);
+
+    const result = await statAsync('file:///data/cover/600.jpg');
+
+    expect(mockModule.statAsync).toHaveBeenCalledWith('file:///data/cover/600.jpg');
+    expect(result).toEqual(expected);
+  });
+
+  it('propagates native errors', async () => {
+    mockModule.statAsync.mockRejectedValue(new Error('stat failed'));
+    await expect(statAsync('file:///x')).rejects.toThrow('stat failed');
+  });
+});
+
+describe('existsAsync', () => {
+  it('resolves true when the path exists', async () => {
+    mockModule.statAsync.mockResolvedValue({ exists: true, size: 10, isDirectory: false });
+    await expect(existsAsync('file:///present')).resolves.toBe(true);
+  });
+
+  it('resolves false when the path is missing', async () => {
+    mockModule.statAsync.mockResolvedValue({ exists: false, size: 0, isDirectory: false });
+    await expect(existsAsync('file:///gone')).resolves.toBe(false);
   });
 });
 

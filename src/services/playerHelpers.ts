@@ -11,11 +11,13 @@ import i18n from '../i18n/i18n';
 import { type EffectiveFormat } from '../types/audio';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { offlineModeStore } from '../store/offlineModeStore';
+import { imageCacheDiagnosticsStore } from '../store/imageCacheDiagnosticsStore';
 import { playbackSettingsStore, type RepeatModeSetting } from '../store/playbackSettingsStore';
 import { type PlaybackStatus } from '../store/playerStore';
 import { resolveEffectiveFormat } from '../utils/effectiveFormat';
 import { coverArtIdForSong } from '../utils/coverArtId';
 import { getCachedImageUri } from './imageCacheService';
+import { logImageCache } from './imageCacheLogger';
 import { getLocalTrackUri } from './musicCacheService';
 import { getCoverArtUrl, getStreamUrl, type Child } from './subsonicService';
 
@@ -114,6 +116,16 @@ export function childToTrack(child: Child): Track | null {
 
   const url = localUri ?? getStreamUrl(child.id);
   if (!url) return null;
+
+  // Diagnostic: a song the cache store reports as downloaded resolving to a
+  // server stream URL means the in-memory track map missed it — the exact
+  // setup that lets AVPlayer latch onto an unreachable server and stall. Logged
+  // (gated) so the next field repro confirms whether this path is ever taken.
+  if (!localUri
+    && imageCacheDiagnosticsStore.getState().enabled
+    && musicCacheStore.getState().cachedSongs[child.id]) {
+    logImageCache(`player stream-url-for-cached-song id=${child.id}`);
+  }
 
   // Cover-art lookup keys off the parent album's ID (see
   // src/utils/coverArtId.ts) so every track in an album shares one

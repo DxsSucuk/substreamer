@@ -41,6 +41,27 @@ public class ExpoAsyncFsModule: Module {
       }
     }
 
+    // Off-thread existence + size + type stat. Single call so a render-path
+    // consumer can confirm a file without a sync .exists/.size on the JS
+    // thread (expo-file-system's are sync-only). `size` is 0 for missing
+    // entries and directories.
+    AsyncFunction("statAsync") { (uri: String) -> [String: Any] in
+      guard let url = URL(string: uri) else {
+        return ["exists": false, "size": 0, "isDirectory": false]
+      }
+      let fm = FileManager.default
+      var isDir: ObjCBool = false
+      let exists = fm.fileExists(atPath: url.path, isDirectory: &isDir)
+      let size: Int = (exists && !isDir.boolValue)
+        ? ((try? fm.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0)
+        : 0
+      return [
+        "exists": exists,
+        "size": size,
+        "isDirectory": isDir.boolValue,
+      ]
+    }
+
     // Off-thread file delete. Returns true if a file existed and was deleted.
     AsyncFunction("deleteFileAsync") { (uri: String) -> Bool in
       guard let url = URL(string: uri) else { return false }

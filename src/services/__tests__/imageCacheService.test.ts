@@ -122,6 +122,15 @@ jest.mock('expo-async-fs', () => ({
     return out;
   },
   getDirectorySizeAsync: (...args: any[]) => mockGetDirectorySizeAsync(...args),
+  statAsync: async (uri: string) => {
+    const name = uri.replace(/^file:\/\//, '');
+    const exists = mockFileExistsMap.get(name) ?? false;
+    return { exists, size: exists ? (mockFileSizeMap.get(name) ?? 100) : 0, isDirectory: false };
+  },
+  existsAsync: async (uri: string) => {
+    const name = uri.replace(/^file:\/\//, '');
+    return mockFileExistsMap.get(name) ?? false;
+  },
   deleteFileAsync: async (uri: string) => {
     const name = uri.replace(/^file:\/\//, '');
     mockDeleteFileAsyncCalls.add(name);
@@ -287,7 +296,12 @@ jest.mock('../../store/persistence/imageCacheTable', () => ({
   hydrateImageCacheAggregates: () => mockHydrateImageCacheAggregates(),
   listCachedImagesForBrowser: (filter?: 'all' | 'complete' | 'incomplete') => mockListCachedImagesForBrowser(filter),
   bulkInsertCachedImages: (rows: readonly CacheDbRow[]) => mockBulkInsertCachedImages(rows),
-  getCachedImagesForCoverArt: jest.fn(() => []),
+  getCachedImagesForCoverArt: (id: string) =>
+    [...mockDbRows.values()]
+      .filter((r) => r.coverArtId === id)
+      .sort((a, b) => a.size - b.size),
+  getAllCachedImageRows: () =>
+    [...mockDbRows.values()].map((r) => ({ coverArtId: r.coverArtId, size: r.size, ext: r.ext })),
   countCachedImages: jest.fn(() => mockDbRows.size),
   countIncompleteCovers: jest.fn(() => mockFindIncompleteCovers().length),
 }));
@@ -313,6 +327,10 @@ import {
   repairIncompleteImages,
   prefetchCoverArt,
   __resetRetryStateForTest,
+  __resetUriIndexForTest,
+  populateUriIndex,
+  reportBadRemote,
+  isRemoteFailed,
 } from '../imageCacheService';
 
 const { fetch: mockFetch } = jest.requireMock('expo/fetch') as { fetch: jest.Mock };
@@ -397,6 +415,7 @@ beforeEach(() => {
   mockAwaitFirstPing.mockClear();
   mockAwaitFirstPing.mockResolvedValue(undefined);
   __resetRetryStateForTest();
+  __resetUriIndexForTest();
   initImageCache();
 });
 
@@ -662,6 +681,59 @@ describe('getCachedImageUri — file-found branch', () => {
     const second = getCachedImageUri(id, 150);
     expect(first).toBe(second);
     expect(first).not.toBeNull();
+  });
+});
+
+describe('getCachedImageUri — index-backed hot path (no sync FS)', () => {
+  it('returns the indexed URI for a present row even when the file is absent from the FS mock', () => {
+    const id = 'indexed-present';
+    // DB row exists; deliberately leave the file ABSENT on the FS mock so that
+    // only the in-memory index — not a sync filesystem stat — can answer.
+    mockUpsertCachedImage({ coverArtId: id, size: 300, ext: 'jpg', bytes: 10, cachedAt: 1 });
+    populateUriIndex(); // build the index + flip uriIndexReady
+
+    const uri = getCachedImageUri(id, 300);
+    expect(uri).not.toBeNull();
+    expect(uri).toContain(`${id}/300.jpg`);
+  });
+
+  it('returns null for an un-indexed cover without consulting the filesystem', () => {
+    const id = 'not-indexed';
+    populateUriIndex(); // ready, but no row for this id
+    // File IS present on disk — a hot path that touched the FS would find it.
+    mockDirExistsMap.set(subDirName(id), true);
+    mockFileExistsMap.set(fileMockName(id, '300.jpg'), true);
+
+    expect(getCachedImageUri(id, 300)).toBeNull();
+  });
+
+  it('source-fallback resolves a smaller size from the indexed 600 source', () => {
+    const id = 'index-srcfallback';
+    mockUpsertCachedImage({ coverArtId: id, size: 600, ext: 'jpg', bytes: 10, cachedAt: 1 });
+    populateUriIndex();
+
+    const uri = getCachedImageUri(id, 50, { sourceFallback: true });
+    expect(uri).not.toBeNull();
+    expect(uri).toContain('600.jpg');
+  });
+});
+
+describe('reportBadRemote — a present local source always wins', () => {
+  it('does not flag a remote-failed id when the 600 source is indexed', () => {
+    const id = 'has-source';
+    mockUpsertCachedImage({ coverArtId: id, size: 600, ext: 'jpg', bytes: 10, cachedAt: 1 });
+    populateUriIndex();
+
+    reportBadRemote(id);
+    expect(isRemoteFailed(id)).toBe(false);
+  });
+
+  it('flags a remote-failed id when no local source exists', () => {
+    const id = 'no-source';
+    populateUriIndex();
+
+    reportBadRemote(id);
+    expect(isRemoteFailed(id)).toBe(true);
   });
 });
 

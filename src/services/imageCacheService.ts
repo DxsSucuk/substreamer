@@ -26,7 +26,7 @@ import { Directory, File, Paths } from 'expo-file-system';
 import { AppState, type AppStateStatus } from 'react-native';
 import { fetch } from 'expo/fetch';
 
-import { deleteDirectoryAsync, deleteFileAsync, listDirectoryAsync, listDirectoryWithSizesAsync } from 'expo-async-fs';
+import { deleteDirectoryAsync, deleteFileAsync, existsAsync, listDirectoryAsync, listDirectoryWithSizesAsync } from 'expo-async-fs';
 import { resizeImageToFileAsync } from 'expo-image-resize';
 import {
   getLastReconcileMs,
@@ -35,6 +35,7 @@ import {
 } from '../store/imageCacheStore';
 import { authStore } from '../store/authStore';
 import { connectivityStore } from '../store/connectivityStore';
+import { imageCacheDiagnosticsStore } from '../store/imageCacheDiagnosticsStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { fireAndForget } from '../utils/fireAndForget';
 import {
@@ -45,6 +46,8 @@ import {
   deleteCachedImagesForCoverArt,
   findIncompleteCovers,
   getAllCachedCoverArtIds,
+  getAllCachedImageRows,
+  getCachedImagesForCoverArt,
   hasCachedImage as dbHasCachedImage,
   hydrateImageCacheAggregates,
   listCachedImagesForBrowser,
@@ -157,10 +160,79 @@ const downloadQueue: string[] = [];
 const pendingResolvers = new Map<string, (() => void)[]>();
 
 /**
- * In-memory URI cache: avoids repeated synchronous filesystem lookups
- * for the same coverArtId + size combination. Keyed by "coverArtId:size".
+ * In-memory URI index: the authoritative answer to "do we have this cover
+ * on disk?" on the render hot path. Mirrors the `cached_images` table —
+ * keyed by "coverArtId:size", value is the local `file://` URI.
+ *
+ * Populated once at post-splash init ({@link populateUriIndex}) and kept in
+ * sync on every mutation (download success, variant resize, delete, purge,
+ * reconcile). `getCachedImageUri` reads ONLY this map once the index is
+ * ready, so it performs ZERO synchronous filesystem stats per render — the
+ * regression that made on-disk covers vanish to placeholders when the JS
+ * thread was contended (server unreachable on mobile data). See
+ * [[feedback_async_sqlite_hot_paths]].
  */
 const uriCache = new Map<string, string | null>();
+
+/**
+ * Flips true once {@link populateUriIndex} has built the index from SQL.
+ * Until then, `getCachedImageUri` falls back to a synchronous filesystem
+ * lookup so the very first screen's covers still paint immediately on cold
+ * start (the index can't populate until the DB is open, which is after the
+ * module-scope `initImageCache`). Steady state — including the entire
+ * lifetime of any running session — is index-only.
+ */
+let uriIndexReady = false;
+
+/**
+ * Build the deterministic `file://` URI for a variant by string concat,
+ * matching the on-disk layout every write path uses: `{cacheDir}/{sanitised
+ * coverArtId}/{size}.{ext}`. String concat (not `new File()`) avoids a native
+ * bridge crossing per row — material when indexing tens of thousands of rows.
+ */
+function buildVariantUri(coverArtId: string, size: number, ext: string): string {
+  return `${ensureCacheDir().uri}/${coverArtPathKey(coverArtId)}/${size}.${ext}`;
+}
+
+/**
+ * Populate the in-memory URI index from the `cached_images` table. Idempotent;
+ * safe to re-run (a later mutation's `uriCache.set` always wins). Called from
+ * `deferredImageCacheInit` once the DB is hydrated. Never throws — on failure
+ * the index stays "not ready" and the sync-FS fallback keeps covers working.
+ */
+export function populateUriIndex(): void {
+  try {
+    const rows = getAllCachedImageRows();
+    for (const row of rows) {
+      uriCache.set(
+        uriCacheKey(row.coverArtId, row.size),
+        buildVariantUri(row.coverArtId, row.size, row.ext),
+      );
+    }
+    uriIndexReady = true;
+    logImageCache(`uri-index populated rows=${rows.length}`);
+  } catch (e) {
+    logImageCache(
+      `uri-index populate-failed err=${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
+/**
+ * Re-derive a single cover's index entries from its `cached_images` rows.
+ * Used off the render hot path (worker `finally`) after a download attempt so
+ * the index reflects exactly which variants landed — without a per-size sync
+ * FS stat. Clears entries for sizes whose rows are gone.
+ */
+function refreshUriIndexForCover(coverArtId: string): void {
+  for (const size of IMAGE_SIZES) uriCache.delete(uriCacheKey(coverArtId, size));
+  for (const row of getCachedImagesForCoverArt(coverArtId)) {
+    uriCache.set(
+      uriCacheKey(coverArtId, row.size),
+      buildVariantUri(coverArtId, row.size, row.ext),
+    );
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /*  Cache-update subscriptions                                          */
@@ -428,6 +500,10 @@ export function teardownImageCache(): void {
   appStateSubscription?.remove();
   appStateSubscription = null;
   cacheDir = null;
+  // Drop the index + ready flag so a re-login rebuilds from the new identity's
+  // rows rather than serving stale URIs.
+  uriCache.clear();
+  uriIndexReady = false;
 }
 
 /**
@@ -476,6 +552,11 @@ export function deferredImageCacheInit(): Promise<void> {
         if (shouldRunReconcile()) {
           await reconcileImageCache('startup');
         }
+
+        // Build the in-memory URI index from SQL now that the DB is hydrated
+        // (and after any reconcile drift-heal above). Once ready,
+        // `getCachedImageUri` is pure-memory — no synchronous FS on render.
+        populateUriIndex();
 
         // Repair is non-blocking from here. The startup chain in
         // _layout.tsx awaits this function before running music cache
@@ -537,9 +618,26 @@ offlineModeStore.subscribe((state, prev) => {
 // offline toggle — the user's "should recover when the server is available
 // again" requirement.
 connectivityStore.subscribe((state, prev) => {
-  if (!state.isServerReachable || prev.isServerReachable) return;
-  if (offlineModeStore.getState().offlineMode) return;
-  clearFailedRemoteIds('server-reachable');
+  if (state.isServerReachable === prev.isServerReachable) return;
+  if (state.isServerReachable) {
+    if (offlineModeStore.getState().offlineMode) return;
+    clearFailedRemoteIds('server-reachable');
+  } else {
+    // Server just dropped while (typically) still "online". Diagnostic only:
+    // correlate the drop with cover-state changes in the same log stream.
+    // No marker clearing — remote loads genuinely can't succeed now, and
+    // re-enabling them would just re-fail. Cached covers are unaffected; they
+    // resolve from the in-memory URI index, not the network.
+    logImageCache('connectivity server-unreachable (was reachable)');
+  }
+});
+
+// Entering offline mode: re-derive every remote-failed cover. The remote
+// render branch is disabled while offline, so cleared markers can't trigger
+// retries — covers fall back to their local file (or placeholder) cleanly,
+// and the state is clean for the eventual offline→online recovery pass.
+offlineModeStore.subscribe((state, prev) => {
+  if (state.offlineMode && !prev.offlineMode) clearFailedRemoteIds('entering-offline');
 });
 
 /**
@@ -704,6 +802,11 @@ export async function reconcileImageCache(source: string = 'auto'): Promise<void
     // the (unchanged) DB and the spinner shows real numbers.
     imageCacheStore.getState().recalculateFromDb();
   }
+
+  // Refresh the index from the healed DB when reconcile is triggered manually
+  // post-boot (Settings). At boot the index isn't ready yet — `populateUriIndex`
+  // runs right after this in `deferredImageCacheInit`, so skip the double pass.
+  if (uriIndexReady) populateUriIndex();
 }
 
 /** Return the initialised cache directory (auto-inits if needed). */
@@ -884,6 +987,50 @@ export function getCachedImageUri(
   const cached = uriCache.get(key);
   if (cached) return cached;
 
+  // Source-size fallback: when the requested variant isn't indexed but the
+  // 600px source IS, return the source URI. Covers (a) servers/proxies that
+  // serve the original but fail resized variants, and (b) the brief window
+  // between the source landing and the local resize pipeline finishing the
+  // smaller variants. The renderer scales the source down — better than a
+  // placeholder. Opt-in: internal callers (e.g. cacheAllSizes' completeness
+  // check) want strict semantics; render-time consumers pass it.
+  if (opts.sourceFallback && size !== SOURCE_SIZE) {
+    const sourceCached = uriCache.get(uriCacheKey(coverArtId, SOURCE_SIZE));
+    if (sourceCached) return sourceCached;
+  }
+
+  // Index ready → it mirrors `cached_images`, so a miss means "not cached".
+  // Do NOT touch the filesystem on the render hot path: a synchronous
+  // `File.exists` here, multiplied across every CachedImage re-render under a
+  // contended JS thread, is what dropped on-disk covers to placeholders when
+  // the server went unreachable. A genuine FS↔SQL drift (file present, no row)
+  // is healed off-thread by `reconcileImageCache`.
+  if (uriIndexReady) {
+    if (imageCacheDiagnosticsStore.getState().enabled && dbHasCachedImage(coverArtId, size)) {
+      // Should be unreachable: a present row must already be in the index.
+      // Logged so any index↔SQL drift is self-diagnosing in field reports.
+      logImageCache(`cache-miss-but-row-exists id=${coverArtId} size=${size}`);
+    }
+    return null;
+  }
+
+  // Cold-start fallback only (index not yet built from SQL — DB opens after
+  // the module-scope `initImageCache`). One-time synchronous confirmation so
+  // the first screen paints its covers immediately; superseded by the index
+  // the moment `populateUriIndex` runs in `deferredImageCacheInit`.
+  return lookupUriOnDisk(coverArtId, size, key, opts);
+}
+
+/**
+ * Synchronous on-disk variant lookup. Render-path use is confined to the
+ * cold-start window before the URI index is ready (see {@link getCachedImageUri}).
+ */
+function lookupUriOnDisk(
+  coverArtId: string,
+  size: number,
+  key: string,
+  opts: { sourceFallback?: boolean },
+): string | null {
   const subDir = new Directory(ensureCacheDir(), coverArtPathKey(coverArtId));
   if (!subDir.exists) return null;
   for (const ext of EXTENSIONS) {
@@ -893,18 +1040,6 @@ export function getCachedImageUri(
       return file.uri;
     }
   }
-  // Source-size fallback: when the requested variant isn't on disk but
-  // the 600px source IS, return the source URI. Covers two real-world
-  // cases: (a) servers/proxies that fail to serve resized variants but
-  // serve the original, and (b) the brief window between the source
-  // download landing and the local resize pipeline finishing the smaller
-  // variants. The renderer scales the source down — better than a
-  // placeholder.
-  //
-  // Opt-in: internal callers (e.g. cacheAllSizes' "all sizes present"
-  // check) want strict semantics so they can tell whether the resize
-  // pipeline has actually completed. Render-time consumers pass
-  // `{ sourceFallback: true }` to get the lenient lookup.
   if (opts.sourceFallback && size !== SOURCE_SIZE) {
     const sourceKey = uriCacheKey(coverArtId, SOURCE_SIZE);
     const sourceCached = uriCache.get(sourceKey);
@@ -1054,6 +1189,15 @@ export function reportBadCache(coverArtId: string, size: number): void {
  */
 export function reportBadRemote(coverArtId: string): void {
   if (!coverArtId) return;
+  // A present full-size source always wins over a remote error: every size
+  // request resolves to the local file (directly or via source-fallback), so
+  // never pin the placeholder — just nudge a re-render onto the LOCAL branch.
+  // Guarded on the 600px source specifically so this can't loop (a smaller-
+  // only cache wouldn't satisfy a 600px request and would re-fail).
+  if (uriCache.get(uriCacheKey(coverArtId, SOURCE_SIZE))) {
+    notifyImageCacheUpdate(coverArtId);
+    return;
+  }
   if (failedRemoteIds.has(coverArtId)) return;
   logImageCache(`reportBadRemote id=${coverArtId}`);
   failedRemoteIds.add(coverArtId);
@@ -1188,10 +1332,10 @@ async function processNext(): Promise<void> {
       /* individual image failure -- continue with the rest */
     } finally {
       downloading.delete(coverArtId);
-      for (const s of IMAGE_SIZES) {
-        uriCache.delete(uriCacheKey(coverArtId, s));
-        getCachedImageUri(coverArtId, s);
-      }
+      // Re-derive this cover's index entries from the rows the download just
+      // wrote (off the render hot path) so exactly the landed variants are
+      // indexed — no per-size sync FS stat.
+      refreshUriIndexForCover(coverArtId);
       // Re-derive the aggregate totals from SQL. Debounced: during a burst of
       // completing downloads this coalesces many async scans into a handful
       // (the cycle force-flushes at the end), so the JS thread never queues a
@@ -1356,8 +1500,8 @@ async function downloadSourceImage(
     tmpFile.write(bytes);
 
     const dest = new File(subDir, fileName);
-    if (dest.exists) {
-      try { dest.delete(); } catch { /* best-effort */ }
+    if (await existsAsync(dest.uri)) {
+      try { await deleteFileAsync(dest.uri); } catch { /* best-effort */ }
     }
     await tmpFile.move(dest);
 
@@ -1437,8 +1581,8 @@ async function generateResizedVariant(
     // that produced 0-byte upserts pre-fix).
     const fileBytes = tmpFile.size;
 
-    if (dest.exists) {
-      try { dest.delete(); } catch { /* best-effort */ }
+    if (await existsAsync(dest.uri)) {
+      try { await deleteFileAsync(dest.uri); } catch { /* best-effort */ }
     }
     await tmpFile.move(dest);
 
@@ -1654,10 +1798,7 @@ export async function refreshCoverArt(
     await downloadAndCacheImage(coverArtId);
   } finally {
     downloading.delete(coverArtId);
-    for (const s of IMAGE_SIZES) {
-      uriCache.delete(uriCacheKey(coverArtId, s));
-      getCachedImageUri(coverArtId, s);
-    }
+    refreshUriIndexForCover(coverArtId);
     scheduleAggregateRecalc();
     resolveWaiters(coverArtId);
     const present = IMAGE_SIZES.filter((s) => getCachedImageUri(coverArtId, s) != null);
@@ -1703,6 +1844,10 @@ async function teardownImageCacheState({ reinit }: { reinit: boolean }): Promise
   clearAllCachedImages();
   imageCacheStore.getState().reset();
   if (reinit) initImageCache();
+  // The cache (DB + disk) is now empty. When the session continues, the empty
+  // index is authoritative — misses correctly mean "not cached". On logout,
+  // leave it un-ready so the next login rebuilds from that identity's rows.
+  uriIndexReady = reinit;
 }
 
 /**
@@ -1974,6 +2119,16 @@ export function __resetRetryStateForTest(): void {
   pendingRetries.clear();
   retryAttempts.clear();
   failedRemoteIds.clear();
+}
+
+/**
+ * Test-only: clear the in-memory URI index and mark it not-ready, so each
+ * test starts in the cold-start (sync-FS lookup) state unless it explicitly
+ * builds the index via `populateUriIndex` / `deferredImageCacheInit`.
+ */
+export function __resetUriIndexForTest(): void {
+  uriCache.clear();
+  uriIndexReady = false;
 }
 
 /**

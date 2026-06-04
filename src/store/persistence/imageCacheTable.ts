@@ -282,6 +282,33 @@ export function getCachedImagesForCoverArt(
   }
 }
 
+/** A single cached variant, keyed for the in-memory URI index. */
+export interface CachedImageIndexRow {
+  coverArtId: string;
+  size: number;
+  ext: string;
+}
+
+/**
+ * Every cached variant as a flat `(coverArtId, size, ext)` list. Read once
+ * at post-splash init to build the in-memory URI index that backs
+ * `getCachedImageUri` — so the render hot path never does a synchronous
+ * filesystem stat. Bytes/cachedAt are intentionally omitted (the index only
+ * needs to reconstruct the file path).
+ */
+export function getAllCachedImageRows(): CachedImageIndexRow[] {
+  const db = getDb();
+  if (db === null) return [];
+  try {
+    const rows = db.getAllSync<{ cover_art_id: string; size: number; ext: string }>(
+      'SELECT cover_art_id, size, ext FROM cached_images;',
+    );
+    return rows.map((r) => ({ coverArtId: r.cover_art_id, size: r.size, ext: r.ext }));
+  } catch {
+    return [];
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /*  Incomplete detection                                               */
 /* ------------------------------------------------------------------ */

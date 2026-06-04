@@ -53,6 +53,22 @@ class ExpoAsyncFsModule : Module() {
       }
     }
 
+    // Off-thread existence + size + type stat. Single call so a render-path
+    // consumer can confirm a file without a sync File.exists/File.length on the
+    // JS thread (expo-file-system's are sync-only). `size` is 0 for missing
+    // entries and directories.
+    AsyncFunction("statAsync") { uri: String ->
+      val path = Uri.parse(uri).path
+        ?: return@AsyncFunction bundleOf("exists" to false, "size" to 0.0, "isDirectory" to false)
+      val f = File(path)
+      val exists = f.exists()
+      bundleOf(
+        "exists" to exists,
+        "size" to (if (exists && f.isFile) f.length().toDouble() else 0.0),
+        "isDirectory" to (exists && f.isDirectory),
+      )
+    }
+
     // Off-thread file delete. Returns true if a file existed and was deleted.
     AsyncFunction("deleteFileAsync") { uri: String ->
       val path = Uri.parse(uri).path ?: return@AsyncFunction false
