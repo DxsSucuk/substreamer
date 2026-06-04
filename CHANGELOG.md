@@ -1,5 +1,29 @@
 # Changelog
 
+## [8.0.70] - 2026-06-04
+
+- fix: serve cover-art lookup from an in-memory index, not sync FS
+- fix: build track maps after cachedSongs hydration
+- fix: downloaded-music edge cases + enable timer/skip buttons
+- fix: centralize partial-download indicator colour
+- fix: store full song Child in song_index so the Songs list keeps all metadata
+- fix: don't offer scrobble-exclusion for playlists in More Options
+- fix: revert My Listening recentScrobbles memoization
+- fix: move recentScrobbles useMemo above My Listening early returns
+- perf: JS-only sync→async (review E/G)
+- perf: native modules + off-thread filesystem (review C/F/H)
+- refactor: drop dead sync hydrateFromDb store methods (review D)
+- refactor: remove dead sync fetchAllSongsByTitle (review D)
+- perf: single-pass offline genre list for Tuned-In builder (review A.3)
+- perf: async writes for queue + album detail; gate fetch-on-empty (review A.1/A.2/B)
+- fix: review follow-ups — resetAllStores drop order, hydration gate, docs
+- perf: debounced deferred-stringify writes for library stores (phase 4)
+- perf: async kvStorage adapter off the JS thread (phase 3)
+- perf: async boot rehydration off the JS thread (phase 2)
+- perf: defer sync hot-path work off the JS thread (phase 1)
+- Merge branch 'perf/flakiness-cleanup-sdk56': post-SDK56 flakiness fixes
+- perf: fix post-SDK56 flakiness (freezes, blank lists, car art, songs)
+- ci: update coverage badge [skip ci]
 ## [8.0.69] - 2026-06-02
 
 - fix: deprecation
