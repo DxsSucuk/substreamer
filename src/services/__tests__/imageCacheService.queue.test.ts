@@ -35,7 +35,9 @@ jest.mock('expo-image-resize', () => ({
 
 jest.mock('expo-async-fs', () => ({
   listDirectoryAsync: jest.fn(async () => []),
+  listDirectoryWithSizesAsync: jest.fn(async () => []),
   getDirectorySizeAsync: jest.fn(async () => 0),
+  deleteFileAsync: jest.fn(async () => false),
 }));
 
 jest.mock('expo/fetch', () => ({ fetch: jest.fn() }));

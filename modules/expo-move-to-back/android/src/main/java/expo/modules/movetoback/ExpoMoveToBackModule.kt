@@ -8,7 +8,11 @@ class ExpoMoveToBackModule : Module() {
         Name("ExpoMoveToBack")
 
         Function("moveToBack") {
-            appContext.currentActivity?.moveTaskToBack(true)
+            // moveTaskToBack is an Activity/UI operation and must run on the
+            // main thread; this Function is invoked on the JS thread. Dispatch
+            // to the UI thread (fire-and-forget — the call itself is trivial).
+            val activity = appContext.currentActivity ?: return@Function
+            activity.runOnUiThread { activity.moveTaskToBack(true) }
         }
     }
 }

@@ -26,7 +26,7 @@ import { Directory, File, Paths } from 'expo-file-system';
 import { AppState, type AppStateStatus } from 'react-native';
 import { fetch } from 'expo/fetch';
 
-import { listDirectoryAsync } from 'expo-async-fs';
+import { deleteDirectoryAsync, deleteFileAsync, listDirectoryAsync, listDirectoryWithSizesAsync } from 'expo-async-fs';
 import { resizeImageToFileAsync } from 'expo-image-resize';
 import {
   getLastReconcileMs,
@@ -588,34 +588,44 @@ export async function reconcileImageCache(source: string = 'auto'): Promise<void
   const seenOnDisk = new Set<string>();
   const diskKey = (coverArtId: string, size: number) => `${coverArtId}::${size}`;
 
+  // Disk snapshot built during Pass 1 (dirName -> fileName -> size) so Pass 2
+  // needs no further filesystem calls. Only dirs we successfully listed appear.
+  const diskFiles = new Map<string, Map<string, number>>();
+
   // --- Pass 1: FS -> SQL (discover missing rows) ---
   for (const dirName of topLevelNames) {
     if (!dirName) continue;
     const subDir = new Directory(dir, dirName);
-    if (!subDir.exists) continue;
     // Post-Migration-25, every on-disk dir was written under the
     // sanitised entity-ID scheme, so the dir name IS the SQL coverArtId.
     const coverArtId = dirName;
-    let fileNames: string[] = [];
+    // One off-thread call returns every entry's name + size + type — no
+    // per-file sync `.exists`/`.size` stat on the JS thread. A non-directory
+    // or missing path yields []; the `subDir.exists` sync check is no longer
+    // needed.
+    let entries;
     try {
-      fileNames = await listDirectoryAsync(subDir.uri);
+      entries = await listDirectoryWithSizesAsync(subDir.uri);
     } catch {
       continue;
     }
-    for (const name of fileNames) {
-      if (!name || name.endsWith('.tmp')) continue;
+    const fileMap = new Map<string, number>();
+    diskFiles.set(dirName, fileMap);
+    for (const entry of entries) {
+      const name = entry.name;
+      if (!name || entry.isDirectory || name.endsWith('.tmp')) continue;
       const match = /^(50|150|300|600)\.(jpg|png|webp)$/.exec(name);
       if (!match) continue;
       const size = Number(match[1]);
       const ext = match[2];
-      const file = new File(subDir, name);
-      if (!file.exists) continue;
+      fileMap.set(name, entry.size);
       // A zero-byte finalised file is the signature of a crashed write
       // (e.g. ENOSPC between rename and content write, or a kill after
       // the move but before the bytes landed). RNImage renders nothing
-      // for it, so delete it here — Pass 2 then drops any stale DB row.
-      if ((file.size ?? 0) === 0) {
-        try { file.delete(); } catch { /* best-effort */ }
+      // for it, so delete it (off-thread) here — Pass 2 then drops any
+      // stale DB row (the zero size is recorded in fileMap above).
+      if (entry.size === 0) {
+        void deleteFileAsync(new File(subDir, name).uri);
         uriCache.delete(uriCacheKey(coverArtId, size));
         continue;
       }
@@ -625,7 +635,7 @@ export async function reconcileImageCache(source: string = 'auto'): Promise<void
         coverArtId,
         size,
         ext,
-        bytes: file.size ?? 0,
+        bytes: entry.size,
         cachedAt: Date.now(),
       });
     }
@@ -660,22 +670,19 @@ export async function reconcileImageCache(source: string = 'auto'): Promise<void
     const post = listCachedImagesForBrowser('all');
     let droppedCount = 0;
     for (const entry of post) {
+      // Disk paths are sanitised; SQL rows keep the original coverArtId.
+      const onDiskDirName = coverArtPathKey(entry.coverArtId);
+      const fileMap = diskFiles.get(onDiskDirName);
+      // If Pass 1 couldn't list this dir, we have no reliable view of it —
+      // leave its rows alone rather than dropping on incomplete info.
+      if (fileMap === undefined) continue;
       for (const file of entry.files) {
         if (seenOnDisk.has(diskKey(entry.coverArtId, file.size))) continue;
-        // Disk paths are sanitised; SQL rows keep the original coverArtId.
-        const subDir = new Directory(dir, coverArtPathKey(entry.coverArtId));
-        const onDisk = new File(subDir, `${file.size}.${file.ext}`);
-        if (onDisk.exists) {
-          // Belt-and-braces: if Pass 1 missed a zero-byte file (e.g.
-          // listDirectoryAsync failed for that subdir), catch it here.
-          if ((onDisk.size ?? 0) === 0) {
-            try { onDisk.delete(); } catch { /* best-effort */ }
-            deleteCachedImageVariant(entry.coverArtId, file.size);
-            uriCache.delete(uriCacheKey(entry.coverArtId, file.size));
-            droppedCount++;
-          }
-          continue;
-        }
+        const onDiskSize = fileMap.get(`${file.size}.${file.ext}`);
+        // Present and non-zero — keep. (Rarely reached, since such a file
+        // would already be in seenOnDisk; guards the sanitised-id keying.)
+        if (onDiskSize !== undefined && onDiskSize > 0) continue;
+        // File gone, or zero-byte (Pass 1 already deleted it): drop the row.
         deleteCachedImageVariant(entry.coverArtId, file.size);
         uriCache.delete(uriCacheKey(entry.coverArtId, file.size));
         droppedCount++;
@@ -760,7 +767,8 @@ export async function repairIncompleteImages(source: string = 'auto'): Promise<R
   for (const coverArtId of subDirNames) {
     if (!coverArtId) continue;
     const subDir = new Directory(dir, coverArtId);
-    if (!subDir.exists) continue;
+    // No sync `subDir.exists` — listDirectoryAsync on a non-dir/missing path
+    // yields [] (caught below).
     let fileNames: string[] = [];
     try {
       fileNames = await listDirectoryAsync(subDir.uri);
@@ -769,7 +777,9 @@ export async function repairIncompleteImages(source: string = 'auto'): Promise<R
     }
     for (const name of fileNames) {
       if (!name.endsWith('.tmp')) continue;
-      try { new File(subDir, name).delete(); tmpDeleted++; } catch { /* best-effort */ }
+      // Delete off-thread (best-effort).
+      void deleteFileAsync(new File(subDir, name).uri).catch(() => { /* best-effort */ });
+      tmpDeleted++;
     }
   }
   logImageCache(`repair tmp-sweep deleted=${tmpDeleted} top-level-dirs=${subDirNames.length}`);
@@ -1672,7 +1682,7 @@ export async function refreshCoverArt(
  * triggered "Clear Cache"); `{ reinit: false }` when the session is over
  * (logout) and the next `initImageCache` will come from the auth flow.
  */
-function teardownImageCacheState({ reinit }: { reinit: boolean }): void {
+async function teardownImageCacheState({ reinit }: { reinit: boolean }): Promise<void> {
   uriCache.clear();
   downloadQueue.length = 0;
   downloading.clear();
@@ -1682,8 +1692,13 @@ function teardownImageCacheState({ reinit }: { reinit: boolean }): void {
   retryAttempts.clear();
   resolveAllWaiters();
   if (cacheDir) {
-    try { cacheDir.delete(); } catch { /* best-effort */ }
+    const dirUri = cacheDir.uri;
     cacheDir = null;
+    // Recursive on-disk wipe off the JS thread — the image cache is thousands
+    // of small variant files; a sync Directory.delete() would freeze the UI
+    // (this runs on logout + clear-cache). Awaited so the `reinit` recreate
+    // below only runs after the delete completes (no recreate-vs-delete race).
+    try { await deleteDirectoryAsync(dirUri); } catch { /* best-effort */ }
   }
   clearAllCachedImages();
   imageCacheStore.getState().reset();
@@ -1705,7 +1720,7 @@ export async function clearImageCache(
 ): Promise<number> {
   const reinit = opts.reinit ?? true;
   const freedBytes = hydrateImageCacheAggregates().totalBytes;
-  teardownImageCacheState({ reinit });
+  await teardownImageCacheState({ reinit });
   logImageCache(`clearImageCache reinit=${reinit} freed-bytes=${freedBytes}`);
   return freedBytes;
 }

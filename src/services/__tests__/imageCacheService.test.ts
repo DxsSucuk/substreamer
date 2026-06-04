@@ -18,6 +18,10 @@ jest.mock('expo-sqlite', () => ({
 
 const mockListDirectoryAsync = jest.fn();
 const mockGetDirectorySizeAsync = jest.fn();
+// Tracks every deleteFileAsync() invocation (by internal `_name`, i.e. with
+// the leading file:// stripped) so reconcile tests can assert deletions the
+// same way they do for File.delete via mockFileDeleteCalls.
+const mockDeleteFileAsyncCalls = new Set<string>();
 
 const mockFileExistsMap = new Map<string, boolean>();
 const mockDirExistsMap = new Map<string, boolean>();
@@ -102,7 +106,29 @@ jest.mock('expo-image-resize', () => ({
 
 jest.mock('expo-async-fs', () => ({
   listDirectoryAsync: (...args: any[]) => mockListDirectoryAsync(...args),
+  // Derive entries from the same maps the File mock uses, so reconcile tests
+  // drive the listing via mockListDirectoryAsync + mockFileSizeMap exactly as
+  // before. `${uri}/${name}` reconstructs the File mock's `_name` key
+  // (== fileMockName). The directory listing implies existence, so only files
+  // present in mockFileExistsMap are returned.
+  listDirectoryWithSizesAsync: async (uri: string) => {
+    const names: string[] = (await mockListDirectoryAsync(uri)) ?? [];
+    const out: { name: string; size: number; isDirectory: boolean }[] = [];
+    for (const name of names) {
+      const key = `${uri}/${name}`;
+      if (!(mockFileExistsMap.get(key) ?? false)) continue;
+      out.push({ name, size: mockFileSizeMap.get(key) ?? 100, isDirectory: false });
+    }
+    return out;
+  },
   getDirectorySizeAsync: (...args: any[]) => mockGetDirectorySizeAsync(...args),
+  deleteFileAsync: async (uri: string) => {
+    const name = uri.replace(/^file:\/\//, '');
+    mockDeleteFileAsyncCalls.add(name);
+    mockFileExistsMap.delete(name);
+    mockFileSizeMap.delete(name);
+    return true;
+  },
 }));
 
 jest.mock('expo/fetch', () => ({
@@ -334,6 +360,7 @@ beforeEach(() => {
   mockDirExistsMap.clear();
   mockFileSizeMap.clear();
   mockFileDeleteCalls.clear();
+  mockDeleteFileAsyncCalls.clear();
   mockDbRows.clear();
   mockListDirectoryAsync.mockReset();
   mockGetDirectorySizeAsync.mockReset();
@@ -1126,8 +1153,8 @@ describe('reconcileImageCache — zero-byte detection', () => {
 
     await reconcileImageCache();
 
-    // Zero-byte file was deleted…
-    expect(mockFileDeleteCalls.has(fileName('album1', 600))).toBe(true);
+    // Zero-byte file was deleted (off-thread via deleteFileAsync)…
+    expect(mockDeleteFileAsyncCalls.has(fileName('album1', 600))).toBe(true);
     // …and never inserted into the DB.
     expect(mockBulkInsertCachedImages).not.toHaveBeenCalled();
     expect(mockDbRows.size).toBe(0);
@@ -1144,16 +1171,20 @@ describe('reconcileImageCache — zero-byte detection', () => {
 
     await reconcileImageCache();
 
-    expect(mockFileDeleteCalls.has(fileName('album1', 600))).toBe(false);
+    expect(mockDeleteFileAsyncCalls.has(fileName('album1', 600))).toBe(false);
     expect(mockBulkInsertCachedImages).toHaveBeenCalledWith(
       expect.arrayContaining([expect.objectContaining({ coverArtId: 'album1', size: 600, bytes: 12345 })]),
     );
   });
 
   it('Pass 2: drops a DB row whose file exists but is zero bytes', async () => {
-    // Pass 1 sees nothing on disk for the coverArtId this test targets.
-    mockListDirectoryAsync.mockImplementation(async () => []);
-    // DB row is present; file on disk exists but is zero bytes.
+    // The dir is enumerated and its file is zero-byte: Pass 1 deletes the
+    // zero-byte file and records size 0; Pass 2 then drops the stale row.
+    mockListDirectoryAsync.mockImplementation(async (uri: string) => {
+      if (uri.endsWith('image-cache')) return ['album2'];
+      if (uri.endsWith('album2')) return ['600.jpg'];
+      return [];
+    });
     seedDbRow({ coverArtId: 'album2', size: 600, ext: 'jpg' });
     mockFileExistsMap.set(fileName('album2', 600), true);
     mockFileSizeMap.set(fileName('album2', 600), 0);
@@ -1161,17 +1192,19 @@ describe('reconcileImageCache — zero-byte detection', () => {
     await reconcileImageCache();
 
     // The zero-byte file was deleted…
-    expect(mockFileDeleteCalls.has(fileName('album2', 600))).toBe(true);
+    expect(mockDeleteFileAsyncCalls.has(fileName('album2', 600))).toBe(true);
     // …and the DB row was removed via the persistence helper.
     expect(mockDeleteCachedImageVariant).toHaveBeenCalledWith('album2', 600);
     expect(mockDbRows.has('album2::600')).toBe(false);
   });
 
   it('Pass 2: existing behaviour still drops rows whose files are missing', async () => {
-    mockListDirectoryAsync.mockImplementation(async () => []);
+    // The dir is enumerated but empty (file gone) → Pass 2 drops the row.
+    mockListDirectoryAsync.mockImplementation(async (uri: string) => {
+      if (uri.endsWith('image-cache')) return ['album3'];
+      return [];
+    });
     seedDbRow({ coverArtId: 'album3', size: 600, ext: 'jpg' });
-    // File doesn't exist on disk.
-    mockFileExistsMap.set(fileName('album3', 600), false);
 
     await reconcileImageCache();
 
@@ -1816,9 +1849,13 @@ describe('coverArtPathKey — FS-hostile coverArtId sanitisation', () => {
 
 describe('reconcileImageCache — uriCache eviction', () => {
   it('Pass 2: evicts the URI cache entry when a DB row is deleted for a missing file', async () => {
-    // Seed a DB row for a cover whose file no longer exists on disk.
+    // Seed a DB row for a cover whose file no longer exists on disk. The dir
+    // is enumerated but empty so Pass 2 drops the row.
     seedDbRow({ coverArtId: 'gone-album', size: 600, ext: 'jpg' });
-    mockListDirectoryAsync.mockImplementation(async () => []);
+    mockListDirectoryAsync.mockImplementation(async (uri: string) => {
+      if (uri.endsWith('image-cache')) return ['gone-album'];
+      return [];
+    });
     mockFileExistsMap.clear();
 
     // Pre-warm the URI cache so we can prove it gets cleared.

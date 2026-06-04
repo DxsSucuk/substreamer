@@ -2,7 +2,7 @@ import ExpoAsyncFsModule from './ExpoAsyncFsModule';
 
 import { type EventSubscription } from 'expo-modules-core';
 
-export { type DownloadProgressEvent } from './ExpoAsyncFsModule';
+export { type DownloadProgressEvent, type DirectoryEntry } from './ExpoAsyncFsModule';
 
 /**
  * List directory contents asynchronously on a native background thread.
@@ -10,6 +10,36 @@ export { type DownloadProgressEvent } from './ExpoAsyncFsModule';
  */
 export function listDirectoryAsync(uri: string): Promise<string[]> {
   return ExpoAsyncFsModule.listDirectoryAsync(uri);
+}
+
+/**
+ * List directory contents with each entry's size and type in a single
+ * off-thread native call. Avoids a sync `File.exists`/`File.size` stat per
+ * child on the JS thread (those are sync-only in expo-file-system). `size` is
+ * 0 for directories.
+ */
+export function listDirectoryWithSizesAsync(
+  uri: string,
+): Promise<import('./ExpoAsyncFsModule').DirectoryEntry[]> {
+  return ExpoAsyncFsModule.listDirectoryWithSizesAsync(uri);
+}
+
+/**
+ * Delete a single file on a native background thread. Resolves true if a file
+ * existed and was deleted, false otherwise.
+ */
+export function deleteFileAsync(uri: string): Promise<boolean> {
+  return ExpoAsyncFsModule.deleteFileAsync(uri);
+}
+
+/**
+ * Recursively delete a directory and all its contents on a native background
+ * thread (Android: Dispatchers.IO). For whole-cache wipes — expo-file-system's
+ * `Directory.delete()` is sync-only and would block the JS thread unlinking
+ * thousands of files. Resolves true if the directory existed and was removed.
+ */
+export function deleteDirectoryAsync(uri: string): Promise<boolean> {
+  return ExpoAsyncFsModule.deleteDirectoryAsync(uri);
 }
 
 /**

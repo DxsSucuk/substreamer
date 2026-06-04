@@ -8,9 +8,22 @@ public class ExpoSslTrustModule: Module {
         
         AsyncFunction("initTrustStore") { (promise: Promise) in
             SslTrustStore.shared.initialize()
-            promise.resolve(nil)
+            // Resolve the install status to match the Android contract
+            // (`{ installed, error }`). iOS has no JSSE-style install failure,
+            // so `error` is always null once initialize() has run.
+            promise.resolve([
+                "installed": SslTrustStore.shared.installSucceeded,
+                "error": NSNull(),
+            ])
         }
-        
+
+        AsyncFunction("getInstallStatus") { (promise: Promise) in
+            promise.resolve([
+                "installed": SslTrustStore.shared.installSucceeded,
+                "error": NSNull(),
+            ])
+        }
+
         AsyncFunction("getCertificateInfo") { (url: String, promise: Promise) in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {

@@ -29,6 +29,10 @@ const fileDeletes: string[] = [];
 // Track Directory.delete calls so reconciliation tests can assert empty
 // album directories get cleaned up.
 const dirDeletes: string[] = [];
+// Track the async expo-async-fs delete helpers (the off-thread replacements
+// for File.delete / Directory.delete on reconcile/cancel/clear paths).
+const fileDeletesAsync: string[] = [];
+const dirDeletesAsync: string[] = [];
 // Per-URI overrides. When a substring of the file URI matches one of these
 // keys, the corresponding value wins over `mockFileExists`. Tests seed this
 // to exercise reconciliation scenarios where only some files are present.
@@ -85,6 +89,8 @@ jest.mock('expo-async-fs', () => ({
   listDirectoryAsync: (...args: any[]) => mockListDirectoryAsync(...args),
   getDirectorySizeAsync: (...args: any[]) => mockGetDirectorySizeAsync(...args),
   downloadFileAsyncWithProgress: (...args: any[]) => mockDownloadFileAsyncWithProgress(...args),
+  deleteFileAsync: jest.fn(async (uri: string) => { fileDeletesAsync.push(uri); return true; }),
+  deleteDirectoryAsync: jest.fn(async (uri: string) => { dirDeletesAsync.push(uri); return true; }),
 }));
 
 jest.mock('react-native', () => ({
@@ -362,6 +368,8 @@ beforeEach(() => {
   mockDirExists = true;
   fileDeletes.length = 0;
   dirDeletes.length = 0;
+  fileDeletesAsync.length = 0;
+  dirDeletesAsync.length = 0;
   mockFileExistsByPathSubstring.clear();
   persistenceMock.__resetEdges();
 
@@ -2578,8 +2586,9 @@ describe('reconcileMusicCacheAsync', () => {
 
     await reconcileMusicCacheAsync();
 
-    expect(fileDeletes.some((u) => u.endsWith('abandoned.mp3.tmp'))).toBe(true);
-    expect(fileDeletes.some((u) => u.endsWith('another.flac.tmp'))).toBe(true);
+    // .tmp/orphan deletes now go off-thread via deleteFileAsync.
+    expect(fileDeletesAsync.some((u) => u.endsWith('abandoned.mp3.tmp'))).toBe(true);
+    expect(fileDeletesAsync.some((u) => u.endsWith('another.flac.tmp'))).toBe(true);
   });
 
   it('removes an empty album directory with no SQL songs referencing it', async () => {

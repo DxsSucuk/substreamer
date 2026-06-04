@@ -11,9 +11,18 @@ interface DownloadResult {
   bytes: number;
 }
 
+export interface DirectoryEntry {
+  name: string;
+  size: number;
+  isDirectory: boolean;
+}
+
 interface ExpoAsyncFsNativeModule {
   listDirectoryAsync(uri: string): Promise<string[]>;
+  listDirectoryWithSizesAsync(uri: string): Promise<DirectoryEntry[]>;
   getDirectorySizeAsync(uri: string): Promise<number>;
+  deleteFileAsync(uri: string): Promise<boolean>;
+  deleteDirectoryAsync(uri: string): Promise<boolean>;
   downloadFileAsyncWithProgress(
     url: string,
     destinationUri: string,
@@ -34,7 +43,10 @@ try {
 
   module = {
     listDirectoryAsync: () => Promise.resolve([]),
+    listDirectoryWithSizesAsync: () => Promise.resolve([]),
     getDirectorySizeAsync: () => Promise.resolve(0),
+    deleteFileAsync: () => Promise.resolve(false),
+    deleteDirectoryAsync: () => Promise.resolve(false),
     downloadFileAsyncWithProgress: () => Promise.resolve({ uri: '', bytes: 0 }),
     addListener: () => ({ remove: () => {} }),
   } as unknown as ExpoAsyncFsNativeModule;

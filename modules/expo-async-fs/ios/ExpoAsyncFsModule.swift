@@ -18,6 +18,50 @@ public class ExpoAsyncFsModule: Module {
       return Self.directorySize(at: url)
     }
 
+    // One off-thread call that returns each entry's name + size + type, so
+    // callers avoid a sync .exists/.size stat per child on the JS thread
+    // (expo-file-system's .exists/.size are sync-only). Used by
+    // reconcileImageCache to walk the cover-art cache without blocking JS.
+    AsyncFunction("listDirectoryWithSizesAsync") { (uri: String) -> [[String: Any]] in
+      guard let url = URL(string: uri) else { return [] }
+      let fm = FileManager.default
+      let names = try fm.contentsOfDirectory(atPath: url.path)
+      return names.map { name in
+        let childPath = url.appendingPathComponent(name).path
+        var isDir: ObjCBool = false
+        fm.fileExists(atPath: childPath, isDirectory: &isDir)
+        let size: Int = isDir.boolValue
+          ? 0
+          : ((try? fm.attributesOfItem(atPath: childPath)[.size] as? Int) ?? 0)
+        return [
+          "name": name,
+          "size": size,
+          "isDirectory": isDir.boolValue,
+        ]
+      }
+    }
+
+    // Off-thread file delete. Returns true if a file existed and was deleted.
+    AsyncFunction("deleteFileAsync") { (uri: String) -> Bool in
+      guard let url = URL(string: uri) else { return false }
+      let fm = FileManager.default
+      guard fm.fileExists(atPath: url.path) else { return false }
+      try fm.removeItem(atPath: url.path)
+      return true
+    }
+
+    // Off-thread RECURSIVE directory delete (whole cache wipe on logout /
+    // clear-cache). expo-file-system's Directory.delete is sync-only and would
+    // unlink potentially thousands of files on the JS thread. FileManager's
+    // removeItem is recursive for directories.
+    AsyncFunction("deleteDirectoryAsync") { (uri: String) -> Bool in
+      guard let url = URL(string: uri) else { return false }
+      let fm = FileManager.default
+      guard fm.fileExists(atPath: url.path) else { return false }
+      try fm.removeItem(atPath: url.path)
+      return true
+    }
+
     AsyncFunction("downloadFileAsyncWithProgress") { (urlString: String, destinationUri: String, downloadId: String) -> [String: Any] in
       guard let url = URL(string: urlString) else {
         throw DownloadError.invalidUrl

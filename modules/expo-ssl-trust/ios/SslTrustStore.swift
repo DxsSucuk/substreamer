@@ -10,7 +10,14 @@ class SslTrustStore: NSObject {
     private let userDefaultsKey = "expo_ssl_trust_store"
     private var trustedCerts: [String: TrustedCertEntry] = [:]
     private var isInitialized = false
-    
+
+    /// Whether the trust store has been installed. On iOS, registering the
+    /// URLProtocol has no JSSE-style failure mode (unlike Android), so this is
+    /// simply true once `initialize()` has run. Exposed so the module's
+    /// `initTrustStore`/`getInstallStatus` can report a status matching the
+    /// Android contract (`{ installed, error }`).
+    var installSucceeded: Bool { isInitialized }
+
     struct TrustedCertEntry: Codable {
         let sha256Fingerprint: String
         let acceptedAt: Double // epoch ms

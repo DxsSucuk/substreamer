@@ -37,6 +37,49 @@ class ExpoAsyncFsModule : Module() {
       directorySize(File(path))
     }
 
+    // One off-thread call that returns each entry's name + size + type, so
+    // callers don't have to do a sync File.exists/File.size stat per child on
+    // the JS thread (expo-file-system's .exists/.size are sync-only). Used by
+    // reconcileImageCache to walk the cover-art cache without blocking JS.
+    AsyncFunction("listDirectoryWithSizesAsync") { uri: String ->
+      val path = Uri.parse(uri).path ?: return@AsyncFunction emptyList<Bundle>()
+      val entries = File(path).listFiles() ?: return@AsyncFunction emptyList<Bundle>()
+      entries.map { f ->
+        bundleOf(
+          "name" to f.name,
+          "size" to (if (f.isFile) f.length().toDouble() else 0.0),
+          "isDirectory" to f.isDirectory,
+        )
+      }
+    }
+
+    // Off-thread file delete. Returns true if a file existed and was deleted.
+    AsyncFunction("deleteFileAsync") { uri: String ->
+      val path = Uri.parse(uri).path ?: return@AsyncFunction false
+      val f = File(path)
+      if (f.exists()) f.delete() else false
+    }
+
+    // Off-thread RECURSIVE directory delete (the whole cache wipe on logout /
+    // clear-cache). expo-file-system's Directory.delete is sync-only and would
+    // unlink potentially thousands of files on the JS thread. Dispatched to
+    // Dispatchers.IO so a large wipe runs in parallel off the module queue.
+    AsyncFunction("deleteDirectoryAsync") { uri: String, promise: Promise ->
+      CoroutineScope(Dispatchers.IO).launch {
+        try {
+          val path = Uri.parse(uri).path
+          if (path == null) {
+            promise.resolve(false)
+            return@launch
+          }
+          val dir = File(path)
+          promise.resolve(if (dir.exists()) dir.deleteRecursively() else false)
+        } catch (e: Exception) {
+          promise.reject("ERR_DELETE_DIR", e.message ?: "Recursive delete failed", e)
+        }
+      }
+    }
+
     // Mirrors expo-file-system's downloadFileAsync but adds a network
     // interceptor for progress events. Uses OkHttpClientProvider (rather
     // than a bare OkHttpClient) so the RN network stack configuration

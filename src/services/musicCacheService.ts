@@ -29,6 +29,8 @@ import {
   listDirectoryAsync,
   getDirectorySizeAsync,
   downloadFileAsyncWithProgress,
+  deleteDirectoryAsync,
+  deleteFileAsync,
 } from 'expo-async-fs';
 import { checkStorageLimit } from './storageService';
 import { beginDownload, clearDownload } from './downloadSpeedTracker';
@@ -404,13 +406,14 @@ export async function reconcileMusicCacheAsync(): Promise<void> {
 
     for (const fileName of fileNames) {
       const file = new File(albumDir, fileName);
-      if (!file.exists) continue;
+      // No sync `.exists` check — the name came from the directory listing.
 
       // Stale .tmp remnants from a crashed transfer. Deleted unconditionally
       // at startup — no in-flight downloads have been scheduled yet, so any
-      // .tmp on disk is abandoned state.
+      // .tmp on disk is abandoned state. Delete off-thread (best-effort).
       if (fileName.endsWith('.tmp')) {
-        try { file.delete(); staleTmpDeleted++; } catch { /* best-effort */ }
+        void deleteFileAsync(file.uri).catch(() => { /* best-effort */ });
+        staleTmpDeleted++;
         continue;
       }
 
@@ -421,7 +424,8 @@ export async function reconcileMusicCacheAsync(): Promise<void> {
       // Orphan check: no SQL row, or the row exists under a different album.
       const sqlRow = musicCacheStore.getState().cachedSongs[songId];
       if (!sqlRow || sqlRow.albumId !== albumId) {
-        try { file.delete(); orphanFilesDeleted++; } catch { /* best-effort */ }
+        void deleteFileAsync(file.uri).catch(() => { /* best-effort */ });
+        orphanFilesDeleted++;
       }
     }
 
@@ -435,7 +439,7 @@ export async function reconcileMusicCacheAsync(): Promise<void> {
       try {
         const remaining = await listDirectoryAsync(albumDir.uri);
         if (Array.isArray(remaining) && remaining.length === 0) {
-          albumDir.delete();
+          void deleteFileAsync(albumDir.uri).catch(() => { /* best-effort */ });
         }
       } catch { /* best-effort */ }
     }
@@ -646,12 +650,12 @@ export function getLocalTrackUri(trackId: string): string | null {
  * Also updates the in-memory `trackUriMap` so the change is visible
  * without a full rehydrate.
  */
-export function renameCachedSongFile(
+export async function renameCachedSongFile(
   albumId: string,
   oldId: string,
   newId: string,
   suffix: string,
-): 'renamed' | 'missing' | 'failed' {
+): Promise<'renamed' | 'missing' | 'failed'> {
   if (oldId === newId) return 'missing';
   const safeAlbumId = albumId || UNKNOWN_ALBUM_ID;
   const albumDir = new Directory(ensureCacheDir(), safeAlbumId);
@@ -659,7 +663,9 @@ export function renameCachedSongFile(
   if (!oldFile.exists) return 'missing';
   const newFile = new File(albumDir, `${newId}.${suffix}`);
   try {
-    oldFile.move(newFile);
+    // Await so a move failure is caught here (returns 'failed') rather than
+    // surfacing as an unhandled rejection while we wrongly report 'renamed'.
+    await oldFile.move(newFile);
     // Refresh the in-memory map so subsequent getLocalTrackUri(newId) hits.
     trackUriMap.delete(oldId);
     trackUriMap.set(newId, newFile.uri);
@@ -1287,7 +1293,7 @@ async function downloadSong(track: Child): Promise<CachedSongMeta | null> {
     if (dest.exists) {
       try { dest.delete(); } catch { /* best-effort */ }
     }
-    tmpDest.move(dest);
+    await tmpDest.move(dest);
 
     const bytes = dest.exists ? dest.size ?? 0 : 0;
 
@@ -1816,28 +1822,40 @@ export function cancelDownload(queueId: string): void {
   } catch {
     songs = [];
   }
-  const albumsVisited = new Set<string>();
+  // Group cancelled song ids by album, then sweep each album's .tmp remnants
+  // off the JS thread: one directory listing per album + async deletes, rather
+  // than a sync exists/delete per song×extension (which was O(songs²) on the
+  // JS thread for a large cancelled set). Best-effort and fire-and-forget.
+  const songIdsByAlbum = new Map<string, Set<string>>();
   for (const s of songs) {
+    if (!s.id) continue;
     const albumId = s.albumId || UNKNOWN_ALBUM_ID;
-    if (albumsVisited.has(albumId)) continue;
-    albumsVisited.add(albumId);
+    let set = songIdsByAlbum.get(albumId);
+    if (!set) { set = new Set(); songIdsByAlbum.set(albumId, set); }
+    set.add(s.id);
+  }
+  for (const [albumId, songIds] of songIdsByAlbum) {
     const albumDir = new Directory(ensureCacheDir(), albumId);
-    if (!albumDir.exists) continue;
-    // Sweep tmp files for songs in this cancelled set.
-    for (const song of songs) {
-      if ((song.albumId || UNKNOWN_ALBUM_ID) !== albumId) continue;
-      // Try a few extensions — we don't know which was in flight.
-      const candidates = [
-        song.suffix,
-        playbackSettingsStore.getState().downloadFormat,
-      ].filter((e): e is string => typeof e === 'string' && e.length > 0);
-      for (const ext of candidates) {
-        const tmp = new File(albumDir, `${song.id}.${ext}.tmp`);
-        if (tmp.exists) {
-          try { tmp.delete(); } catch { /* best-effort */ }
+    void (async () => {
+      let names: string[];
+      try {
+        const result = await listDirectoryAsync(albumDir.uri);
+        names = Array.isArray(result) ? result : [];
+      } catch {
+        return;
+      }
+      for (const name of names) {
+        if (!name.endsWith('.tmp')) continue;
+        // Filename is `${songId}.${ext}.tmp` — delete if it belongs to a
+        // cancelled song in this album.
+        for (const songId of songIds) {
+          if (name.startsWith(`${songId}.`)) {
+            void deleteFileAsync(new File(albumDir, name).uri).catch(() => { /* best-effort */ });
+            break;
+          }
         }
       }
-    }
+    })();
   }
 
   // Only clear trackToItems bookkeeping for this cancelled itemId — the
@@ -1870,7 +1888,10 @@ export async function clearMusicCache(): Promise<number> {
   const dir = ensureCacheDir();
   const freedBytes = await getDirectorySizeAsync(dir.uri);
 
-  try { dir.delete(); } catch { /* best-effort */ }
+  // Recursive wipe off the JS thread — the music cache can be many GB /
+  // thousands of files; a sync Directory.delete() would freeze the UI (this
+  // runs on logout + the clear-cache setting).
+  try { await deleteDirectoryAsync(dir.uri); } catch { /* best-effort */ }
 
   cacheDir = null;
   trackUriMap.clear();
