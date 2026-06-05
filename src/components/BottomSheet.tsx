@@ -2,8 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Modal,
   Pressable,
+  ScrollView,
   StyleSheet,
   View,
+  useWindowDimensions,
   type DimensionValue,
   type LayoutChangeEvent,
 } from 'react-native';
@@ -24,6 +26,8 @@ const BACKDROP_OPACITY = 0.4;
 const DISMISS_DISTANCE_RATIO = 0.35;
 const DISMISS_VELOCITY = 800;
 const DEFAULT_HEIGHT = 600;
+/** Gap kept below the status bar so a full-height sheet never butts the top. */
+const TOP_GAP = 24;
 const ENTRY_SPRING = { damping: 28, stiffness: 160, mass: 0.8 };
 const EXIT_DURATION = 250;
 const BACKDROP_DURATION = 300;
@@ -50,6 +54,13 @@ interface BottomSheetProps {
   onCloseComplete?: () => void;
   closeable?: boolean;
   maxHeight?: DimensionValue;
+  /**
+   * Wrap children in a vertical ScrollView so tall content scrolls within the
+   * sheet instead of overflowing off the top of the screen. Default `true`.
+   * Pass `false` for sheets that supply their own scroll container (FlatList /
+   * FlashList / ScrollView) — wrapping those would nest scrollables.
+   */
+  scrollable?: boolean;
   children: React.ReactNode;
 }
 
@@ -59,10 +70,24 @@ export function BottomSheet({
   onCloseComplete,
   closeable = true,
   maxHeight,
+  scrollable = true,
   children,
 }: BottomSheetProps) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
+
+  // Never let the sheet exceed the screen (minus the status bar + a small gap),
+  // so tall content can't run off the top. When the caller gives an explicit
+  // maxHeight we honour it but still clamp a numeric value to the screen cap;
+  // percentage values are already relative to the screen height.
+  const screenCap = windowHeight - insets.top - TOP_GAP;
+  const sheetMaxHeight: DimensionValue =
+    maxHeight == null
+      ? screenCap
+      : typeof maxHeight === 'number'
+        ? Math.min(maxHeight, screenCap)
+        : maxHeight;
 
   const [internalVisible, setInternalVisible] = useState(false);
   const isClosing = useRef(false);
@@ -257,7 +282,7 @@ export function BottomSheet({
         <Animated.View
           style={[
             styles.sheet,
-            maxHeight != null && { maxHeight },
+            { maxHeight: sheetMaxHeight },
             {
               backgroundColor: colors.card,
               paddingBottom: Math.max(insets.bottom, 16),
@@ -273,7 +298,21 @@ export function BottomSheet({
             </View>
           </GestureDetector>
 
-          {children}
+          {scrollable ? (
+            // flexShrink lets the ScrollView collapse to the available space when
+            // the sheet hits its max height (→ content scrolls); when content is
+            // short the sheet still sizes to content and nothing scrolls.
+            <ScrollView
+              style={styles.scroll}
+              contentContainerStyle={styles.scrollContent}
+              bounces={false}
+              showsVerticalScrollIndicator
+            >
+              {children}
+            </ScrollView>
+          ) : (
+            children
+          )}
         </Animated.View>
       </GestureHandlerRootView>
     </Modal>
@@ -301,6 +340,12 @@ const styles = StyleSheet.create({
     maxWidth: 600,
     alignSelf: 'center',
     width: '100%',
+  },
+  scroll: {
+    flexShrink: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
   },
   handleContainer: {
     paddingVertical: 12,

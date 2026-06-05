@@ -131,13 +131,18 @@ describe('BottomSheet', () => {
     expect(findStyleProp(toJSON(), (s) => s.maxHeight === '70%')).toBe(true);
   });
 
-  it('does not apply maxHeight when not provided', () => {
+  it('caps to a numeric screen height when maxHeight is not provided', () => {
+    // With no explicit maxHeight the sheet still caps to the screen (window
+    // height minus the top inset and gap) so tall content can't run off the
+    // top — the value is therefore numeric, not absent.
     const { toJSON } = render(
       <BottomSheet visible={true} onClose={jest.fn()}>
         <Text>Content</Text>
       </BottomSheet>,
     );
-    expect(findStyleProp(toJSON(), (s) => 'maxHeight' in s)).toBe(false);
+    expect(
+      findStyleProp(toJSON(), (s) => typeof s.maxHeight === 'number'),
+    ).toBe(true);
   });
 
   it('renders with safe area bottom padding', () => {

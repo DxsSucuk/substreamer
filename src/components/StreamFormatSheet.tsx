@@ -150,7 +150,7 @@ export function StreamFormatSheet() {
 
   return (
     <>
-      <BottomSheet visible={visible} onClose={handleClose} maxHeight="85%">
+      <BottomSheet visible={visible} onClose={handleClose} maxHeight="85%" scrollable={false}>
         <View style={styles.header}>
           <Text style={[styles.title, dynamicStyles.title]} numberOfLines={1}>
             {t(titleKey)}

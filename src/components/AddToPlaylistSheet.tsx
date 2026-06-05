@@ -258,7 +258,7 @@ export function AddToPlaylistSheet() {
   const coverArtId = target ? getTargetCoverArt(target) : undefined;
 
   return (
-    <BottomSheet visible={visible} onClose={handleClose} maxHeight="70%">
+    <BottomSheet visible={visible} onClose={handleClose} maxHeight="70%" scrollable={false}>
       <View style={styles.header}>
         {coverArtId && (
           <CachedImage coverArtId={coverArtId} size={150} style={styles.coverArt} resizeMode="cover" />

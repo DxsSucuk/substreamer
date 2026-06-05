@@ -272,7 +272,7 @@ export function MbidSearchSheet() {
   const emptyLabel = isArtist ? t('noArtistsFound') : t('noAlbumsFound');
 
   return (
-    <BottomSheet visible={visible} onClose={handleClose} maxHeight="80%">
+    <BottomSheet visible={visible} onClose={handleClose} maxHeight="80%" scrollable={false}>
       <View style={styles.header}>
         {coverArtId && (
           <CachedImage coverArtId={coverArtId} size={150} style={styles.coverArt} resizeMode="cover" />
