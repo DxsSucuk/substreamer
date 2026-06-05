@@ -4,7 +4,6 @@ import { ScrollView } from 'react-native';
 
 import { BottomChrome } from '../components/BottomChrome';
 import { GradientBackground } from '../components/GradientBackground';
-import { BackgroundPlaybackCard } from '../components/settings/BackgroundPlaybackCard';
 import { OfflineCard } from '../components/settings/OfflineCard';
 import { ServerFailoverCard } from '../components/settings/ServerFailoverCard';
 import { TrustedCertificatesCard } from '../components/settings/TrustedCertificatesCard';
@@ -22,7 +21,6 @@ export function SettingsConnectivityScreen() {
       >
         <OfflineCard />
         <ServerFailoverCard />
-        <BackgroundPlaybackCard />
         <TrustedCertificatesCard />
       </ScrollView>
       <BottomChrome withSafeAreaPadding />

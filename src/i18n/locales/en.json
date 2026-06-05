@@ -73,7 +73,7 @@
   "onboardingCustomiseHeadline": "Customise Your Experience",
   "onboardingCustomiseBody": "Head to Settings to choose your streaming and download quality, set storage limits, and pick your preferred theme and accent colour.",
   "onboardingBackgroundHeadline": "Background Playback",
-  "onboardingBackgroundBody": "If music stops when the screen turns off or you switch apps, open Settings → Background Playback and allow the app to ignore battery optimization.",
+  "onboardingBackgroundBody": "If music stops when the screen turns off or you switch apps, open Settings → Sound & Playback and allow the app to ignore battery optimization.",
   "helpWelcomeGuide": "Help & Welcome Guide",
   "helpWelcomeGuideSubtitle": "Learn about gestures, offline mode, and settings",
   "audioDiagnostics": "Player Logging",

@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 
 import { BottomChrome } from '../components/BottomChrome';
 import { GradientBackground } from '../components/GradientBackground';
+import { BackgroundPlaybackCard } from '../components/settings/BackgroundPlaybackCard';
 import { DownloadingCard } from '../components/settings/DownloadingCard';
 import { PlayerControlsCard } from '../components/settings/PlayerControlsCard';
 import { RemoteControlsCard } from '../components/settings/RemoteControlsCard';
@@ -91,6 +92,9 @@ export function SettingsPlaybackScreen() {
           <PlayerControlsCard />
           <SkipIntervalsCard />
           <RemoteControlsCard />
+          {/* Battery-optimization exemption — affects background playback, so it
+              lives here under Sound & Playback (Android-only; renders null on iOS). */}
+          <BackgroundPlaybackCard />
 
           {!isDefault && (
             <Pressable
