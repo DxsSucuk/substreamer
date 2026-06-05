@@ -936,7 +936,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     height: 40,
-    marginTop: 20,
+    // No vertical margin: the three equal flex spacers (above the primary row,
+    // between the rows, and below the secondary row) own ALL the inter-row
+    // spacing. A fixed marginTop here is asymmetric — it inflates the gap above
+    // the secondary row but not below it, so on short screens (where the
+    // spacers shrink) the row gets pushed down against the tab bar.
     paddingHorizontal: HERO_PADDING,
     maxWidth: 464,
     width: '100%',
