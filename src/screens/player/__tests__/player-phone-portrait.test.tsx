@@ -77,7 +77,22 @@ jest.mock('react-native-reanimated', () => {
 
 jest.mock('react-native-gesture-handler', () => {
   const { Pressable } = require('react-native');
-  return { Pressable };
+  // Chainable Pan gesture stub: every builder method returns the same object.
+  const makeChainable = () => {
+    const g: Record<string, () => unknown> = {};
+    const methods = [
+      'enabled', 'activeOffsetY', 'failOffsetY', 'activeOffsetX', 'failOffsetX',
+      'onBegin', 'onStart', 'onUpdate', 'onChange', 'onEnd', 'onFinalize',
+      'simultaneousWithExternalGesture', 'requireExternalGestureToFail',
+    ];
+    for (const m of methods) g[m] = () => g;
+    return g;
+  };
+  return {
+    Pressable,
+    GestureDetector: ({ children }: { children: React.ReactNode }) => children,
+    Gesture: { Pan: makeChainable },
+  };
 });
 
 jest.mock('react-native-safe-area-context', () => ({
