@@ -12,7 +12,12 @@ import {
 
 const ICON_SIZE = 28;
 
-export const RepeatButton = memo(function RepeatButton() {
+export interface RepeatButtonProps {
+  /** Glyph size (dp). Defaults to 28; smaller on compact player layouts. */
+  size?: number;
+}
+
+export const RepeatButton = memo(function RepeatButton({ size = ICON_SIZE }: RepeatButtonProps) {
   const { colors } = useTheme();
   const { t } = useTranslation();
   const repeatMode = playbackSettingsStore((s) => s.repeatMode);

@@ -48,6 +48,7 @@ import { useImagePalette } from '@/hooks/useImagePalette';
 import { usePlayerActions } from '@/hooks/usePlayerActions';
 import { useShuffleOverlay } from '@/hooks/useShuffleOverlay';
 import { useSwipeDownDismiss } from '@/hooks/useSwipeDownDismiss';
+import { getPlayerSize } from '@/hooks/playerSize';
 import { useTheme } from '@/hooks/useTheme';
 import { offlineModeStore } from '@/store/offlineModeStore';
 import {
@@ -467,17 +468,40 @@ const PlayerContent = memo(function PlayerContent({
   const showSleepTimer = playbackSettingsStore((s) => s.showSleepTimerButton);
   const { canSkipNext, canSkipPrevious } = useCanSkip();
 
-  // On small screens (Pixel 2 ≈ 731dp tall), shrink the hero to leave room
-  // for a secondary controls row. On larger screens heroSize equals the
-  // natural width so the layout is unchanged.
+  // Content-height budget (window minus header + top/bottom safe-area insets)
+  // and the portrait width drive the responsive tier: smaller art/controls/
+  // fonts on short OR narrow screens, and the secondary controls row is dropped
+  // on the smallest tier so the essential transport controls always stay above
+  // the nav bar AND fit horizontally (issue #90 — 800×480 is narrow in portrait).
+  const availableHeight = windowHeight - insets.top - insets.bottom - HEADER_BAR_HEIGHT;
+  const m = useMemo(
+    () => getPlayerSize(availableHeight, windowWidth),
+    [availableHeight, windowWidth],
+  );
+
+  // Clamp the centre transport cluster to the actual width so the shuffle/repeat
+  // side controls keep room and never overflow off-screen. Each side needs at
+  // least its icon plus a little breathing space.
+  const transportWidth = useMemo(() => {
+    const sideMin = m.sideIcon + 8;
+    const maxCenter = windowWidth - 2 * HERO_PADDING - 2 * sideMin;
+    return Math.max(120, Math.min(m.transportWidth, maxCenter));
+  }, [windowWidth, m.sideIcon, m.transportWidth]);
+  const secondaryCenterWidth = useMemo(() => {
+    const sideMin = m.sideIcon + 8;
+    const maxCenter = windowWidth - 2 * HERO_PADDING - 2 * sideMin;
+    return Math.max(120, Math.min(m.secondaryCenterWidth, maxCenter));
+  }, [windowWidth, m.sideIcon, m.secondaryCenterWidth]);
+
+  // Shrink the hero to leave room for the controls; never below the tier floor.
+  // Scaled to ~90% of the fitted size to give the controls a little more room.
   const heroSize = useMemo(() => {
     const naturalWidth = Math.min(windowWidth - 2 * HERO_PADDING, 464 - 2 * HERO_PADDING);
-    // Non-hero vertical space: header, safe areas, tab bar, track info,
-    // progress, controls, secondary row, hero padding, spacer breathing room.
-    const reserved = insets.top + HEADER_BAR_HEIGHT + insets.bottom + 342;
+    const reserved = insets.top + HEADER_BAR_HEIGHT + insets.bottom + m.reserved;
     const maxHero = windowHeight - reserved;
-    return Math.max(Math.min(naturalWidth, maxHero), 120);
-  }, [windowHeight, windowWidth, insets.top, insets.bottom]);
+    const fitted = Math.max(Math.min(naturalWidth, maxHero), m.heroFloor);
+    return Math.round(fitted * 0.9);
+  }, [windowHeight, windowWidth, insets.top, insets.bottom, m.reserved, m.heroFloor]);
 
   const isPlaying =
     playbackState === 'playing' || playbackState === 'buffering';
@@ -485,8 +509,8 @@ const PlayerContent = memo(function PlayerContent({
     playbackState === 'buffering' || playbackState === 'loading';
 
   const marqueeStyle = useMemo(
-    () => [styles.trackTitle, { color: colors.textPrimary }],
-    [colors.textPrimary],
+    () => [styles.trackTitle, { color: colors.textPrimary, fontSize: m.titleFont }],
+    [colors.textPrimary, m.titleFont],
   );
 
   if (queueLoading) {
@@ -507,7 +531,7 @@ const PlayerContent = memo(function PlayerContent({
           already offset via top: headerTopPadding. */}
       {Platform.OS === 'ios' && <View style={{ height: insets.top + HEADER_BAR_HEIGHT }} />}
       {/* Hero cover art */}
-      <View style={styles.hero}>
+      <View style={[styles.hero, { paddingBottom: m.heroPadBottom }]}>
         <View style={[styles.heroImageWrap, { width: heroSize, height: heroSize }]}>
           <CachedImage
             coverArtId={currentTrack.albumId ?? currentTrack.id}
@@ -522,14 +546,14 @@ const PlayerContent = memo(function PlayerContent({
       </View>
 
       {/* Track info */}
-      <View style={styles.trackInfo}>
+      <View style={[styles.trackInfo, { marginBottom: m.infoMarginBottom }]}>
         <View style={styles.trackInfoRow}>
           <View style={styles.trackInfoText}>
             <MarqueeText style={marqueeStyle}>
               {currentTrack.title}
             </MarqueeText>
             <Text
-              style={[styles.trackArtist, { color: colors.textSecondary }]}
+              style={[styles.trackArtist, { color: colors.textSecondary, fontSize: m.artistFont }]}
               numberOfLines={1}
             >
               {currentTrack.artist ?? t('unknownArtist')}
@@ -540,7 +564,7 @@ const PlayerContent = memo(function PlayerContent({
       </View>
 
       {/* Progress bar */}
-      <View style={styles.progressSection}>
+      <View style={[styles.progressSection, { marginBottom: m.progressMarginBottom }]}>
         <PlayerProgressBar
           position={position}
           duration={duration}
@@ -561,18 +585,18 @@ const PlayerContent = memo(function PlayerContent({
       <View style={styles.playerSpacer} />
 
       {/* Playback controls */}
-      <View style={styles.controls}>
+      <View style={[styles.controls, { paddingVertical: m.controlsPadV }]}>
         {/* Shuffle toggle */}
         <View style={styles.controlSideLeft}>
           <ShuffleButton
             onPress={handleShuffle}
             disabled={shuffling || queueLength < 2}
-            size={28}
+            size={m.sideIcon}
           />
         </View>
 
         {/* Transport controls */}
-        <View style={styles.transportControls}>
+        <View style={[styles.transportControls, { width: transportWidth }]}>
           <Pressable
             onPress={skipToPrevious}
             hitSlop={12}
@@ -581,7 +605,7 @@ const PlayerContent = memo(function PlayerContent({
           >
             <Ionicons
               name="play-back"
-              size={32}
+              size={m.transportIcon}
               color={canSkipPrevious ? colors.textPrimary : colors.textSecondary}
             />
           </Pressable>
@@ -590,7 +614,7 @@ const PlayerContent = memo(function PlayerContent({
             onPress={togglePlayPause}
             style={({ pressed }) => [
               styles.playPauseButton,
-              { backgroundColor: colors.textPrimary },
+              { width: m.playButton, height: m.playButton, borderRadius: m.playButton / 2, backgroundColor: colors.textPrimary },
               pressed && styles.playPausePressed,
             ]}
           >
@@ -599,7 +623,7 @@ const PlayerContent = memo(function PlayerContent({
             ) : (
               <Ionicons
                 name={isPlaying ? 'pause' : 'play'}
-                size={32}
+                size={m.playIcon}
                 color={colors.background}
                 style={!isPlaying ? styles.playIcon : undefined}
               />
@@ -614,7 +638,7 @@ const PlayerContent = memo(function PlayerContent({
           >
             <Ionicons
               name="play-forward"
-              size={32}
+              size={m.transportIcon}
               color={canSkipNext ? colors.textPrimary : colors.textSecondary}
             />
           </Pressable>
@@ -622,34 +646,39 @@ const PlayerContent = memo(function PlayerContent({
 
         {/* Repeat toggle */}
         <View style={styles.controlSideRight}>
-          <RepeatButton />
+          <RepeatButton size={m.sideIcon} />
         </View>
       </View>
 
-      {/* Middle spacer — equal to the spacers above and below the rows. */}
-      <View style={styles.playerSpacer} />
-
-      {/* Secondary controls row — mirrors primary controls layout. Skip-interval
-          buttons sit under prev/next with the playback rate between them. */}
-      <View style={styles.secondaryControls}>
-        <View style={[styles.controlSideLeft, styles.secondaryLeftInset]}>
-          {showSleepTimer && <SleepTimerButton />}
-        </View>
-        <View style={[styles.secondaryCenter, styles.secondaryCenterRow]}>
-          {showSkipInterval && (
-            <SkipIntervalButton direction="backward" size={32} />
-          )}
-          <View style={styles.secondaryRateSlot}>
-            <PlaybackRateButton />
+      {/* Secondary controls row — dropped on the smallest tier
+          (m.showSecondaryRow === false) so the transport controls clear the nav
+          bar (issue #90). When present, its own middle spacer keeps both rows
+          evenly distributed; when absent, the two remaining spacers center the
+          single primary row. */}
+      {m.showSecondaryRow && (
+        <>
+          <View style={styles.playerSpacer} />
+          <View style={styles.secondaryControls}>
+            <View style={[styles.controlSideLeft, styles.secondaryLeftInset]}>
+              {showSleepTimer && <SleepTimerButton />}
+            </View>
+            <View style={[styles.secondaryCenterRow, { width: secondaryCenterWidth }]}>
+              {showSkipInterval && (
+                <SkipIntervalButton direction="backward" size={32} />
+              )}
+              <View style={styles.secondaryRateSlot}>
+                <PlaybackRateButton />
+              </View>
+              {showSkipInterval && (
+                <SkipIntervalButton direction="forward" size={32} />
+              )}
+            </View>
+            <View style={styles.controlSideRight}>
+              <BookmarkButton style={styles.favoriteButton} />
+            </View>
           </View>
-          {showSkipInterval && (
-            <SkipIntervalButton direction="forward" size={32} />
-          )}
-        </View>
-        <View style={styles.controlSideRight}>
-          <BookmarkButton style={styles.favoriteButton} />
-        </View>
-      </View>
+        </>
+      )}
 
       <View style={styles.playerSpacer} />
     </View>
@@ -937,9 +966,6 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
     justifyContent: 'center',
   },
-  secondaryCenter: {
-    width: 248,
-  },
   secondaryCenterRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -968,7 +994,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-evenly',
-    width: 248,
+    // width is set inline (tier-scaled + clamped to the screen width) so the
+    // shuffle/repeat side controls always keep room — see playerSize.
   },
   playPauseButton: {
     width: 64,
