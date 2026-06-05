@@ -43,6 +43,7 @@ import { SplitLayout } from '../components/SplitLayout';
 import { MbidSearchSheet } from '../components/MbidSearchSheet';
 import { MoreOptionsSheet } from '../components/MoreOptionsSheet';
 import { OnboardingGuide } from '../components/OnboardingGuide';
+import { BackgroundPlaybackPromptModal } from '../components/BackgroundPlaybackPromptModal';
 import { SetRatingSheet } from '../components/SetRatingSheet';
 import { SleepTimerSheet } from '../components/SleepTimerSheet';
 import { PlaybackToast } from '../components/PlaybackToast';
@@ -821,6 +822,10 @@ export default function RootLayout() {
 
       {/* Onboarding welcome guide shown once after first login */}
       <OnboardingGuide />
+
+      {/* One-time Fire-OS background-playback guidance, shown over the first
+          playback (driven by backgroundPlaybackPromptStore). */}
+      <BackgroundPlaybackPromptModal />
 
       {/* Animated splash renders as an overlay on top of the Stack so the
           navigator is always mounted and ready for auth-based navigation. */}

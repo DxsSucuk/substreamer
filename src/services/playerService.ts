@@ -22,6 +22,7 @@ import {
   type RepeatModeSetting,
 } from '../store/playbackSettingsStore';
 import { offlineModeStore } from '../store/offlineModeStore';
+import { backgroundPlaybackPromptStore } from '../store/backgroundPlaybackPromptStore';
 import { playbackToastStore } from '../store/playbackToastStore';
 import { playerStore } from '../store/playerStore';
 import { sleepTimerStore } from '../store/sleepTimerStore';
@@ -52,6 +53,20 @@ import {
   stampQueueFormat,
 } from './playerHelpers';
 import { logImageCache } from './imageCacheLogger';
+import { isFireOS } from '../utils/isFireOS';
+
+/**
+ * One-time Fire-OS background-playback guidance. Fired the first time the user
+ * starts playback on a Fire tablet. Non-blocking — it only flips store state (a
+ * root modal renders over the now-playing playback); playback proceeds normally.
+ * No-op off Fire OS and after it has been shown once. Marking `seen` happens
+ * inside the store up-front, so it appears at most once even across restarts.
+ */
+function maybePromptFireBackgroundPlayback(): void {
+  if (!isFireOS()) return;
+  if (backgroundPlaybackPromptStore.getState().seen) return;
+  backgroundPlaybackPromptStore.getState().markSeenAndShow();
+}
 
 /* ------------------------------------------------------------------ */
 /*  Module state                                                       */
@@ -941,6 +956,10 @@ export async function playTrack(
   // overwritten.
   await awaitHydration();
 
+  // First user-initiated play on a Fire tablet → surface the one-time
+  // background-playback guidance over the audio (non-blocking).
+  maybePromptFireBackgroundPlayback();
+
   resetScrobbleCoordination();
   isSettingQueue = true;
   positionOffset = 0;
@@ -1007,6 +1026,9 @@ export async function togglePlayPause(): Promise<void> {
   if (state.state === State.Playing) {
     await TrackPlayer.pause();
   } else {
+    // Covers a returning user resuming a restored queue via the mini-player —
+    // they may never go through playTrack. One-time, Fire-only, non-blocking.
+    maybePromptFireBackgroundPlayback();
     await TrackPlayer.play();
   }
 }

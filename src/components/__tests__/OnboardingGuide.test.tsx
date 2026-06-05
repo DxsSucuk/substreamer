@@ -1,6 +1,7 @@
 jest.mock('../../store/persistence/kvStorage', () => require('../../store/persistence/__mocks__/kvStorage'));
 
 import React from 'react';
+import { Platform } from 'react-native';
 import { act, fireEvent, render } from '@testing-library/react-native';
 
 import { onboardingStore } from '../../store/onboardingStore';
@@ -59,9 +60,22 @@ describe('OnboardingGuide', () => {
     const { toJSON } = render(<OnboardingGuide />);
     // Find the dots container — 3 dots for 3 slides
     const json = JSON.stringify(toJSON());
-    // Active dot has width 24, inactive dots have width 8
+    // Active dot has width 24, inactive dots have width 8. Android appends an
+    // extra background-playback slide, so it has one more (inactive) dot.
+    const inactiveDots = Platform.OS === 'android' ? 3 : 2;
     expect((json.match(/"width":24/g) || []).length).toBe(1);
-    expect((json.match(/"width":8/g) || []).length).toBe(2);
+    expect((json.match(/"width":8/g) || []).length).toBe(inactiveDots);
+  });
+
+  it('includes the background-playback slide on Android only', () => {
+    onboardingStore.setState({ visible: true });
+    const { queryByText } = render(<OnboardingGuide />);
+    if (Platform.OS === 'android') {
+      expect(queryByText('musical-notes-outline')).toBeTruthy();
+      expect(queryByText('Background Playback')).toBeTruthy();
+    } else {
+      expect(queryByText('musical-notes-outline')).toBeNull();
+    }
   });
 
   it('re-renders when store visibility changes', () => {

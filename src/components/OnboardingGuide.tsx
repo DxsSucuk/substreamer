@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import {
   FlatList,
   Modal,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -43,6 +44,19 @@ const SLIDES: Slide[] = [
     bodyKey: 'onboardingCustomiseBody',
   },
 ];
+
+/**
+ * Android-only extra slide: points users to Settings → Background Playback if
+ * music stops when the screen is off / the app is backgrounded. Surfaces the
+ * battery-optimization exemption broadly (Fire OS users also get a one-time
+ * prompt on first play; this covers all Android). Not shown on iOS, which has
+ * no equivalent setting.
+ */
+const ANDROID_BACKGROUND_SLIDE: Slide = {
+  icon: 'musical-notes-outline',
+  headlineKey: 'onboardingBackgroundHeadline',
+  bodyKey: 'onboardingBackgroundBody',
+};
 
 /* ------------------------------------------------------------------ */
 /*  Dot indicator                                                      */
@@ -95,18 +109,24 @@ export const OnboardingGuide = memo(function OnboardingGuide() {
   const cardWidth = Math.min(screenWidth - CARD_HORIZONTAL_MARGIN * 2, CARD_MAX_WIDTH);
   const slideWidth = cardWidth;
 
+  // Append the background-playback slide on Android only.
+  const slides = useMemo(
+    () => (Platform.OS === 'android' ? [...SLIDES, ANDROID_BACKGROUND_SLIDE] : SLIDES),
+    [],
+  );
+
   const handleDismiss = useCallback(() => {
     onboardingStore.getState().dismiss();
     setActiveIndex(0);
   }, []);
 
   const handleNext = useCallback(() => {
-    if (activeIndex < SLIDES.length - 1) {
+    if (activeIndex < slides.length - 1) {
       listRef.current?.scrollToIndex({ index: activeIndex + 1, animated: true });
     } else {
       handleDismiss();
     }
-  }, [activeIndex, handleDismiss]);
+  }, [activeIndex, handleDismiss, slides.length]);
 
   const viewabilityConfig = useRef({ viewAreaCoveragePercentThreshold: 50 }).current;
 
@@ -146,7 +166,7 @@ export const OnboardingGuide = memo(function OnboardingGuide() {
 
   const keyExtractor = useCallback((_: Slide, index: number) => String(index), []);
 
-  const isLastSlide = activeIndex === SLIDES.length - 1;
+  const isLastSlide = activeIndex === slides.length - 1;
 
   if (!visible) return null;
 
@@ -170,7 +190,7 @@ export const OnboardingGuide = memo(function OnboardingGuide() {
               .claude/rules/react-components.md for the documented carveout. */}
           <FlatList
             ref={listRef}
-            data={SLIDES}
+            data={slides}
             renderItem={renderItem}
             keyExtractor={keyExtractor}
             horizontal
@@ -186,7 +206,7 @@ export const OnboardingGuide = memo(function OnboardingGuide() {
 
           {/* Dots */}
           <Dots
-            count={SLIDES.length}
+            count={slides.length}
             activeIndex={activeIndex}
             activeColor={colors.primary}
             inactiveColor={colors.border}
