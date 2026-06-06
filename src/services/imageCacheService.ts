@@ -35,7 +35,6 @@ import {
 } from '../store/imageCacheStore';
 import { authStore } from '../store/authStore';
 import { connectivityStore } from '../store/connectivityStore';
-import { imageCacheDiagnosticsStore } from '../store/imageCacheDiagnosticsStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { fireAndForget } from '../utils/fireAndForget';
 import {
@@ -46,7 +45,6 @@ import {
   deleteCachedImagesForCoverArt,
   findIncompleteCovers,
   getAllCachedCoverArtIds,
-  getCachedImagesForCoverArt,
   getCachedImagesForCoverArtAsync,
   hasCachedImage as dbHasCachedImage,
   hydrateImageCacheAggregates,

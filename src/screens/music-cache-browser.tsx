@@ -27,7 +27,6 @@ import {
   type SwipeAction,
 } from '../components/SwipeableRow';
 import { useTheme } from '../hooks/useTheme';
-import { ThemedAlert } from '../components/ThemedAlert';
 import { useThemedAlert } from '../hooks/useThemedAlert';
 import {
   clearDownloadQueue,

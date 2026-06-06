@@ -40,7 +40,7 @@ export const RepeatButton = memo(function RepeatButton({ size = ICON_SIZE }: Rep
       ]}
     >
       <View style={styles.iconWrap}>
-        <Ionicons name="repeat" size={ICON_SIZE} color={iconColor} />
+        <Ionicons name="repeat" size={size} color={iconColor} />
         {repeatMode === 'one' && (
           <View style={[styles.badge, { backgroundColor: colors.primary }]}>
             <Text

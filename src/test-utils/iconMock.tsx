@@ -12,7 +12,6 @@
  * no longer installed).
  */
 
-import React from 'react';
 import { Text } from 'react-native';
 
 interface IconStubProps {

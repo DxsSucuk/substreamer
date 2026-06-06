@@ -239,7 +239,7 @@ export function ArtistDetailScreen() {
   const albumKeyExtractor = useCallback((item: AlbumID3) => item.id, []);
 
   const topSongsRenderItem = useCallback(
-    ({ item, index }: { item: Child; index: number }) => (
+    ({ item }: { item: Child }) => (
       <SongCard
         song={item}
         width={CARD_WIDTH}

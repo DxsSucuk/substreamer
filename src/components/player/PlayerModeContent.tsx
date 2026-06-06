@@ -47,7 +47,6 @@ export const PlayerModeContent = memo(function PlayerModeContent({
   currentTrackIndex,
   colors,
   queueColors,
-  offlineMode,
   onQueueItemPress,
   onQueueItemLongPress,
   onShareQueue,

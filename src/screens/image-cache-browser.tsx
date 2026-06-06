@@ -24,7 +24,6 @@ import { SwipeableRow, type SwipeAction } from '../components/SwipeableRow';
 import { useRefreshControlKey } from '../hooks/useRefreshControlKey';
 import { useTransitionComplete } from '../hooks/useTransitionComplete';
 import { useTheme } from '../hooks/useTheme';
-import { ThemedAlert } from '../components/ThemedAlert';
 import { useThemedAlert } from '../hooks/useThemedAlert';
 import {
   clearImageCache,

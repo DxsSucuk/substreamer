@@ -15,7 +15,6 @@ import {
   classifyAudio,
   formatAudioDetails,
   getQualityColor,
-  type AudioQualityTier,
 } from '../utils/audioFormat';
 import { hexWithAlpha } from '../utils/colors';
 

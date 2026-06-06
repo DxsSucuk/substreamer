@@ -19,7 +19,6 @@ import { GradientBackground } from '../components/GradientBackground';
 import { BottomChrome } from '../components/BottomChrome';
 import { settingsStyles } from '../styles/settingsStyles';
 import { SwipeableRow, type SwipeAction } from '../components/SwipeableRow';
-import { ThemedAlert } from '../components/ThemedAlert';
 import { useRefreshControlKey } from '../hooks/useRefreshControlKey';
 import { useTheme } from '../hooks/useTheme';
 import { useThemedAlert } from '../hooks/useThemedAlert';

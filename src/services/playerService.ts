@@ -21,7 +21,6 @@ import {
   type PlaybackRate,
   type RepeatModeSetting,
 } from '../store/playbackSettingsStore';
-import { offlineModeStore } from '../store/offlineModeStore';
 import { backgroundPlaybackPromptStore } from '../store/backgroundPlaybackPromptStore';
 import { playbackToastStore } from '../store/playbackToastStore';
 import { playerStore } from '../store/playerStore';

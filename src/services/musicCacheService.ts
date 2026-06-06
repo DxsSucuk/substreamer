@@ -63,8 +63,6 @@ import {
   prefetchCoverArt,
 } from './imageCacheService';
 import {
-  coverArtIdForAlbum,
-  coverArtIdForPlaylist,
   coverArtIdForSong,
 } from '../utils/coverArtId';
 
@@ -666,46 +664,6 @@ export async function forceRecoverDownloadsAsync(): Promise<void> {
 export function getLocalTrackUri(trackId: string): string | null {
   if (!trackId) return null;
   return trackUriMap.get(trackId) ?? null;
-}
-
-/**
- * Rename a downloaded song's file on disk to match a new song_id. Used
- * by the stale-ID recovery flow (#146): when the server reindexes a
- * track and gives it a new ID, the file is unchanged but its filename
- * (which embeds the song_id) needs to move so future `getLocalTrackUri`
- * lookups by the new ID resolve to the on-disk file.
- *
- * Returns:
- *   - 'renamed'   — file was on disk and successfully moved
- *   - 'missing'   — no file at the old path (nothing to do; not an error)
- *   - 'failed'    — exception while renaming (file remains at old path)
- *
- * Also updates the in-memory `trackUriMap` so the change is visible
- * without a full rehydrate.
- */
-export async function renameCachedSongFile(
-  albumId: string,
-  oldId: string,
-  newId: string,
-  suffix: string,
-): Promise<'renamed' | 'missing' | 'failed'> {
-  if (oldId === newId) return 'missing';
-  const safeAlbumId = albumId || UNKNOWN_ALBUM_ID;
-  const albumDir = new Directory(ensureCacheDir(), safeAlbumId);
-  const oldFile = new File(albumDir, `${oldId}.${suffix}`);
-  if (!oldFile.exists) return 'missing';
-  const newFile = new File(albumDir, `${newId}.${suffix}`);
-  try {
-    // Await so a move failure is caught here (returns 'failed') rather than
-    // surfacing as an unhandled rejection while we wrongly report 'renamed'.
-    await oldFile.move(newFile);
-    // Refresh the in-memory map so subsequent getLocalTrackUri(newId) hits.
-    trackUriMap.delete(oldId);
-    trackUriMap.set(newId, newFile.uri);
-    return 'renamed';
-  } catch {
-    return 'failed';
-  }
 }
 
 /** Check whether an album / playlist / favorites / song item is cached. */
