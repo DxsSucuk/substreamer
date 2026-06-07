@@ -143,6 +143,10 @@ async function pingServer(): Promise<void> {
 
   const api = getApiUnchecked();
   if (!api) {
+    // No API yet (not logged in / no credentials). Unblock any awaitFirstPing
+    // waiters so they re-check store state and bail rather than hanging forever,
+    // then retry.
+    resolveFirstPing();
     schedulePing();
     return;
   }

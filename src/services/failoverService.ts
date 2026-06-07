@@ -47,6 +47,9 @@ let primarySuccessStreak = 0;
 let recoveryTimer: ReturnType<typeof setTimeout> | null = null;
 let lastSwitchAt = 0;
 let switchInFlight = false;
+/** Latest switch intent that arrived while a switch was in flight (replayed
+ *  on completion so the newest failover decision isn't dropped). */
+let pendingSwitch: { target: ServerSlot; cause: SwitchCause } | null = null;
 
 /* ------------------------------------------------------------------ */
 /*  Public API                                                          */
@@ -64,7 +67,12 @@ export async function switchToServer(
   target: ServerSlot,
   cause: SwitchCause,
 ): Promise<void> {
-  if (switchInFlight) return;
+  if (switchInFlight) {
+    // A switch is already running. Record the latest intent (newest wins) so it
+    // isn't silently dropped — the in-flight switch replays it on completion.
+    pendingSwitch = { target, cause };
+    return;
+  }
   const auth = authStore.getState();
   if (auth.activeServer === target) return;
   const targetUrl =
@@ -98,6 +106,13 @@ export async function switchToServer(
     }
   } finally {
     switchInFlight = false;
+    // Replay the newest intent that arrived mid-switch, if it still differs from
+    // where we landed.
+    const next = pendingSwitch;
+    pendingSwitch = null;
+    if (next && authStore.getState().activeServer !== next.target) {
+      void switchToServer(next.target, next.cause);
+    }
   }
 }
 
