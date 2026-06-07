@@ -183,6 +183,13 @@ async function recoverTranscodedStream(adjustedPosition: number): Promise<void> 
     const newUrl = getStreamUrl(child.id, timeOffset);
     if (!newUrl) return;
 
+    // Re-verify the track we began recovering is STILL the active one. A user
+    // skip during the awaits above would otherwise reload this track's
+    // recovered URL onto whatever is now playing. Use the freshly-fetched track
+    // as the load base, not the stale snapshot.
+    const stillActive = await TrackPlayer.getActiveTrack();
+    if (stillActive?.id !== child.id) return;
+
     // Set offset BEFORE load so event handlers know we're recovering.
     positionOffset = adjustedPosition;
 
@@ -191,7 +198,7 @@ async function recoverTranscodedStream(adjustedPosition: number): Promise<void> 
     isFullyBuffered = false;
 
     await TrackPlayer.load({
-      ...activeTrack,
+      ...stillActive,
       url: newUrl,
     });
     await TrackPlayer.play();
@@ -358,8 +365,16 @@ export async function initPlayer(): Promise<void> {
     if (!store.retrying) {
       store.setError(message);
       store.setRetrying(true);
+      // Capture the track this error belongs to. If the user skips / clears /
+      // replaces the queue during the delay, the deferred retry would fire
+      // against a different track — bail instead.
+      const retryTrackId = store.currentTrack?.id;
       // Brief delay before retrying to let transient issues settle.
       await new Promise((r) => setTimeout(r, 1500));
+      if (playerStore.getState().currentTrack?.id !== retryTrackId) {
+        playerStore.getState().setRetrying(false);
+        return;
+      }
       try {
         await TrackPlayer.retry();
         // If retry succeeds, the PlaybackState -> Playing handler clears
@@ -1389,7 +1404,10 @@ export async function playSongNext(song: Child): Promise<void> {
   newQueue.splice(insertBefore, 0, ...playable);
   currentChildQueue = newQueue;
   playerStore.getState().setQueue(currentChildQueue);
-  persistQueue(currentChildQueue, currentIndex);
+  // Re-read the index AFTER the awaited TrackPlayer.add: an auto-advance during
+  // the await would have moved the active track, so persisting the snapshot
+  // taken before the await could resume at the wrong position.
+  persistQueue(currentChildQueue, playerStore.getState().currentTrackIndex ?? 0);
 }
 
 /**
