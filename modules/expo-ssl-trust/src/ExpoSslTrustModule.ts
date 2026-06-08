@@ -2,6 +2,7 @@ import { requireNativeModule } from 'expo-modules-core';
 
 import {
   type CertificateInfo,
+  type ProxyInfo,
   type TrustedCert,
   type TrustStoreInstallStatus,
 } from './ExpoSslTrust';
@@ -14,6 +15,9 @@ interface ExpoSslTrustNative {
   removeTrustedCertificate(hostname: string): Promise<void>;
   getTrustedCertificates(): Promise<TrustedCert[]>;
   isCertificateTrusted(hostname: string): Promise<boolean>;
+  /** iOS-only local reverse proxy. Android resolves these via stubs (no proxy). */
+  syncProxyUpstreams(baseUrls: string[]): Promise<ProxyInfo | null>;
+  getProxyInfo(): Promise<ProxyInfo | null>;
 }
 
 // Load the native module from JSI. If the native module is not available
@@ -41,6 +45,8 @@ try {
     removeTrustedCertificate: noop,
     getTrustedCertificates: () => Promise.resolve([]),
     isCertificateTrusted: () => Promise.resolve(false),
+    syncProxyUpstreams: () => Promise.resolve(null),
+    getProxyInfo: () => Promise.resolve(null),
   };
 }
 

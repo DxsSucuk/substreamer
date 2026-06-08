@@ -76,5 +76,34 @@ public class ExpoSslTrustModule: Module {
             let trusted = SslTrustStore.shared.isCertificateTrusted(hostname: hostname)
             promise.resolve(trusted)
         }
+
+        // Reconcile the local reverse proxy's upstreams with the app's
+        // configured server base URLs. Only URLs whose host has a trusted
+        // self-signed cert are proxied; everything else connects directly.
+        // Returns `{ port, upstreams: [{ baseUrl, token }] }` or null when no
+        // upstream needs proxying. iOS only — Android has no proxy (its
+        // OkHttp/TrustManager path handles trust at the HTTP layer).
+        AsyncFunction("syncProxyUpstreams") { (baseUrls: [String], promise: Promise) in
+            SslTrustStore.shared.initialize()
+            let trusted = baseUrls.filter { url in
+                guard let host = URL(string: url)?.host else { return false }
+                return SslTrustStore.shared.isCertificateTrusted(hostname: host)
+            }
+            for url in trusted { _ = SslTrustProxy.shared.register(baseUrl: url) }
+            SslTrustProxy.shared.retainOnly(trusted)
+            if trusted.isEmpty {
+                SslTrustProxy.shared.stop()
+                promise.resolve(NSNull())
+            } else {
+                promise.resolve(SslTrustProxy.shared.ensureRunningAndWait() ?? NSNull())
+            }
+        }
+
+        // Current proxy info (live port + token map). Restarts the listener if
+        // it dropped (e.g. after a background suspend), so the JS cache can be
+        // refreshed on foreground. Null when nothing is registered.
+        AsyncFunction("getProxyInfo") { (promise: Promise) in
+            promise.resolve(SslTrustProxy.shared.ensureRunningAndWait() ?? NSNull())
+        }
     }
 }

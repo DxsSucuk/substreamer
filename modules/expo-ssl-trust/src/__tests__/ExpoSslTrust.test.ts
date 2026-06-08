@@ -1,3 +1,5 @@
+import { Platform } from 'react-native';
+
 import ExpoSslTrustModule from '../ExpoSslTrustModule';
 import {
   getCertificateInfo,
@@ -8,6 +10,9 @@ import {
   initTrustStore,
   getInstallStatus,
   isSSLError,
+  resolveServerBase,
+  refreshProxyUpstreams,
+  __setProxyInfoForTests,
 } from '../ExpoSslTrust';
 
 import type {
@@ -165,6 +170,66 @@ describe('isCertificateTrusted', () => {
     const result = await isCertificateTrusted('unknown.host');
 
     expect(result).toBe(false);
+  });
+});
+
+// -- Local reverse proxy: resolveServerBase / refreshProxyUpstreams --
+
+describe('resolveServerBase', () => {
+  const isIOS = Platform.OS === 'ios';
+
+  afterEach(() => __setProxyInfoForTests(null));
+
+  it('returns the input unchanged when no proxy info is cached', () => {
+    __setProxyInfoForTests(null);
+    expect(resolveServerBase('https://music.example.com')).toBe('https://music.example.com');
+  });
+
+  it('rewrites a registered host to the loopback proxy (iOS) / identity (Android)', () => {
+    __setProxyInfoForTests({
+      port: 50555,
+      upstreams: [{ baseUrl: 'https://music.example.com', token: 'tok123' }],
+    });
+    const result = resolveServerBase('https://music.example.com');
+    expect(result).toBe(isIOS ? 'http://127.0.0.1:50555/tok123' : 'https://music.example.com');
+  });
+
+  it('returns identity for an unregistered host even while the proxy runs', () => {
+    __setProxyInfoForTests({
+      port: 50555,
+      upstreams: [{ baseUrl: 'https://music.example.com', token: 'tok123' }],
+    });
+    expect(resolveServerBase('https://other.example.com')).toBe('https://other.example.com');
+  });
+
+  it('matches by scheme+host+port regardless of case (iOS)', () => {
+    __setProxyInfoForTests({
+      port: 1,
+      upstreams: [{ baseUrl: 'https://Music.Example.com:4533', token: 't' }],
+    });
+    const out = resolveServerBase('https://music.example.com:4533');
+    expect(out).toBe(isIOS ? 'http://127.0.0.1:1/t' : 'https://music.example.com:4533');
+  });
+
+  it('does NOT match a different port (a plain-HTTP secondary stays direct)', () => {
+    __setProxyInfoForTests({
+      port: 1,
+      upstreams: [{ baseUrl: 'https://music.example.com:443', token: 't' }],
+    });
+    // Same host, different scheme/port → not the registered self-signed upstream.
+    expect(resolveServerBase('http://music.example.com:8080')).toBe('http://music.example.com:8080');
+  });
+});
+
+describe('refreshProxyUpstreams', () => {
+  it('is a no-op on Android; delegates to native on iOS', async () => {
+    mockModule.syncProxyUpstreams.mockResolvedValue(null);
+    await refreshProxyUpstreams(['https://music.example.com']);
+    if (Platform.OS === 'ios') {
+      expect(mockModule.syncProxyUpstreams).toHaveBeenCalledWith(['https://music.example.com']);
+    } else {
+      expect(mockModule.syncProxyUpstreams).not.toHaveBeenCalled();
+    }
   });
 });
 

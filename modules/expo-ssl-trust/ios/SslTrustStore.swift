@@ -45,7 +45,6 @@ class SslTrustStore: NSObject {
     func initialize() {
         guard !isInitialized else { return }
         load()
-        installURLProtocol()
         isInitialized = true
     }
     
@@ -153,14 +152,6 @@ class SslTrustStore: NSObject {
             _ = CC_SHA256(bytes.baseAddress, CC_LONG(data.count), &hash)
         }
         return hash.map { String(format: "%02X", $0) }.joined(separator: ":")
-    }
-    
-    // MARK: - URLProtocol Installation
-    
-    /// Install our custom URLProtocol to intercept HTTPS requests.
-    /// This works for NSURLSession-based networking in React Native.
-    private func installURLProtocol() {
-        URLProtocol.registerClass(SslTrustURLProtocol.self)
     }
     
     // MARK: - Certificate DER Data Storage (for AVPlayer)

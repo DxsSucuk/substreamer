@@ -14,4 +14,6 @@ export default {
   removeTrustedCertificate: jest.fn().mockResolvedValue(undefined),
   getTrustedCertificates: jest.fn().mockResolvedValue([]),
   isCertificateTrusted: jest.fn().mockResolvedValue(false),
+  syncProxyUpstreams: jest.fn().mockResolvedValue(null),
+  getProxyInfo: jest.fn().mockResolvedValue(null),
 };

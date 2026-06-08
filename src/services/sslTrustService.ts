@@ -1,10 +1,28 @@
+import { AppState } from 'react-native';
+
 import {
   initTrustStore,
   trustCertificate as nativeTrustCertificate,
   removeTrustedCertificate as nativeRemoveTrustedCertificate,
+  refreshProxyUpstreams,
+  refreshProxyInfo,
 } from '../../modules/expo-ssl-trust/src';
+import { authStore } from '../store/authStore';
 import { sslCertStore } from '../store/sslCertStore';
 import { fireAndForget } from '../utils/fireAndForget';
+
+/**
+ * Reconcile the iOS local reverse proxy with the app's configured server URLs.
+ * The native side proxies only the ones whose host has a trusted self-signed
+ * cert; everything else connects directly. No-op on Android.
+ */
+async function syncProxyUpstreams(): Promise<void> {
+  const { serverUrl, primaryServerUrl, secondaryServerUrl } = authStore.getState();
+  const urls = [serverUrl, primaryServerUrl, secondaryServerUrl].filter(
+    (u): u is string => !!u,
+  );
+  await refreshProxyUpstreams([...new Set(urls)]);
+}
 
 let initialized = false;
 let nativeInstalled = false;
@@ -27,16 +45,27 @@ export function initSslTrustStore(): void {
   if (initialized) return;
   initialized = true;
 
+  // The local proxy's listener can drop while the app is suspended (no audio
+  // playing); refresh the cached port when we return to the foreground so the
+  // next request hits the live port. No-op on Android / when no proxy runs.
+  AppState.addEventListener('change', (state) => {
+    if (state === 'active') fireAndForget(refreshProxyInfo(), 'sslTrust.refreshProxyInfo');
+  });
+
   const { trustedCerts } = sslCertStore.getState();
   if (Object.keys(trustedCerts).length === 0) {
     // No persisted certs → no need to touch native JSSE wiring at all.
     return;
   }
 
-  // Persisted certs present — install eagerly and sync them.
+  // Persisted certs present — install eagerly, sync them, and prime the proxy
+  // so the first request after a cold start (iOS self-signed) is routed.
   fireAndForget(
     ensureNativeTrustStoreInstalled().then((ok) => {
-      if (ok) fireAndForget(syncToNative(), 'sslTrust.syncToNative');
+      if (ok) {
+        fireAndForget(syncToNative(), 'sslTrust.syncToNative');
+        fireAndForget(syncProxyUpstreams(), 'sslTrust.syncProxyUpstreams');
+      }
     }),
     'sslTrust.ensureInstalled',
   );
@@ -117,6 +146,10 @@ export async function trustCertificateForHost(
   } catch (err) {
     console.warn(`[sslTrustService] Failed to push cert for ${hostname}:`, err);
   }
+
+  // (iOS) register/refresh the local proxy now this host is trusted so the
+  // login retry + subsequent requests are routed through it.
+  fireAndForget(syncProxyUpstreams(), 'sslTrust.syncProxyUpstreams');
 }
 
 /**
@@ -129,6 +162,8 @@ export async function removeTrustForHost(hostname: string): Promise<void> {
   } catch (err) {
     console.warn(`[sslTrustService] Failed to remove cert for ${hostname}:`, err);
   }
+  // (iOS) drop this host from the proxy so we no longer route through it.
+  fireAndForget(syncProxyUpstreams(), 'sslTrust.syncProxyUpstreams');
 }
 
 /**

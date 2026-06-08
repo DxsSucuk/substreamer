@@ -15,6 +15,7 @@ import SubsonicAPI, {
   type StructuredLyrics,
 } from 'subsonic-api';
 
+import { resolveServerBase, refreshProxyUpstreams } from '../../modules/expo-ssl-trust/src';
 import i18n from '../i18n/i18n';
 
 import { authStore } from '../store/authStore';
@@ -62,7 +63,19 @@ export async function login(
   password: string,
   legacyAuth = false
 ): Promise<LoginResult> {
-  const url = normalizeServerUrl(serverUrl);
+  const norm = normalizeServerUrl(serverUrl);
+  // Prime the iOS proxy: if this host (or an already-configured failover host)
+  // has a trusted self-signed cert, register it so the post-trust login retry
+  // is routed through the loopback proxy. No-op on Android / for CA certs.
+  const { primaryServerUrl, secondaryServerUrl } = authStore.getState();
+  const proxyUrls = [
+    norm,
+    primaryServerUrl ? normalizeServerUrl(primaryServerUrl) : null,
+    secondaryServerUrl ? normalizeServerUrl(secondaryServerUrl) : null,
+  ].filter((u): u is string => !!u);
+  await refreshProxyUpstreams([...new Set(proxyUrls)]);
+
+  const url = resolveServerBase(norm);
   const api = new SubsonicAPI({
     url,
     auth: { username: username.trim(), password },
@@ -130,12 +143,15 @@ export function getApiUnchecked(): SubsonicAPI | null {
   if (!isLoggedIn || !serverUrl || !username || !password) {
     return null;
   }
-  const key = `${normalizeServerUrl(serverUrl)}|${username}|${legacyAuth}`;
+  // Key on the RESOLVED base so a proxy port change (listener restart after a
+  // background suspend) invalidates the cached client. Identity on Android / CA.
+  const resolvedBase = resolveServerBase(normalizeServerUrl(serverUrl));
+  const key = `${resolvedBase}|${username}|${legacyAuth}`;
   if (cachedKey === key && cachedApi) {
     return cachedApi;
   }
   cachedApi = new SubsonicAPI({
-    url: normalizeServerUrl(serverUrl),
+    url: resolvedBase,
     auth: { username, password },
     legacyAuth,
     reuseSalt: true,
@@ -169,7 +185,7 @@ export function buildPingApi(url: string): SubsonicAPI | null {
   const { username, password, legacyAuth } = authStore.getState();
   if (!username || !password) return null;
   return new SubsonicAPI({
-    url: normalizeServerUrl(url),
+    url: resolveServerBase(normalizeServerUrl(url)),
     auth: { username, password },
     legacyAuth,
     reuseSalt: true,
@@ -248,7 +264,7 @@ export function getCoverArtUrl(
   if (!coverArtId || !isLoggedIn || !serverUrl || !username) return null;
   if (cachedCoverArtKey === null || !cachedCoverArtToken) return null;
   if (offlineModeStore.getState().offlineMode) return null;
-  const base = `${normalizeServerUrl(serverUrl)}/rest/getCoverArt.view`;
+  const base = `${resolveServerBase(normalizeServerUrl(serverUrl))}/rest/getCoverArt.view`;
   const params = new URLSearchParams({
     id: coverArtId,
     v: '1.15.0',
@@ -299,7 +315,7 @@ export function getStreamUrl(
   if (!trackId || !isLoggedIn || !serverUrl || !username) return null;
   if (cachedCoverArtKey === null || !cachedCoverArtToken) return null;
   if (offlineModeStore.getState().offlineMode) return null;
-  const base = `${normalizeServerUrl(serverUrl)}/rest/stream.view`;
+  const base = `${resolveServerBase(normalizeServerUrl(serverUrl))}/rest/stream.view`;
   const params = new URLSearchParams({
     id: trackId,
     v: '1.15.0',
@@ -333,7 +349,7 @@ export function getDownloadStreamUrl(trackId: string): string | null {
   const { isLoggedIn, serverUrl, username } = authStore.getState();
   if (!trackId || !isLoggedIn || !serverUrl || !username) return null;
   if (cachedCoverArtKey === null || !cachedCoverArtToken) return null;
-  const base = `${normalizeServerUrl(serverUrl)}/rest/stream.view`;
+  const base = `${resolveServerBase(normalizeServerUrl(serverUrl))}/rest/stream.view`;
   const params = new URLSearchParams({
     id: trackId,
     v: '1.15.0',
