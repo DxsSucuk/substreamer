@@ -4,6 +4,7 @@ import {
   initTrustStore,
   trustCertificate as nativeTrustCertificate,
   removeTrustedCertificate as nativeRemoveTrustedCertificate,
+  getTrustedCertificates as nativeGetTrustedCertificates,
   refreshProxyUpstreams,
   refreshProxyInfo,
 } from '../../modules/expo-ssl-trust/src';
@@ -176,16 +177,24 @@ export async function removeTrustForHost(hostname: string): Promise<void> {
  * `sslCertStore` is reset separately by `resetAllStores`, but the native
  * `SslTrustStore` (what the iOS URLProtocol swizzle / Android OkHttp actually
  * read) and the proxy upstreams are not — without this the device keeps
- * trusting the self-signed cert after logout. Pass the trusted hostnames
- * captured BEFORE the JS store is wiped. Never rejects (best-effort).
+ * trusting the self-signed cert after logout.
+ *
+ * Queries the NATIVE store as the source of truth (it may hold certs the JS
+ * store no longer lists — e.g. orphaned by a logout from before this existed)
+ * and removes each. Never rejects (best-effort).
  */
-export async function clearNativeTrust(hostnames: string[]): Promise<void> {
-  for (const hostname of hostnames) {
-    try {
-      await nativeRemoveTrustedCertificate(hostname);
-    } catch (err) {
-      console.warn(`[sslTrustService] logout: failed to clear native cert ${hostname}:`, err);
+export async function clearAllNativeTrust(): Promise<void> {
+  try {
+    const certs = await nativeGetTrustedCertificates();
+    for (const cert of certs) {
+      try {
+        await nativeRemoveTrustedCertificate(cert.hostname);
+      } catch (err) {
+        console.warn(`[sslTrustService] logout: failed to clear native cert ${cert.hostname}:`, err);
+      }
     }
+  } catch (err) {
+    console.warn('[sslTrustService] logout: failed to read native trust store:', err);
   }
   // Stop the iOS streaming proxy (no upstreams remain). No-op on Android.
   try {
