@@ -16,7 +16,6 @@ import TrackPlayer, {
 
 import { type EffectiveFormat } from '../types/audio';
 import {
-  PLAYBACK_RATES,
   playbackSettingsStore,
   type PlaybackRate,
   type RepeatModeSetting,
@@ -1502,19 +1501,13 @@ export async function cycleRepeatMode(): Promise<void> {
 }
 
 /**
- * Cycle the playback rate through the predefined steps.
- *
- * 0.5 → 0.75 → 1 → 1.25 → 1.5 → 2 → 0.5 …
- *
- * Updates both the persisted store and the native RNTP player.
+ * Set the playback rate (persisted store + native RNTP player). Used by the
+ * speed picker; the store update is synchronous so the UI reflects the new
+ * rate immediately while the native call settles.
  */
-export async function cyclePlaybackRate(): Promise<void> {
-  const current = playbackSettingsStore.getState().playbackRate;
-  const currentIndex = PLAYBACK_RATES.indexOf(current);
-  const nextIndex = (currentIndex + 1) % PLAYBACK_RATES.length;
-  const next: PlaybackRate = PLAYBACK_RATES[nextIndex];
-  playbackSettingsStore.getState().setPlaybackRate(next);
-  await TrackPlayer.setRate(next);
+export async function applyPlaybackRate(rate: PlaybackRate): Promise<void> {
+  playbackSettingsStore.getState().setPlaybackRate(rate);
+  await TrackPlayer.setRate(rate);
 }
 
 /**

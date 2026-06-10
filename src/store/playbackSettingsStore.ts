@@ -66,6 +66,17 @@ export type RepeatModeSetting = 'off' | 'all' | 'one';
 export const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
 export type PlaybackRate = (typeof PLAYBACK_RATES)[number];
 
+/**
+ * Pitch-correction quality mode applied when playing at non-1x speed:
+ * - none  → no pitch correction (pitch rises with speed / varispeed)
+ * - voice → default built-in processor (iOS timeDomain / Android Sonic)
+ * - music → high-quality music-grade time-stretch (iOS spectral / Android tbd)
+ * NOTE: the backing audio-processing is not wired up yet — this stores the
+ * user's choice; the player will honour it in a follow-up.
+ */
+export const PITCH_CORRECTION_MODES = ['none', 'voice', 'music'] as const;
+export type PitchCorrection = (typeof PITCH_CORRECTION_MODES)[number];
+
 /** Supported skip interval durations in seconds. */
 export const SKIP_INTERVALS = [5, 10, 15, 30, 45, 60] as const;
 export type SkipInterval = (typeof SKIP_INTERVALS)[number];
@@ -87,6 +98,8 @@ export interface PlaybackSettingsState {
   repeatMode: RepeatModeSetting;
   /** Playback speed multiplier (1 = normal). */
   playbackRate: PlaybackRate;
+  /** Pitch-correction mode applied at non-1x speed (default 'none'). */
+  pitchCorrection: PitchCorrection;
 
   /** Maximum bitrate for offline downloads. */
   downloadMaxBitRate: MaxBitRate;
@@ -111,6 +124,7 @@ export interface PlaybackSettingsState {
   setEstimateContentLength: (enabled: boolean) => void;
   setRepeatMode: (mode: RepeatModeSetting) => void;
   setPlaybackRate: (rate: PlaybackRate) => void;
+  setPitchCorrection: (mode: PitchCorrection) => void;
   setDownloadMaxBitRate: (bitRate: MaxBitRate) => void;
   setDownloadFormat: (format: StreamFormat) => void;
   setShowSkipIntervalButtons: (show: boolean) => void;
@@ -150,6 +164,7 @@ export const playbackSettingsStore = create<PlaybackSettingsState>()(
       estimateContentLength: Platform.OS === 'android',
       repeatMode: 'off',
       playbackRate: 1,
+      pitchCorrection: 'none',
       downloadMaxBitRate: 320,
       downloadFormat: 'mp3',
       showSkipIntervalButtons: true,
@@ -164,6 +179,7 @@ export const playbackSettingsStore = create<PlaybackSettingsState>()(
       setEstimateContentLength: (estimateContentLength) => set({ estimateContentLength }),
       setRepeatMode: (repeatMode) => set({ repeatMode }),
       setPlaybackRate: (playbackRate) => set({ playbackRate }),
+      setPitchCorrection: (pitchCorrection) => set({ pitchCorrection }),
       setDownloadMaxBitRate: (downloadMaxBitRate) => set({ downloadMaxBitRate }),
       setDownloadFormat: (downloadFormat) => set({ downloadFormat: normalizeFormat(downloadFormat) }),
       setShowSkipIntervalButtons: (showSkipIntervalButtons) => set({ showSkipIntervalButtons }),
@@ -184,6 +200,7 @@ export const playbackSettingsStore = create<PlaybackSettingsState>()(
         estimateContentLength: state.estimateContentLength,
         repeatMode: state.repeatMode,
         playbackRate: state.playbackRate,
+        pitchCorrection: state.pitchCorrection,
         downloadMaxBitRate: state.downloadMaxBitRate,
         downloadFormat: state.downloadFormat,
         showSkipIntervalButtons: state.showSkipIntervalButtons,

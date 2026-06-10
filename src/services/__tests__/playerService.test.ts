@@ -199,7 +199,7 @@ import {
   removeFromQueue,
   removeNonDownloadedTracks,
   cycleRepeatMode,
-  cyclePlaybackRate,
+  applyPlaybackRate,
   shuffleQueue,
   skipByInterval,
   updateRemoteCapabilities,
@@ -914,19 +914,12 @@ describe('cycleRepeatMode', () => {
   });
 });
 
-describe('cyclePlaybackRate', () => {
-  it('cycles through playback rates', async () => {
+describe('applyPlaybackRate', () => {
+  it('sets the store rate and the native player', async () => {
     playbackSettingsStore.setState({ playbackRate: 1 } as any);
-    await cyclePlaybackRate();
-    const newRate = playbackSettingsStore.getState().playbackRate;
-    expect(newRate).toBe(1.25);
-    expect(mockTP.setRate).toHaveBeenCalledWith(1.25);
-  });
-
-  it('wraps around to first rate', async () => {
-    playbackSettingsStore.setState({ playbackRate: 2 } as any);
-    await cyclePlaybackRate();
-    expect(playbackSettingsStore.getState().playbackRate).toBe(0.5);
+    await applyPlaybackRate(1.5);
+    expect(playbackSettingsStore.getState().playbackRate).toBe(1.5);
+    expect(mockTP.setRate).toHaveBeenCalledWith(1.5);
   });
 });
 
