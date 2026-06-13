@@ -1,11 +1,11 @@
-Reset changelog
-Make MiniPlayer and PlayerProgressBar share a single source
-Fill 38 remaining English placeholders in zh-Hans + zh-Hant
-Round-2 defense of Apple-aligned values
-Update translations from Crowdin (#121)
-Full Taiwan Traditional pass from zh-Hans baseline
-Defend Apple-aligned zh-Hans and ru terminology
-Update translations from Crowdin (#120)
-Apple Music / Spotify terminology pass for 6 locales
-Update translations from Crowdin (#119)
-Drop isProcessing guard blocking bulk repair
+New in this release:
+• Playback speed control
+• Server failover with a backup URL
+• Self-signed certificate support
+• Download your entire library
+• Save & restore play-queue bookmarks
+• Share songs, plus Play Next & More Like This
+• New Songs view and faster search
+• Improved tablet portrait player
+
+Smoother scrolling and fewer freezes on large libraries, plus more reliable cover art, offline playback and overall stability — and many bug fixes.
