@@ -1,5 +1,18 @@
 # Changelog
 
+## [8.0.73] - 2026-06-13
+
+- release notes
+- chore(fastlane): refresh store release notes
+- ci: update coverage badge [skip ci]
+- fix(lyrics): crash when app backgrounded with lyrics screen open
+- ci: update coverage badge [skip ci]
+- i18n: cherry-pick new keys from Crowdin PR #162
+- i18n(zh-Hant): pull in translation corrections from #181
+- ci: update coverage badge [skip ci]
+- fix(i18n): drop orphaned albumCacheRefresh keys from locales
+- feat: playback speed picker bottom sheet
+- chore(ios): enable CarPlay audio entitlement (build 157)
 ## [8.0.72] - 2026-06-09
 
 - fix(tuned-in): suppress Jump back in flash before For You renders
