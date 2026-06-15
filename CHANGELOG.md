@@ -1,5 +1,11 @@
 # Changelog
 
+## [8.0.74] - 2026-06-15
+
+- fix(player): remove Android swipe-to-dismiss that blocked now-playing controls
+- ci: update coverage badge [skip ci]
+- chore(deps): bump @shopify/flash-list to 2.3.2 and expo SDK 56 patch releases
+- ci: update coverage badge [skip ci]
 ## [8.0.73] - 2026-06-13
 
 - release notes
