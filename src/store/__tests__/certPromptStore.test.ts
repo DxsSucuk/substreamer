@@ -9,6 +9,7 @@ const MOCK_CERT: CertificateInfo = {
   validTo: '2027-01-01T00:00:00Z',
   serialNumber: '01',
   isSelfSigned: false,
+  isSystemTrusted: false,
 };
 
 beforeEach(() => {

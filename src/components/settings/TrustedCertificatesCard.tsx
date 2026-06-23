@@ -91,6 +91,13 @@ export function TrustedCertificatesCard() {
     setCertFetching(true);
     try {
       const info = await getCertificateInfo(result.url);
+      if (info.isSystemTrusted) {
+        // The device already trusts this cert. Pinning it would do nothing for
+        // security and would needlessly route streaming through the loopback
+        // proxy (and break at the next cert rotation), so refuse it.
+        alert(t('certAlreadyTrustedTitle'), t('certAlreadyTrustedMessage', { hostname: result.hostname }));
+        return;
+      }
       setCertInfo(info);
       setCertHostname(result.hostname);
       setCertModalVisible(true);

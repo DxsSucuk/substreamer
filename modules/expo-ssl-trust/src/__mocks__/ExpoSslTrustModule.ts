@@ -9,6 +9,7 @@ export default {
     validTo: '2026-01-01T00:00:00Z',
     serialNumber: '01',
     isSelfSigned: true,
+    isSystemTrusted: false,
   }),
   trustCertificate: jest.fn().mockResolvedValue(undefined),
   removeTrustedCertificate: jest.fn().mockResolvedValue(undefined),

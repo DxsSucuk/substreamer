@@ -493,6 +493,8 @@
   "certChangedTitle": "Certificate Changed",
   "certDetailsTitle": "Certificate Details",
   "untrustedCertificateTitle": "Untrusted Certificate",
+  "certAlreadyTrustedTitle": "Already Trusted",
+  "certAlreadyTrustedMessage": "Your device already trusts the certificate for {{hostname}}, so there's nothing to add. Pinning it isn't needed and could cause playback to break when the certificate is renewed.",
   "certChangedWarning": "WARNING: The SSL certificate for this server has changed since you last connected. This could indicate a server reconfiguration, but could also mean someone is intercepting your connection. Only proceed if you trust this server.",
   "certValidDescription": "The server at {{hostname}} has a valid certificate signed by a trusted authority. You can add it to your trusted list to pin this specific certificate for extra security.",
   "certUntrustedDescription": "The server at {{hostname}} is presenting a certificate that is not trusted by your device. This is common for self-hosted servers using self-signed certificates. Review the details below before deciding to trust it.",

@@ -58,12 +58,12 @@ export const CertificatePromptModal = memo(function CertificatePromptModal({
           {/* Header */}
           <View style={styles.headerRow}>
             <Ionicons
-              name={isRotation ? 'alert-circle' : isManualAdd && !certInfo.isSelfSigned ? 'shield-checkmark-outline' : 'shield-outline'}
+              name={isRotation ? 'alert-circle' : isManualAdd && certInfo.isSystemTrusted ? 'shield-checkmark-outline' : 'shield-outline'}
               size={28}
-              color={isRotation ? colors.red : isManualAdd && !certInfo.isSelfSigned ? colors.primary : colors.orange}
+              color={isRotation ? colors.red : isManualAdd && certInfo.isSystemTrusted ? colors.primary : colors.orange}
             />
             <Text style={[styles.title, { color: colors.textPrimary }]}>
-              {isRotation ? t('certChangedTitle') : isManualAdd && !certInfo.isSelfSigned ? t('certDetailsTitle') : t('untrustedCertificateTitle')}
+              {isRotation ? t('certChangedTitle') : isManualAdd && certInfo.isSystemTrusted ? t('certDetailsTitle') : t('untrustedCertificateTitle')}
             </Text>
           </View>
 
@@ -71,7 +71,7 @@ export const CertificatePromptModal = memo(function CertificatePromptModal({
             <Text style={[styles.warning, { color: colors.red }]}>
               {t('certChangedWarning')}
             </Text>
-          ) : isManualAdd && !certInfo.isSelfSigned ? (
+          ) : isManualAdd && certInfo.isSystemTrusted ? (
             <Text style={[styles.description, { color: colors.textSecondary }]}>
               {t('certValidDescription', { hostname })}
             </Text>
@@ -148,7 +148,7 @@ export const CertificatePromptModal = memo(function CertificatePromptModal({
             style={({ pressed }) => [
               styles.trustButton,
               {
-                backgroundColor: isRotation ? colors.red : isManualAdd && !certInfo.isSelfSigned ? colors.primary : colors.orange,
+                backgroundColor: isRotation ? colors.red : isManualAdd && certInfo.isSystemTrusted ? colors.primary : colors.orange,
               },
               pressed && styles.buttonPressed,
             ]}

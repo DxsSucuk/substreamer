@@ -17,6 +17,11 @@ export interface CertificateInfo {
   serialNumber: string;
   /** Whether the certificate is self-signed (subject === issuer) */
   isSelfSigned: boolean;
+  /** Whether the device already trusts this cert (full chain + hostname + dates),
+   *  evaluated natively on both platforms (iOS `SecTrustEvaluateWithError`,
+   *  Android default trust-manager handshake). When true the app must NOT pin it —
+   *  pinning a system-trusted cert needlessly forces streaming onto the proxy. */
+  isSystemTrusted: boolean;
 }
 
 export interface TrustedCert {

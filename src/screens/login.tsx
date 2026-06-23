@@ -114,6 +114,12 @@ export function LoginScreen() {
       }
       const hostname = extractHostname(url);
       const info = await getCertificateInfo(normalized);
+      if (info.isSystemTrusted) {
+        // The device already trusts this cert — pinning it does nothing for
+        // security and would needlessly route traffic through the trust proxy.
+        setError(t('certAlreadyTrustedMessage', { hostname }));
+        return;
+      }
       setCertInfo(info);
       setCertHostname(hostname);
       setIsCertRotation(false);
@@ -191,6 +197,14 @@ export function LoginScreen() {
       try {
         const hostname = extractHostname(url);
         const info = await getCertificateInfo(url);
+        if (info.isSystemTrusted) {
+          // Valid, system-trusted cert: the login failure wasn't a trust issue
+          // (likely a transient drop mis-reported as -1005 on iOS). Don't offer
+          // to pin a cert the OS already trusts — surface the original error.
+          setLoading(false);
+          setError(errorMsg);
+          return;
+        }
         const isRotation = errorMsg.includes('CERT_FINGERPRINT_MISMATCH');
 
         setCertInfo(info);

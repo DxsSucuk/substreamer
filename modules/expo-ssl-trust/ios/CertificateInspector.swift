@@ -14,11 +14,16 @@ class CertificateInspector: NSObject, URLSessionDelegate {
         let validTo: String
         let serialNumber: String
         let isSelfSigned: Bool
+        /// The device's OWN verdict on this cert (chain + hostname + dates). True
+        /// means iOS already trusts it, so the app should NOT pin it — pinning a
+        /// system-trusted cert needlessly forces streaming onto the loopback proxy.
+        let isSystemTrusted: Bool
         let derData: Data?
     }
     
     private var capturedCertificate: SecCertificate?
     private var capturedTrust: SecTrust?
+    private var capturedSystemTrusted = false
     private let semaphore = DispatchSemaphore(value: 0)
     private var connectionError: Error?
     
@@ -67,7 +72,7 @@ class CertificateInspector: NSObject, URLSessionDelegate {
                          userInfo: [NSLocalizedDescriptionKey: "No certificate received from server"])
         }
         
-        return extractCertInfo(certificate: certificate)
+        return extractCertInfo(certificate: certificate, isSystemTrusted: capturedSystemTrusted)
     }
     
     // MARK: - URLSessionDelegate
@@ -89,7 +94,14 @@ class CertificateInspector: NSObject, URLSessionDelegate {
             capturedCertificate = cert
             capturedTrust = serverTrust
         }
-        
+
+        // Record the device's own verdict (same trust, evaluated against its SSL
+        // policy) BEFORE we override it below — so JS can avoid pinning a cert iOS
+        // already trusts. This is a read; the .useCredential override still lets us
+        // capture self-signed / otherwise-untrusted certs for the prompt.
+        var sysErr: CFError?
+        capturedSystemTrusted = SecTrustEvaluateWithError(serverTrust, &sysErr)
+
         // Accept the certificate (we're only inspecting)
         let credential = URLCredential(trust: serverTrust)
         completionHandler(.useCredential, credential)
@@ -97,7 +109,7 @@ class CertificateInspector: NSObject, URLSessionDelegate {
     
     // MARK: - Certificate Extraction
     
-    private func extractCertInfo(certificate: SecCertificate) -> CertInfo {
+    private func extractCertInfo(certificate: SecCertificate, isSystemTrusted: Bool) -> CertInfo {
         let fingerprint = SslTrustStore.sha256Fingerprint(of: certificate)
         let derData = SecCertificateCopyData(certificate) as Data
         
@@ -120,6 +132,7 @@ class CertificateInspector: NSObject, URLSessionDelegate {
             validTo: parsedFields.validTo ?? "Unknown",
             serialNumber: parsedFields.serialNumber ?? "Unknown",
             isSelfSigned: isSelfSigned,
+            isSystemTrusted: isSystemTrusted,
             derData: derData
         )
     }

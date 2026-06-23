@@ -25,6 +25,12 @@ object CertificateInspector {
         val validTo: String,
         val serialNumber: String,
         val isSelfSigned: Boolean,
+        /** Whether the device's default trust store already accepts this endpoint
+         *  (full chain + hostname + validity). True means the OS trusts it, so the
+         *  app must NOT pin it — pinning a system-trusted cert is pointless and
+         *  routes streaming through expo-ssl-trust for zero benefit. Mirrors iOS's
+         *  SecTrustEvaluateWithError verdict so both platforms behave identically. */
+        val isSystemTrusted: Boolean,
         val derData: ByteArray? = null
     )
 
@@ -65,13 +71,37 @@ object CertificateInspector {
 
             val leaf = certs[0] as? X509Certificate
                 ?: throw Exception("Server leaf certificate is not X.509")
-            return extractCertInfo(leaf)
+            return extractCertInfo(leaf, evaluateSystemTrust(url))
         } finally {
             connection.disconnect()
         }
     }
 
-    private fun extractCertInfo(cert: X509Certificate): CertInfo {
+    /**
+     * Does the device's default trust store accept this endpoint? Opens a second
+     * connection using the system defaults (no trust-all override, default
+     * hostname verifier) and reports whether the TLS handshake succeeds. The
+     * inspection connection above already proved connectivity, so a failure here
+     * is a genuine trust/hostname/expiry rejection, not an outage. A deliberate
+     * one-off cost on settings/login actions — not a hot path.
+     */
+    private fun evaluateSystemTrust(url: URL): Boolean {
+        var conn: HttpsURLConnection? = null
+        return try {
+            conn = url.openConnection() as? HttpsURLConnection ?: return false
+            conn.connectTimeout = 10_000
+            conn.readTimeout = 10_000
+            conn.requestMethod = "HEAD"
+            conn.connect() // throws if the system trust manager / hostname verifier rejects
+            true
+        } catch (_: Exception) {
+            false
+        } finally {
+            conn?.disconnect()
+        }
+    }
+
+    private fun extractCertInfo(cert: X509Certificate, isSystemTrusted: Boolean): CertInfo {
         val isoFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
         isoFormat.timeZone = TimeZone.getTimeZone("UTC")
 
@@ -91,6 +121,7 @@ object CertificateInspector {
             validTo = isoFormat.format(cert.notAfter),
             serialNumber = cert.serialNumber.toString(16).uppercase(),
             isSelfSigned = isSelfSigned,
+            isSystemTrusted = isSystemTrusted,
             derData = cert.encoded
         )
     }

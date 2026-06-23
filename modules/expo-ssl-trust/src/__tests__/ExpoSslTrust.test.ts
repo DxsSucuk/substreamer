@@ -93,6 +93,7 @@ describe('getCertificateInfo', () => {
     validTo: '2026-01-01T00:00:00Z',
     serialNumber: 'DEADBEEF',
     isSelfSigned: true,
+    isSystemTrusted: false,
   };
 
   it('passes URL to native and returns CertificateInfo', async () => {

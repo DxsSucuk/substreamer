@@ -54,7 +54,8 @@ public class ExpoSslTrustModule: Module {
                         "validFrom": info.validFrom,
                         "validTo": info.validTo,
                         "serialNumber": info.serialNumber,
-                        "isSelfSigned": info.isSelfSigned
+                        "isSelfSigned": info.isSelfSigned,
+                        "isSystemTrusted": info.isSystemTrusted
                     ]
                     promise.resolve(result)
                 } catch {
