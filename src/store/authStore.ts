@@ -47,6 +47,11 @@ export interface AuthState {
    *  is the caller's responsibility (failoverService handles that flow). */
   setSecondaryServerUrl: (url: string | null) => void;
   setServerSwitchMode: (mode: ServerSwitchMode) => void;
+  /** Switch the auth scheme (token ↔ legacy plaintext) without disturbing the
+   *  server slots. Callers must re-verify against the server first — see the
+   *  Account settings toggle. The API + cover-art caches key on `legacyAuth`,
+   *  so they rebuild on next use (pair with `clearApiCache()`). */
+  setLegacyAuth: (legacyAuth: boolean) => void;
 }
 
 const PERSIST_KEY = 'substreamer-auth';
@@ -117,6 +122,8 @@ export const authStore = create<AuthState>()(
       setSecondaryServerUrl: (url) => set({ secondaryServerUrl: url }),
 
       setServerSwitchMode: (mode) => set({ serverSwitchMode: mode }),
+
+      setLegacyAuth: (legacyAuth) => set({ legacyAuth }),
     }),
     {
       name: PERSIST_KEY,

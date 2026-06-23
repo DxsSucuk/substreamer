@@ -478,6 +478,8 @@
   "hideAdvancedOptions": "Hide advanced options",
   "legacyAuthentication": "Legacy authentication",
   "legacyAuthenticationHint": "Required for Nextcloud Music and Ampache servers",
+  "legacyAuthVerified": "The selected authentication method connected to your server and has been saved.",
+  "legacyAuthValidationFailed": "Could not connect to your server with this authentication method. The setting was reverted.",
   "trustServerCertificate": "Trust server certificate",
   "trustServerCertificateHint": "Manually trust a self-signed or custom certificate",
   "logIn": "Log in",

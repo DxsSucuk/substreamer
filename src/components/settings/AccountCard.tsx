@@ -1,17 +1,18 @@
 import Ionicons from '@react-native-vector-icons/ionicons/static';
 import { useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
 import { useTheme } from '../../hooks/useTheme';
+import { useThemedAlert } from '../../hooks/useThemedAlert';
 import { settingsStyles } from '../../styles/settingsStyles';
 import { clearImageCache } from '../../services/imageCacheService';
 import { clearMusicCache } from '../../services/musicCacheService';
 import { clearQueue } from '../../services/playerService';
 import { stopPolling } from '../../services/scanService';
 import { clearAllNativeTrust } from '../../services/sslTrustService';
-import { clearApiCache } from '../../services/subsonicService';
+import { clearApiCache, login } from '../../services/subsonicService';
 import { authStore } from '../../store/authStore';
 import { deviceIdentityStore } from '../../store/deviceIdentityStore';
 import { resetAllStores } from '../../store/resetAllStores';
@@ -23,10 +24,12 @@ import { SettingsSectionTitle } from './SettingsSectionTitle';
 export function AccountCard() {
   const { t } = useTranslation();
   const { colors } = useTheme();
+  const { alert } = useThemedAlert();
   const router = useRouter();
 
   const username = authStore((s) => s.username);
   const password = authStore((s) => s.password);
+  const legacyAuth = authStore((s) => s.legacyAuth);
   const deviceLabel = deviceIdentityStore((s) => s.deviceLabel);
   const adminRole = serverInfoStore((s) => s.adminRole);
   const shareRole = serverInfoStore((s) => s.shareRole);
@@ -34,6 +37,35 @@ export function AccountCard() {
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [changePasswordVisible, setChangePasswordVisible] = useState(false);
   const [deviceNameSheetVisible, setDeviceNameSheetVisible] = useState(false);
+  // Optimistic position of the legacy-auth switch while a candidate value is
+  // being verified against the server; null when not verifying. Bound as the
+  // switch value so it shows the attempted position, then reverts on failure.
+  const [pendingLegacyAuth, setPendingLegacyAuth] = useState<boolean | null>(null);
+  const [verifyingLegacyAuth, setVerifyingLegacyAuth] = useState(false);
+
+  // Switch the auth scheme, but verify it works against the server BEFORE
+  // committing — otherwise a wrong choice silently breaks every request and the
+  // only fix is a full logout/login. On success: persist + drop the caches
+  // (keyed on legacyAuth) so they rebuild. On failure: revert + surface why.
+  const handleToggleLegacyAuth = useCallback(
+    async (next: boolean) => {
+      const auth = authStore.getState();
+      if (!auth.serverUrl || !auth.username || !auth.password) return;
+      setPendingLegacyAuth(next);
+      setVerifyingLegacyAuth(true);
+      const result = await login(auth.serverUrl, auth.username, auth.password, next);
+      setVerifyingLegacyAuth(false);
+      setPendingLegacyAuth(null);
+      if (result.success) {
+        authStore.getState().setLegacyAuth(next);
+        clearApiCache();
+        alert(t('legacyAuthentication'), t('legacyAuthVerified'));
+      } else {
+        alert(t('error'), result.error || t('legacyAuthValidationFailed'));
+      }
+    },
+    [alert, t],
+  );
 
   const handleLogout = useCallback(async () => {
     clearQueue();
@@ -80,6 +112,22 @@ export function AccountCard() {
                   />
                 </Pressable>
               ) : null}
+            </View>
+          </View>
+          <View style={[styles.fieldRow, { borderBottomColor: colors.border }]}>
+            <View style={styles.legacyLabelWrap}>
+              <Text style={[styles.fieldLabel, { color: colors.textPrimary }]}>{t('legacyAuthentication')}</Text>
+              <Text style={[styles.legacyHint, { color: colors.textSecondary }]}>
+                {t('legacyAuthenticationHint')}
+              </Text>
+            </View>
+            <View style={styles.legacyRight}>
+              {verifyingLegacyAuth ? <ActivityIndicator size="small" color={colors.textSecondary} /> : null}
+              <Switch
+                value={pendingLegacyAuth ?? legacyAuth}
+                onValueChange={handleToggleLegacyAuth}
+                disabled={verifyingLegacyAuth}
+              />
             </View>
           </View>
           <View style={[styles.fieldRow, { borderBottomColor: colors.border }]}>
@@ -156,6 +204,9 @@ const styles = StyleSheet.create({
   },
   fieldLabel: { fontSize: 16, flex: 1 },
   fieldValue: { fontSize: 16, fontWeight: '500' },
+  legacyLabelWrap: { flex: 1, marginRight: 12 },
+  legacyHint: { fontSize: 12, marginTop: 2 },
+  legacyRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   passwordValue: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   rightValue: {
     flexDirection: 'row',

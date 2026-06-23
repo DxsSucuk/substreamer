@@ -39,6 +39,26 @@ describe('authStore', () => {
     expect(authStore.getState().legacyAuth).toBe(true);
   });
 
+  it('setLegacyAuth flips the auth scheme without disturbing the server slots', () => {
+    authStore.getState().setSession('https://music.example.com', 'user', 'pass', '1.16');
+    authStore.getState().setSecondaryServerUrl('https://backup.example.com');
+    authStore.getState().setActiveServer('secondary');
+
+    authStore.getState().setLegacyAuth(true);
+
+    const state = authStore.getState();
+    expect(state.legacyAuth).toBe(true);
+    // Slots, active server, and credentials are untouched.
+    expect(state.primaryServerUrl).toBe('https://music.example.com');
+    expect(state.secondaryServerUrl).toBe('https://backup.example.com');
+    expect(state.activeServer).toBe('secondary');
+    expect(state.serverUrl).toBe('https://backup.example.com');
+    expect(state.username).toBe('user');
+
+    authStore.getState().setLegacyAuth(false);
+    expect(authStore.getState().legacyAuth).toBe(false);
+  });
+
   it('clearSession resets all credentials', () => {
     authStore.getState().setSession('https://music.example.com', 'user', 'pass', '1.16', true);
     authStore.getState().clearSession();
