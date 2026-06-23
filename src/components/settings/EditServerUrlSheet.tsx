@@ -1,6 +1,6 @@
 import Ionicons from '@react-native-vector-icons/ionicons/static';
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
 import { BottomSheet } from '../BottomSheet';
@@ -8,15 +8,37 @@ import { useTheme } from '../../hooks/useTheme';
 import { useThemedAlert } from '../../hooks/useThemedAlert';
 import { settingsStyles } from '../../styles/settingsStyles';
 import { switchToServer } from '../../services/failoverService';
+import { syncProxyUpstreams, trustCertificateForHost } from '../../services/sslTrustService';
 import { clearApiCache, login, normalizeServerUrl } from '../../services/subsonicService';
 import { clearQueue } from '../../services/playerService';
 import { authStore } from '../../store/authStore';
+import { getCertificateInfo, isSSLError, type CertificateInfo } from '../../../modules/expo-ssl-trust/src';
 
 type TestState =
   | { kind: 'idle' }
   | { kind: 'testing' }
   | { kind: 'passed'; testedUrl: string }
-  | { kind: 'failed'; error: string };
+  | { kind: 'failed'; error: string }
+  | {
+      // Test hit an untrusted/self-signed cert; show its details inline so the
+      // user can trust it without leaving the sheet (a nested modal would stack
+      // on this BottomSheet, which the codebase avoids).
+      kind: 'cert';
+      certInfo: CertificateInfo;
+      hostname: string;
+      isRotation: boolean;
+      testedUrl: string;
+    };
+
+/** Best-effort hostname extraction. `normalizeServerUrl` guarantees a scheme,
+ *  so `new URL` parses; fall back to the raw string if it somehow doesn't. */
+function extractHostname(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+}
 
 /**
  * Server-URL editor. One component covers both primary and secondary
@@ -81,10 +103,72 @@ export function EditServerUrlSheet({
     const result = await login(normalised, auth.username, auth.password, auth.legacyAuth);
     if (result.success) {
       setTestState({ kind: 'passed', testedUrl: normalised });
+      return;
+    }
+    // A self-signed / untrusted TLS rejection blocks the connection. On iOS RN
+    // reports it as the generic "network connection was lost" (-1005); pair that
+    // with explicit SSL error strings and probe the certificate so the user can
+    // trust it inline. getCertificateInfo only succeeds against a live TLS
+    // endpoint, so a genuine outage falls through to the plain failure below.
+    const errorMsg = result.error || t('connectionFailed');
+    const maybeCertIssue =
+      isSSLError(errorMsg) ||
+      (Platform.OS === 'ios' && /network connection was lost/i.test(errorMsg));
+    if (maybeCertIssue) {
+      try {
+        const info = await getCertificateInfo(normalised);
+        if (info.isSystemTrusted) {
+          // Valid, system-trusted cert — the failure wasn't a trust problem
+          // (likely a transient drop mis-reported as -1005 on iOS). Don't offer
+          // to pin a cert the OS already trusts; surface the original error.
+          setTestState({ kind: 'failed', error: errorMsg });
+          return;
+        }
+        setTestState({
+          kind: 'cert',
+          certInfo: info,
+          hostname: extractHostname(normalised),
+          isRotation: errorMsg.includes('CERT_FINGERPRINT_MISMATCH'),
+          testedUrl: normalised,
+        });
+        return;
+      } catch {
+        /* cert probe failed (real outage / DNS) — fall through to plain error */
+      }
+    }
+    setTestState({ kind: 'failed', error: errorMsg });
+  }, [input, t]);
+
+  // Trust the presented cert, then re-run the test against the same URL so the
+  // user lands on the normal 'passed' state and can Save. Mirrors the login
+  // screen's trust-then-retry flow.
+  const handleTrustCert = useCallback(async () => {
+    if (testState.kind !== 'cert') return;
+    const { certInfo, hostname, testedUrl } = testState;
+    setTestState({ kind: 'testing' });
+    try {
+      await trustCertificateForHost(hostname, certInfo.sha256Fingerprint, certInfo.validTo);
+    } catch (e) {
+      setTestState({
+        kind: 'failed',
+        error: t('failedToTrustCertificate', {
+          message: e instanceof Error ? e.message : t('unknownError'),
+        }),
+      });
+      return;
+    }
+    const auth = authStore.getState();
+    if (!auth.username || !auth.password) {
+      setTestState({ kind: 'failed', error: t('connectionFailed') });
+      return;
+    }
+    const result = await login(testedUrl, auth.username, auth.password, auth.legacyAuth);
+    if (result.success) {
+      setTestState({ kind: 'passed', testedUrl });
     } else {
       setTestState({ kind: 'failed', error: result.error });
     }
-  }, [input, t]);
+  }, [testState, t]);
 
   const applyPrimary = useCallback((normalised: string) => {
     const auth = authStore.getState();
@@ -92,6 +176,11 @@ export function EditServerUrlSheet({
     clearQueue();
     auth.setSession(normalised, auth.username, auth.password, auth.apiVersion, auth.legacyAuth);
     clearApiCache();
+    // Register the now-active host with the iOS streaming proxy. If it's a
+    // freshly-trusted self-signed host this is what lets AVPlayer reach it —
+    // otherwise getStreamUrl keeps resolving to the raw https URL until the next
+    // app launch. No-op on Android / for CA-trusted hosts.
+    void syncProxyUpstreams();
     setSaved(true);
     setTimeout(onClose, 500);
   }, [onClose]);
@@ -102,6 +191,9 @@ export function EditServerUrlSheet({
 
     if (target === 'secondary') {
       authStore.getState().setSecondaryServerUrl(normalised);
+      // A trusted self-signed secondary must be registered with the proxy too,
+      // so streaming works after an automatic/manual failover to it.
+      void syncProxyUpstreams();
       setSaved(true);
       setTimeout(onClose, 500);
       return;
@@ -173,6 +265,44 @@ export function EditServerUrlSheet({
             </Text>
           </View>
         )}
+        {testState.kind === 'cert' && (
+          <View style={styles.certBlock}>
+            <View style={styles.certHeaderRow}>
+              <Ionicons
+                name={testState.isRotation ? 'alert-circle' : 'shield-outline'}
+                size={20}
+                color={testState.isRotation ? colors.red : colors.orange}
+              />
+              <Text style={[styles.certTitle, { color: colors.textPrimary }]}>
+                {testState.isRotation ? t('certChangedTitle') : t('untrustedCertificateTitle')}
+              </Text>
+            </View>
+            <Text style={[styles.certDescription, { color: colors.textSecondary }]}>
+              {testState.isRotation
+                ? t('certChangedWarning')
+                : t('certUntrustedDescription', { hostname: testState.hostname })}
+            </Text>
+            <Text style={[styles.certFingerprintLabel, { color: colors.textSecondary }]}>
+              {t('sha256Fingerprint')}
+            </Text>
+            <Text style={[styles.certFingerprint, { color: colors.textPrimary }]} selectable>
+              {testState.certInfo.sha256Fingerprint}
+            </Text>
+            <Pressable
+              onPress={handleTrustCert}
+              style={({ pressed }) => [
+                styles.trustButton,
+                { backgroundColor: testState.isRotation ? colors.red : colors.orange },
+                pressed && settingsStyles.pressed,
+              ]}
+            >
+              <Ionicons name="shield-checkmark-outline" size={18} color="#fff" />
+              <Text style={styles.trustButtonText}>
+                {testState.isRotation ? t('trustNewCertificate') : t('trustThisCertificate')}
+              </Text>
+            </Pressable>
+          </View>
+        )}
         <View style={styles.buttonRow}>
           <Pressable
             onPress={handleTest}
@@ -242,6 +372,22 @@ const styles = StyleSheet.create({
   },
   testStatus: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 },
   testStatusText: { flex: 1, fontSize: 14, lineHeight: 18 },
+  certBlock: { marginTop: 12, gap: 8 },
+  certHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  certTitle: { fontSize: 15, fontWeight: '700' },
+  certDescription: { fontSize: 13, lineHeight: 18 },
+  certFingerprintLabel: { fontSize: 12, fontWeight: '500', marginTop: 4 },
+  certFingerprint: { fontFamily: 'monospace', fontSize: 12, lineHeight: 16 },
+  trustButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderRadius: 12,
+    paddingVertical: 12,
+    marginTop: 4,
+  },
+  trustButtonText: { color: '#fff', fontSize: 15, fontWeight: '700' },
   buttonRow: { flexDirection: 'row', gap: 8, marginTop: 16, marginBottom: 8 },
   splitButton: {
     flex: 1,
