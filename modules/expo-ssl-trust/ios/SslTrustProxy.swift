@@ -48,6 +48,15 @@ final class SslTrustProxy: NSObject {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
         cfg.urlCache = nil
+        // `timeoutIntervalForRequest` is an inactivity timer (reset on each byte
+        // received). During streaming, AVPlayer buffers ahead and stops reading
+        // the loopback socket — backpressure stalls our upstream read, so the
+        // upstream connection sits idle while the buffered audio plays. The 60s
+        // default then kills the connection mid-track. Raise it well past a
+        // normal buffer-ahead idle; RNTP buffer-monitoring + app stall-recovery
+        // remain the real dead-stream detectors. `timeoutIntervalForResource`
+        // keeps its 7-day default as the overall backstop.
+        cfg.timeoutIntervalForRequest = 300
         return URLSession(configuration: cfg)
     }()
 
