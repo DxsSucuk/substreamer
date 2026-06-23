@@ -96,6 +96,9 @@ dependencies {
   api 'com.jakewharton.timber:timber:5.0.1'
 
   implementation 'jp.wasabeef.transformers:coil:1.0.6'
+
+  // JVM unit tests (e.g. RemoteCommandDeduperTest). Pure-Kotlin, no Robolectric.
+  testImplementation 'junit:junit:4.13.2'
 }
 
 react {

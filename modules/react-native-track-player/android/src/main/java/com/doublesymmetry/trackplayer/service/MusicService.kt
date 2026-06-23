@@ -9,6 +9,7 @@ import android.os.Binder
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.KeyEvent
 import androidx.annotation.MainThread
@@ -74,6 +75,11 @@ class MusicService : HeadlessJsMediaService() {
     private var sessionCommands: SessionCommands? = null
     private var playerCommands: Player.Commands? = null
     private var customLayout: List<CommandButton> = listOf()
+
+    // Collapses one physical remote press that fans out across the broadcast,
+    // session-callback and player-command routes into a single emit. Keyed on
+    // receipt time + channel, never on KeyEvent.downTime (see RemoteCommandDeduper).
+    private val remoteCommandDeduper = RemoteCommandDeduper()
     private var lastWake: Long = 0
     var onStartCommandIntentValid: Boolean = true
 
@@ -212,11 +218,6 @@ class MusicService : HeadlessJsMediaService() {
     private var latestOptions: Bundle? = null
     private var commandStarted = false
 
-    // Track last processed media key event to prevent double-handling
-    // when both onStartCommand and onMediaButtonEvent fire for the same press
-    private var lastMediaKeyDownTime: Long = -1
-    private var lastMediaKeyCode: Int = -1
-
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         onStartCommandIntentValid = intent != null
         val incomingKey = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
@@ -230,9 +231,9 @@ class MusicService : HeadlessJsMediaService() {
         )
         // Some OEMs (OnePlus OxygenOS < 15, Huawei HarmonyOS) route media button
         // intents here instead of through MediaSession.Callback.onMediaButtonEvent(),
-        // even on Android 13+. Always attempt to handle them here — deduplication
-        // in onMediaKeyEvent() prevents double-handling on standard devices.
-        onMediaKeyEvent(intent)
+        // even on Android 13+. Always attempt to handle them here — the cross-channel
+        // deduper prevents double-handling when a device also routes via the session.
+        onMediaKeyEvent(intent, RemoteCommandDeduper.Channel.BROADCAST)
         // Media3's MediaSessionService auto-starts the service when play() is called,
         // which re-invokes onStartCommand. Guard against re-registering the headless
         // JS task on subsequent calls.
@@ -751,11 +752,11 @@ class MusicService : HeadlessJsMediaService() {
                         }
                     }
 
-                    MediaSessionCallback.PLAY -> emit(MusicEvents.BUTTON_PLAY)
-                    MediaSessionCallback.PAUSE -> emit(MusicEvents.BUTTON_PAUSE)
-                    MediaSessionCallback.NEXT -> emit(MusicEvents.BUTTON_SKIP_NEXT)
-                    MediaSessionCallback.PREVIOUS -> emit(MusicEvents.BUTTON_SKIP_PREVIOUS)
-                    MediaSessionCallback.STOP -> emit(MusicEvents.BUTTON_STOP)
+                    MediaSessionCallback.PLAY -> emitDedupedRemoteCommand(MusicEvents.BUTTON_PLAY, RemoteCommandDeduper.Channel.PLAYER_CMD)
+                    MediaSessionCallback.PAUSE -> emitDedupedRemoteCommand(MusicEvents.BUTTON_PAUSE, RemoteCommandDeduper.Channel.PLAYER_CMD)
+                    MediaSessionCallback.NEXT -> emitDedupedRemoteCommand(MusicEvents.BUTTON_SKIP_NEXT, RemoteCommandDeduper.Channel.PLAYER_CMD)
+                    MediaSessionCallback.PREVIOUS -> emitDedupedRemoteCommand(MusicEvents.BUTTON_SKIP_PREVIOUS, RemoteCommandDeduper.Channel.PLAYER_CMD)
+                    MediaSessionCallback.STOP -> emitDedupedRemoteCommand(MusicEvents.BUTTON_STOP, RemoteCommandDeduper.Channel.PLAYER_CMD)
                     MediaSessionCallback.FORWARD -> {
                         Bundle().apply {
                             val interval = latestOptions?.getDouble(
@@ -895,6 +896,32 @@ class MusicService : HeadlessJsMediaService() {
     fun emit(event: String, data: Bundle? = null) {
         reactContext?.emitDeviceEvent(event, data?.let { Arguments.fromBundle(it) })
     }
+
+    /**
+     * Emit a discrete one-shot transport command (play/pause/next/previous/stop)
+     * through the cross-channel deduper so the same physical press fanned out across
+     * the broadcast, session-callback and player-command routes acts only once.
+     */
+    private fun emitDedupedRemoteCommand(command: String, channel: RemoteCommandDeduper.Channel) {
+        if (remoteCommandDeduper.shouldEmit(command, channel, SystemClock.uptimeMillis())) {
+            emit(command)
+        } else {
+            RemoteControlDiagnosticLog.log(this, "remoteCommand deduped: $command (channel=$channel)")
+        }
+    }
+
+    /**
+     * Resolve a play/pause TOGGLE to a discrete command from the player's current
+     * state, mirroring the iOS handleTogglePlayPauseCommand. Lets the toggle reuse
+     * the existing RemotePlay/RemotePause JS handlers and dedupe against discrete
+     * play/pause presses.
+     */
+    private fun playPauseToggleCommand(): String =
+        if (::player.isInitialized && player.playerState == AudioPlayerState.PLAYING) {
+            MusicEvents.BUTTON_PAUSE
+        } else {
+            MusicEvents.BUTTON_PLAY
+        }
 
     override fun getTaskConfig(intent: Intent?): HeadlessJsTaskConfig {
         return HeadlessJsTaskConfig(TASK_KEY, Arguments.createMap(), 0, true)
@@ -1225,7 +1252,7 @@ class MusicService : HeadlessJsMediaService() {
     }
 
     @Suppress("DEPRECATION")
-    fun onMediaKeyEvent(intent: Intent?): Boolean? {
+    fun onMediaKeyEvent(intent: Intent?, channel: RemoteCommandDeduper.Channel): Boolean? {
         val keyEvent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent?.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
         } else {
@@ -1233,52 +1260,56 @@ class MusicService : HeadlessJsMediaService() {
         }
 
         if (keyEvent?.action == KeyEvent.ACTION_DOWN) {
-            // Deduplicate: on well-behaved Android 13+ devices, media button
-            // intents arrive at both onStartCommand and onMediaButtonEvent.
-            // Skip if this exact press was already processed.
-            if (keyEvent.downTime == lastMediaKeyDownTime &&
-                keyEvent.keyCode == lastMediaKeyCode) {
-                RemoteControlDiagnosticLog.log(
-                    this,
-                    "onMediaKeyEvent: deduped (keyCode=${keyEvent.keyCode})",
-                )
-                return true // already handled
-            }
-            lastMediaKeyDownTime = keyEvent.downTime
-            lastMediaKeyCode = keyEvent.keyCode
-
+            // One physical press can arrive on more than one channel (and Media3
+            // 1.9.2 can redeliver on a single channel); the deduper collapses those.
+            // KeyEvent.downTime is deliberately NOT used as a key — it is unreliable
+            // for synthesised Bluetooth events and was the cause of #205.
             val resolved = when (keyEvent.keyCode) {
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
-                    emit(MusicEvents.BUTTON_PLAY_PAUSE)
+                    emitDedupedRemoteCommand(playPauseToggleCommand(), channel)
                     true
                 }
 
+                // Headset hook single-press is play/pause. On the session route
+                // Media3's default already handles it (incl. double/triple-tap),
+                // so only resolve it here on the broadcast route — where Media3
+                // has no fallback and it would otherwise be dropped.
+                KeyEvent.KEYCODE_HEADSETHOOK -> {
+                    if (channel == RemoteCommandDeduper.Channel.BROADCAST) {
+                        emitDedupedRemoteCommand(playPauseToggleCommand(), channel)
+                        true
+                    } else {
+                        null
+                    }
+                }
+
                 KeyEvent.KEYCODE_MEDIA_STOP -> {
-                    emit(MusicEvents.BUTTON_STOP)
+                    emitDedupedRemoteCommand(MusicEvents.BUTTON_STOP, channel)
                     true
                 }
 
                 KeyEvent.KEYCODE_MEDIA_PAUSE -> {
-                    emit(MusicEvents.BUTTON_PAUSE)
+                    emitDedupedRemoteCommand(MusicEvents.BUTTON_PAUSE, channel)
                     true
                 }
 
                 KeyEvent.KEYCODE_MEDIA_PLAY -> {
-                    emit(MusicEvents.BUTTON_PLAY)
+                    emitDedupedRemoteCommand(MusicEvents.BUTTON_PLAY, channel)
                     true
                 }
 
                 KeyEvent.KEYCODE_MEDIA_NEXT -> {
-                    emit(MusicEvents.BUTTON_SKIP_NEXT)
+                    emitDedupedRemoteCommand(MusicEvents.BUTTON_SKIP_NEXT, channel)
                     true
                 }
 
                 KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
-                    emit(MusicEvents.BUTTON_SKIP_PREVIOUS)
+                    emitDedupedRemoteCommand(MusicEvents.BUTTON_SKIP_PREVIOUS, channel)
                     true
                 }
 
                 KeyEvent.KEYCODE_MEDIA_FAST_FORWARD, KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD, KeyEvent.KEYCODE_MEDIA_STEP_FORWARD -> {
+                    // Jump commands may legitimately autorepeat on press-and-hold; not deduped.
                     emit(MusicEvents.BUTTON_JUMP_FORWARD)
                     true
                 }
@@ -1292,7 +1323,7 @@ class MusicService : HeadlessJsMediaService() {
             }
             RemoteControlDiagnosticLog.log(
                 this,
-                "onMediaKeyEvent: keyCode=${keyEvent.keyCode} resolved=$resolved",
+                "onMediaKeyEvent: keyCode=${keyEvent.keyCode} channel=$channel resolved=$resolved",
             )
             return resolved
         }
@@ -1405,7 +1436,7 @@ class MusicService : HeadlessJsMediaService() {
                 "onMediaButtonEvent action=${intent.action} controller=${controllerInfo.packageName} " +
                     "keyCode=${incomingKey?.keyCode} keyAction=${incomingKey?.action}",
             )
-            return onMediaKeyEvent(intent) ?: super.onMediaButtonEvent(
+            return onMediaKeyEvent(intent, RemoteCommandDeduper.Channel.SESSION_KEY) ?: super.onMediaButtonEvent(
                 session,
                 controllerInfo,
                 intent
