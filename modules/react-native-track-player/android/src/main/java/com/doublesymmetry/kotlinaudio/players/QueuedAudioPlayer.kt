@@ -187,8 +187,23 @@ class QueuedAudioPlayer(
         val lastIdx = currentIndex
         val lastPosition = exoPlayer.currentPosition
         val wasActive = playerState.isActive
-        exoPlayer.seekToNextMediaItem()
-        exoPlayer.prepare()
+
+        // A manual skip advances to the adjacent track regardless of repeat-one
+        // (repeatMode stays ONE, so the track we land on then repeats). An explicit
+        // index seek is required because seekToNextMediaItem() re-targets the SAME
+        // window under REPEAT_MODE_ONE, which would restart the track. (#206)
+        if (currentIndex < exoPlayer.mediaItemCount - 1) {
+            exoPlayer.seekToDefaultPosition(currentIndex + 1)
+            exoPlayer.prepare()
+        } else if (repeatMode == RepeatMode.ALL && exoPlayer.mediaItemCount > 1) {
+            // Last track + repeat all: wrap to first
+            exoPlayer.seekToDefaultPosition(0)
+            exoPlayer.prepare()
+        } else {
+            // Last track, no wrap: nothing to advance to.
+            return
+        }
+
         if (wasActive && (lastIdx != currentIndex || repeatMode == RepeatMode.ALL)) {
             playerEventHolder.updatePlaybackEnd(PlaybackEndEvent(
                 PlaybackEndedReason.SKIPPED_TO_NEXT, lastIdx, lastPosition
@@ -206,11 +221,9 @@ class QueuedAudioPlayer(
         val lastPosition = exoPlayer.currentPosition
         val wasActive = playerState.isActive
 
-        // Repeat-one: always restart current track
-        if (repeatMode == RepeatMode.ONE) {
-            exoPlayer.seekTo(0L)
-            return
-        }
+        // A manual skip ignores repeat-one — it advances to the previous track and
+        // leaves repeatMode == ONE set, so the track we land on then repeats. End-of-
+        // track auto-repeat is handled separately via onMediaItemTransition. (#206)
 
         // Past threshold: restart current track
         if (exoPlayer.currentPosition >= PREVIOUS_THRESHOLD_MS) {
@@ -218,9 +231,11 @@ class QueuedAudioPlayer(
             return
         }
 
-        // Under threshold: go to previous track
+        // Under threshold: go to previous track. An explicit index seek is required
+        // because seekToPreviousMediaItem() re-targets the SAME window under
+        // REPEAT_MODE_ONE, which would restart the track.
         if (currentIndex > 0) {
-            exoPlayer.seekToPreviousMediaItem()
+            exoPlayer.seekToDefaultPosition(currentIndex - 1)
             exoPlayer.prepare()
         } else if (repeatMode == RepeatMode.ALL && exoPlayer.mediaItemCount > 1) {
             // First track + repeat all: wrap to last

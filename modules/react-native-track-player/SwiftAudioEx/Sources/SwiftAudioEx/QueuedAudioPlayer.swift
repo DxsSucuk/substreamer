@@ -132,11 +132,10 @@ public class QueuedAudioPlayer: AudioPlayer, QueueManagerDelegate {
         let lastIndex = currentIndex
         let playbackWasActive = wrapper.playbackActive
 
-        // Repeat-one: always restart current track
-        if repeatMode == .track {
-            seek(to: 0)
-            return
-        }
+        // Note: a manual skip ignores repeat-one — it advances to the adjacent
+        // track and leaves repeatMode == .track set, so the track we land on then
+        // repeats. End-of-track auto-repeat is handled separately in
+        // AVWrapperItemDidPlayToEndTime and is unaffected. (#206)
 
         // Past threshold: restart current track
         if currentTime >= Self.previousThresholdSeconds {
