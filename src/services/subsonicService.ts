@@ -549,14 +549,16 @@ export async function getLyricsForTrack(
 
 /**
  * Attempt to fetch all albums via search3 with an empty query.
- * Some servers return the full library this way; others return nothing.
+ * Some servers return the full library this way (any sane library fits within
+ * the requested count); others return nothing, in which case the caller falls
+ * back to the paginated getAlbumList2 path (see albumLibraryStore). (#204)
  */
 export async function searchAllAlbums(): Promise<AlbumID3[]> {
   const api = getApi();
   if (!api) return [];
   const response = await api.search3({
     query: '',
-    albumCount: 10000,
+    albumCount: 100000,
     songCount: 0,
     artistCount: 0,
   });
