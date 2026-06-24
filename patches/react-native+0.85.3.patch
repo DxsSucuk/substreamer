@@ -190,3 +190,30 @@ index 086eb37..efb2d04 100644
      }
    }
  
+diff --git a/node_modules/react-native/ReactCommon/react/nativemodule/core/platform/ios/ReactCommon/RCTTurboModule.mm b/node_modules/react-native/ReactCommon/react/nativemodule/core/platform/ios/ReactCommon/RCTTurboModule.mm
+index a2c71d8..4bf9b37 100644
+--- a/node_modules/react-native/ReactCommon/react/nativemodule/core/platform/ios/ReactCommon/RCTTurboModule.mm
++++ b/node_modules/react-native/ReactCommon/react/nativemodule/core/platform/ios/ReactCommon/RCTTurboModule.mm
+@@ -461,9 +461,19 @@ TraceSection s(
+     @try {
+       [inv invokeWithTarget:strongModule];
+     } @catch (NSException *exception) {
+-      // Void methods are always async, re-throw instead of converting to
+-      // JSError, same as the async branch in performMethodInvocation.
+-      @throw exception;
++      // Void methods are always async. Re-throwing here propagates an uncaught
++      // NSException on the background method queue, which nothing catches and so
++      // aborts the whole process (objc_exception_rethrow -> std::terminate ->
++      // SIGABRT). iOS 26 trips this frequently and there is no JSError/promise
++      // path available for a void async method
++      // (facebook/react-native#54859, reactwg/react-native-new-architecture#276).
++      // Log with full module/method context and swallow instead of crashing.
++      NSLog(
++          @"[TurboModule] swallowed uncaught NSException in async void %s.%s: %@ — %@",
++          moduleName,
++          methodName,
++          exception.name,
++          exception.reason);
+     } @finally {
+       [retainedObjectsForInvocation removeAllObjects];
+     }
