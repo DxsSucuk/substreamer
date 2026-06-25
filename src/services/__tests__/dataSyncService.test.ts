@@ -2,6 +2,7 @@
 const mockRefreshAll = jest.fn(() => Promise.resolve());
 const mockRefreshRecentlyPlayed = jest.fn(() => Promise.resolve());
 const mockFetchAllAlbums = jest.fn(() => Promise.resolve());
+const mockUpsertAlbums = jest.fn();
 const mockFetchAllArtists = jest.fn(() => Promise.resolve());
 const mockFetchAllPlaylists = jest.fn(() => Promise.resolve());
 const mockFetchStarred = jest.fn(() => Promise.resolve());
@@ -57,7 +58,7 @@ jest.mock('../../store/albumLibraryStore', () => ({
       albums: albumLibraryState.albums,
       loading: albumLibraryState.loading,
       fetchAllAlbums: () => mockFetchAllAlbums(),
-      upsertAlbums: jest.fn(),
+      upsertAlbums: (albums: Array<{ id: string }>) => mockUpsertAlbums(albums),
       clearAlbums: () => { albumLibraryState.albums = []; },
     }),
   },
@@ -751,10 +752,22 @@ describe('dataSyncService — onAlbumReferenced', () => {
     expect(mockFetchAllAlbums).not.toHaveBeenCalled();
   });
 
-  it('refreshes the full library when the album is unknown and library is warm', async () => {
+  it('upserts only the referenced album when unknown and library is warm (no full refetch)', async () => {
     albumLibraryState.albums = [{ id: 'a1' }];
+    const mockGetAlbum = subsonicService.getAlbum as jest.Mock;
+    mockGetAlbum.mockResolvedValue({ id: 'a99', name: 'New', song: [{ id: 't1' }] });
     await onAlbumReferenced('a99');
-    expect(mockFetchAllAlbums).toHaveBeenCalledTimes(1);
+    expect(mockFetchAllAlbums).not.toHaveBeenCalled();
+    expect(mockGetAlbum).toHaveBeenCalledWith('a99');
+    // Merged into the library without the `song` array (lean AlbumID3[]).
+    expect(mockUpsertAlbums).toHaveBeenCalledWith([{ id: 'a99', name: 'New' }]);
+  });
+
+  it('does not upsert when the single-album fetch returns nothing', async () => {
+    albumLibraryState.albums = [{ id: 'a1' }];
+    (subsonicService.getAlbum as jest.Mock).mockResolvedValue(null);
+    await onAlbumReferenced('a99');
+    expect(mockUpsertAlbums).not.toHaveBeenCalled();
   });
 });
 

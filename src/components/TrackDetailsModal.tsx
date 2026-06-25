@@ -10,6 +10,7 @@ import { useTranslation } from 'react-i18next';
 
 import { BottomSheet } from './BottomSheet';
 import { CachedImage } from './CachedImage';
+import { useSongCoverArt } from '../hooks/useSongCoverArt';
 import { useTheme } from '../hooks/useTheme';
 import type { Child } from '../services/subsonicService';
 import { formatTrackDuration } from '../utils/formatters';
@@ -56,6 +57,7 @@ function formatTrackNumber(track: Child, t: (key: string, opts?: Record<string, 
 export function TrackDetailsModal({ track, visible, onClose }: TrackDetailsModalProps) {
   const { colors } = useTheme();
   const { t } = useTranslation();
+  const songCoverArtId = useSongCoverArt(track);
 
   const rows = useMemo(() => {
     const result: { label: string; value: string; wide?: boolean }[] = [];
@@ -140,7 +142,7 @@ export function TrackDetailsModal({ track, visible, onClose }: TrackDetailsModal
     <BottomSheet visible={visible} onClose={onClose} maxHeight="60%">
       <View style={styles.header}>
         {(track.albumId ?? track.id) && (
-          <CachedImage coverArtId={track.albumId ?? track.id} size={150} style={styles.coverArt} resizeMode="cover" />
+          <CachedImage coverArtId={songCoverArtId} size={150} style={styles.coverArt} resizeMode="cover" />
         )}
         <View style={styles.headerText}>
           <Text style={[styles.title, { color: colors.textPrimary }]}>

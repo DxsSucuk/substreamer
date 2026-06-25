@@ -1,7 +1,8 @@
 import { create } from 'zustand';
 
 import { ensureCached, prefetchCoverArt } from '../services/imageCacheService';
-import { coverArtIdForAlbum } from '../utils/coverArtId';
+import { albumLibraryStore } from './albumLibraryStore';
+import { coverArtForAlbum } from '../utils/coverArtId';
 import {
   ensureCoverArtAuth,
   getAlbum,
@@ -36,7 +37,17 @@ export interface AlbumDetailState {
    *  used by the background library sync so a metadata refresh doesn't
    *  kick off hundreds of image downloads. User-facing fetches (detail
    *  screens, pull-to-refresh) omit the flag so art still pre-caches. */
-  fetchAlbum: (id: string, opts?: { prefetchCovers?: boolean }) => Promise<AlbumWithSongsID3 | null>;
+  fetchAlbum: (
+    id: string,
+    opts?: {
+      prefetchCovers?: boolean;
+      /** Optimistically merge the fetched album into `albumLibraryStore` (#202):
+       *  `'ifAbsent'` adds it only when not yet synced; `'replace'` always
+       *  overwrites (use on an explicit album-detail pull-to-refresh so edits
+       *  land). Omit to leave the library untouched (bulk walk, downloads). */
+      syncToLibrary?: 'ifAbsent' | 'replace';
+    },
+  ) => Promise<AlbumWithSongsID3 | null>;
   /** Eagerly bump local play stats for a just-scrobbled song. Updates both
    *  the album row (playCount + played) and the matching song inside
    *  `album.data.song[]`. No-op when the album isn't in the cache. */
@@ -60,7 +71,7 @@ export const albumDetailStore = create<AlbumDetailState>()((set, get) => ({
   albums: {},
   hasHydrated: false,
 
-  fetchAlbum: async (id: string, opts?: { prefetchCovers?: boolean }) => {
+  fetchAlbum: async (id: string, opts?: { prefetchCovers?: boolean; syncToLibrary?: 'ifAbsent' | 'replace' }) => {
     const prefetchCovers = opts?.prefetchCovers ?? true;
     const result = await withTimeout(async () => {
       await ensureCoverArtAuth();
@@ -86,10 +97,24 @@ export const albumDetailStore = create<AlbumDetailState>()((set, get) => ({
         // counter (and totalCount) stay consistent with the SQL table.
         songIndexStore.getState().upsertSongsForAlbum(id, data.song ?? []);
 
+        // Optimistically reflect this album in the lean library list (#202) so
+        // album-mode song covers resolve and pull-to-refresh edits propagate.
+        // Drop `song` — the library is song-less AlbumID3[]; the full envelope
+        // lives in album_details. 'ifAbsent' avoids re-sort churn on a plain
+        // open of an already-synced album; 'replace' forces edits through.
+        if (opts?.syncToLibrary) {
+          const lib = albumLibraryStore.getState();
+          const present = lib.albums.some((a) => a.id === id);
+          if (opts.syncToLibrary === 'replace' || !present) {
+            const { song: _song, ...albumMeta } = data;
+            lib.upsertAlbums([albumMeta]);
+          }
+        }
+
         // Proactively cache cover art for new IDs so they survive offline.
         // Skipped during bulk sync — see prefetchCovers contract above.
         if (prefetchCovers) {
-          const albumArtId = coverArtIdForAlbum(data);
+          const albumArtId = coverArtForAlbum(data);
           if (albumArtId) ensureCached(albumArtId).catch(() => { /* non-critical */ });
           if (data.song?.length) prefetchCoverArt(data.song);
         }

@@ -2099,6 +2099,48 @@ const MIGRATION_TASKS: MigrationTask[] = [
     },
   },
 
+  {
+    id: 29,
+    name: 'Re-key image cache to the coverArt-value model',
+    run: async (log) => {
+      // #202: cover-art lookups moved back from the entity ID to the entity's
+      // `coverArt` VALUE (album.coverArt / playlist.coverArt / artist.coverArt;
+      // songs resolve their parent album's or own coverArt). Files cached under
+      // the OLD entity-ID keys are now orphaned — no consumer queries an entity
+      // ID any more.
+      //
+      // We wipe + repopulate rather than rename-in-place. The entity-ID keys
+      // never worked on OpenSubsonic servers where `coverArt !== id` (Gonic,
+      // airsonic) — those cached files are placeholders/empties, so there is
+      // nothing worth preserving there. On servers where the ID happened to
+      // resolve (Navidrome), `ensureCached` (online browsing) and the download
+      // recache below repopulate the correct coverArt-keyed files. A blanket
+      // wipe also reclaims the orphaned bytes immediately. (Mirrors m25, which
+      // did the inverse switch.)
+      try {
+        const { clearImageCache } = require('./imageCacheService') as {
+          clearImageCache: () => Promise<number>;
+        };
+        const freed = await clearImageCache();
+        log(`[m29] wiped image cache, freed=${freed} bytes`);
+      } catch (e) {
+        log(`[m29] wipe failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      // Re-warm downloaded covers so offline-first users get them back the next
+      // time they're online. The snapshot is mode-aware (album vs per-track),
+      // so it fetches the correct coverArt value per the current setting.
+      try {
+        const { enqueueImageRefreshCycle } = require('./imageCacheService') as {
+          enqueueImageRefreshCycle: (scope: string) => Promise<string | null>;
+        };
+        const cycleId = await enqueueImageRefreshCycle('refresh-downloads');
+        log(`[m29] queued downloaded-cover re-warm cycle=${cycleId ?? 'none'}`);
+      } catch (e) {
+        log(`[m29] recache enqueue failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+  },
+
   // -------------------------------------------------------------------
   // TEMPLATE – How to add a new migration task:
   //

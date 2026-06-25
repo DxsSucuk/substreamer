@@ -79,7 +79,7 @@ import {
   type Child,
   type Playlist,
 } from './subsonicService';
-import { coverArtIdForEntity } from '../utils/coverArtId';
+import { resolveEntityCoverArt, resolveSongCoverArt } from '../hooks/useSongCoverArt';
 
 // Sentinel cover-art IDs rendered from bundled assets via
 // `CachedImage.tsx`, never downloaded. Inlined here (not imported)
@@ -1723,17 +1723,17 @@ export async function clearImageCache(
 
 /**
  * Proactively cache cover art for a list of entities (songs, albums,
- * artists, playlists). Keys off the canonical entity ID via
- * `coverArtIdForEntity` (NOT the server `coverArt` field) so the warmed
- * file matches what the render side reads. Deduplicates by resolved ID
- * and skips entries already in cache.
+ * artists, playlists). Keys off the entity's `coverArt` value via
+ * `resolveEntityCoverArt` (mode-aware for songs) so the warmed file matches
+ * what the render side reads. Deduplicates by resolved value and skips entries
+ * already in cache. (#202)
  */
 export function prefetchCoverArt(
   entities: Array<AlbumID3 | ArtistID3 | Playlist | Child>,
 ): void {
   const seen = new Set<string>();
   for (const entity of entities) {
-    const id = coverArtIdForEntity(entity);
+    const id = resolveEntityCoverArt(entity);
     if (id && !seen.has(id)) {
       seen.add(id);
       // cacheAllSizes does its own DB-authoritative all-cached check and
@@ -1749,34 +1749,35 @@ export function prefetchCoverArt(
  * out so it can be mocked in unit tests without dragging in the entire
  * `musicCacheTables` import surface.
  *
- * Keys off ENTITY IDs (album.id, playlist.id, song.albumId), not the
- * server-supplied `coverArt` field — see src/utils/coverArtId.ts.
- * Same ID scheme that every consumer (CachedImage, childToTrack, etc.)
- * uses, so the recached files match what callers will look up.
+ * Keys off each entity's stored `coverArt` value — the cached item's
+ * `coverArtId` field for albums/playlists, and the mode-aware song cover value
+ * for songs (see src/utils/coverArtId.ts) — NOT the entity ID. Same scheme that
+ * every consumer (CachedImage, childToTrack, etc.) uses, so the recached files
+ * match what callers will look up. (#202)
  */
 function hydrateCachedItemsForRecache(): {
   items: Array<{ type: string; coverArtId: string | null }>;
   /**
-   * Per-song cover-art IDs from `cached_songs`. Each song's cover key
-   * is its parent album's ID (fallback to song.id for orphans) so
-   * multiple tracks in the same album share one cached file.
+   * Per-song cover-art values from `cached_songs`, resolved mode-aware
+   * (album mode: parent album's coverArt so tracks share one file; per-track:
+   * the song's own coverArt).
    */
   songCoverArtIds: string[];
 } {
   // Lazy-required: keeps the recache worker testable without forcing
   // every test that touches imageCacheService to mock musicCacheTables.
   const { hydrateCachedItems, hydrateCachedSongs } = require('../store/persistence/musicCacheTables') as {
-    hydrateCachedItems: () => Record<string, { itemId: string; type: string }>;
-    hydrateCachedSongs: () => Record<string, { id: string; albumId?: string | null }>;
+    hydrateCachedItems: () => Record<string, { itemId: string; type: string; coverArtId?: string }>;
+    hydrateCachedSongs: () => Record<string, { id: string; albumId?: string | null; coverArt?: string | null }>;
   };
   const items = Object.values(hydrateCachedItems()).map((r) => ({
     type: r.type,
-    coverArtId: r.itemId,
+    coverArtId: r.coverArtId ?? null,
   }));
   const songCoverArtIds: string[] = [];
   const seen = new Set<string>();
   for (const s of Object.values(hydrateCachedSongs())) {
-    const id = s.albumId ?? s.id;
+    const id = resolveSongCoverArt(s);
     if (!id || seen.has(id)) continue;
     seen.add(id);
     songCoverArtIds.push(id);

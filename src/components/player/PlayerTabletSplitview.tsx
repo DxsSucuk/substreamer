@@ -26,6 +26,7 @@ import { SleepTimerCapsule } from '@/components/SleepTimerCapsule';
 import { closeOpenRow } from '@/components/SwipeableRow';
 import { type ThemeColors } from '@/constants/theme';
 import { useCanSkip } from '@/hooks/useCanSkip';
+import { useSongCoverArt } from '@/hooks/useSongCoverArt';
 import { mixHexColors } from '@/utils/colors';
 import { usePlayerActions } from '@/hooks/usePlayerActions';
 import { useShuffleOverlay } from '@/hooks/useShuffleOverlay';
@@ -215,6 +216,7 @@ const PanelHeader = memo(function PanelHeader({
   handleExpand,
 }: PanelHeaderProps) {
   const { t } = useTranslation();
+  const songCoverArtId = useSongCoverArt(currentTrack);
   const playbackState = playerStore((s) => s.playbackState);
   const position = playerStore((s) => s.position);
   const duration = playerStore((s) => s.duration);
@@ -261,7 +263,7 @@ const PanelHeader = memo(function PanelHeader({
           <View style={styles.coverSection}>
             <View style={styles.coverWrap}>
               <CachedImage
-                coverArtId={currentTrack.albumId ?? currentTrack.id}
+                coverArtId={songCoverArtId}
                 size={COVER_SIZE}
                 style={styles.coverImage}
                 resizeMode="cover"

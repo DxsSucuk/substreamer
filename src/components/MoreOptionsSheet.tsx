@@ -22,7 +22,7 @@ import { useDownloadStatus, type DownloadStatus } from '../hooks/useDownloadStat
 import { useIsStarred } from '../hooks/useIsStarred';
 import { useRating } from '../hooks/useRating';
 import { useTheme } from '../hooks/useTheme';
-import { coverArtIdForEntity } from '../utils/coverArtId';
+import { resolveEntityCoverArt } from '../hooks/useSongCoverArt';
 import { tabletLayoutStore } from '../store/tabletLayoutStore';
 import {
   addAlbumToQueue,
@@ -104,9 +104,9 @@ function getSubtitle(entity: MoreOptionsEntity, t: (key: string, options?: Recor
 }
 
 function getCoverArtId(entity: MoreOptionsEntity): string | undefined {
-  // Cover-art lookups key off the entity ID, not the server's `coverArt`
-  // field — the single rule lives in src/utils/coverArtId.ts.
-  return coverArtIdForEntity(entity.item);
+  // Cover-art lookups use the entity's `coverArt` value (mode-aware for songs) —
+  // the single rule lives in src/utils/coverArtId.ts. (#202)
+  return resolveEntityCoverArt(entity.item);
 }
 
 function isStarrable(entity: MoreOptionsEntity): boolean {
@@ -324,13 +324,13 @@ export function MoreOptionsSheet() {
       const resolvedMbid = artistDetailStore.getState().artists[artistId]?.resolvedMbid;
       const currentMbid = override?.mbid ?? resolvedMbid ?? null;
       await moreOptionsStore.getState().hideAndAwait();
-      mbidSearchStore.getState().showArtist(artistId, artistName, currentMbid, artistId);
+      mbidSearchStore.getState().showArtist(artistId, artistName, currentMbid, resolveEntityCoverArt(entity.item));
     } else if (entity.type === 'album') {
       const album = entity.item as AlbumID3;
       const override = getOverride(mbidOverrideStore.getState().overrides, 'album', album.id);
       const currentMbid = override?.mbid ?? null;
       await moreOptionsStore.getState().hideAndAwait();
-      mbidSearchStore.getState().showAlbum(album.id, album.name, album.artist ?? null, currentMbid, album.id);
+      mbidSearchStore.getState().showAlbum(album.id, album.name, album.artist ?? null, currentMbid, album.coverArt);
     }
   }, [entity]);
 
@@ -460,9 +460,9 @@ export function MoreOptionsSheet() {
     if (!entity) return;
     await moreOptionsStore.getState().hideAndAwait();
     if (entity.type === 'album') {
-      createShareStore.getState().showAlbum(entity.item.id, entity.item.name, entity.item.artist, entity.item.id);
+      createShareStore.getState().showAlbum(entity.item.id, entity.item.name, entity.item.artist, resolveEntityCoverArt(entity.item));
     } else if (entity.type === 'playlist') {
-      createShareStore.getState().showPlaylist(entity.item.id, entity.item.name, entity.item.id);
+      createShareStore.getState().showPlaylist(entity.item.id, entity.item.name, resolveEntityCoverArt(entity.item));
     } else if (entity.type === 'song') {
       // #151 — Subsonic createShare accepts a single song/mediafile id.
       // Navidrome maps it to ResourceType="media_file"; other Subsonic
@@ -473,16 +473,16 @@ export function MoreOptionsSheet() {
         song.id,
         song.title,
         song.artist ?? undefined,
-        song.albumId ?? song.id,
+        resolveEntityCoverArt(song),
       );
     }
   }, [entity]);
 
   const handleSetRating = useCallback(async () => {
     if (!entity || !isRatable(entity)) return;
-    // Entity-ID based cover art (see src/utils/coverArtId.ts) — songs key
-    // off the parent album so mini player / rating sheet share one cache.
-    const coverArtId = coverArtIdForEntity(entity.item);
+    // `coverArt`-value based cover art (see src/utils/coverArtId.ts) — songs
+    // resolve mode-aware so mini player / rating sheet share one cache. (#202)
+    const coverArtId = resolveEntityCoverArt(entity.item);
     await moreOptionsStore.getState().hideAndAwait();
     setRatingStore.getState().show(
       entity.type as 'song' | 'album' | 'artist',

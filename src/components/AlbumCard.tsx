@@ -46,7 +46,7 @@ export const AlbumCard = memo(function AlbumCard({
       <View style={[styles.card, { backgroundColor: colors.card }, width != null && { width }]}>
         <View style={styles.imageContainer}>
           <CachedImage
-            coverArtId={album.id}
+            coverArtId={album.coverArt}
             size={COVER_SIZE}
             style={styles.cover}
             resizeMode="cover"

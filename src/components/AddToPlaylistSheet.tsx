@@ -21,7 +21,9 @@ import { useTranslation } from 'react-i18next';
 
 import { BottomSheet } from './BottomSheet';
 import { CachedImage } from './CachedImage';
+import { resolveSongCoverArt } from '../hooks/useSongCoverArt';
 import { useTheme } from '../hooks/useTheme';
+import { coverArtForAlbum } from '../utils/coverArtId';
 import { syncCachedItemTracks } from '../services/musicCacheService';
 import {
   addToPlaylist,
@@ -59,11 +61,11 @@ async function resolveSongIds(target: AddToPlaylistTarget): Promise<string[] | n
 }
 
 function getTargetCoverArt(target: AddToPlaylistTarget): string | undefined {
-  // Entity-ID-based cover art (see src/utils/coverArtId.ts).
-  if (target.type === 'song') return target.item.albumId ?? target.item.id;
-  if (target.type === 'album') return target.item.id;
+  // `coverArt`-value based cover art (see src/utils/coverArtId.ts). (#202)
+  if (target.type === 'song') return resolveSongCoverArt(target.item);
+  if (target.type === 'album') return coverArtForAlbum(target.item);
   const first = target.songs[0];
-  return first ? (first.albumId ?? first.id) : undefined;
+  return first ? resolveSongCoverArt(first) : undefined;
 }
 
 function getSubtitleText(target: AddToPlaylistTarget, t: (key: string, options?: Record<string, unknown>) => string): string {

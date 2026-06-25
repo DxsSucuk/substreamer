@@ -15,7 +15,7 @@ import { imageCacheDiagnosticsStore } from '../store/imageCacheDiagnosticsStore'
 import { playbackSettingsStore, type RepeatModeSetting } from '../store/playbackSettingsStore';
 import { type PlaybackStatus } from '../store/playerStore';
 import { resolveEffectiveFormat } from '../utils/effectiveFormat';
-import { coverArtIdForSong } from '../utils/coverArtId';
+import { resolveSongCoverArt } from '../hooks/useSongCoverArt';
 import { resolveCachedImageUri } from './imageCacheService';
 import { logImageCache } from './imageCacheLogger';
 import { getLocalTrackUri } from './musicCacheService';
@@ -130,18 +130,16 @@ export function childToTrack(
     logImageCache(`player stream-url-for-cached-song id=${child.id}`);
   }
 
-  // Cover-art lookup keys off the parent album's ID (see
-  // src/utils/coverArtId.ts) so every track in an album shares one
-  // cached file — fixes the mini player / lock-screen placeholder
-  // problem caused by Navidrome-style per-track coverArt variants.
-  // `child.id` is always present, so the result is a defined string.
-  const coverArtId = coverArtIdForSong(child) ?? child.id;
+  // Cover-art lookup resolves the song's `coverArt` value (album mode: the
+  // parent album's coverArt so every track in an album shares one cached file;
+  // per-track mode: the song's own) — see src/utils/coverArtId.ts. (#202)
+  const coverArtId = resolveSongCoverArt(child);
   const contentType = localUri ? mimeFromUri(localUri) : undefined;
   // In offline mode drop any server-only artwork so RNTP's lock-screen
   // artwork fetch can't hit the network either. (`getCoverArtUrl` also
   // returns null under offline mode now; this is belt-and-braces.)
   const artwork = cachedArt
-    ?? (offline ? undefined : getCoverArtUrl(coverArtId, 600) ?? undefined);
+    ?? (offline || !coverArtId ? undefined : getCoverArtUrl(coverArtId, 600) ?? undefined);
 
   return {
     id: child.id,
@@ -168,8 +166,8 @@ export function childToTrack(
  * Returns null when not cached. Used by the lock-screen artwork re-push.
  */
 export function resolveTrackArtwork(child: Child): Promise<string | null> {
-  const coverArtId = coverArtIdForSong(child) ?? child.id;
-  return resolveCachedImageUri(coverArtId, 600);
+  const coverArtId = resolveSongCoverArt(child);
+  return coverArtId ? resolveCachedImageUri(coverArtId, 600) : Promise.resolve(null);
 }
 
 export async function buildPlayableQueue(queue: readonly Child[]): Promise<{
@@ -179,7 +177,9 @@ export async function buildPlayableQueue(queue: readonly Child[]): Promise<{
   // Resolve local cover artwork up front (async, DB-authoritative — off the JS
   // thread), deduped by album coverArtId so a 500-track album resolves one URI,
   // not 500. Then build the tracks synchronously from the resolved map.
-  const ids = Array.from(new Set(queue.map((c) => coverArtIdForSong(c) ?? c.id)));
+  const ids = Array.from(
+    new Set(queue.map((c) => resolveSongCoverArt(c)).filter((v): v is string => !!v)),
+  );
   const artEntries = await Promise.all(
     ids.map(async (id) => [id, await resolveCachedImageUri(id, 600)] as const),
   );
@@ -188,8 +188,8 @@ export async function buildPlayableQueue(queue: readonly Child[]): Promise<{
   const rnTracks: Track[] = [];
   const filteredQueue: Child[] = [];
   for (const child of queue) {
-    const coverArtId = coverArtIdForSong(child) ?? child.id;
-    const track = childToTrack(child, artMap.get(coverArtId) ?? null);
+    const coverArtId = resolveSongCoverArt(child);
+    const track = childToTrack(child, (coverArtId ? artMap.get(coverArtId) : null) ?? null);
     if (track) {
       rnTracks.push(track);
       filteredQueue.push(child);

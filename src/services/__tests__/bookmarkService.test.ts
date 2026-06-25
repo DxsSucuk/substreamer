@@ -25,7 +25,7 @@ import { playerStore } from '../../store/playerStore';
 
 const identity = (key: string) => key;
 
-function track(id: string, opts: { albumId?: string; duration?: number } = {}): any {
+function track(id: string, opts: { albumId?: string; duration?: number; coverArt?: string } = {}): any {
   return { id, title: `Title ${id}`, artist: `Artist ${id}`, isDir: false, ...opts };
 }
 
@@ -114,9 +114,16 @@ describe('derived display helpers', () => {
     expect(bookmarkQueuePosition(b)).toEqual({ index: 2, total: 2 });
   });
 
-  it('prefers albumId then track id for cover art', () => {
-    expect(bookmarkCoverArtId(bookmark({ queue: [track('t', { albumId: 'al' })], currentIndex: 0 }))).toBe('al');
-    expect(bookmarkCoverArtId(bookmark({ queue: [track('t')], currentIndex: 0 }))).toBe('t');
+  it('resolves the current track cover via the song coverArt value (#202)', () => {
+    // Album mode, album not in the (empty) library → falls back to the song's coverArt.
+    expect(
+      bookmarkCoverArtId(bookmark({ queue: [track('t', { albumId: 'al', coverArt: 'cov-al' })], currentIndex: 0 })),
+    ).toBe('cov-al');
+    expect(
+      bookmarkCoverArtId(bookmark({ queue: [track('t', { coverArt: 'cov-t' })], currentIndex: 0 })),
+    ).toBe('cov-t');
+    // No coverArt anywhere → undefined (never the entity id).
+    expect(bookmarkCoverArtId(bookmark({ queue: [track('t')], currentIndex: 0 }))).toBeUndefined();
   });
 
   it('returns the clamped current track, undefined for empty queue', () => {

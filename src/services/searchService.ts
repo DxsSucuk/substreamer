@@ -22,14 +22,21 @@ export async function performOnlineSearch(query: string): Promise<SearchResults>
 }
 
 /**
- * Construct a minimal Child from a cached_songs row + its parent cached_item.
+ * Construct a Child from a cached_songs row + its parent cached_item.
  *
- * Hot fields only — sufficient for `SongRow` display and `playTrack`. Cover
- * art is resolved downstream via `song.albumId ?? song.id` (entity-ID model);
- * we do not populate `coverArt` because no consumer reads it.
+ * Carries every field the cached row holds — including `coverArt`, which song
+ * cover-art resolution reads (#202). Never narrow a reconstruction because "no
+ * consumer reads it today"; the data is here, so pass it through.
  */
 function childFromCachedSong(
-  track: { id: string; title: string; artist?: string; albumId: string; duration: number },
+  track: {
+    id: string;
+    title: string;
+    artist?: string;
+    albumId: string;
+    duration: number;
+    coverArt?: string;
+  },
   parentItemName?: string,
 ): Child {
   return {
@@ -39,6 +46,7 @@ function childFromCachedSong(
     artist: track.artist,
     album: parentItemName,
     duration: track.duration,
+    coverArt: track.coverArt,
     isDir: false,
   };
 }

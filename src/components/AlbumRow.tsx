@@ -87,7 +87,7 @@ export const AlbumRow = memo(function AlbumRow({ album }: { album: AlbumID3 }) {
       onPress={onPress}
     >
       <View style={styles.row}>
-        <CachedImage coverArtId={album.id} size={COVER_SIZE} style={styles.cover} resizeMode="cover" />
+        <CachedImage coverArtId={album.coverArt} size={COVER_SIZE} style={styles.cover} resizeMode="cover" />
         <View style={styles.text}>
           <View style={styles.titleRow}>
             <Text

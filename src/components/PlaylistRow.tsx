@@ -99,7 +99,7 @@ export const PlaylistRow = memo(function PlaylistRow({ playlist }: { playlist: P
       onPress={onPress}
     >
       <View style={styles.row}>
-        <CachedImage coverArtId={playlist.id} size={COVER_SIZE} style={styles.cover} resizeMode="cover" />
+        <CachedImage coverArtId={playlist.coverArt} size={COVER_SIZE} style={styles.cover} resizeMode="cover" />
         <View style={styles.text}>
           <Text
             style={[styles.playlistName, { color: colors.textPrimary }]}

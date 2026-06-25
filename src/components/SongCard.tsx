@@ -10,6 +10,7 @@ import { CompactRatingBadge } from './StarRating';
 import { useDownloadStatus } from '../hooks/useDownloadStatus';
 import { useIsStarred } from '../hooks/useIsStarred';
 import { useRating } from '../hooks/useRating';
+import { useSongCoverArt } from '../hooks/useSongCoverArt';
 import { useTheme } from '../hooks/useTheme';
 import { type Child } from '../services/subsonicService';
 import { moreOptionsStore } from '../store/moreOptionsStore';
@@ -30,6 +31,7 @@ export const SongCard = memo(function SongCard({
   const starred = useIsStarred('song', song.id);
   const downloaded = useDownloadStatus('song', song.id) === 'complete';
   const rating = useRating(song.id, song.userRating);
+  const songCoverArtId = useSongCoverArt(song);
 
   const onLongPress = useCallback(() => {
     moreOptionsStore.getState().show({ type: 'song', item: song });
@@ -40,7 +42,7 @@ export const SongCard = memo(function SongCard({
       <View style={[styles.card, { backgroundColor: colors.card }, width != null && { width }]}>
         <View style={styles.imageContainer}>
           <CachedImage
-            coverArtId={song.albumId ?? song.id}
+            coverArtId={songCoverArtId}
             size={COVER_SIZE}
             style={styles.cover}
             resizeMode="cover"

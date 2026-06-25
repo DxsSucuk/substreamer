@@ -682,8 +682,8 @@ describe('download pipeline — cacheAllSizes + processQueue', () => {
   });
 });
 
-describe('prefetchCoverArt — keys off entity ID, not the coverArt field', () => {
-  it('warms the cache for the album id, never the server coverArt value', async () => {
+describe('prefetchCoverArt — keys off the coverArt value, not the entity ID (#202)', () => {
+  it('warms the cache for the coverArt value, never the entity id', async () => {
     const { getCoverArtUrl: mockGetCoverArtUrl } = jest.requireMock(
       '../subsonicService',
     ) as { getCoverArtUrl: jest.Mock };
@@ -699,8 +699,8 @@ describe('prefetchCoverArt — keys off entity ID, not the coverArt field', () =
     await new Promise((r) => setTimeout(r, 0));
 
     const calledIds = mockGetCoverArtUrl.mock.calls.map((c) => c[0]);
-    expect(calledIds).toContain('al-key');
-    expect(calledIds).not.toContain('cover-other');
+    expect(calledIds).toContain('cover-other');
+    expect(calledIds).not.toContain('al-key');
     mockGetCoverArtUrl.mockReturnValue(null);
   });
 });

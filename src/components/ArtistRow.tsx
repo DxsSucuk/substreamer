@@ -61,7 +61,7 @@ export const ArtistRow = memo(function ArtistRow({ artist }: { artist: ArtistID3
       onPress={onPress}
     >
       <View style={styles.row}>
-        <CachedImage coverArtId={artist.id} size={COVER_SIZE} style={styles.cover} resizeMode="cover" />
+        <CachedImage coverArtId={artist.coverArt} size={COVER_SIZE} style={styles.cover} resizeMode="cover" />
         <View style={styles.text}>
           <Text
             style={[styles.artistName, { color: colors.textPrimary }]}

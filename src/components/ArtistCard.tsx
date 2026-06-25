@@ -39,7 +39,7 @@ export const ArtistCard = memo(function ArtistCard({
       <View style={[styles.card, { backgroundColor: colors.card }, width != null && { width }]}>
         <View style={styles.imageContainer}>
           <CachedImage
-            coverArtId={artist.id}
+            coverArtId={artist.coverArt}
             size={COVER_SIZE}
             style={styles.cover}
             resizeMode="cover"

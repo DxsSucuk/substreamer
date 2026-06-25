@@ -35,6 +35,7 @@ import { PlayerModeContent, type PlayerMode } from '@/components/player/PlayerMo
 import { type ThemeColors } from '@/constants/theme';
 import { useCanSkip } from '@/hooks/useCanSkip';
 import { useImagePalette } from '@/hooks/useImagePalette';
+import { useSongCoverArt } from '@/hooks/useSongCoverArt';
 import { usePlayerActions } from '@/hooks/usePlayerActions';
 import { useShuffleOverlay } from '@/hooks/useShuffleOverlay';
 import { useTheme } from '@/hooks/useTheme';
@@ -74,6 +75,7 @@ export function PlayerTabletPortrait() {
   const { height: screenH, width: screenW } = useWindowDimensions();
 
   const currentTrack = playerStore((s) => s.currentTrack);
+  const songCoverArtId = useSongCoverArt(currentTrack);
   const currentTrackIndex = playerStore((s) => s.currentTrackIndex);
   const queue = playerStore((s) => s.queue);
   const offlineMode = offlineModeStore((s) => s.offlineMode);
@@ -117,9 +119,7 @@ export function PlayerTabletPortrait() {
     }
   }, [currentTrack, wasPopulated, onClose]);
 
-  const { primary, secondary, gradientOpacity } = useImagePalette(
-    currentTrack ? (currentTrack.albumId ?? currentTrack.id) : undefined,
-  );
+  const { primary, secondary, gradientOpacity } = useImagePalette(songCoverArtId);
   const gradientTopColor = secondary ?? primary ?? colors.background;
   const gradientColors: readonly [string, string, ...string[]] = [gradientTopColor, colors.background];
   const gradientLocations: readonly [number, number, ...number[]] = [0, 0.6];
@@ -211,7 +211,7 @@ export function PlayerTabletPortrait() {
             <View style={styles.band}>
               <View style={[styles.heroImageWrap, { width: artSize, height: artSize }]}>
                 <CachedImage
-                  coverArtId={currentTrack.albumId ?? currentTrack.id}
+                  coverArtId={songCoverArtId}
                   size={HERO_COVER_SIZE}
                   style={styles.heroImage}
                   resizeMode="cover"

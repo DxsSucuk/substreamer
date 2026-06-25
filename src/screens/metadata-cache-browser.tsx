@@ -139,7 +139,7 @@ const MetadataRow = memo(function MetadataRow({
     <SwipeableRow rightActions={rightActions} leftActions={leftActions} enableFullSwipeRight enableFullSwipeLeft={!offlineMode} rowGap={10} borderRadius={12}>
       <View style={styles.row}>
         <CachedImage
-          coverArtId={entry.id}
+          coverArtId={entry.coverArt}
           size={150}
           style={[
             styles.thumb,

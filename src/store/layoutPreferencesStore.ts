@@ -7,6 +7,8 @@ export type ItemLayout = 'list' | 'grid';
 export type AlbumSortOrder = 'artist' | 'title';
 export type ArtistAlbumSortOrder = 'newest' | 'oldest';
 export type DateFormat = 'yyyy/mm/dd' | 'yyyy/dd/mm';
+/** Which cover art a song shows: the parent album's, or the track's own. */
+export type SongCoverArtMode = 'album' | 'perTrack';
 export type ListLength = 20 | 30 | 50 | 100;
 
 export const LIST_LENGTH_DISPLAY_CAP = 20;
@@ -22,6 +24,7 @@ export interface LayoutPreferencesState {
   albumSortOrder: AlbumSortOrder;
   artistAlbumSortOrder: ArtistAlbumSortOrder;
   dateFormat: DateFormat;
+  songCoverArtMode: SongCoverArtMode;
   listLength: ListLength;
   includePartialInDownloadedFilter: boolean;
   setAlbumLayout: (layout: ItemLayout) => void;
@@ -34,6 +37,7 @@ export interface LayoutPreferencesState {
   setAlbumSortOrder: (order: AlbumSortOrder) => void;
   setArtistAlbumSortOrder: (order: ArtistAlbumSortOrder) => void;
   setDateFormat: (format: DateFormat) => void;
+  setSongCoverArtMode: (mode: SongCoverArtMode) => void;
   setListLength: (length: ListLength) => void;
   setIncludePartialInDownloadedFilter: (value: boolean) => void;
 }
@@ -53,6 +57,7 @@ export const layoutPreferencesStore = create<LayoutPreferencesState>()(
       albumSortOrder: 'artist',
       artistAlbumSortOrder: 'newest',
       dateFormat: 'yyyy/mm/dd',
+      songCoverArtMode: 'album',
       listLength: 20,
       includePartialInDownloadedFilter: false,
       setAlbumLayout: (albumLayout) => set({ albumLayout }),
@@ -66,6 +71,7 @@ export const layoutPreferencesStore = create<LayoutPreferencesState>()(
       setArtistAlbumSortOrder: (artistAlbumSortOrder) =>
         set({ artistAlbumSortOrder }),
       setDateFormat: (dateFormat) => set({ dateFormat }),
+      setSongCoverArtMode: (songCoverArtMode) => set({ songCoverArtMode }),
       setListLength: (listLength) => set({ listLength }),
       setIncludePartialInDownloadedFilter: (includePartialInDownloadedFilter) =>
         set({ includePartialInDownloadedFilter }),
@@ -84,6 +90,7 @@ export const layoutPreferencesStore = create<LayoutPreferencesState>()(
         albumSortOrder: state.albumSortOrder,
         artistAlbumSortOrder: state.artistAlbumSortOrder,
         dateFormat: state.dateFormat,
+        songCoverArtMode: state.songCoverArtMode,
         listLength: state.listLength,
         includePartialInDownloadedFilter: state.includePartialInDownloadedFilter,
       }),

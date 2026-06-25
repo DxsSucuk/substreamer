@@ -45,6 +45,7 @@ import { closeOpenRow } from '@/components/SwipeableRow';
 import { type ThemeColors } from '@/constants/theme';
 import { useCanSkip } from '@/hooks/useCanSkip';
 import { useImagePalette } from '@/hooks/useImagePalette';
+import { useSongCoverArt } from '@/hooks/useSongCoverArt';
 import { usePlayerActions } from '@/hooks/usePlayerActions';
 import { useShuffleOverlay } from '@/hooks/useShuffleOverlay';
 import { getPlayerSize } from '@/hooks/playerSize';
@@ -87,6 +88,7 @@ export function PlayerPhonePortrait() {
   const navigation = useNavigation();
   const router = useRouter();
   const currentTrack = playerStore((s) => s.currentTrack);
+  const songCoverArtId = useSongCoverArt(currentTrack);
   const currentTrackIndex = playerStore((s) => s.currentTrackIndex);
   const queue = playerStore((s) => s.queue);
   const queueLoading = playerStore((s) => s.queueLoading);
@@ -104,7 +106,7 @@ export function PlayerPhonePortrait() {
     }
   }, [currentTrack, wasPopulated, onClose]);
 
-  const { primary, secondary, gradientOpacity } = useImagePalette(currentTrack ? (currentTrack.albumId ?? currentTrack.id) : undefined);
+  const { primary, secondary, gradientOpacity } = useImagePalette(songCoverArtId);
 
   // 2-stop gradient: extracted secondary (prefer) → theme background. We
   // drop the more-vibrant `primary` from the render here because on small
@@ -439,6 +441,7 @@ const PlayerContent = memo(function PlayerContent({
   shuffling,
 }: PlayerContentProps) {
   const { t } = useTranslation();
+  const songCoverArtId = useSongCoverArt(currentTrack);
   const { height: windowHeight, width: windowWidth } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const playbackState = playerStore((s) => s.playbackState);
@@ -519,7 +522,7 @@ const PlayerContent = memo(function PlayerContent({
       <View style={[styles.hero, { paddingBottom: m.heroPadBottom }]}>
         <View style={[styles.heroImageWrap, { width: heroSize, height: heroSize }]}>
           <CachedImage
-            coverArtId={currentTrack.albumId ?? currentTrack.id}
+            coverArtId={songCoverArtId}
             size={HERO_COVER_SIZE}
             style={styles.heroImage}
             resizeMode="cover"

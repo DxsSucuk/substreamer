@@ -266,15 +266,16 @@ describe('image-queue meta accessors', () => {
 
 describe('enqueueImageRefreshCycle', () => {
   it('refresh-downloads snapshots from cached_items + per-song covers', async () => {
-    // Snapshot now keys off ENTITY IDs (itemId for cached_items,
-    // albumId for cached_songs), not the server-supplied .coverArt field.
+    // Snapshot keys off the stored coverArt VALUE (#202): the cached_item's
+    // coverArtId for album/playlist, and the mode-aware resolved cover for
+    // songs (album mode, empty library → falls back to the song's own coverArt).
     mockHydrateCachedItems.mockReturnValue({
-      'a-1': { itemId: 'a-1', type: 'album' },
-      'pl-1': { itemId: 'pl-1', type: 'playlist' },
+      'a-1': { itemId: 'a-1', type: 'album', coverArtId: 'cov-a1' },
+      'pl-1': { itemId: 'pl-1', type: 'playlist', coverArtId: 'cov-pl1' },
     });
     mockHydrateCachedSongs.mockReturnValue({
-      's-1': { id: 's-1', albumId: 'a-2' },
-      's-2': { id: 's-2', albumId: 'a-1' }, // dedups with cached_items album
+      's-1': { id: 's-1', albumId: 'a-2', coverArt: 'cov-a2' },
+      's-2': { id: 's-2', albumId: 'a-1', coverArt: 'cov-a1' }, // dedups with item a-1's cover
     });
 
     const cycleId = await enqueueImageRefreshCycle('refresh-downloads');
@@ -282,7 +283,7 @@ describe('enqueueImageRefreshCycle', () => {
     expect(cycleId).not.toBeNull();
     expect(mockEnqueueBulk).toHaveBeenCalledTimes(1);
     const [ids, scope] = mockEnqueueBulk.mock.calls[0];
-    expect(ids).toEqual(['a-1', 'pl-1', 'a-2']);
+    expect(ids).toEqual(['cov-a1', 'cov-pl1', 'cov-a2']);
     expect(scope).toBe('refresh-downloads');
     const meta = getImageQueueState();
     expect(meta.cycleId).toBe(cycleId);

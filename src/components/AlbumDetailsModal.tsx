@@ -148,7 +148,7 @@ export function AlbumDetailsModal({ album, visible, onClose }: AlbumDetailsModal
     <BottomSheet visible={visible} onClose={onClose} maxHeight="60%">
       <View style={styles.header}>
         {album.id && (
-          <CachedImage coverArtId={album.id} size={150} style={styles.coverArt} resizeMode="cover" />
+          <CachedImage coverArtId={album.coverArt} size={150} style={styles.coverArt} resizeMode="cover" />
         )}
         <View style={styles.headerText}>
           <Text style={[styles.title, { color: colors.textPrimary }]}>

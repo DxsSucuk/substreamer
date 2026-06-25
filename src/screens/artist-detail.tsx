@@ -108,7 +108,7 @@ export function ArtistDetailScreen() {
   const refreshControlKey = useRefreshControlKey();
 
   const { primary, secondary, gradientOpacity } = useImagePalette(
-    isWide ? SKIP_COLOR_EXTRACTION : artist?.id,
+    isWide ? SKIP_COLOR_EXTRACTION : artist?.coverArt,
   );
 
   const themeGradientColors = useMemo(() => {
@@ -285,7 +285,7 @@ export function ArtistDetailScreen() {
         {/* ---- Hero ---- */}
         <View style={styles.hero}>
           <CachedImage
-            coverArtId={artist.id}
+            coverArtId={artist.coverArt}
             size={HERO_COVER_SIZE}
             fallbackUri={artistInfo?.largeImageUrl ?? undefined}
             style={[styles.heroImage, { width: heroImageSize, height: heroImageSize, borderRadius: heroImageSize / 2 }]}

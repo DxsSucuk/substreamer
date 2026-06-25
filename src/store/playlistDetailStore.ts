@@ -4,7 +4,7 @@ import { persist } from 'zustand/middleware';
 import { createDebouncedPersistStorage } from './persistence';
 
 import { ensureCached, prefetchCoverArt } from '../services/imageCacheService';
-import { coverArtIdForPlaylist } from '../utils/coverArtId';
+import { coverArtForPlaylist } from '../utils/coverArtId';
 import {
   ensureCoverArtAuth,
   getPlaylist,
@@ -68,7 +68,7 @@ export const playlistDetailStore = create<PlaylistDetailState>()(
           // Proactively cache cover art for new IDs so they survive offline.
           // Skipped during bulk sync — see prefetchCovers contract above.
           if (prefetchCovers) {
-            const playlistArtId = coverArtIdForPlaylist(data);
+            const playlistArtId = coverArtForPlaylist(data);
             if (playlistArtId) ensureCached(playlistArtId).catch(() => { /* non-critical */ });
             if (data.entry?.length) prefetchCoverArt(data.entry);
           }

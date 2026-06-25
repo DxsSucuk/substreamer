@@ -1,9 +1,9 @@
 import {
-  coverArtIdForAlbum,
-  coverArtIdForArtist,
-  coverArtIdForEntity,
-  coverArtIdForPlaylist,
-  coverArtIdForSong,
+  coverArtForAlbum,
+  coverArtForArtist,
+  coverArtForEntity,
+  coverArtForPlaylist,
+  coverArtForSong,
 } from '../coverArtId';
 import {
   type AlbumID3,
@@ -13,54 +13,66 @@ import {
 } from '../../services/subsonicService';
 
 /**
- * The single rule: cover-art keys off the entity ID, NEVER the server
- * `coverArt` field. These tests pin that — every helper must ignore a
- * (deliberately different) `coverArt` value and return the ID.
+ * The single rule (#202): cover-art keys off the entity's `coverArt` VALUE,
+ * NEVER the entity id. Songs additionally pick album-vs-own coverArt by mode.
  */
 describe('coverArtId helpers', () => {
-  it('coverArtIdForAlbum returns the album id, ignoring coverArt', () => {
-    const album = { id: 'al-1', coverArt: 'cover-xyz' } as AlbumID3;
-    expect(coverArtIdForAlbum(album)).toBe('al-1');
+  it('coverArtForAlbum returns the coverArt value, never the id', () => {
+    expect(coverArtForAlbum({ id: 'al-1', coverArt: 'cover-xyz' } as AlbumID3)).toBe('cover-xyz');
   });
 
-  it('coverArtIdForArtist returns the artist id, ignoring coverArt', () => {
-    const artist = { id: 'ar-1', coverArt: 'cover-xyz' } as ArtistID3;
-    expect(coverArtIdForArtist(artist)).toBe('ar-1');
+  it('coverArtForArtist returns the coverArt value, never the id', () => {
+    expect(coverArtForArtist({ id: 'ar-1', coverArt: 'cover-xyz' } as ArtistID3)).toBe('cover-xyz');
   });
 
-  it('coverArtIdForPlaylist returns the playlist id, ignoring coverArt', () => {
-    const playlist = { id: 'pl-1', coverArt: 'cover-xyz' } as Playlist;
-    expect(coverArtIdForPlaylist(playlist)).toBe('pl-1');
+  it('coverArtForPlaylist returns the coverArt value, never the id', () => {
+    expect(coverArtForPlaylist({ id: 'pl-1', coverArt: 'cover-xyz' } as Playlist)).toBe('cover-xyz');
   });
 
-  it('coverArtIdForSong returns the parent albumId, ignoring coverArt', () => {
+  it('returns undefined when the entity has no coverArt', () => {
+    expect(coverArtForAlbum({ id: 'al-1' } as AlbumID3)).toBeUndefined();
+    expect(coverArtForArtist({ id: 'ar-1' } as ArtistID3)).toBeUndefined();
+    expect(coverArtForPlaylist({ id: 'pl-1' } as Playlist)).toBeUndefined();
+  });
+
+  describe('coverArtForSong', () => {
     const song = { id: 's-1', albumId: 'al-1', coverArt: 'mf-9' } as Child;
-    expect(coverArtIdForSong(song)).toBe('al-1');
-  });
 
-  it('coverArtIdForSong falls back to the song id when no albumId (orphan)', () => {
-    const song = { id: 's-1', coverArt: 'mf-9' } as Child;
-    expect(coverArtIdForSong(song)).toBe('s-1');
-  });
-
-  it('returns undefined when the entity has no usable id', () => {
-    expect(coverArtIdForAlbum({ coverArt: 'c' } as AlbumID3)).toBeUndefined();
-    expect(coverArtIdForSong({ coverArt: 'c' } as unknown as Child)).toBeUndefined();
-  });
-
-  describe('coverArtIdForEntity dispatch', () => {
-    it('treats an entity with albumId as a song (albumId wins)', () => {
-      const song = { id: 's-1', albumId: 'al-1', coverArt: 'mf-9' } as Child;
-      expect(coverArtIdForEntity(song)).toBe('al-1');
+    it('album mode resolves the parent album coverArt via the lookup', () => {
+      const lookup = (id: string | null | undefined) => (id === 'al-1' ? 'album-cover' : undefined);
+      expect(coverArtForSong(song, 'album', lookup)).toBe('album-cover');
     });
 
-    it('treats an entity without albumId as id-keyed (album/artist/playlist)', () => {
+    it('album mode falls back to the song coverArt when the album is not cached', () => {
+      expect(coverArtForSong(song, 'album', () => undefined)).toBe('mf-9');
+    });
+
+    it('per-track mode always returns the song coverArt, ignoring the album', () => {
+      const lookup = () => 'album-cover';
+      expect(coverArtForSong(song, 'perTrack', lookup)).toBe('mf-9');
+    });
+
+    it('returns undefined when the song has neither resolvable album nor own coverArt', () => {
+      expect(coverArtForSong({ id: 's-2', albumId: 'al-2' } as Child, 'album', () => undefined)).toBeUndefined();
+    });
+  });
+
+  describe('coverArtForEntity dispatch', () => {
+    const lookup = (id: string | null | undefined) => (id === 'al-1' ? 'album-cover' : undefined);
+
+    it('treats an entity with albumId as a song (mode-aware)', () => {
+      const song = { id: 's-1', albumId: 'al-1', coverArt: 'mf-9' } as Child;
+      expect(coverArtForEntity(song, 'album', lookup)).toBe('album-cover');
+      expect(coverArtForEntity(song, 'perTrack', lookup)).toBe('mf-9');
+    });
+
+    it('treats an entity without albumId as coverArt-keyed (album/artist/playlist)', () => {
       const album = { id: 'al-2', coverArt: 'al-cover' } as AlbumID3;
       const artist = { id: 'ar-2', coverArt: 'ar-cover' } as ArtistID3;
       const playlist = { id: 'pl-2', coverArt: 'pl-cover' } as Playlist;
-      expect(coverArtIdForEntity(album)).toBe('al-2');
-      expect(coverArtIdForEntity(artist)).toBe('ar-2');
-      expect(coverArtIdForEntity(playlist)).toBe('pl-2');
+      expect(coverArtForEntity(album, 'album', lookup)).toBe('al-cover');
+      expect(coverArtForEntity(artist, 'album', lookup)).toBe('ar-cover');
+      expect(coverArtForEntity(playlist, 'album', lookup)).toBe('pl-cover');
     });
   });
 });

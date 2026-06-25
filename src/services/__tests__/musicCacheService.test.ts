@@ -965,7 +965,7 @@ describe('enqueueAlbumDownload', () => {
     expect(queue[0].totalSongs).toBe(2);
   });
 
-  it('caches album cover + track covers by album ID (not coverArt field)', async () => {
+  it('caches album cover by the album coverArt value, not the entity ID (#202)', async () => {
     mockCheckStorageLimit.mockReturnValue(true);
     mockFetchAlbum.mockResolvedValue({
       id: 'album-1',
@@ -974,10 +974,10 @@ describe('enqueueAlbumDownload', () => {
       song: [makeChild('t1', { coverArt: 'tc' })],
     });
     await enqueueAlbumDownload('album-1');
-    // Cover art keys off the album ID, never the server `coverArt` field
+    // Cover art keys off the album's `coverArt` VALUE, never the entity id
     // (see src/utils/coverArtId.ts).
-    expect(ensureCached).toHaveBeenCalledWith('album-1');
-    expect(ensureCached).not.toHaveBeenCalledWith('ac');
+    expect(ensureCached).toHaveBeenCalledWith('ac');
+    expect(ensureCached).not.toHaveBeenCalledWith('album-1');
     expect(prefetchCoverArt).toHaveBeenCalled();
   });
 

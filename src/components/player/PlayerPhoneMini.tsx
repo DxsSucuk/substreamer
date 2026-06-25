@@ -10,6 +10,7 @@ import { CachedImage } from '@/components/CachedImage';
 import { MarqueeText } from '@/components/MarqueeText';
 import WaveformLogo from '@/components/WaveformLogo';
 import { useImagePalette } from '@/hooks/useImagePalette';
+import { useSongCoverArt } from '@/hooks/useSongCoverArt';
 import { useTheme } from '@/hooks/useTheme';
 import { skipToNext, togglePlayPause } from '@/services/playerService';
 import { playbackSettingsStore } from '@/store/playbackSettingsStore';
@@ -24,6 +25,7 @@ export function PlayerPhoneMini() {
   const { colors } = useTheme();
   const { t } = useTranslation();
   const currentTrack = playerStore((s) => s.currentTrack);
+  const songCoverArtId = useSongCoverArt(currentTrack);
   const playbackState = playerStore((s) => s.playbackState);
   const position = playerStore((s) => s.position);
   const duration = playerStore((s) => s.duration);
@@ -54,7 +56,7 @@ export function PlayerPhoneMini() {
 
   // --- Colour extraction (palette is theme-aware; primary is lightness-clamped
   // for safe icon contrast, secondary is null for monochromatic covers). ---
-  const { primary, secondary, gradientOpacity } = useImagePalette(currentTrack ? (currentTrack.albumId ?? currentTrack.id) : undefined);
+  const { primary, secondary, gradientOpacity } = useImagePalette(songCoverArtId);
 
   const gradientAnimatedStyle = useAnimatedStyle(() => ({
     opacity: gradientOpacity.value,
@@ -125,7 +127,7 @@ export function PlayerPhoneMini() {
           </View>
         ) : (
           <CachedImage
-            coverArtId={currentTrack.albumId ?? currentTrack.id}
+            coverArtId={songCoverArtId}
             size={300}
             style={styles.cover}
             resizeMode="cover"

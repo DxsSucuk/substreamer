@@ -12,6 +12,7 @@ import { useTranslation } from 'react-i18next';
 
 import { BottomSheet } from './BottomSheet';
 import { CachedImage } from './CachedImage';
+import { resolveSongCoverArt } from '../hooks/useSongCoverArt';
 import { useTheme } from '../hooks/useTheme';
 import { updateShare } from '../services/subsonicService';
 import { editShareStore } from '../store/editShareStore';
@@ -130,10 +131,10 @@ export function EditShareSheet() {
     return t('share');
   }, [share, t]);
 
-  // Entity-ID based cover art (see src/utils/coverArtId.ts).
-  // Share's first entry is a song-level Child; key off its album.
+  // `coverArt`-value based cover art (see src/utils/coverArtId.ts). (#202)
+  // Share's first entry is a song-level Child; resolve its song cover.
   const firstEntry = share?.entry?.[0];
-  const coverArtId = firstEntry ? (firstEntry.albumId ?? firstEntry.id) : undefined;
+  const coverArtId = firstEntry ? resolveSongCoverArt(firstEntry) : undefined;
 
   return (
     <BottomSheet visible={visible} onClose={handleClose}>

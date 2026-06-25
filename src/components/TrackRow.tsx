@@ -10,6 +10,7 @@ import { SwipeableRow, type SwipeAction } from './SwipeableRow';
 import { useDownloadStatus } from '../hooks/useDownloadStatus';
 import { useIsStarred } from '../hooks/useIsStarred';
 import { useRating } from '../hooks/useRating';
+import { useSongCoverArt } from '../hooks/useSongCoverArt';
 import { addSongToQueue, toggleStar } from '../services/moreOptionsService';
 import { addToPlaylistStore } from '../store/addToPlaylistStore';
 import { moreOptionsStore } from '../store/moreOptionsStore';
@@ -47,6 +48,7 @@ export const TrackRow = memo(function TrackRow({ track, trackNumber, colors, onP
   // stable boolean per track, so non-active rows only re-render when
   // currentTrack changes to/from this row (not on every track change).
   const isActive = playerStore((s) => s.currentTrack?.id === track.id);
+  const songCoverArtId = useSongCoverArt(track);
   // In offline mode, tracks that aren't fully cached can't play and shouldn't
   // accept any interaction — tapping them today silently routes to the first
   // playable track (via playerService.buildPlayableQueue) which is confusing
@@ -123,7 +125,7 @@ export const TrackRow = memo(function TrackRow({ track, trackNumber, colors, onP
         {showCoverArt ? (
           <View style={styles.coverWrap}>
             <CachedImage
-              coverArtId={track.albumId ?? track.id}
+              coverArtId={songCoverArtId}
               size={COVER_SIZE}
               style={styles.cover}
               resizeMode="cover"

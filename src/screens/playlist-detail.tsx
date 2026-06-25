@@ -41,6 +41,7 @@ import { SKIP_COLOR_EXTRACTION, useImagePalette } from '../hooks/useImagePalette
 import { useDownloadStatus } from '../hooks/useDownloadStatus';
 import { useLayoutMode } from '../hooks/useLayoutMode';
 import { useRefreshControlKey } from '../hooks/useRefreshControlKey';
+import { useSongCoverArt } from '../hooks/useSongCoverArt';
 import { useTheme } from '../hooks/useTheme';
 import { mixHexColors } from '../utils/colors';
 import { useTransitionComplete } from '../hooks/useTransitionComplete';
@@ -79,6 +80,7 @@ const EditTrackRow = memo(function EditTrackRow({
 }) {
   const { t } = useTranslation();
   const drag = useReorderableDrag();
+  const songCoverArtId = useSongCoverArt(item);
 
   const handleDelete = useCallback(() => onDelete(index), [onDelete, index]);
 
@@ -103,7 +105,7 @@ const EditTrackRow = memo(function EditTrackRow({
     >
       <View style={[styles.editRow, { borderBottomColor: colors.border }]}>
         <CachedImage
-          coverArtId={item.albumId ?? item.id}
+          coverArtId={songCoverArtId}
           size={300}
           style={styles.editCover}
           resizeMode="cover"
@@ -154,7 +156,7 @@ export function PlaylistDetailScreen() {
   const [saving, setSaving] = useState(false);
 
   const { primary, secondary, gradientOpacity } = useImagePalette(
-    isWide ? SKIP_COLOR_EXTRACTION : playlist?.id,
+    isWide ? SKIP_COLOR_EXTRACTION : playlist?.coverArt,
   );
 
   const themeGradientColors = useMemo(() => {
@@ -390,7 +392,7 @@ export function PlaylistDetailScreen() {
         <View style={styles.hero}>
           <View style={styles.heroImageWrap}>
             <CachedImage
-              coverArtId={playlist.id}
+              coverArtId={playlist.coverArt}
               size={HERO_COVER_SIZE}
               style={styles.heroImage}
               resizeMode="contain"

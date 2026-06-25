@@ -39,6 +39,7 @@ import { SleepTimerCapsule } from '@/components/SleepTimerCapsule';
 import { closeOpenRow } from '@/components/SwipeableRow';
 import { useCanSkip } from '@/hooks/useCanSkip';
 import { useImagePalette } from '@/hooks/useImagePalette';
+import { useSongCoverArt } from '@/hooks/useSongCoverArt';
 import { mixHexColors } from '@/utils/colors';
 import { usePlayerActions } from '@/hooks/usePlayerActions';
 import { useShuffleOverlay } from '@/hooks/useShuffleOverlay';
@@ -75,6 +76,7 @@ export function PlayerTabletLandscape({
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const currentTrack = playerStore((s) => s.currentTrack);
+  const songCoverArtId = useSongCoverArt(currentTrack);
   const currentTrackIndex = playerStore((s) => s.currentTrackIndex);
   const queue = playerStore((s) => s.queue);
   const playbackState = playerStore((s) => s.playbackState);
@@ -98,7 +100,7 @@ export function PlayerTabletLandscape({
   // lightness-clamped for the active theme so the previous manual
   // darkening call is no longer necessary — we just use the hook output.
   const { primary, secondary, gradientOpacity: extractedGradientOpacity } =
-    useImagePalette(currentTrack ? (currentTrack.albumId ?? currentTrack.id) : undefined);
+    useImagePalette(songCoverArtId);
 
   // 2-stop diagonal gradient: extracted secondary (prefer) → a
   // slightly-darkened theme background. We drop the more-vibrant
@@ -316,7 +318,7 @@ export function PlayerTabletLandscape({
                     ]}
                   >
                     <CachedImage
-                      coverArtId={currentTrack.albumId ?? currentTrack.id}
+                      coverArtId={songCoverArtId}
                       size={HERO_COVER_SIZE}
                       style={styles.coverImage}
                       resizeMode="cover"

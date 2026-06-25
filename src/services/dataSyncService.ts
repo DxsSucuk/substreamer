@@ -32,7 +32,7 @@ import { registerMusicCacheOnAlbumReferencedHook } from './musicCacheService';
 import { fetchScanStatus, registerScanCompletedHook } from './scanService';
 import { registerScrobbleBatchCompletedHook } from './scrobbleService';
 import { canUserScan } from './serverCapabilityService';
-import { fetchServerInfo, getRecentlyAddedAlbums, type AlbumID3 } from './subsonicService';
+import { ensureCoverArtAuth, fetchServerInfo, getAlbum, getRecentlyAddedAlbums, type AlbumID3 } from './subsonicService';
 
 /** Bounded concurrency for the album-detail walk. */
 const WALK_CONCURRENCY = 4;
@@ -399,17 +399,26 @@ export async function onScrobbleCompleted(): Promise<void> {
  *   - If the id is already in the library: no-op.
  *   - If the library is cold (zero albums cached): no-op — the startup
  *     path already handles first-fetch via its `length === 0` guard.
- *   - Otherwise: kick off a background full-library refetch. `fetchAllAlbums`
- *     has its own loading guard so overlapping callers collapse to one fetch.
+ *   - Otherwise: fetch ONLY that album and merge it into the library (#202).
+ *     A targeted single-album upsert — never a full-library re-download, which
+ *     was prohibitively expensive on large libraries.
  */
 export async function onAlbumReferenced(albumId: string): Promise<void> {
   if (offlineModeStore.getState().offlineMode) return;
   const libState = albumLibraryStore.getState();
   if (libState.albums.length === 0) return;
   if (libState.albums.some((a) => a.id === albumId)) return;
-  // Fire-and-forget — reconciliation on the fresh library (via the hook
-  // registered at module load) will pick up the new album's detail too.
-  fireAndForget(libState.fetchAllAlbums(), 'sync.onAlbumReferenced');
+  try {
+    await ensureCoverArtAuth();
+    const album = await getAlbum(albumId);
+    if (album) {
+      // Drop `song` — the library is a song-less AlbumID3[].
+      const { song: _song, ...albumMeta } = album;
+      albumLibraryStore.getState().upsertAlbums([albumMeta]);
+    }
+  } catch {
+    /* best-effort: a missed reference resolves on the next full sync */
+  }
 }
 
 /** Bounded concurrency for the playlist-detail prefetch (smaller than the

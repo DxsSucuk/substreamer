@@ -100,7 +100,7 @@ export function AlbumDetailScreen() {
   }, [id]);
 
   const { primary, secondary, gradientOpacity } = useImagePalette(
-    isWide ? SKIP_COLOR_EXTRACTION : album?.id,
+    isWide ? SKIP_COLOR_EXTRACTION : album?.coverArt,
   );
 
   const themeGradientColors = useMemo(() => {
@@ -153,7 +153,10 @@ export function AlbumDetailScreen() {
     setError(null);
     try {
       const delay = isRefresh ? minDelay() : null;
-      const data = await fetchAlbum(id);
+      // Reflect the viewed album in the library (#202): an explicit refresh
+      // replaces the entry (propagating server-side edits), a plain open adds
+      // it only if it wasn't synced yet.
+      const data = await fetchAlbum(id, { syncToLibrary: isRefresh ? 'replace' : 'ifAbsent' });
       setAlbum(data);
       if (!data) setError(t('albumNotFound'));
       if (isRefresh && data?.id) {
@@ -255,7 +258,7 @@ export function AlbumDetailScreen() {
         <View style={styles.hero}>
           <View style={styles.heroImageWrap}>
             <CachedImage
-              coverArtId={album.id}
+              coverArtId={album.coverArt}
               size={HERO_COVER_SIZE}
               style={styles.heroImage}
               resizeMode="contain"

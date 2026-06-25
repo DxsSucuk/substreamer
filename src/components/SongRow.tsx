@@ -10,6 +10,7 @@ import { SwipeableRow, type SwipeAction } from './SwipeableRow';
 import { useDownloadStatus } from '../hooks/useDownloadStatus';
 import { useIsStarred } from '../hooks/useIsStarred';
 import { useRating } from '../hooks/useRating';
+import { useSongCoverArt } from '../hooks/useSongCoverArt';
 import { useTheme } from '../hooks/useTheme';
 import { addSongToQueue, toggleStar } from '../services/moreOptionsService';
 import { type Child } from '../services/subsonicService';
@@ -32,6 +33,7 @@ export const SongRow = memo(function SongRow({ song, onPress }: { song: Child; o
   const duration =
     song.duration != null ? formatTrackDuration(song.duration) : '—';
   const isActive = playerStore((s) => s.currentTrack?.id === song.id);
+  const songCoverArtId = useSongCoverArt(song);
 
   const handleAddToQueue = useCallback(() => {
     addSongToQueue(song);
@@ -88,7 +90,7 @@ export const SongRow = memo(function SongRow({ song, onPress }: { song: Child; o
     >
       <View style={styles.row}>
         <View style={styles.coverWrap}>
-          <CachedImage coverArtId={song.albumId ?? song.id} size={COVER_SIZE} style={styles.cover} resizeMode="cover" />
+          <CachedImage coverArtId={songCoverArtId} size={COVER_SIZE} style={styles.cover} resizeMode="cover" />
           {isActive && (
             <View style={styles.activeOverlay}>
               <NowPlayingIndicator size={26} color={colors.primary} />
