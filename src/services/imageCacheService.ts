@@ -294,6 +294,34 @@ function clearFailedRemoteIds(reason: string): void {
 }
 
 /**
+ * Re-notify EVERY mounted CachedImage so it re-derives its URI and re-fetches
+ * against the NEW active server. Called from the active-server switch
+ * (primary↔secondary): a manual switch flips neither offlineMode nor
+ * isServerReachable, so the subscription-driven recovery paths above never fire.
+ *
+ * Unlike `clearFailedRemoteIds`, this notifies ALL subscribers, not just the
+ * remote-failed ones — covers stuck on the placeholder after a switch are
+ * typically NOT in the failed set (no local file post-migration-wipe, and the
+ * switch's `clearApiCache` briefly nulled the auth token so no remote URL was
+ * built), so a failed-only sweep would miss them (the "scroll to load" symptom).
+ */
+export function retryRemoteImagesForServerSwitch(): void {
+  failedRemoteIds.clear();
+  let notified = 0;
+  for (const listeners of cacheUpdateListeners.values()) {
+    for (const listener of listeners) {
+      try {
+        listener();
+        notified += 1;
+      } catch {
+        /* swallow — one bad subscriber can't poison the rest */
+      }
+    }
+  }
+  logImageCache(`retryRemoteImagesForServerSwitch notified=${notified}`);
+}
+
+/**
  * Characters that are either reserved on some filesystems (Windows:
  * `\/:*?"<>|`; legacy macOS: `:`) or otherwise troublesome in URIs.
  * Encoded as `%HH` (uppercase hex) before the coverArtId is used as an

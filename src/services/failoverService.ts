@@ -34,8 +34,9 @@
 import { authStore, type ServerSlot } from '../store/authStore';
 import { failoverStatusStore, type SwitchCause } from '../store/failoverStatusStore';
 import { setConnectivityRestoredHook, setServerDownHook } from './connectivityService';
+import { retryRemoteImagesForServerSwitch } from './imageCacheService';
 import { rebuildQueueForServerSwitch } from './playerService';
-import { buildPingApi, clearApiCache } from './subsonicService';
+import { buildPingApi, clearApiCache, ensureCoverArtAuth } from './subsonicService';
 import { withTimeout } from '../utils/withTimeout';
 
 const PING_TIMEOUT_MS = 5_000;
@@ -90,8 +91,19 @@ export async function switchToServer(
     //    are NOT cleared — same server, same caps.
     clearApiCache();
 
+    // 2b. Re-establish the cover-art auth token against the new server — step 2
+    //     nulled it, and both the queue rebuild and the image retry below need a
+    //     valid token to produce working getStreamUrl / getCoverArtUrl results.
+    await ensureCoverArtAuth();
+
     // 3. Rebuild the RNTP queue against the new base. Brief audio pause.
     await rebuildQueueForServerSwitch();
+
+    // 3b. Tell the image layer to retry: a switch doesn't flip offlineMode or
+    //     isServerReachable, so mounted CachedImages that failed against the old
+    //     server won't re-attempt on their own. Clears remote-failed markers and
+    //     re-notifies them so covers reload without needing a list-row recycle.
+    retryRemoteImagesForServerSwitch();
 
     // 4. Record the switch for the UI banner.
     failoverStatusStore.getState().recordSwitch(target, cause);

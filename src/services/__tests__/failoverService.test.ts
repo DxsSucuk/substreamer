@@ -5,14 +5,23 @@ jest.mock('../playerService', () => ({
   rebuildQueueForServerSwitch: jest.fn(async () => {}),
 }));
 
-// subsonicService bridge — we stub buildPingApi + clearApiCache and let
-// the real authStore drive state.
+// subsonicService bridge — we stub buildPingApi + clearApiCache +
+// ensureCoverArtAuth and let the real authStore drive state.
 const mockPing = jest.fn();
 const mockBuildPingApi: jest.Mock = jest.fn(() => ({ ping: mockPing }));
 const mockClearApiCache = jest.fn();
+const mockEnsureCoverArtAuth = jest.fn(async () => {});
 jest.mock('../subsonicService', () => ({
   buildPingApi: (url: string) => mockBuildPingApi(url),
   clearApiCache: () => mockClearApiCache(),
+  ensureCoverArtAuth: () => mockEnsureCoverArtAuth(),
+}));
+
+// imageCacheService — switchToServer pokes the image layer to retry. Stub it
+// so the test doesn't drag in the native image-cache surface.
+const mockRetryRemoteImages = jest.fn();
+jest.mock('../imageCacheService', () => ({
+  retryRemoteImagesForServerSwitch: () => mockRetryRemoteImages(),
 }));
 
 // connectivityService hook registration — failoverService.initFailover
@@ -90,14 +99,19 @@ afterEach(() => {
 });
 
 describe('switchToServer', () => {
-  it('atomically swaps active slot, clears API cache, rebuilds queue, records status', async () => {
+  it('atomically swaps active slot, clears API cache, re-auths, rebuilds queue, retries images, records status', async () => {
     await switchToServer('secondary', 'manual');
 
     const auth = authStore.getState();
     expect(auth.activeServer).toBe('secondary');
     expect(auth.serverUrl).toBe('https://secondary.example.com');
     expect(mockClearApiCache).toHaveBeenCalledTimes(1);
+    // Re-establishes the cover-art token (clearApiCache nulled it) so the
+    // rebuilt queue + reloaded covers resolve against the new server.
+    expect(mockEnsureCoverArtAuth).toHaveBeenCalledTimes(1);
     expect(mockRebuild).toHaveBeenCalledTimes(1);
+    // Pokes the image layer so mounted covers reload without a list-row recycle.
+    expect(mockRetryRemoteImages).toHaveBeenCalledTimes(1);
 
     const status = failoverStatusStore.getState();
     expect(status.lastSwitchTarget).toBe('secondary');

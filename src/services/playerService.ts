@@ -1292,6 +1292,18 @@ export async function rebuildQueueForServerSwitch(): Promise<void> {
       // RNTP may not be ready yet; the reset below handles it.
     }
 
+    // Re-establish the cover-art auth token and re-sync the streaming proxy
+    // upstreams against the NEW active server BEFORE regenerating URLs. The
+    // switch's clearApiCache() nulled the token, so without this getStreamUrl
+    // returns null (no token) — or, on iOS, resolves to a raw self-signed
+    // https URL — and every streaming track is filtered out, bailing the
+    // rebuild and leaving the stale pre-switch URLs loaded. Mirrors the
+    // hydrateRestoredQueue() prerequisites used on app-start restore.
+    await ensureCoverArtAuth();
+    if (Platform.OS === 'ios') {
+      await syncProxyUpstreams();
+    }
+
     const { rnTracks, filteredQueue } = await buildPlayableQueue(queue);
     if (rnTracks.length === 0) {
       // Every track in the queue was filtered out (e.g. all offline-only
