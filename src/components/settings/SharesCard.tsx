@@ -27,7 +27,7 @@ export function SharesCard() {
   const offlineMode = offlineModeStore((s) => s.offlineMode);
   const showShares = !offlineMode && canUserShare();
 
-  const serverUrl = authStore((s) => s.serverUrl);
+  const primaryServerUrl = authStore((s) => s.primaryServerUrl ?? s.serverUrl);
   const shareBaseUrl = shareSettingsStore((s) => s.shareBaseUrl);
   const shares = sharesStore((s) => s.shares ?? []);
   const shareCount = shares.length;
@@ -60,7 +60,7 @@ export function SharesCard() {
             <View style={styles.urlRow}>
               <Text style={[settingsStyles.infoLabel, { color: colors.textPrimary }]}>{t('shareUrl')}</Text>
               <Text style={[styles.urlValue, { color: colors.textSecondary }]} numberOfLines={1}>
-                {shareBaseUrl || serverUrl || '—'}
+                {shareBaseUrl || primaryServerUrl || '—'}
               </Text>
             </View>
             <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />

@@ -11,6 +11,7 @@ beforeEach(() => {
   shareSettingsStore.setState({ shareBaseUrl: null });
   authStore.setState({
     serverUrl: 'https://music.example.com',
+    primaryServerUrl: null,
     username: 'user',
     password: 'pass',
     apiVersion: '1.16',
@@ -61,6 +62,33 @@ describe('rewriteShareUrl', () => {
     shareSettingsStore.setState({ shareBaseUrl: 'https://share.example.com' });
     const original = 'https://other-server.com/rest/stream.view?id=123';
     expect(rewriteShareUrl(original)).toBe(original);
+  });
+
+  it('restores a port the server stripped from a same-host share link (#208)', () => {
+    // Navidrome behind a reverse proxy returns the share URL without the port
+    // because req.Host carried no port. We connect on :4533, so restore it.
+    authStore.setState({
+      primaryServerUrl: 'http://192.168.88.96:4533',
+      serverUrl: 'http://192.168.88.96:4533',
+    });
+    const original = 'http://192.168.88.96/share/abc123';
+    expect(rewriteShareUrl(original)).toBe('http://192.168.88.96:4533/share/abc123');
+  });
+
+  it('uses the PRIMARY server origin, not the active (failover) server', () => {
+    authStore.setState({
+      primaryServerUrl: 'http://192.168.88.96:4533',
+      serverUrl: 'http://192.168.88.96:9999', // active server drifted (failover)
+    });
+    const original = 'http://192.168.88.96/share/abc123';
+    expect(rewriteShareUrl(original)).toBe('http://192.168.88.96:4533/share/abc123');
+  });
+
+  it('alternate base URL overrides the origin and carries its own port', () => {
+    authStore.setState({ primaryServerUrl: 'http://192.168.88.96:4533' });
+    shareSettingsStore.setState({ shareBaseUrl: 'https://share.example.com:8443' });
+    const original = 'http://192.168.88.96/share/abc123';
+    expect(rewriteShareUrl(original)).toBe('https://share.example.com:8443/share/abc123');
   });
 });
 

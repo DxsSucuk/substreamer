@@ -18,7 +18,7 @@ export function EditShareUrlSheet({
   const { t } = useTranslation();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
-  const serverUrl = authStore((s) => s.serverUrl);
+  const serverUrl = authStore((s) => s.primaryServerUrl ?? s.serverUrl);
   const shareBaseUrl = shareSettingsStore((s) => s.shareBaseUrl);
 
   const [input, setInput] = useState('');
