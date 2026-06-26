@@ -52,7 +52,9 @@ function subscribe(): void {
 
   appStateSubscription = AppState.addEventListener('change', (nextState) => {
     if (nextState === 'active') {
-      NetInfo.refresh().then(handleNetworkChange);
+      // NetInfo.refresh() is a native bridge call that can reject; never let a
+      // failed probe become an unhandled rejection — just skip this evaluation.
+      NetInfo.refresh().then(handleNetworkChange).catch(() => {});
     }
   });
 }
@@ -80,12 +82,12 @@ export function startAutoOffline(): void {
   NetInfo.refresh().then((state) => {
     if (state.type === 'unknown' || state.type === 'none') {
       setTimeout(() => {
-        NetInfo.refresh().then(handleNetworkChange);
+        NetInfo.refresh().then(handleNetworkChange).catch(() => {});
       }, 500);
     } else {
       handleNetworkChange(state);
     }
-  });
+  }).catch(() => {});
 
   // Re-subscribe when store settings change
   unsubscribeStore = autoOfflineStore.subscribe((state, prev) => {
@@ -104,7 +106,7 @@ export function startAutoOffline(): void {
       subscribe();
     } else if (ssidsChanged && state.mode === 'home-wifi') {
       // Re-evaluate with current network state
-      NetInfo.fetch().then(handleNetworkChange);
+      NetInfo.fetch().then(handleNetworkChange).catch(() => {});
     }
   });
 }

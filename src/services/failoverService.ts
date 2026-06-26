@@ -116,6 +116,16 @@ export async function switchToServer(
     } else {
       stopRecoveryPoll();
     }
+  } catch (e) {
+    // Best-effort orchestration: the active-slot swap (step 1) has already
+    // taken effect, so a failure in any later step (re-auth, queue rebuild,
+    // image retry, status record) must NOT reject and crash the caller — the
+    // 60s recovery poller, a manual switch tap, or auto-failover. Log and
+    // continue; the user can retry, and the next poll re-evaluates.
+    console.warn(
+      '[failover] switchToServer step failed:',
+      e instanceof Error ? e.message : String(e),
+    );
   } finally {
     switchInFlight = false;
     // Replay the newest intent that arrived mid-switch, if it still differs from
