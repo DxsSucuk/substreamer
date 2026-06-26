@@ -1,5 +1,25 @@
 # Changelog
 
+## [8.0.75] - 2026-06-26
+
+- refactor(player): remove transcode-offset resume mechanism (#197)
+- fix(shares): rebuild share links from the configured server URL
+- chore(deps): bump in-range patch/minor updates
+- refactor(failover): replace auto-switch with detect-and-confirm
+- fix: catch unguarded async rejections in auto-offline + failover
+- chore(migration): clear persisted player queue once for a clean restart
+- fix(player): harden transcoded-stream recovery + detection
+- fix(failover): rebuild queue + reload covers on server switch
+- fix(cover-art): resolve covers by the coverArt value, not entity ID
+- fix(player): skip past the current track under repeat-one
+- fix: sync libraries larger than 10k albums
+- fix(ios): don't crash on uncaught exception in async void TurboModule
+- fix(android): repeat remote Next/Previous over Bluetooth (#205)
+- feat(settings): trust untrusted server cert inline when editing URL
+- feat(settings): legacy-auth toggle with verify-before-commit
+- fix(ssl-trust): raise iOS streaming proxy idle timeout to 300s
+- fix(ssl-trust): never pin a certificate the system already trusts
+- ci: update coverage badge [skip ci]
 ## [8.0.74] - 2026-06-15
 
 - fix(player): remove Android swipe-to-dismiss that blocked now-playing controls
