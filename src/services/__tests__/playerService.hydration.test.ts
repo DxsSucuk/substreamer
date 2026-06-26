@@ -277,6 +277,7 @@ describe('cold-start hydration', () => {
 
     const svc = loadFreshPlayerService();
     await svc.initPlayer();
+    svc.restorePersistedQueueAfterBoot();
     // Drain the async hydration kicked off by initPlayer.
     await svc.togglePlayPause();
 
@@ -302,6 +303,7 @@ describe('cold-start hydration', () => {
 
     const svc = loadFreshPlayerService();
     await svc.initPlayer();
+    svc.restorePersistedQueueAfterBoot();
     await svc.togglePlayPause();
 
     expect(mockTP.skip).not.toHaveBeenCalled();
@@ -318,6 +320,7 @@ describe('cold-start hydration', () => {
 
     const svc = loadFreshPlayerService();
     await svc.initPlayer();
+    svc.restorePersistedQueueAfterBoot();
     await svc.togglePlayPause();
 
     expect(mockTP.seekTo).not.toHaveBeenCalled();
@@ -335,6 +338,7 @@ describe('cold-start hydration', () => {
 
     const svc = loadFreshPlayerService();
     await svc.initPlayer();
+    svc.restorePersistedQueueAfterBoot();
     await svc.togglePlayPause();
 
     expect(mockTP.add).toHaveBeenCalledTimes(2);
@@ -351,6 +355,7 @@ describe('cold-start hydration', () => {
 
     const svc = loadFreshPlayerService();
     await svc.initPlayer();
+    svc.restorePersistedQueueAfterBoot();
     await svc.togglePlayPause();
 
     expect(mockToastFail).toHaveBeenCalled();
@@ -371,6 +376,7 @@ describe('cold-start hydration', () => {
 
     const svc = loadFreshPlayerService();
     await svc.initPlayer();
+    svc.restorePersistedQueueAfterBoot();
     // Hydration has a 100ms real-timer settle between its pre-load reset
     // and the add() call. Wait past it so add() is actually stalled.
     await new Promise((r) => setTimeout(r, 200));
@@ -398,6 +404,7 @@ describe('cold-start hydration', () => {
 
     const svc = loadFreshPlayerService();
     await svc.initPlayer();
+    svc.restorePersistedQueueAfterBoot();
     // Let hydration advance past the 100ms settle so its add() is stalled.
     await new Promise((r) => setTimeout(r, 200));
 
@@ -427,6 +434,7 @@ describe('cold-start hydration', () => {
 
     const svc = loadFreshPlayerService();
     await svc.initPlayer();
+    svc.restorePersistedQueueAfterBoot();
     // Give hydration time to run past its 100ms settle.
     await new Promise((r) => setTimeout(r, 200));
 
@@ -444,6 +452,7 @@ describe('setupPlayer error classification', () => {
 
     const svc = loadFreshPlayerService();
     await svc.initPlayer();
+    svc.restorePersistedQueueAfterBoot();
 
     // Event listeners still registered — post-setup reset still ran.
     expect(mockTP.addEventListener).toHaveBeenCalled();
@@ -455,6 +464,7 @@ describe('setupPlayer error classification', () => {
 
     const svc = loadFreshPlayerService();
     await svc.initPlayer();
+    svc.restorePersistedQueueAfterBoot();
 
     // No event listeners registered, no reset, no hydration — we bailed.
     expect(mockTP.addEventListener).not.toHaveBeenCalled();
@@ -467,6 +477,7 @@ describe('public API hydration guards (no persisted queue)', () => {
     // Default mocks → no persisted queue → no hydration kicked off.
     const svc = loadFreshPlayerService();
     await svc.initPlayer();
+    svc.restorePersistedQueueAfterBoot();
 
     jest.clearAllMocks();
 

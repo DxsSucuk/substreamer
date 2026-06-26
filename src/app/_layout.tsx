@@ -71,7 +71,7 @@ import {
 import { connectivityStore } from '../store/connectivityStore';
 import { deferredMusicCacheInit, getMusicCacheStats, initMusicCache } from '../services/musicCacheService';
 import { checkStorageLimit } from '../services/storageService';
-import { initPlayer, removeNonDownloadedTracks } from '../services/playerService';
+import { initPlayer, removeNonDownloadedTracks, restorePersistedQueueAfterBoot } from '../services/playerService';
 import { flushPersistedQueue } from '../services/queuePersistenceService';
 import NetInfo from '@react-native-community/netinfo';
 import { startMonitoring, stopMonitoring } from '../services/connectivityService';
@@ -377,11 +377,15 @@ export default function RootLayout() {
   // byte totals stale after login (the cause of inflated "used space"
   // numbers when the user logs out and back in).
   useEffect(() => {
-    if (!isLoggedIn) return;
+    // Hold the expensive deferred startup (image/music cache scans, backup,
+    // data-sync, image-queue drain) until the animated splash has finished —
+    // its synchronous SQLite/FS work otherwise blocks the JS thread and
+    // contributes to the splash freeze.
+    if (!isLoggedIn || splashVisible) return;
     let cancelled = false;
     void runDeferredStartup(() => cancelled);
     return () => { cancelled = true; };
-  }, [isLoggedIn]);
+  }, [isLoggedIn, splashVisible]);
 
   // --- Cover-art recache resumption on connectivity restoration ---
   // The image-cache refresh-queue worker picks up cover art for
@@ -491,13 +495,15 @@ export default function RootLayout() {
       // on empty defaults.
       await awaitKvHydration();
       if (cancelled) return;
+      // Set up the native player eagerly so playback is available immediately.
+      // The persisted-queue RESTORE is deferred to after the splash (see the
+      // queueRestoreStartedRef effect below) — its heavy RNTP hydration was
+      // freezing the splash animation mid-sweep.
       initPlayer();
       initScrobbleService();
       initFailover();
       // (iOS) bring up the streaming proxy for AVPlayer if the active server is
-      // a trusted self-signed host. Session-driven: runs on every logged-in
-      // start (cold boot, login, reload) now that authStore is hydrated, so the
-      // proxy survives restarts without needing a re-login. No-op on Android.
+      // a trusted self-signed host. No-op on Android.
       void syncProxyUpstreams();
 
       const offline = offlineModeStore.getState().offlineMode;
@@ -524,6 +530,21 @@ export default function RootLayout() {
       stopMonitoring();
     };
   }, [rehydrated, isLoggedIn]);
+
+  // --- Deferred persisted-queue restore (after the animated splash) ---
+  // The native player is set up eagerly above; only the heavy queue RESTORE +
+  // RNTP hydration is deferred here — it froze the splash mid-sweep when it ran
+  // during boot. Running it once the splash has hidden keeps the animation
+  // smooth, and means the restore happens AFTER migrations so the one-time
+  // queue-clear migration actually takes effect instead of being restored over.
+  const queueRestoreStartedRef = useRef(false);
+  useEffect(() => {
+    if (!rehydrated || !isLoggedIn || splashVisible || queueRestoreStartedRef.current) {
+      return;
+    }
+    queueRestoreStartedRef.current = true;
+    restorePersistedQueueAfterBoot();
+  }, [rehydrated, isLoggedIn, splashVisible]);
 
   // --- Android: background the app instead of killing it at the root ---
   useEffect(() => {

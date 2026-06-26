@@ -568,14 +568,27 @@ export async function initPlayer(): Promise<void> {
   AppState.addEventListener('change', handleAppState);
 
   isPlayerReady = true;
+}
 
-  // --- Restore persisted queue from previous session ---
-  //
-  // restorePersistedQueue() populates the Zustand store synchronously so the
-  // mini player can render immediately. If it returns true, a previously
-  // active queue exists; kick off the async hydration sequence which loads
-  // tracks into RNTP in a muted, paused, seek-positioned state so the first
-  // user tap plays without negotiating any native-layer uncertainty.
+/* ------------------------------------------------------------------ */
+/*  Persisted-queue restore (deferred to after the splash)             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Restore the previous session's queue. Split out of initPlayer and driven from
+ * the root layout AFTER the animated splash has finished: the restore + RNTP
+ * hydration (reset/add/skip + track-map wait) is heavy, mostly-synchronous
+ * native work that froze the splash mid-sweep when it ran during boot. The
+ * native player is set up eagerly by initPlayer, so this only loads the queue.
+ *
+ * restorePersistedQueue() populates the Zustand store synchronously so the mini
+ * player renders immediately; if a previous queue exists it kicks off the async
+ * hydration that loads tracks into RNTP muted/paused/seek-positioned so the
+ * first user tap plays cleanly. Running after migrations also means the
+ * one-time queue-clear migration actually takes effect instead of being
+ * restored over.
+ */
+export function restorePersistedQueueAfterBoot(): void {
   const needsHydration = restorePersistedQueue();
   if (needsHydration) {
     hydrationPromise = hydrateRestoredQueue().finally(() => {
