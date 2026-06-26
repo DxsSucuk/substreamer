@@ -288,6 +288,10 @@ beforeEach(async () => {
   const { playerStore } = require('../../store/playerStore');
   (playerStore.getState as jest.Mock).mockReturnValue(defaultPlayerState());
   (serverInfoStore.getState as jest.Mock).mockReturnValue({ extensions: [] });
+  // Transcoding is now read from the active stream URL; default to a non-
+  // transcoded (null) active track so a transcoded mock from one test can't
+  // leak into the next (mockResolvedValue persists through clearAllMocks).
+  mockTP.getActiveTrack.mockResolvedValue(null);
 
   playbackSettingsStore.setState({
     repeatMode: 'off',
@@ -1212,7 +1216,7 @@ describe('PlaybackError event handler', () => {
       extensions: [{ name: 'transcodeOffset', versions: [1] }],
     });
 
-    mockTP.getActiveTrack.mockResolvedValue({ id: 't1', url: 'test' });
+    mockTP.getActiveTrack.mockResolvedValue({ id: 't1', url: 'https://example.com/rest/stream.view?id=t1&format=mp3&maxBitRate=320' });
     (getStreamUrl as jest.Mock).mockReturnValue('https://example.com/stream-offset.mp3');
     mockTP.load.mockResolvedValue(undefined);
     mockTP.play.mockResolvedValue(undefined);
@@ -1556,8 +1560,8 @@ describe('seekTo edge branches', () => {
     await clearQueue();
     jest.clearAllMocks();
 
-    // Set up transcoding
-    playbackSettingsStore.setState({ streamFormat: 'mp3', maxBitRate: null } as any);
+    // Transcoding is read from the loaded stream URL (format=mp3), not settings.
+    mockTP.getActiveTrack.mockResolvedValue({ id: 't1', url: 'https://example.com/rest/stream.view?id=t1&format=mp3&maxBitRate=320' });
 
     mockTP.getProgress.mockResolvedValue({ position: 10, duration: 0, buffered: 50 });
 
@@ -1584,19 +1588,20 @@ describe('seekTo edge branches', () => {
     expect(mockTP.seekTo).toHaveBeenCalledWith(80);
   });
 
-  it('clamps when transcoding via maxBitRate even with raw format', async () => {
+  it('clamps when the stream URL carries maxBitRate (a transcode)', async () => {
     await initPlayer();
 
     await clearQueue();
     jest.clearAllMocks();
 
-    playbackSettingsStore.setState({ streamFormat: 'raw', maxBitRate: 128 } as any);
+    // A maxBitRate param in the loaded stream URL means the server transcoded.
+    mockTP.getActiveTrack.mockResolvedValue({ id: 't1', url: 'https://example.com/rest/stream.view?id=t1&format=mp3&maxBitRate=128' });
 
     mockTP.getProgress.mockResolvedValue({ position: 10, duration: 0, buffered: 50 });
 
     await seekTo(80);
 
-    // Should clamp because maxBitRate is set (isTranscoding is true)
+    // Should clamp because the URL is a transcode (maxBitRate present).
     expect(mockTP.seekTo).toHaveBeenCalledWith(49);
   });
 });
@@ -2101,7 +2106,7 @@ describe('recoverRawStream (via PlaybackError)', () => {
       extensions: [{ name: 'transcodeOffset', versions: [1] }],
     });
 
-    mockTP.getActiveTrack.mockResolvedValue({ id: 't1', url: 'test' });
+    mockTP.getActiveTrack.mockResolvedValue({ id: 't1', url: 'https://example.com/rest/stream.view?id=t1&format=mp3&maxBitRate=320' });
     (getStreamUrl as jest.Mock).mockReturnValue('https://example.com/stream-offset.mp3');
 
     await errorHandler({ message: 'Error', position: 50 });
@@ -2276,7 +2281,7 @@ describe('PlaybackActiveTrackChanged edge branches', () => {
     const { playerStore } = require('../../store/playerStore');
     (playerStore.getState as jest.Mock).mockReturnValue(mockState);
 
-    mockTP.getActiveTrack.mockResolvedValue({ id: 't1', url: 'test' });
+    mockTP.getActiveTrack.mockResolvedValue({ id: 't1', url: 'https://example.com/rest/stream.view?id=t1&format=mp3&maxBitRate=320' });
     (getStreamUrl as jest.Mock).mockReturnValue('https://example.com/stream-offset.mp3');
     // Make load() hang so isRecoveringStream stays true when we fire ActiveTrackChanged
     let resolveLoad: () => void;

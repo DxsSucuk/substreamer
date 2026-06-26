@@ -155,10 +155,10 @@ describe('getStreamUrl', () => {
     expect(url).toContain('estimateContentLength=true');
   });
 
-  it('omits format and bitrate when set to raw/null', async () => {
+  it('sends format=raw and no bitrate when set to raw/null', async () => {
     await ensureCoverArtAuth();
     const url = getStreamUrl('track-1');
-    expect(url).not.toContain('format=');
+    expect(url).toContain('format=raw');
     expect(url).not.toContain('maxBitRate=');
     expect(url).not.toContain('estimateContentLength=');
   });
@@ -216,10 +216,10 @@ describe('getDownloadStreamUrl', () => {
     expect(url).toContain('format=mp3');
   });
 
-  it('omits format and bitrate when using raw defaults', async () => {
+  it('sends format=raw and no bitrate when using raw defaults', async () => {
     await ensureCoverArtAuth();
     const url = getDownloadStreamUrl('track-1');
-    expect(url).not.toContain('format=');
+    expect(url).toContain('format=raw');
     expect(url).not.toContain('maxBitRate=');
   });
 });
@@ -273,7 +273,7 @@ describe('format/bitrate URL building (FORMAT_PRESETS)', () => {
     expect(url).not.toContain('maxBitRate=');
   });
 
-  it('raw never sends format= or maxBitRate= even when picker has a value', async () => {
+  it('raw sends format=raw and never maxBitRate= even when picker has a value', async () => {
     await ensureCoverArtAuth();
     mockPlaybackSettingsStore.getState.mockReturnValue({
       maxBitRate: 256,
@@ -281,7 +281,7 @@ describe('format/bitrate URL building (FORMAT_PRESETS)', () => {
       estimateContentLength: false,
     } as any);
     const url = getStreamUrl('track-1');
-    expect(url).not.toContain('format=');
+    expect(url).toContain('format=raw');
     expect(url).not.toContain('maxBitRate=');
   });
 
@@ -1846,8 +1846,8 @@ describe('legacy auth URL building', () => {
     expect(url).not.toBeNull();
     expect(url).toContain('p=enc%3A6e6370617373');
     expect(url).toContain('u=ncuser');
-    expect(url).not.toContain('t=');
-    expect(url).not.toContain('s=');
+    expect(url).not.toMatch(/[?&]t=/);
+    expect(url).not.toMatch(/[?&]s=/);
   });
 
   it('getDownloadStreamUrl uses p param in legacy mode', () => {
@@ -1855,8 +1855,8 @@ describe('legacy auth URL building', () => {
     expect(url).not.toBeNull();
     expect(url).toContain('p=enc%3A6e6370617373');
     expect(url).toContain('u=ncuser');
-    expect(url).not.toContain('t=');
-    expect(url).not.toContain('s=');
+    expect(url).not.toMatch(/[?&]t=/);
+    expect(url).not.toMatch(/[?&]s=/);
   });
 
   it('token mode still uses t+s (regression)', async () => {

@@ -275,9 +275,13 @@ function applyFormatAndBitrate(
   format: StreamFormat,
   maxBitRate: MaxBitRate,
 ): void {
-  if (format !== 'raw') {
-    params.set('format', format);
-  }
+  // Always send `format` explicitly — INCLUDING `format=raw` to disable
+  // transcoding. Omitting it lets the server pick its own default, which is
+  // server-dependent (the Subsonic spec doesn't define no-`format` behaviour)
+  // and on some servers (e.g. Gonic) means transcoding even when the user asked
+  // for the original file. `format=raw` (API 1.9.0+; we send v=1.15.0) is the
+  // spec-defined "no transcoding" value.
+  params.set('format', format);
   const preset = FORMAT_PRESETS.find((p) => p.value === format);
   // raw or any lossless preset → never send maxBitRate
   if (format === 'raw' || preset?.lossless) return;

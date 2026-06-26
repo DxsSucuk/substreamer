@@ -149,6 +149,43 @@ let pendingResumePosition: { trackId: string; position: number } | null = null;
 /** Consecutive raw stream recovery attempts for the current track. */
 let rawRecoveryAttempts = 0;
 const MAX_RAW_RECOVERY_ATTEMPTS = 3;
+/**
+ * Consecutive transcoded-stream recovery attempts for the current track.
+ * Reset to 0 once playback successfully resumes (PlaybackState → Playing), so
+ * the cap counts only back-to-back failures with no progress in between. Without
+ * a cap, a transcode that keeps erroring (e.g. a `timeOffset` reload the server
+ * ignores, or a load that fails instantly while offline) would reload forever —
+ * a tight loop that churns AVPlayerItems and pegs the CPU.
+ */
+let transcodedRecoveryAttempts = 0;
+const MAX_TRANSCODED_RECOVERY_ATTEMPTS = 5;
+/** Escalating backoff before each transcoded recovery reload (ms, by attempt). */
+const TRANSCODED_RECOVERY_BACKOFF_MS = [0, 500, 1500, 3000, 5000] as const;
+
+/**
+ * Whether the CURRENTLY-LOADED stream is a server transcode, read from the
+ * actual stream URL rather than current settings (which can drift from what the
+ * stream was built with). `applyFormatAndBitrate` omits BOTH `format` and
+ * `maxBitRate` for raw and sets at least one for any transcode — so the presence
+ * of either param is the ground-truth signal that transcoding was requested.
+ * Gates the transcoded-only recovery + seek-clamp paths, so a raw stream — even
+ * one the native player reports with `duration === 0` (e.g. a Gonic HTTP file
+ * with no Content-Length) — is never mistaken for a transcode and seek-clamped.
+ */
+function streamUrlIsTranscode(url: string | undefined | null): boolean {
+  if (!url) return false;
+  try {
+    const params = new URL(url).searchParams;
+    // A `maxBitRate` always implies a transcode. `format` implies a transcode
+    // UNLESS it's the explicit `format=raw` (no transcoding). Older URLs with no
+    // `format` at all are likewise treated as raw.
+    if (params.has('maxBitRate')) return true;
+    const format = (params.get('format') ?? '').toLowerCase();
+    return format !== '' && format !== 'raw';
+  } catch {
+    return false;
+  }
+}
 
 
 /* ------------------------------------------------------------------ */
@@ -163,7 +200,7 @@ const MAX_RAW_RECOVERY_ATTEMPTS = 3;
  * stream (duration === 0).  Without this, the native player would
  * re-request the URL and the server would start from second 0.
  */
-async function recoverTranscodedStream(adjustedPosition: number): Promise<void> {
+async function recoverTranscodedStream(adjustedPosition: number, attempt = 0): Promise<void> {
   try {
     // Only attempt recovery if the server supports the transcodeOffset
     // OpenSubsonic extension — otherwise timeOffset will be ignored and
@@ -182,6 +219,15 @@ async function recoverTranscodedStream(adjustedPosition: number): Promise<void> 
     const timeOffset = Math.floor(adjustedPosition);
     const newUrl = getStreamUrl(child.id, timeOffset);
     if (!newUrl) return;
+
+    // Escalating backoff before the reload so repeated failures can't spin in a
+    // tight loop (CPU churn / AVPlayerItem thrash). The `attempt` index comes
+    // from the capped counter in the PlaybackError handler.
+    const backoff =
+      TRANSCODED_RECOVERY_BACKOFF_MS[
+        Math.min(attempt, TRANSCODED_RECOVERY_BACKOFF_MS.length - 1)
+      ];
+    if (backoff > 0) await new Promise((r) => setTimeout(r, backoff));
 
     // Re-verify the track we began recovering is STILL the active one. A user
     // skip during the awaits above would otherwise reload this track's
@@ -319,6 +365,7 @@ export async function initPlayer(): Promise<void> {
       if (store.error) store.setError(null);
       if (store.retrying) store.setRetrying(false);
       rawRecoveryAttempts = 0;
+      transcodedRecoveryAttempts = 0;
 
       // First resume after a background period (e.g. reconnecting to the car):
       // re-assert now-playing metadata so the head unit re-renders the artwork
@@ -345,12 +392,21 @@ export async function initPlayer(): Promise<void> {
       const adjustedPos = errorPosition + positionOffset;
       const metadataDuration = store.currentTrack?.duration ?? 0;
       if (metadataDuration > 0 && adjustedPos < metadataDuration - 5) {
-        const { streamFormat, maxBitRate } = playbackSettingsStore.getState();
-        const isTranscoding = streamFormat !== 'raw' || maxBitRate != null;
+        // Read transcoding from the loaded stream URL (ground truth), not from
+        // current settings which may have changed since the track was built.
+        const active = await TrackPlayer.getActiveTrack();
+        const isTranscoding = streamUrlIsTranscode(active?.url);
         if (isTranscoding) {
-          isRecoveringStream = true;
-          recoverTranscodedStream(adjustedPos);
-          return;
+          // Cap consecutive transcoded recoveries (reset on a successful resume)
+          // so a reload that never clears the error can't spin forever. Once
+          // exhausted, fall through to normal error handling (manual retry).
+          if (transcodedRecoveryAttempts < MAX_TRANSCODED_RECOVERY_ATTEMPTS) {
+            const attempt = transcodedRecoveryAttempts;
+            transcodedRecoveryAttempts++;
+            isRecoveringStream = true;
+            recoverTranscodedStream(adjustedPos, attempt);
+            return;
+          }
         }
         if (rawRecoveryAttempts < MAX_RAW_RECOVERY_ATTEMPTS) {
           rawRecoveryAttempts++;
@@ -527,6 +583,7 @@ export async function initPlayer(): Promise<void> {
     // Reset recovery state for genuine track changes.
     positionOffset = 0;
     rawRecoveryAttempts = 0;
+    transcodedRecoveryAttempts = 0;
 
     let resolvedChild: Child | null = null;
     if (track != null && track.id) {
@@ -1120,8 +1177,10 @@ export async function seekTo(position: number): Promise<void> {
   //  2. The stream is transcoded (non-raw format or bitrate-limited).
   //  3. The seek target is beyond the effective buffered range.
   if (duration === 0 && nativeTarget > effectiveBuffered && effectiveBuffered > 0) {
-    const { streamFormat, maxBitRate } = playbackSettingsStore.getState();
-    const isTranscoding = streamFormat !== 'raw' || maxBitRate != null;
+    // Transcoding from the loaded stream URL (ground truth) — a raw stream that
+    // merely reports duration 0 must NOT be clamped (it's freely seekable).
+    const active = await TrackPlayer.getActiveTrack();
+    const isTranscoding = streamUrlIsTranscode(active?.url);
 
     if (isTranscoding) {
       await TrackPlayer.seekTo(effectiveBuffered - 1);
@@ -1208,6 +1267,7 @@ async function clearPlayerStateInternal(): Promise<void> {
   resetScrobbleCoordination();
   positionOffset = 0;
   rawRecoveryAttempts = 0;
+  transcodedRecoveryAttempts = 0;
   pendingResumePosition = null;
   maxBufferedSeen = 0;
   isFullyBuffered = false;
