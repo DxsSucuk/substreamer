@@ -299,10 +299,7 @@ function applyFormatAndBitrate(
  * Mirrors getCoverArtUrl but targets the /rest/stream.view endpoint.
  * Must call ensureCoverArtAuth() before using this.
  */
-export function getStreamUrl(
-  trackId: string,
-  timeOffset?: number,
-): string | null {
+export function getStreamUrl(trackId: string): string | null {
   const { isLoggedIn, serverUrl, username } = authStore.getState();
   if (!trackId || !isLoggedIn || !serverUrl || !username) return null;
   if (cachedCoverArtKey === null || !cachedCoverArtToken) return null;
@@ -323,11 +320,6 @@ export function getStreamUrl(
   applyFormatAndBitrate(params, streamFormat, maxBitRate);
   if (estimateContentLength) {
     params.set('estimateContentLength', 'true');
-  }
-
-  // Resume transcoded streams from a given offset (OpenSubsonic timeOffset).
-  if (timeOffset != null && timeOffset > 0) {
-    params.set('timeOffset', String(timeOffset));
   }
 
   return `${base}?${params.toString()}`;

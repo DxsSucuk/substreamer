@@ -106,6 +106,17 @@ describe('persistPositionIfDue / getPersistedPosition', () => {
     kvStorage.setItem('substreamer-persisted-position', 'not-json');
     expect(getPersistedPosition()).toBeNull();
   });
+
+  it('clamps a position past the duration down to the duration', () => {
+    // e.g. a transcoded stream reporting position beyond its estimated length.
+    persistPositionIfDue(1721, 'track-1', 1061);
+    expect(getPersistedPosition()!.position).toBe(1061);
+  });
+
+  it('leaves an in-range position unchanged when a duration is given', () => {
+    persistPositionIfDue(500, 'track-1', 1061);
+    expect(getPersistedPosition()!.position).toBe(500);
+  });
 });
 
 describe('flushPosition', () => {
@@ -122,6 +133,11 @@ describe('flushPosition', () => {
 
     const wrote = persistPositionIfDue(60, 'track-1');
     expect(wrote).toBe(false);
+  });
+
+  it('clamps a position past the duration down to the duration', () => {
+    flushPosition(1721, 'track-1', 1061);
+    expect(getPersistedPosition()!.position).toBe(1061);
   });
 });
 

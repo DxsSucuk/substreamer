@@ -68,25 +68,36 @@ export function flushPersistedQueue(): void {
   flushQueueWrite();
 }
 
+/**
+ * A persisted resume position must be a valid in-track offset. Clamp to
+ * [0, duration] when the duration is known so we never store a position past
+ * the end of the track (which would seek to an invalid spot on next launch).
+ */
+function clampPersistedPosition(position: number, duration?: number): number {
+  const floored = Math.max(0, position);
+  return duration != null && duration > 0 ? Math.min(floored, duration) : floored;
+}
+
 export function persistPositionIfDue(
   position: number,
   trackId: string,
+  duration?: number,
 ): boolean {
   const now = Date.now();
   if (now - lastPositionPersistTime < PERSIST_INTERVAL_MS) return false;
   lastPositionPersistTime = now;
   kvStorageSync.setItem(
     POSITION_KEY,
-    JSON.stringify({ position, trackId } as PersistedPosition),
+    JSON.stringify({ position: clampPersistedPosition(position, duration), trackId } as PersistedPosition),
   );
   return true;
 }
 
-export function flushPosition(position: number, trackId: string): void {
+export function flushPosition(position: number, trackId: string, duration?: number): void {
   lastPositionPersistTime = Date.now();
   kvStorageSync.setItem(
     POSITION_KEY,
-    JSON.stringify({ position, trackId } as PersistedPosition),
+    JSON.stringify({ position: clampPersistedPosition(position, duration), trackId } as PersistedPosition),
   );
 }
 

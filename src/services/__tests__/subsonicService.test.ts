@@ -163,18 +163,6 @@ describe('getStreamUrl', () => {
     expect(url).not.toContain('estimateContentLength=');
   });
 
-  it('includes timeOffset when provided', async () => {
-    await ensureCoverArtAuth();
-    const url = getStreamUrl('track-1', 120);
-    expect(url).toContain('timeOffset=120');
-  });
-
-  it('omits timeOffset when zero', async () => {
-    await ensureCoverArtAuth();
-    const url = getStreamUrl('track-1', 0);
-    expect(url).not.toContain('timeOffset');
-  });
-
   it('returns null when offline mode is on', async () => {
     await ensureCoverArtAuth();
     const { offlineModeStore } = require('../../store/offlineModeStore');

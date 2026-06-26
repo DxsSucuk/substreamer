@@ -1191,49 +1191,6 @@ describe('PlaybackError event handler', () => {
     expect(mockSetError).toHaveBeenCalledWith('Playback error occurred');
   });
 
-  it('attempts transcoded stream recovery when error position > 5 and transcoding', async () => {
-    await initPlayer();
-    const errorHandler = eventHandlers[Event.PlaybackError];
-
-    // Set up transcoding conditions
-    playbackSettingsStore.setState({ streamFormat: 'mp3', maxBitRate: null } as any);
-
-    // Need transcodeOffset extension
-    (serverInfoStore.getState as jest.Mock).mockReturnValue({
-      extensions: [{ name: 'transcodeOffset', versions: [1] }],
-    });
-
-    // Set up track for recovery
-    const queue = [makeChild('t1', { duration: 200 })];
-    await playTrack(queue[0], queue);
-    jest.clearAllMocks();
-
-    const mockState = defaultPlayerState();
-    mockState.currentTrack = { duration: 200 } as any;
-    const { playerStore } = require('../../store/playerStore');
-    (playerStore.getState as jest.Mock).mockReturnValue(mockState);
-    (serverInfoStore.getState as jest.Mock).mockReturnValue({
-      extensions: [{ name: 'transcodeOffset', versions: [1] }],
-    });
-
-    mockTP.getActiveTrack.mockResolvedValue({ id: 't1', url: 'https://example.com/rest/stream.view?id=t1&format=mp3&maxBitRate=320' });
-    (getStreamUrl as jest.Mock).mockReturnValue('https://example.com/stream-offset.mp3');
-    mockTP.load.mockResolvedValue(undefined);
-    mockTP.play.mockResolvedValue(undefined);
-
-    // errorPosition > 5, adjustedPos < metadataDuration - 5
-    const promise = errorHandler({ message: 'Stream error', position: 50 });
-    await promise;
-    // Flush microtasks so fire-and-forget recoverTranscodedStream completes.
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-
-    // Should have attempted recovery — load + play called
-    expect(mockTP.load).toHaveBeenCalled();
-    expect(mockTP.play).toHaveBeenCalled();
-  });
-
   it('clears retrying when retry() itself throws', async () => {
     const errorHandler = eventHandlers[Event.PlaybackError];
 
@@ -1701,19 +1658,6 @@ describe('PlaybackProgressUpdated event handler', () => {
     expect(mockSetProgress).toHaveBeenCalledWith(42, 200, 80);
   });
 
-  it('passes position through without offset when no stream recovery active', async () => {
-    await initPlayer();
-    const handlers = eventHandlers;
-
-    // positionOffset is 0 by default (reset in beforeEach via clearQueue)
-    handlers[Event.PlaybackProgressUpdated]({
-      position: 42, duration: 200, buffered: 80, track: 0,
-    });
-
-    // position should be passed through unchanged (offset is 0)
-    expect(mockSetProgress).toHaveBeenCalledWith(42, 200, 80);
-  });
-
   it('uses metadata duration for fully-buffered tracks', async () => {
     await initPlayer();
     const handlers = eventHandlers;
@@ -1802,100 +1746,6 @@ describe('PlaybackProgressUpdated event handler', () => {
       position: 5, duration: 180, buffered: 30, track: 1,
     });
     expect(mockSetProgress).toHaveBeenCalledWith(5, 180, 30);
-  });
-});
-
-/* ------------------------------------------------------------------ */
-/*  recoverTranscodedStream                                            */
-/* ------------------------------------------------------------------ */
-
-describe('recoverTranscodedStream (via PlaybackError)', () => {
-  beforeEach(() => {
-    jest.useFakeTimers();
-  });
-
-  afterEach(() => {
-    jest.useRealTimers();
-  });
-
-  it('skips recovery when server does not support transcodeOffset', async () => {
-    await initPlayer();
-    const errorHandler = eventHandlers[Event.PlaybackError];
-
-    playbackSettingsStore.setState({ streamFormat: 'mp3', maxBitRate: null } as any);
-
-    const mockState = defaultPlayerState();
-    mockState.currentTrack = { duration: 200 } as any;
-    const { playerStore } = require('../../store/playerStore');
-    (playerStore.getState as jest.Mock).mockReturnValue(mockState);
-
-    // No transcodeOffset extension
-    (serverInfoStore.getState as jest.Mock).mockReturnValue({
-      extensions: [],
-    });
-
-    const queue = [makeChild('t1', { duration: 200 })];
-    await playTrack(queue[0], queue);
-    jest.clearAllMocks();
-    (playerStore.getState as jest.Mock).mockReturnValue(mockState);
-    (serverInfoStore.getState as jest.Mock).mockReturnValue({ extensions: [] });
-
-    mockTP.getActiveTrack.mockResolvedValue({ id: 't1', url: 'test' });
-
-    const promise = errorHandler({ message: 'Error', position: 50 });
-
-    // The handler takes the recovery path (fire-and-forget) and returns.
-    // recoverTranscodedStream finds no extension and does nothing.
-    // load() should NOT be called since the extension check fails.
-    await promise;
-    // Flush microtasks so recoverTranscodedStream completes.
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(mockTP.load).not.toHaveBeenCalled();
-  });
-
-  it('resets positionOffset on recovery failure (catch path)', async () => {
-    await initPlayer();
-    const queue = [makeChild('t1', { duration: 200 })];
-    await playTrack(queue[0], queue);
-
-    const errorHandler = eventHandlers[Event.PlaybackError];
-
-    playbackSettingsStore.setState({ streamFormat: 'mp3', maxBitRate: null } as any);
-
-    const mockState = defaultPlayerState();
-    mockState.currentTrack = { duration: 200 } as any;
-    const { playerStore } = require('../../store/playerStore');
-    (playerStore.getState as jest.Mock).mockReturnValue(mockState);
-
-    (serverInfoStore.getState as jest.Mock).mockReturnValue({
-      extensions: [{ name: 'transcodeOffset', versions: [1] }],
-    });
-
-    mockTP.getActiveTrack.mockResolvedValue({ id: 't1', url: 'test' });
-    mockTP.load.mockRejectedValueOnce(new Error('load failed'));
-
-    await errorHandler({ message: 'Error', position: 50 });
-    // Flush microtasks so fire-and-forget recoverTranscodedStream completes
-    // (including the catch and finally blocks after load rejection).
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-
-    // After recovery failure, positionOffset is reset to 0.
-    // We verify by seeking — if positionOffset were non-zero, nativeTarget
-    // would be negative.  With offset = 0, seekTo(10) should pass 10.
-    jest.clearAllMocks();
-
-    // Clear fully buffered so we hit the getProgress path
-    await clearQueue();
-    (playerStore.getState as jest.Mock).mockReturnValue(defaultPlayerState());
-    mockTP.getProgress.mockResolvedValue({ position: 5, duration: 200, buffered: 100 });
-
-    await seekTo(10);
-    expect(mockTP.seekTo).toHaveBeenCalledWith(10);
   });
 });
 
@@ -2084,39 +1934,34 @@ describe('recoverRawStream (via PlaybackError)', () => {
     expect(mockTP.seekTo).toHaveBeenCalledWith(60);
   });
 
-  it('still uses transcoded recovery when transcoding', async () => {
+  it('does NOT raw-recover a transcoded stream; falls through to error handling', async () => {
     await initPlayer();
     const errorHandler = eventHandlers[Event.PlaybackError];
 
     playbackSettingsStore.setState({ streamFormat: 'mp3', maxBitRate: null } as any);
 
-    (serverInfoStore.getState as jest.Mock).mockReturnValue({
-      extensions: [{ name: 'transcodeOffset', versions: [1] }],
-    });
+    const mockState = defaultPlayerState();
+    mockState.currentTrack = { duration: 200 } as any;
+    // retrying=true → the normal handler takes its synchronous else-branch
+    // (no 1500ms auto-retry timer to drain).
+    mockState.retrying = true;
+    const { playerStore } = require('../../store/playerStore');
+    (playerStore.getState as jest.Mock).mockReturnValue(mockState);
 
     const queue = [makeChild('t1', { duration: 200 })];
     await playTrack(queue[0], queue);
     jest.clearAllMocks();
-
-    const mockState = defaultPlayerState();
-    mockState.currentTrack = { duration: 200 } as any;
-    const { playerStore } = require('../../store/playerStore');
     (playerStore.getState as jest.Mock).mockReturnValue(mockState);
-    (serverInfoStore.getState as jest.Mock).mockReturnValue({
-      extensions: [{ name: 'transcodeOffset', versions: [1] }],
-    });
 
+    // Active stream URL carries transcode params → streamUrlIsTranscode === true.
     mockTP.getActiveTrack.mockResolvedValue({ id: 't1', url: 'https://example.com/rest/stream.view?id=t1&format=mp3&maxBitRate=320' });
-    (getStreamUrl as jest.Mock).mockReturnValue('https://example.com/stream-offset.mp3');
 
     await errorHandler({ message: 'Error', position: 50 });
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
 
-    // Transcoded path uses load(), not retry().
-    expect(mockTP.load).toHaveBeenCalled();
-    expect(mockTP.retry).not.toHaveBeenCalled();
+    // Raw recovery (retry()+seekTo) is NOT used for a transcoded stream...
+    expect(mockTP.seekTo).not.toHaveBeenCalled();
+    // ...it falls through to the normal error handling.
+    expect(mockSetError).toHaveBeenCalledWith('Error');
   });
 });
 
@@ -2270,27 +2115,24 @@ describe('PlaybackActiveTrackChanged edge branches', () => {
     // Set previousActiveChild to t1
     activeTrackHandler({ track: { id: 't1' }, index: 0 });
 
-    // Trigger stream recovery: set up transcoding + transcodeOffset extension
-    playbackSettingsStore.setState({ streamFormat: 'mp3', maxBitRate: null } as any);
-    (serverInfoStore.getState as jest.Mock).mockReturnValue({
-      extensions: [{ name: 'transcodeOffset', versions: [1] }],
-    });
+    // Trigger RAW stream recovery (raw streams keep native-seek recovery).
+    playbackSettingsStore.setState({ streamFormat: 'raw', maxBitRate: null } as any);
 
     const mockState = defaultPlayerState();
     mockState.currentTrack = { duration: 200 } as any;
     const { playerStore } = require('../../store/playerStore');
     (playerStore.getState as jest.Mock).mockReturnValue(mockState);
 
-    mockTP.getActiveTrack.mockResolvedValue({ id: 't1', url: 'https://example.com/rest/stream.view?id=t1&format=mp3&maxBitRate=320' });
-    (getStreamUrl as jest.Mock).mockReturnValue('https://example.com/stream-offset.mp3');
-    // Make load() hang so isRecoveringStream stays true when we fire ActiveTrackChanged
-    let resolveLoad: () => void;
-    mockTP.load.mockReturnValue(new Promise<void>((r) => { resolveLoad = r; }));
+    // Raw (non-transcoded) active URL so streamUrlIsTranscode === false.
+    mockTP.getActiveTrack.mockResolvedValue({ id: 't1', url: 'https://example.com/rest/stream.view?id=t1&format=raw' });
+    // Make retry() hang so isRecoveringStream stays true when we fire ActiveTrackChanged.
+    let resolveRetry: () => void;
+    mockTP.retry.mockReturnValue(new Promise<void>((r) => { resolveRetry = r; }));
 
     // Fire error to trigger recovery (fire-and-forget)
     const promise = errorHandler({ message: 'Stream error', position: 50 });
     await promise;
-    // Let recoverTranscodedStream run up to the load() call
+    // Let recoverRawStream run up to the retry() call
     await Promise.resolve();
     await Promise.resolve();
 
@@ -2306,8 +2148,8 @@ describe('PlaybackActiveTrackChanged edge branches', () => {
     expect(mockSetCurrentTrack).not.toHaveBeenCalled();
     expect(sendNowPlaying).not.toHaveBeenCalled();
 
-    // Resolve load to clean up
-    resolveLoad!();
+    // Resolve retry to clean up
+    resolveRetry!();
     await Promise.resolve();
     await Promise.resolve();
   });
@@ -2904,7 +2746,7 @@ describe('queue persistence integration', () => {
       buffered: 60,
     });
 
-    expect(mockPersistPositionIfDue).toHaveBeenCalledWith(45, 't1');
+    expect(mockPersistPositionIfDue).toHaveBeenCalledWith(45, 't1', 200);
   });
 
   it('PlaybackProgressUpdated skips persist when position is 0', async () => {
@@ -2941,7 +2783,7 @@ describe('queue persistence integration', () => {
     });
 
     await appStateHandler('background');
-    expect(mockFlushPosition).toHaveBeenCalledWith(55, 't1');
+    expect(mockFlushPosition).toHaveBeenCalledWith(55, 't1', 200);
   });
 
   it('AppState inactive transition flushes position', async () => {
@@ -2957,7 +2799,7 @@ describe('queue persistence integration', () => {
     });
 
     await appStateHandler('inactive');
-    expect(mockFlushPosition).toHaveBeenCalledWith(30, 't1');
+    expect(mockFlushPosition).toHaveBeenCalledWith(30, 't1', 200);
   });
 
   it('AppState background skips flush when no current track', async () => {

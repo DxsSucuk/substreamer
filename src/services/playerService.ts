@@ -24,7 +24,6 @@ import { backgroundPlaybackPromptStore } from '../store/backgroundPlaybackPrompt
 import { playbackToastStore } from '../store/playbackToastStore';
 import { playerStore } from '../store/playerStore';
 import { sleepTimerStore } from '../store/sleepTimerStore';
-import { serverInfoStore } from '../store/serverInfoStore';
 import { shuffleArray } from '../utils/arrayHelpers';
 import { addCompletedScrobble, sendNowPlaying } from './scrobbleService';
 import { registerPlayerPlayStatListener } from './playStatsService';
@@ -41,7 +40,6 @@ import {
 import { withTimeout } from '../utils/withTimeout';
 import {
   ensureCoverArtAuth,
-  getStreamUrl,
   type Child,
 } from './subsonicService';
 import {
@@ -105,13 +103,6 @@ let savedTrackForScrobble: Child | null = null;
  * from saving a stale outgoing track reference.
  */
 let scrobbleHandledByEnded = false;
-/**
- * Seconds added to getProgress().position to compensate for transcoded
- * stream recovery.  When we reload a track with `timeOffset`, the native
- * player resets to position 0, but the real song position is `positionOffset`.
- * Reset to 0 on every genuine track change.
- */
-let positionOffset = 0;
 /** True while we are reloading the current track for stream recovery. */
 let isRecoveringStream = false;
 /**
@@ -149,18 +140,6 @@ let pendingResumePosition: { trackId: string; position: number } | null = null;
 /** Consecutive raw stream recovery attempts for the current track. */
 let rawRecoveryAttempts = 0;
 const MAX_RAW_RECOVERY_ATTEMPTS = 3;
-/**
- * Consecutive transcoded-stream recovery attempts for the current track.
- * Reset to 0 once playback successfully resumes (PlaybackState → Playing), so
- * the cap counts only back-to-back failures with no progress in between. Without
- * a cap, a transcode that keeps erroring (e.g. a `timeOffset` reload the server
- * ignores, or a load that fails instantly while offline) would reload forever —
- * a tight loop that churns AVPlayerItems and pegs the CPU.
- */
-let transcodedRecoveryAttempts = 0;
-const MAX_TRANSCODED_RECOVERY_ATTEMPTS = 5;
-/** Escalating backoff before each transcoded recovery reload (ms, by attempt). */
-const TRANSCODED_RECOVERY_BACKOFF_MS = [0, 500, 1500, 3000, 5000] as const;
 
 /**
  * Whether the CURRENTLY-LOADED stream is a server transcode, read from the
@@ -189,96 +168,32 @@ function streamUrlIsTranscode(url: string | undefined | null): boolean {
 
 
 /* ------------------------------------------------------------------ */
-/*  Transcoded stream recovery                                         */
+/*  Stream recovery                                                    */
 /* ------------------------------------------------------------------ */
-
-/**
- * Reload the current track with `timeOffset` so the server resumes
- * transcoding from the given position instead of from the start.
- *
- * Called when we detect the buffer is about to run out on a transcoded
- * stream (duration === 0).  Without this, the native player would
- * re-request the URL and the server would start from second 0.
- */
-async function recoverTranscodedStream(adjustedPosition: number, attempt = 0): Promise<void> {
-  try {
-    // Only attempt recovery if the server supports the transcodeOffset
-    // OpenSubsonic extension — otherwise timeOffset will be ignored and
-    // the server will transcode from the start again.
-    const supportsOffset = serverInfoStore
-      .getState()
-      .extensions.some((e) => e.name === 'transcodeOffset');
-    if (!supportsOffset) return;
-
-    const activeTrack = await TrackPlayer.getActiveTrack();
-    if (!activeTrack?.id) return;
-
-    const child = currentChildQueue.find((c) => c.id === activeTrack.id);
-    if (!child) return;
-
-    const timeOffset = Math.floor(adjustedPosition);
-    const newUrl = getStreamUrl(child.id, timeOffset);
-    if (!newUrl) return;
-
-    // Escalating backoff before the reload so repeated failures can't spin in a
-    // tight loop (CPU churn / AVPlayerItem thrash). The `attempt` index comes
-    // from the capped counter in the PlaybackError handler.
-    const backoff =
-      TRANSCODED_RECOVERY_BACKOFF_MS[
-        Math.min(attempt, TRANSCODED_RECOVERY_BACKOFF_MS.length - 1)
-      ];
-    if (backoff > 0) await new Promise((r) => setTimeout(r, backoff));
-
-    // Re-verify the track we began recovering is STILL the active one. A user
-    // skip during the awaits above would otherwise reload this track's
-    // recovered URL onto whatever is now playing. Use the freshly-fetched track
-    // as the load base, not the stale snapshot.
-    const stillActive = await TrackPlayer.getActiveTrack();
-    if (stillActive?.id !== child.id) return;
-
-    // Set offset BEFORE load so event handlers know we're recovering.
-    positionOffset = adjustedPosition;
-
-    // Reset buffer tracking for the fresh stream segment.
-    maxBufferedSeen = 0;
-    isFullyBuffered = false;
-
-    await TrackPlayer.load({
-      ...stillActive,
-      url: newUrl,
-    });
-    await TrackPlayer.play();
-  } catch {
-    // Recovery failed — reset offset so the UI doesn't jump.
-    positionOffset = 0;
-  } finally {
-    isRecoveringStream = false;
-  }
-}
 
 /**
  * Retry the current raw (non-transcoded) stream after a playback error
  * and verify the playback position is preserved.
  *
- * Unlike transcoded recovery (which reloads with a new timeOffset URL),
- * raw streams use the native retry mechanism directly — the server
- * serves the full file and the native player can seek freely.  The
- * explicit seekTo() after retry() is a safety net: if the native layer
- * lost position (stale lastPosition on iOS, failed byte-range on
- * Android), we restore it.
+ * Raw streams use the native retry mechanism directly — the server serves
+ * the full file and the native player can seek freely.  The explicit
+ * seekTo() after retry() is a safety net: if the native layer lost position
+ * (stale lastPosition on iOS, failed byte-range on Android), we restore it.
+ * Transcoded streams are NOT recovered here (they can't seek mid-stream);
+ * they fall through to the normal auto-retry/error path.
  */
-async function recoverRawStream(adjustedPosition: number): Promise<void> {
+async function recoverRawStream(position: number): Promise<void> {
   try {
     console.warn(
       '[Player] Attempting raw stream recovery at position',
-      adjustedPosition,
+      position,
     );
 
     maxBufferedSeen = 0;
     isFullyBuffered = false;
 
     await TrackPlayer.retry();
-    await TrackPlayer.seekTo(adjustedPosition);
+    await TrackPlayer.seekTo(position);
     await TrackPlayer.play();
 
     console.warn('[Player] Raw stream recovery completed');
@@ -365,7 +280,6 @@ export async function initPlayer(): Promise<void> {
       if (store.error) store.setError(null);
       if (store.retrying) store.setRetrying(false);
       rawRecoveryAttempts = 0;
-      transcodedRecoveryAttempts = 0;
 
       // First resume after a background period (e.g. reconnecting to the car):
       // re-assert now-playing metadata so the head unit re-renders the artwork
@@ -384,34 +298,22 @@ export async function initPlayer(): Promise<void> {
     const errorPosition = (e as { position?: number }).position ?? 0;
     const store = playerStore.getState();
 
-    // --- Transcoded stream recovery ----------------------------------
-    // If the error occurred mid-stream on a transcoded track, attempt to
-    // recover by reloading with a timeOffset so the server resumes from
-    // the failure position.  This replaces the old polling-based heuristic.
+    // --- Raw stream recovery -----------------------------------------
+    // A raw (non-transcoded, seekable) stream that errors mid-track is retried
+    // and seeked back to the failure position. Transcoded streams can't seek
+    // mid-stream, so they fall through to the normal auto-retry path below
+    // (which restarts the track from the start).
     if (!isRecoveringStream && errorPosition > 5) {
-      const adjustedPos = errorPosition + positionOffset;
       const metadataDuration = store.currentTrack?.duration ?? 0;
-      if (metadataDuration > 0 && adjustedPos < metadataDuration - 5) {
+      if (metadataDuration > 0 && errorPosition < metadataDuration - 5) {
         // Read transcoding from the loaded stream URL (ground truth), not from
         // current settings which may have changed since the track was built.
         const active = await TrackPlayer.getActiveTrack();
         const isTranscoding = streamUrlIsTranscode(active?.url);
-        if (isTranscoding) {
-          // Cap consecutive transcoded recoveries (reset on a successful resume)
-          // so a reload that never clears the error can't spin forever. Once
-          // exhausted, fall through to normal error handling (manual retry).
-          if (transcodedRecoveryAttempts < MAX_TRANSCODED_RECOVERY_ATTEMPTS) {
-            const attempt = transcodedRecoveryAttempts;
-            transcodedRecoveryAttempts++;
-            isRecoveringStream = true;
-            recoverTranscodedStream(adjustedPos, attempt);
-            return;
-          }
-        }
-        if (rawRecoveryAttempts < MAX_RAW_RECOVERY_ATTEMPTS) {
+        if (!isTranscoding && rawRecoveryAttempts < MAX_RAW_RECOVERY_ATTEMPTS) {
           rawRecoveryAttempts++;
           isRecoveringStream = true;
-          recoverRawStream(adjustedPos);
+          recoverRawStream(errorPosition);
           return;
         }
       }
@@ -490,12 +392,11 @@ export async function initPlayer(): Promise<void> {
       maxBufferedSeen = Math.max(maxBufferedSeen, buffered, position);
     }
 
-    const adjustedPosition = position + positionOffset;
-    playerStore.getState().setProgress(adjustedPosition, duration, maxBufferedSeen);
+    playerStore.getState().setProgress(position, duration, maxBufferedSeen);
 
     const currentTrack = playerStore.getState().currentTrack;
-    if (currentTrack?.id && adjustedPosition > 0) {
-      persistPositionIfDue(adjustedPosition, currentTrack.id);
+    if (currentTrack?.id && position > 0) {
+      persistPositionIfDue(position, currentTrack.id, currentTrack.duration);
     }
   });
 
@@ -549,8 +450,8 @@ export async function initPlayer(): Promise<void> {
     const sameTrack =
       previousActiveChild?.id != null && previousActiveChild?.id === track?.id;
 
-    // During stream recovery (load() with timeOffset) the active track
-    // may fire with the same ID — don't scrobble, don't reset offset.
+    // During raw stream recovery (retry()) the active track may re-fire with
+    // the same ID — don't scrobble, just reset buffer tracking.
     if (isRecoveringStream && sameTrack) {
       maxBufferedSeen = 0;
       isFullyBuffered = false;
@@ -581,9 +482,7 @@ export async function initPlayer(): Promise<void> {
     isFullyBuffered = false;
 
     // Reset recovery state for genuine track changes.
-    positionOffset = 0;
     rawRecoveryAttempts = 0;
-    transcodedRecoveryAttempts = 0;
 
     let resolvedChild: Child | null = null;
     if (track != null && track.id) {
@@ -662,7 +561,7 @@ export async function initPlayer(): Promise<void> {
       needsArtworkRepushOnResume = true;
       const { position, currentTrack } = playerStore.getState();
       if (currentTrack?.id && position > 0) {
-        flushPosition(position, currentTrack.id);
+        flushPosition(position, currentTrack.id, currentTrack.duration);
       }
     }
   };
@@ -728,8 +627,7 @@ async function syncStoreFromNative(): Promise<void> {
     } else {
       maxBufferedSeen = Math.max(maxBufferedSeen, buffered, position);
     }
-    const adjustedPosition = position + positionOffset;
-    playerStore.getState().setProgress(adjustedPosition, duration, maxBufferedSeen);
+    playerStore.getState().setProgress(position, duration, maxBufferedSeen);
   } catch {
     // Player may not be ready yet; ignore.
   }
@@ -1042,7 +940,6 @@ export async function playTrack(
 
   resetScrobbleCoordination();
   isSettingQueue = true;
-  positionOffset = 0;
   pendingResumePosition = null;
   playerStore.getState().setQueueLoading(true);
 
@@ -1153,9 +1050,7 @@ export function canSkipToPrevious(): boolean {
 export async function seekTo(position: number): Promise<void> {
   await awaitHydration();
 
-  // Convert the UI-level position (which may include a recovery offset)
-  // back to the native player's timeline.
-  const nativeTarget = Math.max(0, position - positionOffset);
+  const nativeTarget = Math.max(0, position);
 
   // If the entire stream has been downloaded, seek freely — all data is
   // available even if the native player doesn't report it.
@@ -1185,7 +1080,7 @@ export async function seekTo(position: number): Promise<void> {
     if (isTranscoding) {
       await TrackPlayer.seekTo(effectiveBuffered - 1);
       const store = playerStore.getState();
-      store.setProgress((effectiveBuffered - 1) + positionOffset, store.duration, maxBufferedSeen);
+      store.setProgress(effectiveBuffered - 1, store.duration, maxBufferedSeen);
       return;
     }
   }
@@ -1265,9 +1160,7 @@ export async function retryPlayback(): Promise<void> {
  */
 async function clearPlayerStateInternal(): Promise<void> {
   resetScrobbleCoordination();
-  positionOffset = 0;
   rawRecoveryAttempts = 0;
-  transcodedRecoveryAttempts = 0;
   pendingResumePosition = null;
   maxBufferedSeen = 0;
   isFullyBuffered = false;
@@ -1656,7 +1549,6 @@ export async function shuffleQueue(): Promise<void> {
 
   resetScrobbleCoordination();
   isSettingQueue = true;
-  positionOffset = 0;
   maxBufferedSeen = 0;
   isFullyBuffered = false;
 

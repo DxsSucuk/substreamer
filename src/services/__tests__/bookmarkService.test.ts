@@ -146,7 +146,7 @@ describe('createBookmarkFromPlayer', () => {
     expect(bm!.name).toBe('My Spot');
     expect(bm!.currentIndex).toBe(1);
     expect(bm!.positionSec).toBe(42);
-    expect(flushPosition).toHaveBeenCalledWith(42, 'b');
+    expect(flushPosition).toHaveBeenCalledWith(42, 'b', undefined);
     expect(bookmarksStore.getState().bookmarks['test-uuid']).toBeDefined();
   });
 

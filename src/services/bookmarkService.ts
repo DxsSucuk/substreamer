@@ -84,7 +84,7 @@ export function capturePlayerSnapshot(): BookmarkSnapshot | null {
   if (queue.length === 0) return null;
 
   // Flush the latest position so it's coherent with what we snapshot here.
-  if (currentTrack?.id) flushPosition(position, currentTrack.id);
+  if (currentTrack?.id) flushPosition(position, currentTrack.id, currentTrack.duration);
 
   return { queue, currentIndex: currentTrackIndex ?? 0, positionSec: position };
 }
