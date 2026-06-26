@@ -13,7 +13,8 @@ import Animated, {
 import { useTranslation } from 'react-i18next';
 
 import { handleSslCertPrompt } from '../services/connectivityService';
-import { connectivityStore, type BannerState } from '../store/connectivityStore';
+import { switchToServer } from '../services/failoverService';
+import { connectivityStore, type BannerState, type FailoverPrompt } from '../store/connectivityStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 
 import type { IoniconsName } from '../utils/iconNames';
@@ -37,22 +38,36 @@ interface ContentConfig {
   iconColor: string;
   icon: IoniconsName;
   messageKey: string;
+  tappable: boolean;
 }
 
 function getConfig(
   bannerState: BannerState,
   isInternetReachable: boolean,
+  failoverPrompt: FailoverPrompt | null,
 ): ContentConfig {
   if (bannerState === 'reconnected') {
-    return { iconColor: SUCCESS, icon: 'checkmark-circle', messageKey: 'connected' };
+    return { iconColor: SUCCESS, icon: 'checkmark-circle', messageKey: 'connected', tappable: false };
   }
   if (bannerState === 'ssl-error') {
-    return { iconColor: ERROR_RED, icon: 'shield-outline', messageKey: 'certificateChanged' };
+    return { iconColor: ERROR_RED, icon: 'shield-outline', messageKey: 'certificateChanged', tappable: true };
   }
   if (!isInternetReachable) {
-    return { iconColor: ERROR_RED, icon: 'cloud-offline', messageKey: 'noInternetConnection' };
+    // No network at all — a server switch is pointless, so don't offer one.
+    return { iconColor: ERROR_RED, icon: 'cloud-offline', messageKey: 'noInternetConnection', tappable: false };
   }
-  return { iconColor: ERROR_RED, icon: 'cloud-offline', messageKey: 'serverUnreachable' };
+  // Active server unreachable (network is up). Drive the message off the
+  // failover prompt set by failoverService.evaluateServerDownPrompt.
+  if (failoverPrompt === 'secondary') {
+    return { iconColor: ERROR_RED, icon: 'cloud-offline', messageKey: 'failoverOfferSecondary', tappable: true };
+  }
+  if (failoverPrompt === 'primary') {
+    return { iconColor: ERROR_RED, icon: 'cloud-offline', messageKey: 'failoverOfferPrimary', tappable: true };
+  }
+  if (failoverPrompt === 'both-down') {
+    return { iconColor: ERROR_RED, icon: 'cloud-offline', messageKey: 'serversBothUnavailable', tappable: false };
+  }
+  return { iconColor: ERROR_RED, icon: 'cloud-offline', messageKey: 'serverUnreachable', tappable: false };
 }
 
 export const ConnectivityBanner = memo(function ConnectivityBanner() {
@@ -60,11 +75,11 @@ export const ConnectivityBanner = memo(function ConnectivityBanner() {
   const offlineMode = offlineModeStore((s) => s.offlineMode);
   const rawBannerState = connectivityStore((s) => s.bannerState);
   const isInternetReachable = connectivityStore((s) => s.isInternetReachable);
+  const failoverPrompt = connectivityStore((s) => s.failoverPrompt);
   const bannerState: BannerState = offlineMode ? 'hidden' : rawBannerState;
   const prev = useRef<BannerState>(bannerState);
 
   const visible = bannerState !== 'hidden';
-  const tappable = bannerState === 'ssl-error';
 
   const heightValue = useSharedValue(visible ? BANNER_HEIGHT : 0);
   const capsuleScale = useSharedValue(visible ? 1 : 0);
@@ -72,14 +87,26 @@ export const ConnectivityBanner = memo(function ConnectivityBanner() {
   const contentOpacity = useSharedValue(visible ? 1 : 0);
   const contentTranslateY = useSharedValue(0);
 
-  const liveConfig = getConfig(bannerState, isInternetReachable);
+  const liveConfig = getConfig(bannerState, isInternetReachable, failoverPrompt);
   const frozenConfig = useRef(liveConfig);
   if (visible) frozenConfig.current = liveConfig;
   const config = visible ? liveConfig : frozenConfig.current;
+  const tappable = config.tappable;
 
   const handlePress = useCallback(() => {
-    if (tappable) handleSslCertPrompt();
-  }, [tappable]);
+    if (bannerState === 'ssl-error') {
+      handleSslCertPrompt();
+      return;
+    }
+    // Failover offer: tap the unreachable banner to switch to the other server.
+    if (
+      bannerState === 'unreachable'
+      && (failoverPrompt === 'primary' || failoverPrompt === 'secondary')
+    ) {
+      void switchToServer(failoverPrompt);
+      connectivityStore.getState().clearFailoverPrompt();
+    }
+  }, [bannerState, failoverPrompt]);
 
   useEffect(() => {
     const wasVisible = prev.current !== 'hidden';

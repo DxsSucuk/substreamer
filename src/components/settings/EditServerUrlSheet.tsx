@@ -215,7 +215,7 @@ export function EditServerUrlSheet({
 
   const handleRemove = useCallback(async () => {
     if (activeServer === 'secondary') {
-      await switchToServer('primary', 'manual');
+      await switchToServer('primary');
     }
     authStore.getState().setSecondaryServerUrl(null);
     onClose();

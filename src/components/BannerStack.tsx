@@ -23,20 +23,16 @@
 import { memo } from 'react';
 
 import { ConnectivityBanner } from './ConnectivityBanner';
-import { FailoverBanner } from './FailoverBanner';
 import { ImageCacheBanner } from './ImageCacheBanner';
 import { LibrarySyncBanner } from './LibrarySyncBanner';
 import { PersistenceDegradedBanner } from './PersistenceDegradedBanner';
 import { StorageFullBanner } from './StorageFullBanner';
 import { connectivityStore } from '../store/connectivityStore';
-import { failoverStatusStore } from '../store/failoverStatusStore';
 import { imageDownloadQueueStore } from '../store/imageDownloadQueueStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { isDbHealthy } from '../store/persistence';
 import { storageLimitStore } from '../store/storageLimitStore';
 import { syncStatusStore } from '../store/syncStatusStore';
-
-const FAILOVER_BANNER_WINDOW_MS = 4_000;
 
 export const BannerStack = memo(function BannerStack() {
   const bannerState = connectivityStore((s) => s.bannerState);
@@ -45,23 +41,11 @@ export const BannerStack = memo(function BannerStack() {
   const syncPhase = syncStatusStore((s) => s.detailSyncPhase);
   const imageQueueCycleId = imageDownloadQueueStore((s) => s.cycleId);
   const imageQueueTotal = imageDownloadQueueStore((s) => s.cycleTotal);
-  const lastFailoverAt = failoverStatusStore((s) => s.lastSwitchAt);
-  const lastFailoverCause = failoverStatusStore((s) => s.lastSwitchCause);
 
   // Persistence-degraded is sticky and captured at module load. If SQLite
   // failed to open, surface this above everything else so the user knows
   // settings/login won't persist.
   if (!isDbHealthy()) return <PersistenceDegradedBanner />;
-
-  // Failover banner is transient (~4s) and takes priority over connectivity
-  // banners while it shows — the failover IS the resolution of the
-  // connectivity issue that just tripped the unreachable banner. Manual
-  // switches don't trigger the banner (the user knows; they tapped).
-  const failoverRecent =
-    lastFailoverAt != null
-    && lastFailoverCause === 'auto'
-    && Date.now() - lastFailoverAt < FAILOVER_BANNER_WINDOW_MS;
-  if (failoverRecent) return <FailoverBanner />;
 
   // ConnectivityBanner internally hides itself when offlineMode is true (see
   // ConnectivityBanner.tsx:62). Mirror that logic here so the priority

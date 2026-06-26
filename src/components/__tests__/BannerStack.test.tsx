@@ -60,14 +60,6 @@ jest.mock('../ImageCacheBanner', () => ({
   },
 }));
 
-jest.mock('../FailoverBanner', () => ({
-  FailoverBanner: () => {
-    const React = require('react');
-    const { Text } = require('react-native');
-    return React.createElement(Text, { testID: 'banner-failover' }, 'failover');
-  },
-}));
-
 import { BannerStack } from '../BannerStack';
 import { connectivityStore } from '../../store/connectivityStore';
 import { imageDownloadQueueStore } from '../../store/imageDownloadQueueStore';
@@ -209,59 +201,5 @@ describe('BannerStack — priority selection', () => {
     const { queryByTestId } = render(<BannerStack />);
     expect(queryByTestId('banner-library-sync')).not.toBeNull();
     expect(queryByTestId('banner-image-cache')).toBeNull();
-  });
-
-  describe('FailoverBanner priority', () => {
-    const { failoverStatusStore } = require('../../store/failoverStatusStore');
-
-    beforeEach(() => {
-      failoverStatusStore.setState({
-        lastSwitchTarget: null,
-        lastSwitchCause: null,
-        lastSwitchAt: null,
-      });
-    });
-
-    it('shows the failover banner immediately after an auto switch', () => {
-      failoverStatusStore.setState({
-        lastSwitchTarget: 'secondary',
-        lastSwitchCause: 'auto',
-        lastSwitchAt: Date.now(),
-      });
-      const { queryByTestId } = render(<BannerStack />);
-      expect(queryByTestId('banner-failover')).not.toBeNull();
-    });
-
-    it('failover banner takes priority over connectivity banner', () => {
-      connectivityStore.setState({ bannerState: 'unreachable' } as any);
-      failoverStatusStore.setState({
-        lastSwitchTarget: 'secondary',
-        lastSwitchCause: 'auto',
-        lastSwitchAt: Date.now(),
-      });
-      const { queryByTestId } = render(<BannerStack />);
-      expect(queryByTestId('banner-failover')).not.toBeNull();
-      expect(queryByTestId('banner-connectivity')).toBeNull();
-    });
-
-    it('does not show the failover banner for manual switches', () => {
-      failoverStatusStore.setState({
-        lastSwitchTarget: 'secondary',
-        lastSwitchCause: 'manual',
-        lastSwitchAt: Date.now(),
-      });
-      const { queryByTestId } = render(<BannerStack />);
-      expect(queryByTestId('banner-failover')).toBeNull();
-    });
-
-    it('does not show the failover banner once the display window has elapsed', () => {
-      failoverStatusStore.setState({
-        lastSwitchTarget: 'secondary',
-        lastSwitchCause: 'auto',
-        lastSwitchAt: Date.now() - 5_000, // > 4s window
-      });
-      const { queryByTestId } = render(<BannerStack />);
-      expect(queryByTestId('banner-failover')).toBeNull();
-    });
   });
 });

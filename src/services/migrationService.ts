@@ -1856,12 +1856,11 @@ const MIGRATION_TASKS: MigrationTask[] = [
     name: 'Backfill primary server URL for failover schema',
     run: async (log) => {
       // The auth schema gained primaryServerUrl / secondaryServerUrl /
-      // activeServer / serverSwitchMode for the primary+secondary
-      // failover feature. Existing users have only serverUrl populated;
-      // backfill primaryServerUrl from it so failover code paths can
-      // treat primaryServerUrl as authoritative. Other new fields take
-      // their schema defaults (secondaryServerUrl=null, activeServer=
-      // 'primary', serverSwitchMode='manual').
+      // activeServer for the primary+secondary failover feature.
+      // Existing users have only serverUrl populated; backfill
+      // primaryServerUrl from it so failover code paths can treat
+      // primaryServerUrl as authoritative. Other new fields take their
+      // schema defaults (secondaryServerUrl=null, activeServer='primary').
       try {
         const raw = await kvStorage.getItem('substreamer-auth');
         if (!raw) {
@@ -1884,8 +1883,8 @@ const MIGRATION_TASKS: MigrationTask[] = [
         }
         state.primaryServerUrl = state.serverUrl;
         state.activeServer = 'primary';
-        // Don't touch secondaryServerUrl / serverSwitchMode — defaults
-        // apply on next Zustand rehydrate.
+        // Don't touch secondaryServerUrl — defaults apply on next
+        // Zustand rehydrate.
         await kvStorage.setItem('substreamer-auth', JSON.stringify(parsed));
         log(`[m24] backfilled primaryServerUrl from serverUrl`);
       } catch (e) {

@@ -14,7 +14,6 @@ beforeEach(() => {
     primaryServerUrl: null,
     secondaryServerUrl: null,
     activeServer: 'primary',
-    serverSwitchMode: 'manual',
   });
 });
 
@@ -104,14 +103,12 @@ describe('authStore', () => {
         primaryServerUrl: 'https://primary.example.com',
         secondaryServerUrl: 'https://secondary.example.com',
         activeServer: 'secondary',
-        serverSwitchMode: 'automatic',
       });
       authStore.getState().clearSession();
       const state = authStore.getState();
       expect(state.primaryServerUrl).toBeNull();
       expect(state.secondaryServerUrl).toBeNull();
       expect(state.activeServer).toBe('primary');
-      expect(state.serverSwitchMode).toBe('manual');
     });
 
     it('setSecondaryServerUrl stores the URL', () => {
@@ -123,13 +120,6 @@ describe('authStore', () => {
       authStore.setState({ secondaryServerUrl: 'https://secondary.example.com' });
       authStore.getState().setSecondaryServerUrl(null);
       expect(authStore.getState().secondaryServerUrl).toBeNull();
-    });
-
-    it('setServerSwitchMode toggles between manual and automatic', () => {
-      authStore.getState().setServerSwitchMode('automatic');
-      expect(authStore.getState().serverSwitchMode).toBe('automatic');
-      authStore.getState().setServerSwitchMode('manual');
-      expect(authStore.getState().serverSwitchMode).toBe('manual');
     });
 
     it('setActiveServer(secondary) updates serverUrl to secondary URL', () => {

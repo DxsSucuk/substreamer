@@ -1,7 +1,7 @@
 import Ionicons from '@react-native-vector-icons/ionicons/static';
 import { useRouter } from 'expo-router';
 import { useCallback } from 'react';
-import { Pressable, StyleSheet, Switch, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
 import { useTheme } from '../../hooks/useTheme';
@@ -18,12 +18,10 @@ export function ServerFailoverCard() {
   const serverUrl = authStore((s) => s.serverUrl);
   const secondaryServerUrl = authStore((s) => s.secondaryServerUrl);
   const activeServer = authStore((s) => s.activeServer);
-  const serverSwitchMode = authStore((s) => s.serverSwitchMode);
-  const setServerSwitchMode = authStore((s) => s.setServerSwitchMode);
 
   const handleManualSwitchServer = useCallback(async () => {
     const target = activeServer === 'primary' ? 'secondary' : 'primary';
-    await switchToServer(target, 'manual');
+    await switchToServer(target);
   }, [activeServer]);
 
   const handleNavigateToServerSettings = useCallback(() => {
@@ -58,23 +56,9 @@ export function ServerFailoverCard() {
           </>
         ) : (
           <>
-            <View style={[styles.toggleRow, { borderBottomColor: colors.border }]}>
-              <View style={styles.toggleTextWrap}>
-                <Text style={[styles.label, { color: colors.textPrimary }]}>
-                  {t('failoverModeLabel')}
-                </Text>
-                <Text style={[styles.hint, { color: colors.textSecondary }]}>
-                  {serverSwitchMode === 'automatic'
-                    ? t('failoverAutoExplain')
-                    : t('failoverManualExplain')}
-                </Text>
-              </View>
-              <Switch
-                value={serverSwitchMode === 'automatic'}
-                onValueChange={(on) => setServerSwitchMode(on ? 'automatic' : 'manual')}
-                trackColor={{ false: colors.border, true: colors.primary }}
-              />
-            </View>
+            <Text style={[styles.hint, { color: colors.textSecondary, marginBottom: 12 }]}>
+              {t('failoverDetectExplain')}
+            </Text>
 
             <View style={[styles.toggleRow, { borderBottomColor: colors.border }]}>
               <View style={styles.toggleTextWrap}>
@@ -93,21 +77,19 @@ export function ServerFailoverCard() {
               </View>
             </View>
 
-            {serverSwitchMode === 'manual' && (
-              <Pressable
-                onPress={handleManualSwitchServer}
-                style={({ pressed }) => [
-                  styles.actionButton,
-                  { borderColor: colors.primary, marginTop: 12 },
-                  pressed && settingsStyles.pressed,
-                ]}
-              >
-                <Ionicons name="swap-horizontal-outline" size={18} color={colors.primary} />
-                <Text style={[styles.actionButtonText, { color: colors.primary }]}>
-                  {activeServer === 'primary' ? t('switchToSecondary') : t('switchToPrimary')}
-                </Text>
-              </Pressable>
-            )}
+            <Pressable
+              onPress={handleManualSwitchServer}
+              style={({ pressed }) => [
+                styles.actionButton,
+                { borderColor: colors.primary, marginTop: 12 },
+                pressed && settingsStyles.pressed,
+              ]}
+            >
+              <Ionicons name="swap-horizontal-outline" size={18} color={colors.primary} />
+              <Text style={[styles.actionButtonText, { color: colors.primary }]}>
+                {activeServer === 'primary' ? t('switchToSecondary') : t('switchToPrimary')}
+              </Text>
+            </Pressable>
           </>
         )}
       </View>

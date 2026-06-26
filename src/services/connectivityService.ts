@@ -175,6 +175,9 @@ function handleServerResult(reachable: boolean): void {
     consecutiveFailures = 0;
     store.setServerReachable(true);
     store.setInternetReachable(true);
+    // The active server is back — drop any failover prompt (offer / both-down)
+    // so it doesn't linger after recovery.
+    store.clearFailoverPrompt();
 
     if (!wasReachable && !initialCheck) {
       // Genuine recovery from a previously-shown unreachable state.

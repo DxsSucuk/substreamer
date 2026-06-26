@@ -1,10 +1,13 @@
 jest.mock('../../store/persistence/kvStorage', () => require('../../store/persistence/__mocks__/kvStorage'));
 
 import React from 'react';
-import { act, render } from '@testing-library/react-native';
+import { act, fireEvent, render } from '@testing-library/react-native';
 
+import { switchToServer } from '../../services/failoverService';
 import { connectivityStore } from '../../store/connectivityStore';
 import { offlineModeStore } from '../../store/offlineModeStore';
+
+const mockSwitchToServer = switchToServer as jest.Mock;
 
 jest.mock('../../hooks/useTheme', () => ({
   useTheme: () => ({
@@ -19,6 +22,10 @@ jest.mock('../../hooks/useTheme', () => ({
 
 jest.mock('../../services/connectivityService', () => ({
   handleSslCertPrompt: jest.fn(),
+}));
+
+jest.mock('../../services/failoverService', () => ({
+  switchToServer: jest.fn(),
 }));
 
 jest.mock('react-native-reanimated', () => {
@@ -51,8 +58,10 @@ beforeEach(() => {
     bannerState: 'hidden',
     isInternetReachable: true,
     isServerReachable: true,
+    failoverPrompt: null,
   });
   offlineModeStore.setState({ offlineMode: false });
+  mockSwitchToServer.mockClear();
 });
 
 describe('ConnectivityBanner', () => {
@@ -99,6 +108,39 @@ describe('ConnectivityBanner', () => {
     connectivityStore.setState({ bannerState: 'ssl-error' });
     const { getByText } = render(<ConnectivityBanner />);
     expect(getByText('Certificate changed')).toBeTruthy();
+  });
+
+  it('offers to switch to secondary when the active server is down (failoverPrompt=secondary)', () => {
+    connectivityStore.setState({
+      bannerState: 'unreachable',
+      isInternetReachable: true,
+      failoverPrompt: 'secondary',
+    });
+    const { getByText } = render(<ConnectivityBanner />);
+    expect(getByText('Server unreachable — tap to switch to secondary')).toBeTruthy();
+  });
+
+  it('tapping the failover offer switches to the offered server and clears the prompt', () => {
+    connectivityStore.setState({
+      bannerState: 'unreachable',
+      isInternetReachable: true,
+      failoverPrompt: 'secondary',
+    });
+    const { getByText } = render(<ConnectivityBanner />);
+    fireEvent.press(getByText('Server unreachable — tap to switch to secondary'));
+    expect(mockSwitchToServer).toHaveBeenCalledWith('secondary');
+    expect(connectivityStore.getState().failoverPrompt).toBeNull();
+  });
+
+  it('shows "Both servers unavailable" and is NOT tappable when failoverPrompt=both-down', () => {
+    connectivityStore.setState({
+      bannerState: 'unreachable',
+      isInternetReachable: true,
+      failoverPrompt: 'both-down',
+    });
+    const { getByText } = render(<ConnectivityBanner />);
+    fireEvent.press(getByText('Both servers unavailable'));
+    expect(mockSwitchToServer).not.toHaveBeenCalled();
   });
 
   it('has collapsed height when offline mode suppresses banner', () => {

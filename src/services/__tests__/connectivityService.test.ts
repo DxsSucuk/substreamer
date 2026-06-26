@@ -27,6 +27,7 @@ const mockStoreState = {
   setInternetReachable: jest.fn((v: boolean) => { mockStoreState.isInternetReachable = v; }),
   setServerReachable: jest.fn((v: boolean) => { mockStoreState.isServerReachable = v; }),
   setBannerState: jest.fn((v: string) => { mockStoreState.bannerState = v; }),
+  clearFailoverPrompt: jest.fn(),
 };
 
 jest.mock('../../store/connectivityStore', () => ({

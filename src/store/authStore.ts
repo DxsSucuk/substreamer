@@ -6,7 +6,6 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 import { kvStorageSync as kvStorage } from './persistence';
 
 export type ServerSlot = 'primary' | 'secondary';
-export type ServerSwitchMode = 'manual' | 'automatic';
 
 export interface AuthState {
   /** The ACTIVE server URL — what every existing consumer (subsonicService,
@@ -26,9 +25,6 @@ export interface AuthState {
   secondaryServerUrl: string | null;
   /** Which slot `serverUrl` currently mirrors. */
   activeServer: ServerSlot;
-  /** 'manual' (default) requires user action to switch; 'automatic' enables
-   *  the failoverService to auto-switch on primary unreachability. */
-  serverSwitchMode: ServerSwitchMode;
 
   setSession: (
     serverUrl: string,
@@ -46,7 +42,6 @@ export interface AuthState {
   /** Set or clear the secondary URL. Clearing while active='secondary'
    *  is the caller's responsibility (failoverService handles that flow). */
   setSecondaryServerUrl: (url: string | null) => void;
-  setServerSwitchMode: (mode: ServerSwitchMode) => void;
   /** Switch the auth scheme (token ↔ legacy plaintext) without disturbing the
    *  server slots. Callers must re-verify against the server first — see the
    *  Account settings toggle. The API + cover-art caches key on `legacyAuth`,
@@ -77,7 +72,6 @@ export const authStore = create<AuthState>()(
       primaryServerUrl: null,
       secondaryServerUrl: null,
       activeServer: 'primary',
-      serverSwitchMode: 'manual',
 
       setSession: (serverUrl, username, password, apiVersion, legacyAuth = false) =>
         set({
@@ -106,7 +100,6 @@ export const authStore = create<AuthState>()(
           primaryServerUrl: null,
           secondaryServerUrl: null,
           activeServer: 'primary',
-          serverSwitchMode: 'manual',
         }),
 
       setRehydrated: (value) => set({ rehydrated: value }),
@@ -120,8 +113,6 @@ export const authStore = create<AuthState>()(
         }),
 
       setSecondaryServerUrl: (url) => set({ secondaryServerUrl: url }),
-
-      setServerSwitchMode: (mode) => set({ serverSwitchMode: mode }),
 
       setLegacyAuth: (legacyAuth) => set({ legacyAuth }),
     }),
@@ -138,26 +129,10 @@ export const authStore = create<AuthState>()(
         primaryServerUrl: state.primaryServerUrl,
         secondaryServerUrl: state.secondaryServerUrl,
         activeServer: state.activeServer,
-        serverSwitchMode: state.serverSwitchMode,
       }),
-      onRehydrateStorage: () => (rehydrated) => {
-        // Auto-mode boot reset: always start on primary. Without this, a
-        // session that ended on secondary (via auto-failover) would
-        // persist activeServer='secondary' and the next launch would
-        // continue talking to secondary even if primary is now reachable.
-        // The recovery poller would correct it eventually, but resetting
-        // here saves the first minute on secondary when primary is fine.
-        // Manual-mode users keep their explicit choice across launches.
-        if (!rehydrated) return;
-        if (
-          rehydrated.serverSwitchMode === 'automatic' &&
-          rehydrated.activeServer !== 'primary' &&
-          rehydrated.primaryServerUrl
-        ) {
-          rehydrated.activeServer = 'primary';
-          rehydrated.serverUrl = rehydrated.primaryServerUrl;
-        }
-      },
+      // No boot reset: `activeServer` is restored verbatim. If the restored
+      // server is unreachable, the connectivity banner offers a switch (detect-
+      // and-confirm) — we never silently force a slot on launch.
     },
   ),
 );
