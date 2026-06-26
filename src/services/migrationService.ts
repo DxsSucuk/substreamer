@@ -2141,6 +2141,26 @@ const MIGRATION_TASKS: MigrationTask[] = [
     },
   },
 
+  {
+    id: 30,
+    name: 'Clear persisted player queue for a clean restart',
+    run: async (log) => {
+      // One-time reset of the persisted play queue + position. A user whose
+      // saved queue ended up in a bad state (e.g. stream URLs/items from before
+      // the SDK-56 / stream-handling changes) gets a clean starting point on the
+      // next release instead of restoring a queue that may have been wedging
+      // playback on launch. Harmless for everyone else — the queue just starts
+      // empty once; normal playback re-persists it immediately.
+      try {
+        await kvStorage.removeItem('substreamer-persisted-queue');
+        await kvStorage.removeItem('substreamer-persisted-position');
+        log('[m30] cleared persisted player queue + position');
+      } catch (e) {
+        log(`[m30] clear failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+  },
+
   // -------------------------------------------------------------------
   // TEMPLATE – How to add a new migration task:
   //
