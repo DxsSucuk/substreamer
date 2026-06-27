@@ -56,7 +56,7 @@ export const lyricsStore = create<LyricsState>()(
 
         try {
           const result = await withTimeout(
-            async (signal) => getLyricsForTrack(trackId, artist, title, signal),
+            async () => getLyricsForTrack(trackId, artist, title),
             FETCH_TIMEOUT_MS,
           );
 

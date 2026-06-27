@@ -58,11 +58,11 @@ describe('albumListsStore', () => {
       expect(albumListsStore.getState().recentlyAdded).toEqual([album('1')]);
     });
 
-    it('sets empty array on failure', async () => {
+    it('leaves existing state on failure', async () => {
       albumListsStore.setState({ recentlyAdded: [album('old')] });
       mockGetRecentlyAdded.mockRejectedValue(new Error('fail'));
       await albumListsStore.getState().refreshRecentlyAdded();
-      expect(albumListsStore.getState().recentlyAdded).toEqual([]);
+      expect(albumListsStore.getState().recentlyAdded).toEqual([album('old')]);
     });
   });
 
@@ -73,10 +73,11 @@ describe('albumListsStore', () => {
       expect(albumListsStore.getState().recentlyPlayed).toEqual([album('2')]);
     });
 
-    it('sets empty on failure', async () => {
+    it('leaves existing state on failure', async () => {
+      albumListsStore.setState({ recentlyPlayed: [album('old')] });
       mockGetRecentlyPlayed.mockRejectedValue(new Error('fail'));
       await albumListsStore.getState().refreshRecentlyPlayed();
-      expect(albumListsStore.getState().recentlyPlayed).toEqual([]);
+      expect(albumListsStore.getState().recentlyPlayed).toEqual([album('old')]);
     });
   });
 
@@ -87,10 +88,11 @@ describe('albumListsStore', () => {
       expect(albumListsStore.getState().frequentlyPlayed).toEqual([album('3')]);
     });
 
-    it('sets empty on failure', async () => {
+    it('leaves existing state on failure', async () => {
+      albumListsStore.setState({ frequentlyPlayed: [album('old')] });
       mockGetFrequentlyPlayed.mockRejectedValue(new Error('fail'));
       await albumListsStore.getState().refreshFrequentlyPlayed();
-      expect(albumListsStore.getState().frequentlyPlayed).toEqual([]);
+      expect(albumListsStore.getState().frequentlyPlayed).toEqual([album('old')]);
     });
   });
 
@@ -101,10 +103,11 @@ describe('albumListsStore', () => {
       expect(albumListsStore.getState().randomSelection).toEqual([album('4')]);
     });
 
-    it('sets empty on failure', async () => {
+    it('leaves existing state on failure', async () => {
+      albumListsStore.setState({ randomSelection: [album('old')] });
       mockGetRandom.mockRejectedValue(new Error('fail'));
       await albumListsStore.getState().refreshRandomSelection();
-      expect(albumListsStore.getState().randomSelection).toEqual([]);
+      expect(albumListsStore.getState().randomSelection).toEqual([album('old')]);
     });
   });
 

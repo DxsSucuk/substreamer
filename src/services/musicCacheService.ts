@@ -716,6 +716,10 @@ export async function enqueueAlbumDownload(albumId: string): Promise<void> {
     return;
   }
 
+  // Re-check after the awaits: a concurrent enqueue (e.g. a double-tap) may
+  // have queued this album while we were fetching — avoid a duplicate row.
+  if (musicCacheStore.getState().downloadQueue.some((q) => q.itemId === albumId)) return;
+
   if (isTopUp) {
     // Top-up: download only the songs that aren't already edged to this
     // album. If the server-side album grew, the new `expectedSongCount`
@@ -804,6 +808,9 @@ export async function enqueuePlaylistDownload(playlistId: string): Promise<void>
   const playlist = await playlistDetailStore.getState().fetchPlaylist(playlistId);
   if (!playlist?.entry?.length) return;
 
+  // Re-check after the awaits (see enqueueAlbumDownload) — avoid a duplicate row.
+  if (musicCacheStore.getState().downloadQueue.some((q) => q.itemId === playlistId)) return;
+
   // Cover art keys off the playlist's `coverArt` value (see coverArtId.ts). (#202)
   const playlistCover = coverArtForPlaylist(playlist);
   if (playlistCover) ensureCached(playlistCover).catch(() => { /* non-critical */ });
@@ -871,6 +878,9 @@ export async function enqueueSongDownload(song: Child): Promise<void> {
 
   await ensureCoverArtAuth();
   cacheTrackCoverArt([song]);
+
+  // Re-check after the await (see enqueueAlbumDownload) — avoid a duplicate row.
+  if (musicCacheStore.getState().downloadQueue.some((q) => q.itemId === itemId)) return;
 
   musicCacheStore.getState().enqueue({
     itemId,

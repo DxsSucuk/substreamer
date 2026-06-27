@@ -82,7 +82,7 @@ export const albumListsStore = create<AlbumListsState>()(
           set({ recentlyAdded: albums });
           prefetchCoverArt(albums);
         } catch {
-          set({ recentlyAdded: [] });
+          // Leave existing state — a transient fetch failure shouldn't blank the row.
         }
       },
 
@@ -94,7 +94,7 @@ export const albumListsStore = create<AlbumListsState>()(
           set({ recentlyPlayed: albums });
           prefetchCoverArt(albums);
         } catch {
-          set({ recentlyPlayed: [] });
+          // Leave existing state — a transient fetch failure shouldn't blank the row.
         }
       },
 
@@ -106,7 +106,7 @@ export const albumListsStore = create<AlbumListsState>()(
           set({ frequentlyPlayed: albums });
           prefetchCoverArt(albums);
         } catch {
-          set({ frequentlyPlayed: [] });
+          // Leave existing state — a transient fetch failure shouldn't blank the row.
         }
       },
 
@@ -118,7 +118,7 @@ export const albumListsStore = create<AlbumListsState>()(
           set({ randomSelection: albums });
           prefetchCoverArt(albums);
         } catch {
-          set({ randomSelection: [] });
+          // Leave existing state — a transient fetch failure shouldn't blank the row.
         }
       },
 

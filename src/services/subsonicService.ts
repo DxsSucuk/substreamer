@@ -491,8 +491,6 @@ export async function getLyricsForTrack(
   trackId: string,
   artist?: string,
   title?: string,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  _signal?: AbortSignal,
 ): Promise<LyricsData | null> {
   const api = getApi();
   if (!api) return null;
@@ -1012,8 +1010,8 @@ export async function getScanStatus(): Promise<ScanStatusResult | null> {
   try {
     const response = await api.getScanStatus();
     return {
-      scanning: response.scanStatus.scanning,
-      count: response.scanStatus.count ?? 0,
+      scanning: response.scanStatus?.scanning ?? false,
+      count: response.scanStatus?.count ?? 0,
       lastScan: response.lastScan ?? null,
       folderCount: response.folderCount ?? null,
     };
@@ -1032,8 +1030,8 @@ export async function startScan(fullScan?: boolean): Promise<ScanStatusResult | 
   try {
     const response = await api.startScan(fullScan != null ? { fullScan } : undefined);
     return {
-      scanning: response.scanStatus.scanning,
-      count: response.scanStatus.count ?? 0,
+      scanning: response.scanStatus?.scanning ?? false,
+      count: response.scanStatus?.count ?? 0,
       lastScan: null,
       folderCount: null,
     };

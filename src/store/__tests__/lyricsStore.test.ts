@@ -35,7 +35,7 @@ describe('lyricsStore.fetchLyrics', () => {
     expect(lyricsStore.getState().entries['t1']).toBe(sample);
     expect(lyricsStore.getState().loading['t1']).toBeUndefined();
     expect(lyricsStore.getState().errors['t1']).toBeUndefined();
-    expect(mockGetLyrics).toHaveBeenCalledWith('t1', 'A', 'B', expect.any(AbortSignal));
+    expect(mockGetLyrics).toHaveBeenCalledWith('t1', 'A', 'B');
   });
 
   it('sets loading true during fetch and clears on success', async () => {

@@ -95,7 +95,7 @@ export const syncStatusStore = create<SyncStatusState>()(
         set({ detailSyncTotal: total, detailSyncCompleted: 0 }),
       incrementDetailSyncCompleted: () =>
         set({ detailSyncCompleted: get().detailSyncCompleted + 1 }),
-      setLastKnownMarkers: (partial) => set({ ...get(), ...partial }),
+      setLastKnownMarkers: (partial) => set(partial),
       setBannerDismissedAt: (at) => set({ bannerDismissedAt: at }),
       resetDetailSync: () =>
         set({
