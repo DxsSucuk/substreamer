@@ -66,7 +66,7 @@ export function EditServerUrlSheet({
 }) {
   const { t } = useTranslation();
   const { colors } = useTheme();
-  const { alert } = useThemedAlert();
+  const { confirm } = useThemedAlert();
   const serverUrl = authStore((s) => s.serverUrl);
   const secondaryServerUrl = authStore((s) => s.secondaryServerUrl);
   const activeServer = authStore((s) => s.activeServer);
@@ -203,15 +203,13 @@ export function EditServerUrlSheet({
       onClose();
       return;
     }
-    alert(
-      t('serverUrlChangeWarningTitle'),
-      t('serverUrlChangeWarning'),
-      [
-        { text: t('cancel'), style: 'cancel' },
-        { text: t('save'), onPress: () => applyPrimary(normalised) },
-      ],
-    );
-  }, [testState, target, serverUrl, alert, t, applyPrimary, onClose]);
+    confirm({
+      title: t('serverUrlChangeWarningTitle'),
+      message: t('serverUrlChangeWarning'),
+      confirmLabel: t('save'),
+      onConfirm: () => applyPrimary(normalised),
+    });
+  }, [testState, target, serverUrl, confirm, t, applyPrimary, onClose]);
 
   const handleRemove = useCallback(async () => {
     if (activeServer === 'secondary') {

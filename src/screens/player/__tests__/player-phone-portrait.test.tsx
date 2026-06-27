@@ -36,6 +36,7 @@ jest.mock('@/hooks/useIsStarred', () => ({
 jest.mock('@/hooks/useThemedAlert', () => ({
   useThemedAlert: () => ({
     alert: jest.fn(),
+    confirm: jest.fn((opts: { onConfirm?: () => void }) => opts?.onConfirm?.()),
   }),
 }));
 

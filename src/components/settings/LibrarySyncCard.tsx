@@ -20,7 +20,7 @@ import { formatShortDateTime } from '../../utils/dateFormat';
 export function LibrarySyncCard() {
   const { t } = useTranslation();
   const { colors } = useTheme();
-  const { alert } = useThemedAlert();
+  const { confirm } = useThemedAlert();
 
   const offlineMode = offlineModeStore((s) => s.offlineMode);
   const librarySize = albumLibraryStore((s) => s.albums.length);
@@ -31,15 +31,13 @@ export function LibrarySyncCard() {
 
   const handleForceResync = useCallback(() => {
     if (offlineMode) return;
-    alert(
-      t('syncLibrary'),
-      t('syncLibraryDescription'),
-      [
-        { text: t('cancel'), style: 'cancel' },
-        { text: t('syncNow'), onPress: () => { void forceFullResync(); } },
-      ],
-    );
-  }, [alert, offlineMode, t]);
+    confirm({
+      title: t('syncLibrary'),
+      message: t('syncLibraryDescription'),
+      confirmLabel: t('syncNow'),
+      onConfirm: () => { void forceFullResync(); },
+    });
+  }, [confirm, offlineMode, t]);
 
   const handleCancelRunningSync = useCallback(() => {
     cancelAllSyncs('user-cancel');

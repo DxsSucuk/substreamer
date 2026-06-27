@@ -21,7 +21,7 @@ import { SettingsSectionTitle } from './SettingsSectionTitle';
 export function OfflineCard() {
   const { t } = useTranslation();
   const { colors } = useTheme();
-  const { alert } = useThemedAlert();
+  const { alert, confirm } = useThemedAlert();
   const navigation = useNavigation();
 
   const offlineMode = offlineModeStore((s) => s.offlineMode);
@@ -221,19 +221,14 @@ export function OfflineCard() {
   }, [ssidPromptValue, ssidEditTarget]);
 
   const handleRemoveSSID = useCallback((ssid: string) => {
-    alert(
-      t('removeNetwork'),
-      t('removeNetworkMessage', { ssid }),
-      [
-        { text: t('cancel'), style: 'cancel' },
-        {
-          text: t('remove'),
-          style: 'destructive',
-          onPress: () => autoOfflineStore.getState().removeSSID(ssid),
-        },
-      ],
-    );
-  }, [alert, t]);
+    confirm({
+      title: t('removeNetwork'),
+      message: t('removeNetworkMessage', { ssid }),
+      confirmLabel: t('remove'),
+      destructive: true,
+      onConfirm: () => autoOfflineStore.getState().removeSSID(ssid),
+    });
+  }, [confirm, t]);
 
   const showCurrentSSIDRow =
     autoMode === 'home-wifi' &&

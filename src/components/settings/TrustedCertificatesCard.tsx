@@ -16,7 +16,7 @@ import { SettingsSectionTitle } from './SettingsSectionTitle';
 export function TrustedCertificatesCard() {
   const { t } = useTranslation();
   const { colors } = useTheme();
-  const { alert } = useThemedAlert();
+  const { alert, confirm } = useThemedAlert();
 
   const serverUrl = authStore((s) => s.serverUrl);
   const activeHostname = useMemo(() => {
@@ -43,25 +43,20 @@ export function TrustedCertificatesCard() {
 
   const handleRemoveTrustedCert = useCallback((hostname: string) => {
     const isActive = hostname === activeHostname;
-    alert(
-      isActive ? t('removeActiveCertificate') : t('removeTrustedCertificate'),
-      isActive
+    confirm({
+      title: isActive ? t('removeActiveCertificate') : t('removeTrustedCertificate'),
+      message: isActive
         ? t('removeActiveCertificateMessage', { hostname })
         : t('removeTrustedCertificateMessage', { hostname }),
-      [
-        { text: t('cancel'), style: 'cancel' },
-        {
-          text: t('remove'),
-          style: 'destructive',
-          onPress: () => {
-            removeTrustForHost(hostname).catch(() => {
-              /* best-effort removal */
-            });
-          },
-        },
-      ],
-    );
-  }, [alert, activeHostname, t]);
+      confirmLabel: t('remove'),
+      destructive: true,
+      onConfirm: () => {
+        removeTrustForHost(hostname).catch(() => {
+          /* best-effort removal */
+        });
+      },
+    });
+  }, [confirm, activeHostname, t]);
 
   const normalizeUrl = useCallback((input: string): { url: string; hostname: string } | null => {
     const trimmed = input.trim();

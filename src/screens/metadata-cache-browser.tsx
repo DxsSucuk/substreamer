@@ -192,7 +192,7 @@ const MetadataRow = memo(function MetadataRow({
 export function MetadataCacheBrowserScreen() {
   const { colors } = useTheme();
   const { t } = useTranslation();
-  const { alert } = useThemedAlert();
+  const { confirm } = useThemedAlert();
   const headerHeight = useContext(HeaderHeightContext) ?? 0;
   const refreshControlKey = useRefreshControlKey();
   const [entries, setEntries] = useState<MetadataEntry[]>(() => buildEntries());
@@ -260,30 +260,25 @@ export function MetadataCacheBrowserScreen() {
 
   const handleDelete = useCallback(
     (entry: MetadataEntry) => {
-      alert(
-        t('deleteCachedMetadata'),
-        t('deleteCachedMetadataMessage', { name: entry.name }),
-        [
-          { text: t('cancel'), style: 'cancel' },
-          {
-            text: t('delete'),
-            style: 'destructive',
-            onPress: () => {
-              if (entry.type === 'album') {
-                const { [entry.id]: _, ...rest } = albumDetailStore.getState().albums;
-                albumDetailStore.setState({ albums: rest });
-              } else if (entry.type === 'artist') {
-                const { [entry.id]: _, ...rest } = artistDetailStore.getState().artists;
-                artistDetailStore.setState({ artists: rest });
-              } else {
-                const { [entry.id]: _, ...rest } = playlistDetailStore.getState().playlists;
-                playlistDetailStore.setState({ playlists: rest });
-              }
-              setEntries((prev) => prev.filter((e) => e.id !== entry.id));
-            },
-          },
-        ],
-      );
+      confirm({
+        title: t('deleteCachedMetadata'),
+        message: t('deleteCachedMetadataMessage', { name: entry.name }),
+        confirmLabel: t('delete'),
+        destructive: true,
+        onConfirm: () => {
+          if (entry.type === 'album') {
+            const { [entry.id]: _, ...rest } = albumDetailStore.getState().albums;
+            albumDetailStore.setState({ albums: rest });
+          } else if (entry.type === 'artist') {
+            const { [entry.id]: _, ...rest } = artistDetailStore.getState().artists;
+            artistDetailStore.setState({ artists: rest });
+          } else {
+            const { [entry.id]: _, ...rest } = playlistDetailStore.getState().playlists;
+            playlistDetailStore.setState({ playlists: rest });
+          }
+          setEntries((prev) => prev.filter((e) => e.id !== entry.id));
+        },
+      });
     },
     [],
   );

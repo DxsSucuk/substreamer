@@ -26,7 +26,7 @@ export const PlaylistRow = memo(function PlaylistRow({ playlist }: { playlist: P
   const { colors } = useTheme();
   const { t } = useTranslation();
   const router = useRouter();
-  const { alert } = useThemedAlert();
+  const { confirm } = useThemedAlert();
   const downloadStatus = useDownloadStatus('playlist', playlist.id);
 
   const onPress = useCallback(() => {
@@ -47,36 +47,31 @@ export const PlaylistRow = memo(function PlaylistRow({ playlist }: { playlist: P
     // the SwipeableRow close animation.
     closeOpenRow();
     setTimeout(() => {
-      alert(
-        t('deletePlaylist'),
-        t('deletePlaylistConfirmMessage', { name: playlist.name }),
-        [
-          { text: t('cancel'), style: 'cancel' },
-          {
-            text: t('delete'),
-            style: 'destructive',
-            onPress: async () => {
-              processingOverlayStore.getState().show(t('deleting'));
-              try {
-                const success = await deletePlaylist(playlist.id);
-                if (!success) throw new Error('API returned false');
+      confirm({
+        title: t('deletePlaylist'),
+        message: t('deletePlaylistConfirmMessage', { name: playlist.name }),
+        confirmLabel: t('delete'),
+        destructive: true,
+        onConfirm: async () => {
+          processingOverlayStore.getState().show(t('deleting'));
+          try {
+            const success = await deletePlaylist(playlist.id);
+            if (!success) throw new Error('API returned false');
 
-                playlistDetailStore.getState().removePlaylist(playlist.id);
-                playlistLibraryStore.getState().removePlaylist(playlist.id);
-                if (playlist.id in musicCacheStore.getState().cachedItems) {
-                  deleteCachedItem(playlist.id);
-                }
+            playlistDetailStore.getState().removePlaylist(playlist.id);
+            playlistLibraryStore.getState().removePlaylist(playlist.id);
+            if (playlist.id in musicCacheStore.getState().cachedItems) {
+              deleteCachedItem(playlist.id);
+            }
 
-                processingOverlayStore.getState().showSuccess(t('playlistDeleted'));
-              } catch {
-                processingOverlayStore.getState().showError(t('failedToDeletePlaylist'));
-              }
-            },
-          },
-        ],
-      );
+            processingOverlayStore.getState().showSuccess(t('playlistDeleted'));
+          } catch {
+            processingOverlayStore.getState().showError(t('failedToDeletePlaylist'));
+          }
+        },
+      });
     }, 250);
-  }, [playlist, alert, t]);
+  }, [playlist, confirm, t]);
 
   const rightActions: SwipeAction[] = useMemo(
     () => [{ icon: 'playlist-play', iconFamily: 'mdi' as const, color: colors.primary, label: t('queue'), onPress: handleAddToQueue }],

@@ -64,7 +64,7 @@ function getShareSubtitle(share: SubsonicShare, t: (key: string, options?: Recor
 export function ShareBrowserScreen() {
   const { t } = useTranslation();
   const { colors } = useTheme();
-  const { alert } = useThemedAlert();
+  const { alert, confirm } = useThemedAlert();
   const headerHeight = useContext(HeaderHeightContext) ?? 0;
   const refreshControlKey = useRefreshControlKey();
 
@@ -126,29 +126,28 @@ export function ShareBrowserScreen() {
   const handleDelete = useCallback(
     (share: SubsonicShare) => {
       const title = getShareTitle(share, t);
-      alert(t('deleteShare'), t('deleteShareMessage', { title }), [
-        { text: t('cancel'), style: 'cancel' },
-        {
-          text: t('delete'),
-          style: 'destructive',
-          onPress: async () => {
-            setDeletingId(share.id);
-            deleteAnim.value = 0;
-            deleteAnim.value = withRepeat(
-              withTiming(1, { duration: 1200, easing: Easing.linear }),
-              -1,
-            );
+      confirm({
+        title: t('deleteShare'),
+        message: t('deleteShareMessage', { title }),
+        confirmLabel: t('delete'),
+        destructive: true,
+        onConfirm: async () => {
+          setDeletingId(share.id);
+          deleteAnim.value = 0;
+          deleteAnim.value = withRepeat(
+            withTiming(1, { duration: 1200, easing: Easing.linear }),
+            -1,
+          );
 
-            const success = await sharesStore.getState().removeShare(share.id);
+          const success = await sharesStore.getState().removeShare(share.id);
 
-            cancelAnimation(deleteAnim);
-            setDeletingId(null);
-            if (!success) {
-              alert(t('error'), t('failedToDeleteShare'));
-            }
-          },
+          cancelAnimation(deleteAnim);
+          setDeletingId(null);
+          if (!success) {
+            alert(t('error'), t('failedToDeleteShare'));
+          }
         },
-      ]);
+      });
     },
     [deleteAnim],
   );

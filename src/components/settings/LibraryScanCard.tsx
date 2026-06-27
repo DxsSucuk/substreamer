@@ -23,7 +23,7 @@ import { SettingsSectionTitle } from './SettingsSectionTitle';
 export function LibraryScanCard() {
   const { t } = useTranslation();
   const { colors } = useTheme();
-  const { alert } = useThemedAlert();
+  const { confirm } = useThemedAlert();
 
   const scanScanning = scanStatusStore((s) => s.scanning);
   const scanCount = scanStatusStore((s) => s.count);
@@ -44,15 +44,13 @@ export function LibraryScanCard() {
   }, []);
 
   const handleFullScan = useCallback(() => {
-    alert(
-      t('fullScan'),
-      t('fullScanConfirmMessage'),
-      [
-        { text: t('cancel'), style: 'cancel' },
-        { text: t('start'), onPress: () => startLibraryScan(true) },
-      ],
-    );
-  }, [alert, t]);
+    confirm({
+      title: t('fullScan'),
+      message: t('fullScanConfirmMessage'),
+      confirmLabel: t('start'),
+      onConfirm: () => startLibraryScan(true),
+    });
+  }, [confirm, t]);
 
   if (!canScan) return null;
 

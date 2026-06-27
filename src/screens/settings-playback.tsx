@@ -22,7 +22,7 @@ import { settingsStyles } from '../styles/settingsStyles';
 export function SettingsPlaybackScreen() {
   const { t } = useTranslation();
   const { colors } = useTheme();
-  const { alert } = useThemedAlert();
+  const { confirm } = useThemedAlert();
   const headerHeight = useContext(HeaderHeightContext) ?? 0;
 
   // Subscribe to enough state to derive `isDefault` — used to show/hide the
@@ -52,32 +52,27 @@ export function SettingsPlaybackScreen() {
     remoteControlMode === 'skip-track';
 
   const handleResetDefaults = useCallback(() => {
-    alert(
-      t('resetToDefaults'),
-      t('resetSoundPlaybackMessage'),
-      [
-        { text: t('cancel'), style: 'cancel' },
-        {
-          text: t('reset'),
-          style: 'destructive',
-          onPress: () => {
-            const s = playbackSettingsStore.getState();
-            s.setMaxBitRate(null);
-            s.setStreamFormat('raw');
-            s.setEstimateContentLength(false);
-            s.setDownloadMaxBitRate(320);
-            s.setDownloadFormat('mp3');
-            s.setShowSkipIntervalButtons(false);
-            s.setShowSleepTimerButton(false);
-            s.setSkipBackwardInterval(15);
-            s.setSkipForwardInterval(30);
-            s.setRemoteControlMode('skip-track');
-            updateRemoteCapabilities();
-          },
-        },
-      ],
-    );
-  }, [alert, t]);
+    confirm({
+      title: t('resetToDefaults'),
+      message: t('resetSoundPlaybackMessage'),
+      confirmLabel: t('reset'),
+      destructive: true,
+      onConfirm: () => {
+        const s = playbackSettingsStore.getState();
+        s.setMaxBitRate(null);
+        s.setStreamFormat('raw');
+        s.setEstimateContentLength(false);
+        s.setDownloadMaxBitRate(320);
+        s.setDownloadFormat('mp3');
+        s.setShowSkipIntervalButtons(false);
+        s.setShowSleepTimerButton(false);
+        s.setSkipBackwardInterval(15);
+        s.setSkipForwardInterval(30);
+        s.setRemoteControlMode('skip-track');
+        updateRemoteCapabilities();
+      },
+    });
+  }, [confirm, t]);
 
   return (
     <>

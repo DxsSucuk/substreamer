@@ -31,7 +31,7 @@ const CONCURRENT_OPTIONS: MaxConcurrentDownloads[] = [1, 3, 5];
 export function DownloadedMusicCard() {
   const { t } = useTranslation();
   const { colors } = useTheme();
-  const { alert } = useThemedAlert();
+  const { alert, confirm } = useThemedAlert();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const [sheetVisible, setSheetVisible] = useState(false);
@@ -70,19 +70,13 @@ export function DownloadedMusicCard() {
 
     const albums = albumLibraryStore.getState().albums.length;
     const playlists = playlistLibraryStore.getState().playlists.length;
-    alert(
-      t('downloadFullLibraryConfirmTitle'),
-      t('downloadFullLibraryConfirmBody', { albums, playlists }),
-      [
-        { text: t('cancel'), style: 'cancel' },
-        {
-          text: t('downloadFullLibraryConfirm'),
-          style: 'default',
-          onPress: () => fireAndForget(enqueueFullLibraryDownload(), 'fullLibraryDownload'),
-        },
-      ],
-    );
-  }, [alert, t, musicQueueCount]);
+    confirm({
+      title: t('downloadFullLibraryConfirmTitle'),
+      message: t('downloadFullLibraryConfirmBody', { albums, playlists }),
+      confirmLabel: t('downloadFullLibraryConfirm'),
+      onConfirm: () => fireAndForget(enqueueFullLibraryDownload(), 'fullLibraryDownload'),
+    });
+  }, [confirm, t, musicQueueCount]);
 
   // Cancelling stops adding more AND clears everything still queued, but lets
   // the item that's actively downloading finish so it lands in a clean state.

@@ -36,7 +36,7 @@ export function StreamFormatSheet() {
 
   const { colors } = useTheme();
   const { t } = useTranslation();
-  const { alert } = useThemedAlert();
+  const { confirm } = useThemedAlert();
 
   const currentValue = target === 'stream' ? streamFormat : downloadFormat;
   const currentPreset = findPreset(currentValue);
@@ -74,27 +74,22 @@ export function StreamFormatSheet() {
         !previous.startsWith('opus');
 
       if (isOpusOnIos) {
-        alert(
-          t('iosOpusWarningTitle'),
-          t('iosOpusWarningBody'),
-          [
-            { text: t('cancel'), style: 'cancel' },
-            {
-              text: t('iosOpusWarningConfirm'),
-              onPress: () => {
-                persist(next);
-                hide();
-              },
-            },
-          ],
-        );
+        confirm({
+          title: t('iosOpusWarningTitle'),
+          message: t('iosOpusWarningBody'),
+          confirmLabel: t('iosOpusWarningConfirm'),
+          onConfirm: () => {
+            persist(next);
+            hide();
+          },
+        });
         return;
       }
 
       persist(next);
       hide();
     },
-    [currentValue, persist, hide, alert, t],
+    [currentValue, persist, hide, confirm, t],
   );
 
   const handleSelectPreset = useCallback(

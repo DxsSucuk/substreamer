@@ -244,7 +244,7 @@ const QueueRow = memo(function QueueRow({
 export function DownloadQueueScreen() {
   const { colors } = useTheme();
   const { t } = useTranslation();
-  const { alert } = useThemedAlert();
+  const { alert, confirm } = useThemedAlert();
   const navigation = useNavigation();
   const headerHeight = useContext(HeaderHeightContext) ?? 0;
   const insets = useSafeAreaInsets();
@@ -267,19 +267,14 @@ export function DownloadQueueScreen() {
   /* ---- Header buttons ---- */
 
   const handleClearAll = useCallback(() => {
-    alert(
-      t('clearDownloadQueue'),
-      t('clearDownloadQueueMessage'),
-      [
-        { text: t('cancel'), style: 'cancel' },
-        {
-          text: t('clear'),
-          style: 'destructive',
-          onPress: () => clearDownloadQueue(),
-        },
-      ],
-    );
-  }, []);
+    confirm({
+      title: t('clearDownloadQueue'),
+      message: t('clearDownloadQueueMessage'),
+      confirmLabel: t('clear'),
+      destructive: true,
+      onConfirm: () => clearDownloadQueue(),
+    });
+  }, [confirm, t]);
 
   const handleRecover = useCallback(() => {
     forceRecoverDownloadsAsync();

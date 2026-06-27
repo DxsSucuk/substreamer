@@ -21,7 +21,7 @@ import { formatBytes } from '../../utils/formatters';
 export function DangerousActionsCard() {
   const { t } = useTranslation();
   const { colors } = useTheme();
-  const { alert } = useThemedAlert();
+  const { confirm } = useThemedAlert();
   const [expanded, setExpanded] = useState(false);
   const chevronRotation = useSharedValue(0);
 
@@ -44,83 +44,63 @@ export function DangerousActionsCard() {
   }, [chevronRotation]);
 
   const handleClearImageCache = useCallback(() => {
-    alert(
-      t('clearImageCache'),
-      t('clearImageCacheMessage', { size: formatBytes(totalBytes) }),
-      [
-        { text: t('cancel'), style: 'cancel' },
-        {
-          text: t('clear'),
-          style: 'destructive',
-          onPress: async () => {
-            await clearImageCache();
-            checkStorageLimit();
-          },
-        },
-      ],
-    );
-  }, [alert, t, totalBytes]);
+    confirm({
+      title: t('clearImageCache'),
+      message: t('clearImageCacheMessage', { size: formatBytes(totalBytes) }),
+      confirmLabel: t('clear'),
+      destructive: true,
+      onConfirm: async () => {
+        await clearImageCache();
+        checkStorageLimit();
+      },
+    });
+  }, [confirm, t, totalBytes]);
 
   const handleClearMusicCache = useCallback(() => {
-    alert(
-      t('clearDownloadedMusic'),
-      t('clearDownloadedMusicMessage', { size: formatBytes(musicCacheBytes) }),
-      [
-        { text: t('cancel'), style: 'cancel' },
-        {
-          text: t('clear'),
-          style: 'destructive',
-          onPress: async () => {
-            await clearQueue();
-            await clearMusicCache();
-            checkStorageLimit();
-          },
-        },
-      ],
-    );
-  }, [alert, t, musicCacheBytes]);
+    confirm({
+      title: t('clearDownloadedMusic'),
+      message: t('clearDownloadedMusicMessage', { size: formatBytes(musicCacheBytes) }),
+      confirmLabel: t('clear'),
+      destructive: true,
+      onConfirm: async () => {
+        await clearQueue();
+        await clearMusicCache();
+        checkStorageLimit();
+      },
+    });
+  }, [confirm, t, musicCacheBytes]);
 
   const handleClearMetadataCache = useCallback(() => {
-    alert(
-      t('clearMetadataCache'),
-      t('clearMetadataCacheMessage', { count: totalMetadataCount }),
-      [
-        { text: t('cancel'), style: 'cancel' },
-        {
-          text: t('clear'),
-          style: 'destructive',
-          onPress: () => {
-            albumDetailStore.getState().clearAlbums();
-            artistDetailStore.getState().clearArtists();
-            playlistDetailStore.getState().clearPlaylists();
-          },
-        },
-      ],
-    );
-  }, [alert, t, totalMetadataCount]);
+    confirm({
+      title: t('clearMetadataCache'),
+      message: t('clearMetadataCacheMessage', { count: totalMetadataCount }),
+      confirmLabel: t('clear'),
+      destructive: true,
+      onConfirm: () => {
+        albumDetailStore.getState().clearAlbums();
+        artistDetailStore.getState().clearArtists();
+        playlistDetailStore.getState().clearPlaylists();
+      },
+    });
+  }, [confirm, t, totalMetadataCount]);
 
   const handleClearAll = useCallback(() => {
-    alert(
-      t('clearAllData'),
-      t('clearAllDataMessage'),
-      [
-        { text: t('cancel'), style: 'cancel' },
-        {
-          text: t('clearEverything'),
-          style: 'destructive',
-          onPress: async () => {
-            await clearQueue();
-            await clearMusicCache();
-            await clearImageCache();
-            albumDetailStore.getState().clearAlbums();
-            artistDetailStore.getState().clearArtists();
-            playlistDetailStore.getState().clearPlaylists();
-            checkStorageLimit();
-          },
-        },
-      ],
-    );
-  }, [alert, t]);
+    confirm({
+      title: t('clearAllData'),
+      message: t('clearAllDataMessage'),
+      confirmLabel: t('clearEverything'),
+      destructive: true,
+      onConfirm: async () => {
+        await clearQueue();
+        await clearMusicCache();
+        await clearImageCache();
+        albumDetailStore.getState().clearAlbums();
+        artistDetailStore.getState().clearArtists();
+        playlistDetailStore.getState().clearPlaylists();
+        checkStorageLimit();
+      },
+    });
+  }, [confirm, t]);
 
   return (
     <View style={settingsStyles.section}>

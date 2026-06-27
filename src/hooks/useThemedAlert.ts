@@ -37,5 +37,30 @@ export function useThemedAlert() {
     [t],
   );
 
-  return { alert };
+  /**
+   * Two-button confirmation: a cancel button (auto-injected) plus a single
+   * affirmative action. `destructive` styles the action red. Use for the
+   * common `[cancel, confirm]` dialog instead of hand-building the buttons.
+   */
+  const confirm = useCallback(
+    (options: {
+      title: string;
+      message?: string;
+      confirmLabel: string;
+      destructive?: boolean;
+      onConfirm: () => void;
+    }) => {
+      alert(options.title, options.message, [
+        { text: t('cancel'), style: 'cancel' },
+        {
+          text: options.confirmLabel,
+          style: options.destructive ? 'destructive' : 'default',
+          onPress: options.onConfirm,
+        },
+      ]);
+    },
+    [alert, t],
+  );
+
+  return { alert, confirm };
 }

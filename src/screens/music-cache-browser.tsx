@@ -384,7 +384,7 @@ export function MusicCacheBrowserScreen() {
   const { colors } = useTheme();
   const { t } = useTranslation();
   const navigation = useNavigation();
-  const { alert } = useThemedAlert();
+  const { confirm } = useThemedAlert();
   const { confirmRemove } = useConfirmAlbumRemoval();
   const transitionComplete = useTransitionComplete();
   const headerHeight = useContext(HeaderHeightContext) ?? 0;
@@ -397,24 +397,19 @@ export function MusicCacheBrowserScreen() {
   const hasItems = Object.keys(cachedItems).length > 0;
 
   const handleClearAll = useCallback(() => {
-    alert(
-      t('clearAllDownloads'),
-      t('clearAllDownloadsMessage'),
-      [
-        { text: t('cancel'), style: 'cancel' },
-        {
-          text: t('clearAll'),
-          style: 'destructive',
-          onPress: async () => {
-            setExpandedId(null);
-            clearDownloadQueue();
-            await clearQueue();
-            await clearMusicCache();
-          },
-        },
-      ],
-    );
-  }, [alert, t]);
+    confirm({
+      title: t('clearAllDownloads'),
+      message: t('clearAllDownloadsMessage'),
+      confirmLabel: t('clearAll'),
+      destructive: true,
+      onConfirm: async () => {
+        setExpandedId(null);
+        clearDownloadQueue();
+        await clearQueue();
+        await clearMusicCache();
+      },
+    });
+  }, [confirm, t]);
 
   useEffect(() => {
     navigation.setOptions({
@@ -500,41 +495,31 @@ export function MusicCacheBrowserScreen() {
       (sum, id) => sum + (state.cachedSongs[id]?.bytes ?? 0),
       0,
     );
-    alert(
-      t('removeDownload'),
-      t('removeDownloadMessage', { name: item.name, size: formatBytes(itemBytes) }),
-      [
-        { text: t('cancel'), style: 'cancel' },
-        {
-          text: t('delete'),
-          style: 'destructive',
-          onPress: () => {
-            setExpandedId((prev) => (prev === itemId ? null : prev));
-            deleteCachedItem(itemId);
-          },
-        },
-      ],
-    );
-  }, [alert, t, confirmRemove]);
+    confirm({
+      title: t('removeDownload'),
+      message: t('removeDownloadMessage', { name: item.name, size: formatBytes(itemBytes) }),
+      confirmLabel: t('delete'),
+      destructive: true,
+      onConfirm: () => {
+        setExpandedId((prev) => (prev === itemId ? null : prev));
+        deleteCachedItem(itemId);
+      },
+    });
+  }, [confirm, t, confirmRemove]);
 
   const handleRedownload = useCallback((itemId: string) => {
     const item = musicCacheStore.getState().cachedItems[itemId];
     if (!item) return;
-    alert(
-      t('redownload'),
-      t('redownloadMessage', { name: item.name }),
-      [
-        { text: t('cancel'), style: 'cancel' },
-        {
-          text: t('redownload'),
-          onPress: () => {
-            setExpandedId((prev) => (prev === itemId ? null : prev));
-            redownloadItem(itemId);
-          },
-        },
-      ],
-    );
-  }, []);
+    confirm({
+      title: t('redownload'),
+      message: t('redownloadMessage', { name: item.name }),
+      confirmLabel: t('redownload'),
+      onConfirm: () => {
+        setExpandedId((prev) => (prev === itemId ? null : prev));
+        redownloadItem(itemId);
+      },
+    });
+  }, [confirm, t]);
 
   const renderItem = useCallback(
     ({ item }: { item: ListEntry }) => {

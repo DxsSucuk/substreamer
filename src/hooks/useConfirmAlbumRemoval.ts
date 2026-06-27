@@ -23,7 +23,7 @@ import { musicCacheStore } from '../store/musicCacheStore';
  *   edges (and its original `downloadedAt`), so the UI shows it as partial.
  */
 export function useConfirmAlbumRemoval() {
-  const { alert } = useThemedAlert();
+  const { confirm } = useThemedAlert();
   const { t } = useTranslation();
 
   const confirmRemove = useCallback(
@@ -43,25 +43,18 @@ export function useConfirmAlbumRemoval() {
         deleteCachedItem(itemId);
         return;
       }
-      alert(
-        t('removeAlbumKeepsSongsTitle'),
-        t('removeAlbumKeepsSongsMessage', {
+      confirm({
+        title: t('removeAlbumKeepsSongsTitle'),
+        message: t('removeAlbumKeepsSongsMessage', {
           count: survivorCount,
           album: cached.name,
         }),
-        [
-          { text: t('cancel'), style: 'cancel' },
-          {
-            text: t('removeAnyway'),
-            style: 'destructive',
-            onPress: () => {
-              demoteAlbumToPartial(itemId);
-            },
-          },
-        ],
-      );
+        confirmLabel: t('removeAnyway'),
+        destructive: true,
+        onConfirm: () => demoteAlbumToPartial(itemId),
+      });
     },
-    [alert, t],
+    [confirm, t],
   );
 
   return { confirmRemove };

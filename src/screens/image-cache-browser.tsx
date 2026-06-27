@@ -153,7 +153,7 @@ export function ImageCacheBrowserScreen() {
   const { colors } = useTheme();
   const { t } = useTranslation();
   const navigation = useNavigation();
-  const { alert } = useThemedAlert();
+  const { confirm } = useThemedAlert();
   const transitionComplete = useTransitionComplete();
   const headerHeight = useContext(HeaderHeightContext) ?? 0;
   const refreshControlKey = useRefreshControlKey();
@@ -174,22 +174,17 @@ export function ImageCacheBrowserScreen() {
   const listRef = useRef<FlashListRef<CachedImageEntry>>(null);
 
   const handleClearAll = useCallback(() => {
-    alert(
-      t('clearImageCache'),
-      t('clearImageCacheConfirmMessage'),
-      [
-        { text: t('cancel'), style: 'cancel' },
-        {
-          text: t('clearAll'),
-          style: 'destructive',
-          onPress: async () => {
-            await clearImageCache();
-            setAllEntries([]);
-          },
-        },
-      ],
-    );
-  }, [alert, t]);
+    confirm({
+      title: t('clearImageCache'),
+      message: t('clearImageCacheConfirmMessage'),
+      confirmLabel: t('clearAll'),
+      destructive: true,
+      onConfirm: async () => {
+        await clearImageCache();
+        setAllEntries([]);
+      },
+    });
+  }, [confirm, t]);
 
   useEffect(() => {
     navigation.setOptions({
@@ -312,25 +307,20 @@ export function ImageCacheBrowserScreen() {
 
   const handleDelete = useCallback(
     (coverArtId: string) => {
-      alert(
-        t('deleteCachedImage'),
-        t('deleteCachedImageMessage'),
-        [
-          { text: t('cancel'), style: 'cancel' },
-          {
-            text: t('delete'),
-            style: 'destructive',
-            onPress: async () => {
-              await deleteCachedImage(coverArtId);
-              setAllEntries((prev) =>
-                prev.filter((e) => e.coverArtId !== coverArtId),
-              );
-            },
-          },
-        ],
-      );
+      confirm({
+        title: t('deleteCachedImage'),
+        message: t('deleteCachedImageMessage'),
+        confirmLabel: t('delete'),
+        destructive: true,
+        onConfirm: async () => {
+          await deleteCachedImage(coverArtId);
+          setAllEntries((prev) =>
+            prev.filter((e) => e.coverArtId !== coverArtId),
+          );
+        },
+      });
     },
-    [alert, t],
+    [confirm, t],
   );
 
   const renderItem = useCallback(

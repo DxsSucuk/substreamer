@@ -21,7 +21,7 @@ export interface UsePlayerActionsOptions {
  */
 export function usePlayerActions({ source, onClearConfirmed }: UsePlayerActionsOptions) {
   const { t } = useTranslation();
-  const { alert } = useThemedAlert();
+  const { confirm } = useThemedAlert();
 
   const handleSeek = useCallback((seconds: number) => {
     seekTo(seconds);
@@ -43,15 +43,14 @@ export function usePlayerActions({ source, onClearConfirmed }: UsePlayerActionsO
   }, []);
 
   const handleClearQueue = useCallback(() => {
-    alert(
-      t('clearQueue'),
-      t('clearQueueMessage'),
-      [
-        { text: t('cancel'), style: 'cancel' },
-        { text: t('clear'), style: 'destructive', onPress: onClearConfirmed ?? clearQueue },
-      ],
-    );
-  }, [alert, t, onClearConfirmed]);
+    confirm({
+      title: t('clearQueue'),
+      message: t('clearQueueMessage'),
+      confirmLabel: t('clear'),
+      destructive: true,
+      onConfirm: onClearConfirmed ?? clearQueue,
+    });
+  }, [confirm, t, onClearConfirmed]);
 
   return {
     handleSeek,

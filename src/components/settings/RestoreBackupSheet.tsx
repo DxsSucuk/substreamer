@@ -34,7 +34,7 @@ export function RestoreBackupSheet({
 }) {
   const { t } = useTranslation();
   const { colors } = useTheme();
-  const { alert } = useThemedAlert();
+  const { alert, confirm } = useThemedAlert();
   const insets = useSafeAreaInsets();
   const localDeviceId = deviceIdentityStore((s) => s.deviceId);
 
@@ -154,15 +154,14 @@ export function RestoreBackupSheet({
       return;
     }
 
-    alert(
-      t('restoreBackupConfirm'),
-      t('restoreBackupConfirmMessage', { date: dateStr, details: parts.join(', ') }),
-      [
-        { text: t('cancel'), style: 'cancel' },
-        { text: t('restore'), style: 'destructive', onPress: performRestore(entry, 'replace') },
-      ],
-    );
-  }, [selected, state, localDeviceId, alert, t, performRestore]);
+    confirm({
+      title: t('restoreBackupConfirm'),
+      message: t('restoreBackupConfirmMessage', { date: dateStr, details: parts.join(', ') }),
+      confirmLabel: t('restore'),
+      destructive: true,
+      onConfirm: performRestore(entry, 'replace'),
+    });
+  }, [selected, state, localDeviceId, alert, confirm, t, performRestore]);
 
   function renderRow(entry: BackupEntry, includeServerUrl: boolean) {
     const isSelected = selected?.stem === entry.stem;
