@@ -41,6 +41,7 @@ export const BannerStack = memo(function BannerStack() {
   const syncPhase = syncStatusStore((s) => s.detailSyncPhase);
   const imageQueueCycleId = imageDownloadQueueStore((s) => s.cycleId);
   const imageQueueTotal = imageDownloadQueueStore((s) => s.cycleTotal);
+  const imageQueuePhase = imageDownloadQueueStore((s) => s.phase);
 
   // Persistence-degraded is sticky and captured at module load. If SQLite
   // failed to open, surface this above everything else so the user knows
@@ -69,7 +70,9 @@ export const BannerStack = memo(function BannerStack() {
     return <LibrarySyncBanner />;
   }
 
-  if (imageQueueCycleId !== null && imageQueueTotal > 0) {
+  // 'dismissed' keeps the cycle alive (for retry) but must not claim the banner
+  // slot — otherwise a dismissed error would suppress lower-priority banners.
+  if (imageQueueCycleId !== null && imageQueueTotal > 0 && imageQueuePhase !== 'dismissed') {
     return <ImageCacheBanner />;
   }
   return null;

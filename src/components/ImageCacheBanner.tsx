@@ -13,7 +13,7 @@
 import Ionicons from '@react-native-vector-icons/ionicons/static';
 import { memo, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Animated, {
   Easing,
   useAnimatedStyle,
@@ -23,6 +23,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
+import { dismissImageCacheErrorBanner } from '../services/imageCacheService';
 import { imageDownloadQueueStore } from '../store/imageDownloadQueueStore';
 
 const CAPSULE_HEIGHT = 44;
@@ -37,15 +38,20 @@ const SHRINK_EASING = Easing.in(Easing.cubic);
 const LAYOUT_EASING = Easing.inOut(Easing.cubic);
 
 const ACCENT_BLUE = '#1D9BF0';
+const ERROR_RED = '#FF453A';
 
 export const ImageCacheBanner = memo(function ImageCacheBanner() {
   const { t } = useTranslation();
   const cycleId = imageDownloadQueueStore((s) => s.cycleId);
   const cycleTotal = imageDownloadQueueStore((s) => s.cycleTotal);
   const cycleProcessed = imageDownloadQueueStore((s) => s.cycleProcessed);
+  const cycleFailed = imageDownloadQueueStore((s) => s.cycleFailed);
   const isPaused = imageDownloadQueueStore((s) => s.isPaused);
+  const phase = imageDownloadQueueStore((s) => s.phase);
 
-  const visible = cycleId !== null && cycleTotal > 0;
+  const isError = phase === 'error';
+  // 'dismissed' keeps the cycle alive (so retry still works) but hides the banner.
+  const visible = cycleId !== null && cycleTotal > 0 && phase !== 'dismissed';
 
   const prevVisible = useRef(visible);
 
@@ -83,24 +89,34 @@ export const ImageCacheBanner = memo(function ImageCacheBanner() {
 
   if (!visible) return null;
 
-  const label = isPaused
+  const progressLabel = isPaused
     ? t('imageCacheBannerPausedLabel', 'Paused')
     : t('imageCacheBannerRunningLabel', 'Refreshing covers');
   const countText = `${cycleProcessed} / ${cycleTotal}`;
+  const errorLabel = t('imageCacheBannerErrorLabel', {
+    count: cycleFailed,
+    defaultValue: "{{count}} covers couldn't be refreshed",
+  });
 
   return (
     <Animated.View style={[styles.outer, containerStyle]}>
       <View style={styles.pillContainer}>
-        <Animated.View style={[styles.capsule, capsuleStyle]}>
-          <Ionicons
-            name={isPaused ? 'pause' : 'sync'}
-            size={16}
-            color={ACCENT_BLUE}
-          />
-          <Text style={styles.label} numberOfLines={1}>
-            {label} {countText}
-          </Text>
-        </Animated.View>
+        {/* In the error phase the whole pill is a tap-to-dismiss control. */}
+        <Pressable onPress={() => dismissImageCacheErrorBanner()} disabled={!isError}>
+          <Animated.View style={[styles.capsule, capsuleStyle]}>
+            <Ionicons
+              name={isError ? 'alert-circle' : isPaused ? 'pause' : 'sync'}
+              size={16}
+              color={isError ? ERROR_RED : ACCENT_BLUE}
+            />
+            <Text style={styles.label} numberOfLines={1}>
+              {isError ? errorLabel : `${progressLabel} ${countText}`}
+            </Text>
+            {isError ? (
+              <Ionicons name="close" size={15} color="rgba(255, 255, 255, 0.55)" />
+            ) : null}
+          </Animated.View>
+        </Pressable>
       </View>
     </Animated.View>
   );

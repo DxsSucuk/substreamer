@@ -223,6 +223,7 @@ const mockDownloader = jest.fn(async (_id: string) => {
 import {
   __setImageDownloaderForTest,
   cancelImageRefreshCycle,
+  dismissImageCacheErrorBanner,
   enqueueImageRefreshCycle,
   getImageQueueState,
   pauseImageQueue,
@@ -260,6 +261,7 @@ describe('image-queue meta accessors', () => {
       processed: 0,
       failed: 0,
       isPaused: false,
+      phase: 'active',
     });
   });
 });
@@ -349,6 +351,34 @@ describe('processImageQueue worker', () => {
     expect(getImageQueueState().cycleId).not.toBeNull();
     // Retry-once-inline: 2 attempts per row
     expect(mockDownloader).toHaveBeenCalledTimes(2);
+  });
+
+  it('transitions to the error phase when a cycle finishes with failures', async () => {
+    mockGetAllCachedCoverArtIds.mockReturnValue(['cov-a', 'cov-b']);
+    mockDownloaderShouldFail = true;
+    await enqueueImageRefreshCycle('refresh-all');
+
+    await processImageQueue();
+
+    const s = getImageQueueState();
+    expect(s.phase).toBe('error');
+    // cycleId is KEPT (banner shows the error variant; cycle-scoped retry still works).
+    expect(s.cycleId).not.toBeNull();
+    expect(s.failed).toBe(2);
+  });
+
+  it('dismissImageCacheErrorBanner hides the banner but keeps the cycle for retry', async () => {
+    mockGetAllCachedCoverArtIds.mockReturnValue(['cov-a']);
+    mockDownloaderShouldFail = true;
+    await enqueueImageRefreshCycle('refresh-all');
+    await processImageQueue();
+    expect(getImageQueueState().phase).toBe('error');
+
+    dismissImageCacheErrorBanner();
+
+    const s = getImageQueueState();
+    expect(s.phase).toBe('dismissed');
+    expect(s.cycleId).not.toBeNull();
   });
 
   it('returns early when paused', async () => {

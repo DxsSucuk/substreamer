@@ -1827,11 +1827,20 @@ function hydrateCachedItemsForRecache(): {
  */
 const IMAGE_QUEUE_META_KEY = 'substreamer-image-queue-meta';
 
+export type ImageQueuePhase = 'active' | 'error' | 'dismissed';
+
 interface ImageQueueMeta {
   cycleId: string | null;
   cycleScope: ImageDownloadQueueScope | null;
   cycleTotal: number;
   isPaused: boolean;
+  /**
+   * 'active' while the cycle is draining; 'error' once it finishes with one or
+   * more failed rows (drives a dismissible error banner); 'dismissed' after the
+   * user dismisses that banner. cycleId + the error rows are retained in 'error'
+   * and 'dismissed' so the cycle-scoped retry and next-boot recovery still work.
+   */
+  phase: ImageQueuePhase;
 }
 
 function readImageQueueMeta(): ImageQueueMeta {
@@ -1850,12 +1859,16 @@ function readImageQueueMeta(): ImageQueueMeta {
             : null,
         cycleTotal: typeof parsed.cycleTotal === 'number' ? parsed.cycleTotal : 0,
         isPaused: parsed.isPaused === true,
+        phase:
+          parsed.phase === 'error' || parsed.phase === 'dismissed'
+            ? parsed.phase
+            : 'active',
       };
     }
   } catch {
     /* fall through to defaults */
   }
-  return { cycleId: null, cycleScope: null, cycleTotal: 0, isPaused: false };
+  return { cycleId: null, cycleScope: null, cycleTotal: 0, isPaused: false, phase: 'active' };
 }
 
 function writeImageQueueMeta(next: ImageQueueMeta): void {
@@ -1873,6 +1886,7 @@ export interface ImageQueueState {
   processed: number;
   failed: number;
   isPaused: boolean;
+  phase: ImageQueuePhase;
 }
 
 /**
@@ -1893,6 +1907,7 @@ export function getImageQueueState(): ImageQueueState {
       processed: 0,
       failed: 0,
       isPaused: meta.isPaused,
+      phase: meta.phase,
     };
   }
   const remainingInQueue = countImageQueueRowsByCycle(meta.cycleId);
@@ -1906,6 +1921,7 @@ export function getImageQueueState(): ImageQueueState {
     processed,
     failed: errored,
     isPaused: meta.isPaused,
+    phase: meta.phase,
   };
 }
 
@@ -2051,6 +2067,9 @@ async function processOneImage(row: ImageDownloadQueueRow): Promise<void> {
   } else {
     markImageError(row.coverArtId, 'Failed after retry');
     logImageCache(`image-queue: persisted error for id=${row.coverArtId}`);
+    // Completion check on failure too — otherwise an all-failed cycle would
+    // never re-evaluate and transition to its (dismissible) error phase.
+    maybeCompleteCycle();
   }
   notifyImageQueueChange();
 }
@@ -2059,12 +2078,23 @@ function maybeCompleteCycle(): void {
   const meta = readImageQueueMeta();
   if (meta.cycleId === null) return;
   const remaining = countImageQueueRowsByCycle(meta.cycleId);
-  // Remaining includes errored rows that the user might still retry.
-  // We clear the cycle metadata only when EVERY row is gone (success).
   if (remaining === 0) {
-    writeImageQueueMeta({ cycleId: null, cycleScope: null, cycleTotal: 0, isPaused: false });
+    // Every row succeeded → clean complete; banner clears.
+    writeImageQueueMeta({ cycleId: null, cycleScope: null, cycleTotal: 0, isPaused: false, phase: 'active' });
     flushAggregateRecalc();
     logImageCache('image-queue: cycle complete');
+    return;
+  }
+  // Rows remain but none are still queued/downloading → they're terminal
+  // errors. Transition to the dismissible error phase instead of pinning the
+  // progress banner at N/N forever. cycleId + the error rows are kept so the
+  // cycle-scoped retry and next-boot recovery still work.
+  const errored = countImageQueueRowsByStatus('error');
+  const stillActive = remaining - errored;
+  if (stillActive <= 0 && meta.phase === 'active') {
+    writeImageQueueMeta({ ...meta, phase: 'error' });
+    flushAggregateRecalc();
+    logImageCache(`image-queue: cycle finished with ${errored} error(s)`);
   }
 }
 
@@ -2120,6 +2150,12 @@ export async function processImageQueue(): Promise<void> {
 export async function recoverStalledImageDownloads(): Promise<void> {
   const reset = resetStalledImageRows();
   if (reset > 0) {
+    // Rows are queued again → re-activate the cycle so the progress banner
+    // (not a stale error banner) reflects the fresh attempt.
+    const meta = readImageQueueMeta();
+    if (meta.cycleId !== null && meta.phase !== 'active') {
+      writeImageQueueMeta({ ...meta, phase: 'active' });
+    }
     logImageCache(`image-queue: recovered ${reset} stalled row(s) to queued`);
     notifyImageQueueChange();
   }
@@ -2161,7 +2197,7 @@ export function cancelImageRefreshCycle(): void {
     return;
   }
   const removed = clearImageQueueByCycle(meta.cycleId);
-  writeImageQueueMeta({ cycleId: null, cycleScope: null, cycleTotal: 0, isPaused: false });
+  writeImageQueueMeta({ cycleId: null, cycleScope: null, cycleTotal: 0, isPaused: false, phase: 'active' });
   flushAggregateRecalc();
   logImageCache(`image-queue: cancelled cycle ${meta.cycleId}, removed ${removed} row(s)`);
   notifyImageQueueChange();
@@ -2180,8 +2216,24 @@ export function retryFailedImages(): void {
   const reset = resetErrorRowsForCycle(meta.cycleId);
   logImageCache(`image-queue: retryFailed reset ${reset} row(s)`);
   if (reset > 0) {
+    // Back to draining → progress banner, not the error banner.
+    if (meta.phase !== 'active') writeImageQueueMeta({ ...meta, phase: 'active' });
     notifyImageQueueChange();
     void processImageQueue();
+  }
+}
+
+/**
+ * Dismiss the error banner shown after a refresh cycle finished with failures.
+ * Hides the banner (phase → 'dismissed') but keeps the cycle + its error rows
+ * so the cycle-scoped retry still works and next-boot recovery can re-attempt
+ * them. No-op unless the cycle is actually in its error phase.
+ */
+export function dismissImageCacheErrorBanner(): void {
+  const meta = readImageQueueMeta();
+  if (meta.cycleId !== null && meta.phase === 'error') {
+    writeImageQueueMeta({ ...meta, phase: 'dismissed' });
+    notifyImageQueueChange();
   }
 }
 
@@ -2252,6 +2304,7 @@ export async function enqueueImageRefreshCycle(
     cycleScope: scope,
     cycleTotal: inserted,
     isPaused: false,
+    phase: 'active',
   });
   logImageCache(`image-queue: started cycle ${cycleId} scope=${scope} ids=${inserted}`);
   notifyImageQueueChange();

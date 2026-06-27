@@ -21,6 +21,7 @@ import {
   hydrateImageDownloadQueueAsync,
 } from './persistence/imageDownloadQueueTable';
 import {
+  type ImageQueuePhase,
   getImageQueueState,
   subscribeImageQueueChanges,
 } from '../services/imageCacheService';
@@ -33,6 +34,7 @@ export interface ImageDownloadQueueState {
   cycleProcessed: number;
   cycleFailed: number;
   isPaused: boolean;
+  phase: ImageQueuePhase;
 
   /** Re-read the SQL queue + cycle meta into the store (queue read on a
    * background thread). Safe to call repeatedly. */
@@ -49,6 +51,7 @@ export const imageDownloadQueueStore = create<ImageDownloadQueueState>()((set) =
   cycleProcessed: 0,
   cycleFailed: 0,
   isPaused: false,
+  phase: 'active',
 
   hydrateFromDbAsync: async () => {
     const queue = await hydrateImageDownloadQueueAsync();
@@ -61,6 +64,7 @@ export const imageDownloadQueueStore = create<ImageDownloadQueueState>()((set) =
       cycleProcessed: s.processed,
       cycleFailed: s.failed,
       isPaused: s.isPaused,
+      phase: s.phase,
     });
   },
 
@@ -73,6 +77,7 @@ export const imageDownloadQueueStore = create<ImageDownloadQueueState>()((set) =
       cycleProcessed: s.processed,
       cycleFailed: s.failed,
       isPaused: s.isPaused,
+      phase: s.phase,
     });
   },
 }));
