@@ -1,4 +1,5 @@
 import { ThemeProvider, DarkTheme, DefaultTheme } from "expo-router/react-navigation";
+import { errMessage } from '../utils/errorMessage';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -117,7 +118,7 @@ try {
   NetInfo.configure({ shouldFetchWiFiSSID: true });
 } catch (e) {
   // eslint-disable-next-line no-console
-  console.warn('[layout] NetInfo.configure failed:', e instanceof Error ? e.message : String(e));
+  console.warn('[layout] NetInfo.configure failed:', errMessage(e));
 }
 
 // Initialise the on-disk cache directories at module load (fast mkdir only).
@@ -125,13 +126,13 @@ try {
   initImageCache();
 } catch (e) {
   // eslint-disable-next-line no-console
-  console.warn('[layout] initImageCache failed:', e instanceof Error ? e.message : String(e));
+  console.warn('[layout] initImageCache failed:', errMessage(e));
 }
 try {
   initMusicCache();
 } catch (e) {
   // eslint-disable-next-line no-console
-  console.warn('[layout] initMusicCache failed:', e instanceof Error ? e.message : String(e));
+  console.warn('[layout] initMusicCache failed:', errMessage(e));
 }
 
 // Initialise the SSL trust store so the custom TrustManager / URLSession
@@ -140,7 +141,7 @@ try {
   initSslTrustStore();
 } catch (e) {
   // eslint-disable-next-line no-console
-  console.warn('[layout] initSslTrustStore failed:', e instanceof Error ? e.message : String(e));
+  console.warn('[layout] initSslTrustStore failed:', errMessage(e));
 }
 
 // Sync the persisted theme preference to the native layer at module scope —
@@ -175,7 +176,7 @@ try {
   IS_TABLET = Math.min(screenDims.width, screenDims.height) >= 600;
 } catch (e) {
   // eslint-disable-next-line no-console
-  console.warn('[layout] Dimensions.get failed; assuming phone:', e instanceof Error ? e.message : String(e));
+  console.warn('[layout] Dimensions.get failed; assuming phone:', errMessage(e));
 }
 
 // Lock orientation to portrait on phones. Tablets are left free to rotate
@@ -214,7 +215,7 @@ async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
       // eslint-disable-next-line no-console
       console.warn(
         `[layout][${name}] failed:`,
-        e instanceof Error ? e.message : String(e),
+        errMessage(e),
       );
     }
   };

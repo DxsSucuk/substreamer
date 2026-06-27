@@ -1,3 +1,4 @@
+import { errMessage } from './errorMessage';
 /**
  * Fire-and-forget a promise without silent rejections.
  *
@@ -15,7 +16,7 @@ export function fireAndForget<T>(
     // eslint-disable-next-line no-console
     console.warn(
       `[fireAndForget:${tag}]`,
-      e instanceof Error ? e.message : String(e),
+      errMessage(e),
     );
   });
 }

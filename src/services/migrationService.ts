@@ -10,6 +10,7 @@
  */
 
 import { Directory, File, Paths } from 'expo-file-system';
+import { errMessage } from '../utils/errorMessage';
 import { listDirectoryAsync } from 'expo-async-fs';
 import { Platform } from 'react-native';
 
@@ -185,7 +186,7 @@ async function migrateMusicCacheFromBlob(
       }
     }
   } catch (e) {
-    log(`[diag] resolver source 2 (song_index) threw: ${e instanceof Error ? e.message : String(e)}`);
+    log(`[diag] resolver source 2 (song_index) threw: ${errMessage(e)}`);
   }
 
   // Source 3: substreamer-playlist-details blob.
@@ -206,7 +207,7 @@ async function migrateMusicCacheFromBlob(
       }
     }
   } catch (e) {
-    log(`[diag] resolver source 3 (playlist-details blob) threw: ${e instanceof Error ? e.message : String(e)}`);
+    log(`[diag] resolver source 3 (playlist-details blob) threw: ${errMessage(e)}`);
   }
 
   // Source 4: substreamer-favorites blob.
@@ -225,7 +226,7 @@ async function migrateMusicCacheFromBlob(
       }
     }
   } catch (e) {
-    log(`[diag] resolver source 4 (favorites blob) threw: ${e instanceof Error ? e.message : String(e)}`);
+    log(`[diag] resolver source 4 (favorites blob) threw: ${errMessage(e)}`);
   }
 
   log(
@@ -370,7 +371,7 @@ async function migrateMusicCacheFromBlob(
       queue: queueRows,
     });
   } catch (e) {
-    bulkReplaceError = e instanceof Error ? e.message : String(e);
+    bulkReplaceError = errMessage(e);
     log(`[diag] bulkReplace THREW: ${bulkReplaceError}`);
   }
 
@@ -594,7 +595,7 @@ async function backfillCachedSongEnvelopes(
       }
     }
   } catch (e) {
-    log(`[diag] album-details source threw: ${e instanceof Error ? e.message : String(e)}`);
+    log(`[diag] album-details source threw: ${errMessage(e)}`);
   }
 
   // Source 2: substreamer-playlist-details blob.
@@ -613,7 +614,7 @@ async function backfillCachedSongEnvelopes(
       }
     }
   } catch (e) {
-    log(`[diag] playlist-details source threw: ${e instanceof Error ? e.message : String(e)}`);
+    log(`[diag] playlist-details source threw: ${errMessage(e)}`);
   }
 
   // Source 3: substreamer-favorites blob.
@@ -628,7 +629,7 @@ async function backfillCachedSongEnvelopes(
       }
     }
   } catch (e) {
-    log(`[diag] favorites source threw: ${e instanceof Error ? e.message : String(e)}`);
+    log(`[diag] favorites source threw: ${errMessage(e)}`);
   }
 
   let viaAlbum = 0;
@@ -648,7 +649,7 @@ async function backfillCachedSongEnvelopes(
       }
     });
   } catch (e) {
-    log(`[diag] UPDATE transaction threw: ${e instanceof Error ? e.message : String(e)}`);
+    log(`[diag] UPDATE transaction threw: ${errMessage(e)}`);
     return;
   }
 
@@ -694,7 +695,7 @@ async function backfillCachedItemEnvelopes(
   try {
     albumDetails = hydrateAlbumDetails();
   } catch (e) {
-    log(`[diag] album_details hydrate threw: ${e instanceof Error ? e.message : String(e)}`);
+    log(`[diag] album_details hydrate threw: ${errMessage(e)}`);
   }
 
   let playlistBlob: Record<string, { playlist: unknown }> = {};
@@ -708,7 +709,7 @@ async function backfillCachedItemEnvelopes(
       }
     }
   } catch (e) {
-    log(`[diag] playlist-details blob read threw: ${e instanceof Error ? e.message : String(e)}`);
+    log(`[diag] playlist-details blob read threw: ${errMessage(e)}`);
   }
 
   let albumsDone = 0;
@@ -745,7 +746,7 @@ async function backfillCachedItemEnvelopes(
       }
     });
   } catch (e) {
-    log(`[diag] UPDATE transaction threw: ${e instanceof Error ? e.message : String(e)}`);
+    log(`[diag] UPDATE transaction threw: ${errMessage(e)}`);
     return;
   }
 
@@ -840,7 +841,7 @@ async function repairDownloadQueueSongsJson(
       }
     });
   } catch (e) {
-    log(`[diag] UPDATE transaction threw: ${e instanceof Error ? e.message : String(e)}`);
+    log(`[diag] UPDATE transaction threw: ${errMessage(e)}`);
     return;
   }
 
@@ -946,7 +947,7 @@ async function backfillMissingPartialAlbums(
   try {
     albumDetails = hydrateAlbumDetails();
   } catch (e) {
-    log(`[diag] album_details hydrate threw: ${e instanceof Error ? e.message : String(e)}`);
+    log(`[diag] album_details hydrate threw: ${errMessage(e)}`);
   }
 
   let created = 0;
@@ -1042,7 +1043,7 @@ async function backfillMissingPartialAlbums(
       }
     });
   } catch (e) {
-    log(`[diag] backfill transaction threw: ${e instanceof Error ? e.message : String(e)}`);
+    log(`[diag] backfill transaction threw: ${errMessage(e)}`);
     return;
   }
 
@@ -1888,7 +1889,7 @@ const MIGRATION_TASKS: MigrationTask[] = [
         await kvStorage.setItem('substreamer-auth', JSON.stringify(parsed));
         log(`[m24] backfilled primaryServerUrl from serverUrl`);
       } catch (e) {
-        log(`[m24] backfill failed: ${e instanceof Error ? e.message : String(e)}`);
+        log(`[m24] backfill failed: ${errMessage(e)}`);
       }
     },
   },
@@ -1917,7 +1918,7 @@ const MIGRATION_TASKS: MigrationTask[] = [
         const freed = await clearImageCache();
         log(`[m25] wiped image cache, freed=${freed} bytes`);
       } catch (e) {
-        log(`[m25] wipe failed: ${e instanceof Error ? e.message : String(e)}`);
+        log(`[m25] wipe failed: ${errMessage(e)}`);
       }
       // Also drop the legacy substreamer-cover-art-recache kvStorage blob
       // — replaced by the persistent SQL image-download queue. (Originally
@@ -1927,7 +1928,7 @@ const MIGRATION_TASKS: MigrationTask[] = [
         await kvStorage.removeItem('substreamer-cover-art-recache');
         log('[m25] cleared substreamer-cover-art-recache blob');
       } catch (e) {
-        log(`[m25] could not clear recache blob: ${e instanceof Error ? e.message : String(e)}`);
+        log(`[m25] could not clear recache blob: ${errMessage(e)}`);
       }
     },
   },
@@ -1974,7 +1975,7 @@ const MIGRATION_TASKS: MigrationTask[] = [
         });
         log(`[m26] backfilled album name on ${updated} song_index rows`);
       } catch (e) {
-        log(`[m26] backfill failed: ${e instanceof Error ? e.message : String(e)}`);
+        log(`[m26] backfill failed: ${errMessage(e)}`);
       }
     },
   },
@@ -2039,7 +2040,7 @@ const MIGRATION_TASKS: MigrationTask[] = [
           `[m27] backfilled expectedSongCount on ${updated} cached_items rows (${unchanged} already accurate)`,
         );
       } catch (e) {
-        log(`[m27] backfill failed: ${e instanceof Error ? e.message : String(e)}`);
+        log(`[m27] backfill failed: ${errMessage(e)}`);
       }
     },
   },
@@ -2093,7 +2094,7 @@ const MIGRATION_TASKS: MigrationTask[] = [
         });
         log(`[m28] backfilled raw_json on ${updated} song_index rows`);
       } catch (e) {
-        log(`[m28] backfill failed: ${e instanceof Error ? e.message : String(e)}`);
+        log(`[m28] backfill failed: ${errMessage(e)}`);
       }
     },
   },
@@ -2123,7 +2124,7 @@ const MIGRATION_TASKS: MigrationTask[] = [
         const freed = await clearImageCache();
         log(`[m29] wiped image cache, freed=${freed} bytes`);
       } catch (e) {
-        log(`[m29] wipe failed: ${e instanceof Error ? e.message : String(e)}`);
+        log(`[m29] wipe failed: ${errMessage(e)}`);
       }
       // Re-warm downloaded covers so offline-first users get them back the next
       // time they're online. The snapshot is mode-aware (album vs per-track),
@@ -2135,7 +2136,7 @@ const MIGRATION_TASKS: MigrationTask[] = [
         const cycleId = await enqueueImageRefreshCycle('refresh-downloads');
         log(`[m29] queued downloaded-cover re-warm cycle=${cycleId ?? 'none'}`);
       } catch (e) {
-        log(`[m29] recache enqueue failed: ${e instanceof Error ? e.message : String(e)}`);
+        log(`[m29] recache enqueue failed: ${errMessage(e)}`);
       }
     },
   },
@@ -2155,7 +2156,7 @@ const MIGRATION_TASKS: MigrationTask[] = [
         await kvStorage.removeItem('substreamer-persisted-position');
         log('[m30] cleared persisted player queue + position');
       } catch (e) {
-        log(`[m30] clear failed: ${e instanceof Error ? e.message : String(e)}`);
+        log(`[m30] clear failed: ${errMessage(e)}`);
       }
     },
   },
@@ -2218,7 +2219,7 @@ export async function runMigrations(
       completedVersion = task.id;
       lines.push('');
     } catch (e) {
-      lines.push(`FAILED: ${e instanceof Error ? e.message : String(e)}`);
+      lines.push(`FAILED: ${errMessage(e)}`);
       lines.push('');
       // Stop processing further tasks — a failed migration may leave
       // later ones in an ambiguous state. Persist progress up to the

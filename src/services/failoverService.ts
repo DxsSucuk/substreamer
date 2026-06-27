@@ -19,6 +19,7 @@
  */
 
 import { authStore, type ServerSlot } from '../store/authStore';
+import { errMessage } from '../utils/errorMessage';
 import { connectivityStore } from '../store/connectivityStore';
 import { setServerDownHook } from './connectivityService';
 import { retryRemoteImagesForServerSwitch } from './imageCacheService';
@@ -82,7 +83,7 @@ export async function switchToServer(target: ServerSlot): Promise<void> {
     // tap / banner offer). Log and continue; the user can retry.
     console.warn(
       '[failover] switchToServer step failed:',
-      e instanceof Error ? e.message : String(e),
+      errMessage(e),
     );
   } finally {
     switchInFlight = false;

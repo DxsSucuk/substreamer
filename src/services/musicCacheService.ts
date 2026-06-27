@@ -22,6 +22,7 @@
  */
 
 import { Directory, File, Paths } from 'expo-file-system';
+import { errMessage } from '../utils/errorMessage';
 import { AppState, type AppStateStatus } from 'react-native';
 
 import i18n from '../i18n/i18n';
@@ -202,7 +203,7 @@ export function initMusicCache(): void {
     // eslint-disable-next-line no-console
     console.warn(
       '[musicCacheService] initMusicCache failed:',
-      e instanceof Error ? e.message : String(e),
+      errMessage(e),
     );
   }
 }
@@ -257,7 +258,7 @@ export async function deferredMusicCacheInit(): Promise<void> {
     // eslint-disable-next-line no-console
     console.warn(
       '[musicCacheService] reconciliation failed:',
-      e instanceof Error ? e.message : String(e),
+      errMessage(e),
     );
   }
 

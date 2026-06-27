@@ -1,4 +1,5 @@
 import { albumDetailStore } from '../albumDetailStore';
+import { errMessage } from '../../utils/errorMessage';
 import { albumLibraryStore } from '../albumLibraryStore';
 import { albumListsStore } from '../albumListsStore';
 import { artistLibraryStore } from '../artistLibraryStore';
@@ -74,7 +75,7 @@ export async function rehydrateAllStores(): Promise<RehydrationResult> {
       } catch (e) {
         result.failed.push({
           store: name,
-          error: e instanceof Error ? e.message : String(e),
+          error: errMessage(e),
         });
       }
     }),

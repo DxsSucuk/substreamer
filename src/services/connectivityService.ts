@@ -1,4 +1,5 @@
 import NetInfo, { type NetInfoState } from '@react-native-community/netinfo';
+import { errMessage } from '../utils/errorMessage';
 import { AppState, type NativeEventSubscription } from 'react-native';
 
 import { getCertificateInfo, isSSLError } from '../../modules/expo-ssl-trust/src';
@@ -30,7 +31,7 @@ function invokeHook(hook: ConnectivityHook | null, tag: string): void {
     if (result instanceof Promise) fireAndForget(result, tag);
   } catch (e) {
     // eslint-disable-next-line no-console
-    console.warn(`[connectivityService:${tag}]`, e instanceof Error ? e.message : String(e));
+    console.warn(`[connectivityService:${tag}]`, errMessage(e));
   }
 }
 
@@ -152,7 +153,7 @@ async function pingServer(): Promise<void> {
     const response = await withTimeout(api.ping(), PING_TIMEOUT_MS);
     handleServerResult(response.status === 'ok');
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = errMessage(err);
     if (isSSLError(message)) {
       handleSslError();
     } else {

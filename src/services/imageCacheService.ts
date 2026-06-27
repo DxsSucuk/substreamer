@@ -23,6 +23,7 @@
  */
 
 import { Directory, File, Paths } from 'expo-file-system';
+import { errMessage } from '../utils/errorMessage';
 import { AppState, type AppStateStatus } from 'react-native';
 import { fetch } from 'expo/fetch';
 
@@ -474,7 +475,7 @@ export function initImageCache(): void {
     }
   } catch (e) {
     // eslint-disable-next-line no-console
-    console.warn('[imageCacheService] initImageCache failed:', e instanceof Error ? e.message : String(e));
+    console.warn('[imageCacheService] initImageCache failed:', errMessage(e));
   }
 }
 
@@ -645,7 +646,7 @@ export async function reconcileImageCache(source: string = 'auto'): Promise<void
   try {
     topLevelNames = await listDirectoryAsync(dir.uri);
   } catch (e) {
-    logImageCache(`reconcile abort source=${source} reason=list-failed err=${e instanceof Error ? e.message : String(e)}`);
+    logImageCache(`reconcile abort source=${source} reason=list-failed err=${errMessage(e)}`);
     return;
   }
   logImageCache(`reconcile start source=${source} top-level-dirs=${topLevelNames.length}`);
@@ -1336,7 +1337,7 @@ async function downloadSourceImage(
     response = await fetch(url);
   } catch (e) {
     logImageCache(
-      `download id=${coverArtId} transport-error preserved err=${e instanceof Error ? e.message : String(e)}`,
+      `download id=${coverArtId} transport-error preserved err=${errMessage(e)}`,
     );
     return null;
   }
@@ -1414,12 +1415,12 @@ async function downloadSourceImage(
     }
     if (isPurgeAllowedNow()) {
       logImageCache(
-        `download id=${coverArtId} io-error purge connectivity=ok err=${e instanceof Error ? e.message : String(e)}`,
+        `download id=${coverArtId} io-error purge connectivity=ok err=${errMessage(e)}`,
       );
       purgeCoverArtRows(coverArtId);
     } else {
       logImageCache(
-        `download id=${coverArtId} io-error preserved connectivity=down err=${e instanceof Error ? e.message : String(e)}`,
+        `download id=${coverArtId} io-error preserved connectivity=down err=${errMessage(e)}`,
       );
     }
     return null;
@@ -1515,7 +1516,7 @@ async function generateResizedVariant(
     }
     logImageCache(
       `resize id=${coverArtId} size=${size} fail count=${next}/${MAX_VARIANT_FAILURES} `
-      + `srcBytes=${sourceBytes} srcExt=${sourceExt} err=${e instanceof Error ? e.message : String(e)}`,
+      + `srcBytes=${sourceBytes} srcExt=${sourceExt} err=${errMessage(e)}`,
     );
     if (tmpFile.exists) {
       try { tmpFile.delete(); } catch { /* best-effort */ }
@@ -1647,7 +1648,7 @@ export async function deleteCachedImage(coverArtId: string): Promise<void> {
   } catch (e) {
     dirDeleted = false;
     logImageCache(
-      `deleteCachedImage id=${coverArtId} dir-delete-failed err=${e instanceof Error ? e.message : String(e)}`,
+      `deleteCachedImage id=${coverArtId} dir-delete-failed err=${errMessage(e)}`,
     );
   }
 
