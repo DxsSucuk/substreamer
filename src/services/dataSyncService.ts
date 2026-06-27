@@ -279,11 +279,12 @@ async function startupOrResumeFlow(): Promise<void> {
         // running the full walk. Detect errors are swallowed — fire the
         // walk either way.
         fireAndForget(
-          detectChanges().then(({ changedAlbumIds }) => {
-            if (changedAlbumIds.length > 0) {
-              // Routed through onScanCompleted which already handles upsert
-              // + detail fetch for changed IDs.
-              fireAndForget(onScanCompleted(), 'sync.onScanCompleted');
+          detectChanges().then((result) => {
+            if (result.changedAlbumIds.length > 0) {
+              // Hand the already-computed result to onScanCompleted so it
+              // doesn't re-run detectChanges against now-spent markers (which
+              // would return [] and drop the newly-added albums).
+              fireAndForget(onScanCompleted(result), 'sync.onScanCompleted');
             }
           }),
           'sync.detectChanges',
@@ -356,9 +357,11 @@ export async function onPullToRefresh(scope: PullToRefreshScope): Promise<void> 
  * their detail), so the UI reflects scan results without requiring the user
  * to pull-to-refresh.
  */
-export async function onScanCompleted(): Promise<void> {
+export async function onScanCompleted(
+  precomputed?: { changedAlbumIds: string[]; newestAlbums: AlbumID3[] },
+): Promise<void> {
   if (offlineModeStore.getState().offlineMode) return;
-  const { changedAlbumIds, newestAlbums } = await detectChanges();
+  const { changedAlbumIds, newestAlbums } = precomputed ?? (await detectChanges());
   if (changedAlbumIds.length === 0) return;
   // Use the same probe result from detectChanges — no second network call.
   const lib = albumLibraryStore.getState();
@@ -583,20 +586,32 @@ function parseCreatedMs(created: Date | string | undefined | null): number {
  * observation. Callers are expected to upsert them into
  * `albumLibraryStore` and then trigger a detail fetch for each.
  */
-export async function detectChanges(): Promise<{
+let detectChangesInFlight: Promise<{
+  changedAlbumIds: string[];
+  newestAlbums: AlbumID3[];
+}> | null = null;
+
+export function detectChanges(): Promise<{
   changedAlbumIds: string[];
   newestAlbums: AlbumID3[];
 }> {
   if (offlineModeStore.getState().offlineMode) {
-    return { changedAlbumIds: [], newestAlbums: [] };
+    return Promise.resolve({ changedAlbumIds: [], newestAlbums: [] });
   }
+  // Coalesce concurrent callers onto a single probe and hand every caller the
+  // same real result — the loser previously returned an empty result, masking
+  // the changes the winner found.
+  if (detectChangesInFlight) return detectChangesInFlight;
+  detectChangesInFlight = runDetectChanges().finally(() => {
+    detectChangesInFlight = null;
+  });
+  return detectChangesInFlight;
+}
 
-  const existing = syncStatusStore.getState().getInFlight('change-detect');
-  if (existing) {
-    await existing;
-    return { changedAlbumIds: [], newestAlbums: [] };
-  }
-
+async function runDetectChanges(): Promise<{
+  changedAlbumIds: string[];
+  newestAlbums: AlbumID3[];
+}> {
   let settle: () => void;
   const gate = new Promise<void>((r) => { settle = r; });
   syncStatusStore.getState().setInFlight('change-detect', gate);
