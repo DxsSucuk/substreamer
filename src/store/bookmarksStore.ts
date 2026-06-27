@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { mergeExistingWins } from './mergeRecord';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
 import { kvStorage } from './persistence';
@@ -81,27 +82,13 @@ export const bookmarksStore = create<BookmarksState>()(
       setSortOrder: (sortOrder) => set({ sortOrder }),
 
       mergeBookmarks: (incoming) => {
-        const state = get();
-        let added = 0;
-        let skipped = 0;
-        const next = { ...state.bookmarks };
-        for (const [id, value] of Object.entries(incoming)) {
-          if (
-            !value ||
-            typeof value !== 'object' ||
-            !value.id ||
-            !Array.isArray(value.queue)
-          ) {
-            skipped++;
-            continue;
-          }
-          if (id in next) {
-            skipped++;
-            continue;
-          }
-          next[id] = value;
-          added++;
-        }
+        const next = { ...get().bookmarks };
+        const { added, skipped } = mergeExistingWins(
+          next,
+          incoming,
+          (value) =>
+            !!value && typeof value === 'object' && !!value.id && Array.isArray(value.queue),
+        );
         if (added > 0) set({ bookmarks: next });
         return { added, skipped };
       },

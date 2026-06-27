@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { mergeExistingWins } from './mergeRecord';
 import { persist } from 'zustand/middleware';
 
 import { createDebouncedPersistStorage } from './persistence';
@@ -70,15 +71,12 @@ export const mbidOverrideStore = create<MbidOverrideState>()(
       clearOverrides: () => set({ overrides: {} }),
 
       mergeOverrides: (incoming) => {
-        let added = 0;
-        let skipped = 0;
         const next: Record<string, MbidOverride> = { ...get().overrides };
-        for (const [key, value] of Object.entries(incoming)) {
-          if (!value || typeof value !== 'object') { skipped++; continue; }
-          if (key in next) { skipped++; continue; }
-          next[key] = value;
-          added++;
-        }
+        const { added, skipped } = mergeExistingWins(
+          next,
+          incoming,
+          (value) => !!value && typeof value === 'object',
+        );
         if (added > 0) set({ overrides: next });
         return { added, skipped };
       },
