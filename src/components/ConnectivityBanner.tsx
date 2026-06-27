@@ -20,7 +20,7 @@ import { offlineModeStore } from '../store/offlineModeStore';
 import type { IoniconsName } from '../utils/iconNames';
 const CAPSULE_HEIGHT = 44;
 const CAPSULE_BORDER_RADIUS = CAPSULE_HEIGHT / 2;
-export const BANNER_HEIGHT = CAPSULE_HEIGHT + 8;
+const BANNER_HEIGHT = CAPSULE_HEIGHT + 8;
 const SLIDE_DISTANCE = 14;
 const SWAP_MS = 180;
 

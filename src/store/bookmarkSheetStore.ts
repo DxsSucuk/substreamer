@@ -8,7 +8,7 @@ import { type BookmarkSnapshot } from '../services/bookmarkService';
  * the "Autoname bookmarks" setting is off); `rename` mode edits an existing
  * bookmark's name.
  */
-export type BookmarkSheetMode = 'create' | 'rename';
+type BookmarkSheetMode = 'create' | 'rename';
 
 interface BookmarkSheetState {
   visible: boolean;

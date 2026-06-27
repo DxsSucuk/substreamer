@@ -7,12 +7,6 @@ import type { AlbumWithSongsID3, Child } from '../../services/subsonicService';
 
 import { getDb } from './db';
 
-export interface AlbumDetailEntryRow {
-  id: string;
-  album: AlbumWithSongsID3;
-  retrievedAt: number;
-}
-
 /* ------------------------------------------------------------------ */
 /*  album_details                                                      */
 /* ------------------------------------------------------------------ */

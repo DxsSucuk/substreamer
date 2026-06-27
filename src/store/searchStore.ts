@@ -8,8 +8,6 @@ import {
 import { offlineModeStore } from './offlineModeStore';
 import { ratingStore } from './ratingStore';
 
-export type { SearchResults };
-
 const EMPTY_RESULTS: SearchResults = {
   albums: [],
   artists: [],

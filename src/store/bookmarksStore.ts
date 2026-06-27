@@ -26,7 +26,7 @@ export interface PlayQueueBookmark {
   positionSec: number;
 }
 
-export type BookmarkSort = 'newest' | 'oldest';
+type BookmarkSort = 'newest' | 'oldest';
 
 interface BookmarksState {
   bookmarks: Record<string, PlayQueueBookmark>;

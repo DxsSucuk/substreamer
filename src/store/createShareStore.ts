@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-export type ShareTargetType = 'album' | 'playlist' | 'queue' | 'song';
+type ShareTargetType = 'album' | 'playlist' | 'queue' | 'song';
 
 interface CreateShareState {
   visible: boolean;

@@ -13,7 +13,7 @@ export type { StreamFormat, MaxBitRate } from '../types/audio';
  * Variants within a group keep a consistent ordering: base codec → ReplayGain
  * variant → Car-mode variant.
  */
-export type FormatGroup = 'raw' | 'mp3' | 'aac' | 'opus' | 'ogg' | 'flac';
+type FormatGroup = 'raw' | 'mp3' | 'aac' | 'opus' | 'ogg' | 'flac';
 
 /** A built-in format preset shown in the picker. */
 export interface FormatPreset {

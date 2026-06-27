@@ -1,6 +1,6 @@
 import { useWindowDimensions } from 'react-native';
 
-export type LayoutMode = 'compact' | 'wide';
+type LayoutMode = 'compact' | 'wide';
 
 /** Returns the layout mode for a given window width and height. Wide mode requires landscape orientation (width > height) and sufficient width. */
 export function getLayoutMode(width: number, height: number): LayoutMode {

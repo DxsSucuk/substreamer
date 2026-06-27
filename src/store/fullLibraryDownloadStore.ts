@@ -9,7 +9,7 @@ import { create } from 'zustand';
  * restart mid-run just means the user taps it again; the already-queued items
  * keep downloading via the normal queue regardless.
  */
-export type FullLibraryDownloadPhase = 'preparing' | 'queueing' | null;
+type FullLibraryDownloadPhase = 'preparing' | 'queueing' | null;
 
 interface FullLibraryDownloadState {
   active: boolean;

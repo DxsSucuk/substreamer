@@ -12,7 +12,7 @@
  */
 
 // Handle / lifecycle / health / test hook
-export { getDb, isDbHealthy, dbInitError, kvFallback, __setDbForTests, type InternalDb } from './db';
+export { isDbHealthy, __setDbForTests } from './db';
 
 // KV blob storage (Zustand StateStorage adapters) + clear
 export { kvStorage, kvStorageSync, clearKvStorage } from './kvStorage';

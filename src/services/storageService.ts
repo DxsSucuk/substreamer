@@ -19,17 +19,17 @@ export function getFreeDiskSpace(): number {
   return Paths.availableDiskSpace ?? 0;
 }
 
-export function getTotalDiskSpace(): number {
+function getTotalDiskSpace(): number {
   return Paths.totalDiskSpace ?? 0;
 }
 
-export interface CacheUsage {
+interface CacheUsage {
   imageBytes: number;
   musicBytes: number;
   totalBytes: number;
 }
 
-export function getCurrentCacheUsage(): CacheUsage {
+function getCurrentCacheUsage(): CacheUsage {
   const imageBytes = imageCacheStore.getState().totalBytes;
   const musicBytes = musicCacheStore.getState().totalBytes;
   return { imageBytes, musicBytes, totalBytes: imageBytes + musicBytes };

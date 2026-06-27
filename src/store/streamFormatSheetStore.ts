@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 
 /** Which playback setting field the sheet is currently editing. */
-export type StreamFormatSheetTarget = 'stream' | 'download';
+type StreamFormatSheetTarget = 'stream' | 'download';
 
 interface StreamFormatSheetState {
   visible: boolean;

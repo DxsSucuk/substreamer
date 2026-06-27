@@ -185,7 +185,7 @@ export async function removeItemFromQueue(index: number): Promise<void> {
  *
  * Exported for unit tests. Used by `playMoreLikeThis`.
  */
-export async function buildMoreLikeThisQueue(
+async function buildMoreLikeThisQueue(
   source: Child,
   target: number,
 ): Promise<Child[]> {

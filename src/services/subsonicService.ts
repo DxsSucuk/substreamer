@@ -191,11 +191,6 @@ export type { AlbumID3, AlbumInfo, AlbumWithSongsID3, ArtistID3, ArtistInfo2, Ar
 
 export const VARIOUS_ARTISTS_NAME = 'Various Artists';
 
-export const VARIOUS_ARTISTS_BIO =
-  'Various Artists collects compilation albums, soundtracks, tribute records and other ' +
-  'releases that feature songs from multiple artists.\n\n' +
-  'Browse the albums below to discover what\'s in your collection.';
-
 /** Translated bio for Various Artists. Use for UI display only. */
 export function getVariousArtistsBio(): string {
   return i18n.t('variousArtistsBio');

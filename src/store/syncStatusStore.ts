@@ -23,7 +23,7 @@ export type DetailSyncPhase =
   | 'paused-metered'
   | 'error';
 
-export interface LastKnownMarkers {
+interface LastKnownMarkers {
   lastChangeDetectionAt: number | null;
   lastKnownServerUrl: string | null;
   lastKnownServerSongCount: number | null;

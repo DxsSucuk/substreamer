@@ -32,7 +32,7 @@ import * as SQLite from 'expo-sqlite';
  * `void`); widening it lets callers that want row-modification counts read
  * them without changing existing call sites.
  */
-export interface RunResult {
+interface RunResult {
   changes: number;
   lastInsertRowId: number;
 }

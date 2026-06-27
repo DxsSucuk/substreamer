@@ -20,7 +20,7 @@
 
 import { create } from 'zustand';
 
-export interface ThemedAlertButton {
+interface ThemedAlertButton {
   text: string;
   style?: 'default' | 'cancel' | 'destructive';
   onPress?: () => void;

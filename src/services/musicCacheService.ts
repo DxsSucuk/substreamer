@@ -332,7 +332,7 @@ async function populateTrackMapsAsync(): Promise<void> {
  * promise. The player's cold-start hydration uses this to avoid blocking
  * on the image-cache-init chain that owns the "post-splash" populate call.
  */
-export function ensureTrackMapsReady(): Promise<void> {
+function ensureTrackMapsReady(): Promise<void> {
   if (trackMapsReady) return Promise.resolve();
   if (populatePromise) return populatePromise;
   populatePromise = populateTrackMapsAsync().finally(() => {

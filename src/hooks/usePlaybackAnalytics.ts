@@ -17,24 +17,24 @@ export interface ScrobbleRecord {
   time: number;
 }
 
-export interface DailyActivity {
+interface DailyActivity {
   date: string;
   count: number;
 }
 
-export interface TopSong {
+interface TopSong {
   song: Child;
   count: number;
 }
 
-export interface TopArtist {
+interface TopArtist {
   artist: string;
   count: number;
   /** Subsonic artistId when known; absent for old aggregate rows or scrobbles without artistId. */
   artistId?: string;
 }
 
-export interface TopAlbum {
+interface TopAlbum {
   album: string;
   artist: string;
   coverArt?: string;
@@ -43,13 +43,13 @@ export interface TopAlbum {
   albumId?: string;
 }
 
-export interface GenreSlice {
+interface GenreSlice {
   genre: string;
   count: number;
   percentage: number;
 }
 
-export interface PlaybackAnalytics {
+interface PlaybackAnalytics {
   totalPlays: number;
   totalListeningSeconds: number;
   uniqueArtists: number;

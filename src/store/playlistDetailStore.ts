@@ -12,7 +12,7 @@ import {
 } from '../services/subsonicService';
 import { ratingStore } from './ratingStore';
 
-export interface PlaylistDetailEntry {
+interface PlaylistDetailEntry {
   playlist: PlaylistWithSongs;
   /** Timestamp (Date.now()) when this entry was fetched from the server. */
   retrievedAt: number;

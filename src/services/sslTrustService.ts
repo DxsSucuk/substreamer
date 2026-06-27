@@ -18,7 +18,7 @@ import { fireAndForget } from '../utils/fireAndForget';
  * JS `sslCertStore` mirror with it. Call after every native trust op and at
  * boot so the UI + prompt logic always reflect exactly what's enforced.
  */
-export async function refreshTrustedCertsFromNative(): Promise<void> {
+async function refreshTrustedCertsFromNative(): Promise<void> {
   try {
     const certs = await nativeGetTrustedCertificates();
     const map: Record<string, TrustedCertEntry> = {};

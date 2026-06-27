@@ -109,7 +109,7 @@ export const IMAGE_SIZES = [50, 150, 300, 600] as const;
 /** Largest variant — also the server-side source we download. Exported
  *  so CachedImage can use it as a fallback when a smaller variant URL
  *  fails server-side. */
-export const SOURCE_SIZE = 600;
+const SOURCE_SIZE = 600;
 
 /**
  * Cover-art ids whose remote URL has been reported broken by a CachedImage

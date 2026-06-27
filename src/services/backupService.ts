@@ -130,7 +130,7 @@ const AUTO_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 const backupDir = new Directory(Paths.document, BACKUP_DIR_NAME);
 
-export function initBackupDir() {
+function initBackupDir() {
   if (!backupDir.exists) {
     backupDir.create();
   }

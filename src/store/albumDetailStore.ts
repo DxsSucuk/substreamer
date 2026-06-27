@@ -21,7 +21,7 @@ import { songIndexStore } from './songIndexStore';
 /** Hard budget for a single album-detail fetch. */
 const FETCH_TIMEOUT_MS = 15_000;
 
-export interface AlbumDetailEntry {
+interface AlbumDetailEntry {
   album: AlbumWithSongsID3;
   /** Timestamp (Date.now()) when this entry was fetched from the server. */
   retrievedAt: number;

@@ -19,7 +19,7 @@ export interface ThemeColors {
   inputBg: string;
 }
 
-export const lightTheme: ThemeColors = {
+const lightTheme: ThemeColors = {
   background: '#f5f5f5',
   card: '#ffffff',
   textPrimary: '#121212',

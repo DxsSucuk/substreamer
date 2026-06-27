@@ -24,7 +24,7 @@ import { kvStorage } from './persistence';
  *                      `deviceLabelUserSet` then prevents auto-overwrite
  *                      on subsequent launches.
  */
-export interface DeviceIdentityState {
+interface DeviceIdentityState {
   deviceId: string;
   deviceName: string | null;
   deviceLabel: string;

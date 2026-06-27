@@ -17,7 +17,7 @@
  * A 800×480 device has ample height in portrait but a narrow width, so width is
  * what forces it onto the compact tiers — height alone would miss it.
  */
-export interface PlayerSize {
+interface PlayerSize {
   /** Minimum cover-art size; the art shrinks to fill but never below this. */
   heroFloor: number;
   heroPadBottom: number;

@@ -17,7 +17,7 @@ import { syncStatusStore, type DetailSyncPhase } from '../store/syncStatusStore'
 import type { IoniconsName } from '../utils/iconNames';
 const CAPSULE_HEIGHT = 44;
 const CAPSULE_BORDER_RADIUS = CAPSULE_HEIGHT / 2;
-export const BANNER_HEIGHT = CAPSULE_HEIGHT + 8;
+const BANNER_HEIGHT = CAPSULE_HEIGHT + 8;
 
 const SPRING_CONFIG = { damping: 14, stiffness: 200, mass: 0.8 };
 const EXPAND_MS = 300;

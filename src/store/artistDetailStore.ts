@@ -38,7 +38,7 @@ const FETCH_TIMEOUT_MS = 15_000;
  */
 const BIO_NEGATIVE_CACHE_TTL_MS = 72 * 60 * 60 * 1000; // 72 hours
 
-export interface ArtistDetailEntry {
+interface ArtistDetailEntry {
   artist: ArtistWithAlbumsID3;
   artistInfo: ArtistInfo2 | null;
   topSongs: Child[];

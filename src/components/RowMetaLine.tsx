@@ -34,11 +34,11 @@ export const ICON_SLOT_WIDTH = 22;
  * title column on song/track rows.
  */
 export const DURATION_SLOT_WIDTH = 48;
-export const DURATION_SLOT_WIDTH_TRACK = 40;
+const DURATION_SLOT_WIDTH_TRACK = 40;
 
-export type SlotKey = 'rating' | 'heart' | 'download' | 'duration';
+type SlotKey = 'rating' | 'heart' | 'download' | 'duration';
 
-export type DownloadIndicator = 'complete' | 'partial' | 'none';
+type DownloadIndicator = 'complete' | 'partial' | 'none';
 
 export interface RowMetaLineProps {
   /**
