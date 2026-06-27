@@ -58,18 +58,6 @@ describe('authStore', () => {
     expect(authStore.getState().legacyAuth).toBe(false);
   });
 
-  it('clearSession resets all credentials', () => {
-    authStore.getState().setSession('https://music.example.com', 'user', 'pass', '1.16', true);
-    authStore.getState().clearSession();
-    const state = authStore.getState();
-    expect(state.serverUrl).toBeNull();
-    expect(state.username).toBeNull();
-    expect(state.password).toBeNull();
-    expect(state.apiVersion).toBeNull();
-    expect(state.legacyAuth).toBe(false);
-    expect(state.isLoggedIn).toBe(false);
-  });
-
   it('setRehydrated updates rehydrated flag', () => {
     authStore.getState().setRehydrated(true);
     expect(authStore.getState().rehydrated).toBe(true);
@@ -95,19 +83,6 @@ describe('authStore', () => {
       const state = authStore.getState();
       expect(state.serverUrl).toBe('https://new-primary.example.com');
       expect(state.primaryServerUrl).toBe('https://new-primary.example.com');
-      expect(state.activeServer).toBe('primary');
-    });
-
-    it('clearSession wipes failover state along with credentials', () => {
-      authStore.setState({
-        primaryServerUrl: 'https://primary.example.com',
-        secondaryServerUrl: 'https://secondary.example.com',
-        activeServer: 'secondary',
-      });
-      authStore.getState().clearSession();
-      const state = authStore.getState();
-      expect(state.primaryServerUrl).toBeNull();
-      expect(state.secondaryServerUrl).toBeNull();
       expect(state.activeServer).toBe('primary');
     });
 

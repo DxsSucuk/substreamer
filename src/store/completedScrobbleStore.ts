@@ -312,11 +312,3 @@ export const completedScrobbleStore = create<CompletedScrobbleState>()((set, get
     });
   },
 }));
-
-/**
- * Convenience wrapper that exposes the underlying table clear so
- * `resetAllStores` can wipe disk state alongside the in-memory reset.
- */
-export function clearCompletedScrobbleTable(): void {
-  clearScrobbles();
-}

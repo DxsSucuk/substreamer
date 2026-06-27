@@ -1,6 +1,5 @@
 import { authStore } from '../authStore';
 import {
-  getEffectiveShareBaseUrl,
   rewriteShareUrl,
   shareSettingsStore,
 } from '../shareSettingsStore';
@@ -17,17 +16,6 @@ beforeEach(() => {
     apiVersion: '1.16',
     isLoggedIn: true,
     rehydrated: true,
-  });
-});
-
-describe('getEffectiveShareBaseUrl', () => {
-  it('returns custom URL when set', () => {
-    shareSettingsStore.setState({ shareBaseUrl: 'https://share.example.com' });
-    expect(getEffectiveShareBaseUrl()).toBe('https://share.example.com');
-  });
-
-  it('falls back to serverUrl when no custom URL', () => {
-    expect(getEffectiveShareBaseUrl()).toBe('https://music.example.com');
   });
 });
 
@@ -89,14 +77,6 @@ describe('rewriteShareUrl', () => {
     shareSettingsStore.setState({ shareBaseUrl: 'https://share.example.com:8443' });
     const original = 'http://192.168.88.96/share/abc123';
     expect(rewriteShareUrl(original)).toBe('https://share.example.com:8443/share/abc123');
-  });
-});
-
-describe('getEffectiveShareBaseUrl edge cases', () => {
-  it('returns null when both shareBaseUrl and serverUrl are null', () => {
-    shareSettingsStore.setState({ shareBaseUrl: null });
-    authStore.setState({ serverUrl: null } as any);
-    expect(getEffectiveShareBaseUrl()).toBeNull();
   });
 });
 

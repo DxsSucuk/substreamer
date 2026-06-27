@@ -10,7 +10,6 @@ jest.mock('../persistence/pendingScrobbleTable', () => ({
 jest.mock('../../services/subsonicService');
 
 import {
-  clearPendingScrobbleTable,
   pendingScrobbleStore,
   type PendingScrobble,
 } from '../pendingScrobbleStore';
@@ -162,12 +161,5 @@ describe('hydrateFromDbAsync', () => {
     mockHydrate.mockResolvedValue([]);
     await pendingScrobbleStore.getState().hydrateFromDbAsync();
     expect(pendingScrobbleStore.getState().pendingScrobbles).toEqual([]);
-  });
-});
-
-describe('clearPendingScrobbleTable', () => {
-  it('proxies to clearPendingScrobbles on the persistence module', () => {
-    clearPendingScrobbleTable();
-    expect(mockClear).toHaveBeenCalledTimes(1);
   });
 });

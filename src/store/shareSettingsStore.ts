@@ -36,15 +36,6 @@ function getPrimaryServerUrl(): string | null {
 }
 
 /**
- * Returns the effective base URL for share links.
- * Uses the user-configured alternate URL if set, otherwise falls back
- * to the primary server URL.
- */
-export function getEffectiveShareBaseUrl(): string | null {
-  return shareSettingsStore.getState().shareBaseUrl ?? getPrimaryServerUrl();
-}
-
-/**
  * Normalises the origin (scheme + host + port) of a server-provided share URL.
  *
  * Solves two problems:

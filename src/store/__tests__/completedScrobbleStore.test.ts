@@ -12,7 +12,6 @@ jest.mock('../persistence/scrobbleTable', () => ({
 }));
 
 import {
-  clearCompletedScrobbleTable,
   completedScrobbleStore,
   type AnalyticsAggregates,
   type CompletedScrobble,
@@ -511,13 +510,6 @@ describe('replaceAll', () => {
     expect(state.completedScrobbles).toEqual([]);
     expect(state.stats.totalPlays).toBe(0);
     expect(state.aggregates.artistCounts).toEqual({});
-  });
-});
-
-describe('clearCompletedScrobbleTable', () => {
-  it('proxies to clearScrobbles on the persistence module', () => {
-    clearCompletedScrobbleTable();
-    expect(mockClearScrobbles).toHaveBeenCalledTimes(1);
   });
 });
 

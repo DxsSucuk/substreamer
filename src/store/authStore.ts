@@ -33,7 +33,6 @@ export interface AuthState {
     apiVersion: string,
     legacyAuth?: boolean,
   ) => void;
-  clearSession: () => void;
   setRehydrated: (value: boolean) => void;
 
   /** Atomically swap `serverUrl` to point at the requested slot. No-op if
@@ -86,20 +85,6 @@ export const authStore = create<AuthState>()(
           legacyAuth,
           isLoggedIn: true,
           rehydrated: true,
-        }),
-
-      clearSession: () =>
-        set({
-          serverUrl: null,
-          username: null,
-          password: null,
-          apiVersion: null,
-          legacyAuth: false,
-          isLoggedIn: false,
-          // Wipe failover state on logout too — a fresh login will repopulate.
-          primaryServerUrl: null,
-          secondaryServerUrl: null,
-          activeServer: 'primary',
         }),
 
       setRehydrated: (value) => set({ rehydrated: value }),
