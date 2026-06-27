@@ -35,6 +35,7 @@ import { RootErrorBoundary } from '../components/RootErrorBoundary';
 import { ThemedAlertHost } from '../components/ThemedAlertHost';
 import { DARK_MIX, GRADIENT_LOCATIONS, GRADIENT_MIX_CURVE, GradientBackground, LIGHT_MIX } from '../components/GradientBackground';
 import { mixHexColors } from '../utils/colors';
+import { runWhenIdle } from '../utils/runWhenIdle';
 import AnimatedSplashScreen from '../components/AnimatedSplashScreen';
 import { CertificatePromptModal } from '../components/CertificatePromptModal';
 import { CreateShareSheet } from '../components/CreateShareSheet';
@@ -259,7 +260,11 @@ async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
   // session (in 'downloading' or 'error'), then drain whatever's queued.
   // Both stages are no-ops when there's nothing to do.
   await stage('recoverStalledImageDownloads', () => recoverStalledImageDownloads());
-  await stage('processImageQueue', () => processImageQueue());
+  // The image-queue drain is the lowest-priority cache rebuild — push it to an
+  // idle window so it never competes with the user settling into the app. It's
+  // fully resumable (recoverStalledImageDownloads + the connectivity-restored
+  // re-kick), so deferring it is free; worst case it finishes on a later idle.
+  runWhenIdle(() => { if (!getCancelled()) void processImageQueue(); });
 
   // Refresh the home-screen album lists at every cold-start so plays
   // from other clients show up without the user having to pull-to-

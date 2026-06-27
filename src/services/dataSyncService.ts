@@ -23,6 +23,7 @@ import {
 import { playlistDetailStore } from '../store/playlistDetailStore';
 import { scanStatusStore } from '../store/scanStatusStore';
 import { authStore } from '../store/authStore';
+import { runWhenIdle } from '../utils/runWhenIdle';
 import { serverInfoStore } from '../store/serverInfoStore';
 import { syncStatusStore, type SyncScope } from '../store/syncStatusStore';
 import { fireAndForget } from '../utils/fireAndForget';
@@ -246,7 +247,7 @@ async function startupOrResumeFlow(): Promise<void> {
   // Deferred library prefetches. requestIdleCallback waits for the JS
   // thread to settle; the STARTUP_PREFETCH_SETTLE_MS delay then keeps
   // network fan-out off the splash → first-paint critical path.
-  requestIdleCallback(() => {
+  runWhenIdle(() => {
     setTimeout(async () => {
       const libPromise = albumLibraryStore.getState().albums.length === 0
         ? albumLibraryStore.getState().fetchAllAlbums()

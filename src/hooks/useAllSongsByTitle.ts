@@ -6,6 +6,7 @@ import { musicCacheStore } from '../store/musicCacheStore';
 import { songIndexStore } from '../store/songIndexStore';
 import { songLibraryStore } from '../store/songLibraryStore';
 import type { Child } from '../services/subsonicService';
+import { runWhenIdle } from '../utils/runWhenIdle';
 
 interface UseAllSongsByTitleOpts {
   downloadedOnly?: boolean;
@@ -102,7 +103,7 @@ export function useAllSongsByTitle(
  * window so the SQLite read + mapping doesn't compete with first-frame render.
  */
 export function initSongLibrary(): void {
-  requestIdleCallback(() => {
+  runWhenIdle(() => {
     void songLibraryStore.getState().build();
   });
 }

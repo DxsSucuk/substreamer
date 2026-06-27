@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react';
 
+import { runWhenIdle } from '../utils/runWhenIdle';
+
 /**
  * Defer heavy rendering until the JS thread is idle (e.g. after a navigation
- * transition animation completes). Returns `true` once `requestIdleCallback` fires.
+ * transition animation completes). Returns `true` once the idle window fires
+ * (or the safety-net timeout elapses, so it can never stay false forever).
  *
  * If `skip` is true the hook returns `true` immediately (useful when there
  * is no cached data and you want to render the loading state right away).
@@ -12,10 +15,9 @@ export function useTransitionComplete(skip = false): boolean {
 
   useEffect(() => {
     if (skip) return;
-    const id = requestIdleCallback(() => {
+    return runWhenIdle(() => {
       setComplete(true);
     });
-    return () => cancelIdleCallback(id);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return complete;

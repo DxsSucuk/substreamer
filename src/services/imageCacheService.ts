@@ -37,6 +37,7 @@ import { authStore } from '../store/authStore';
 import { connectivityStore } from '../store/connectivityStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { fireAndForget } from '../utils/fireAndForget';
+import { runWhenIdle } from '../utils/runWhenIdle';
 import {
   bulkInsertCachedImages,
   type CachedImageEntry as DbCachedImageEntry,
@@ -521,10 +522,9 @@ function shouldRunReconcile(): boolean {
 
 export function deferredImageCacheInit(): Promise<void> {
   // Defer to an idle window so the reconcile/repair FS passes never
-  // compete with first-render or initial animations. requestIdleCallback
-  // is polyfilled by RN (used elsewhere in dataSyncService, useTransitionComplete).
+  // compete with first-render or initial animations.
   return new Promise((resolve) => {
-    requestIdleCallback(async () => {
+    runWhenIdle(async () => {
       try {
         // Always sweep sentinel rows, even offline — it's a pure SQL +
         // local-file cleanup and prevents the Settings "Incomplete"
