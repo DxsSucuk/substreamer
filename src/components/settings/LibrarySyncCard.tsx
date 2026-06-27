@@ -15,17 +15,7 @@ import { songIndexStore } from '../../store/songIndexStore';
 import { syncStatusStore } from '../../store/syncStatusStore';
 import { OfflineNotice } from './OfflineNotice';
 import { SettingsSectionTitle } from './SettingsSectionTitle';
-
-function formatDateTime(date: Date | null): string {
-  if (!date || isNaN(date.getTime())) return '—';
-  return date.toLocaleString(i18next.language, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
+import { formatShortDateTime } from '../../utils/dateFormat';
 
 export function LibrarySyncCard() {
   const { t } = useTranslation();
@@ -83,7 +73,7 @@ export function LibrarySyncCard() {
         <View style={[settingsStyles.infoRow, { borderBottomColor: colors.border }]}>
           <Text style={[settingsStyles.infoLabel, { color: colors.textPrimary }]}>{t('lastFetched')}</Text>
           <Text style={[settingsStyles.infoValue, { color: colors.textSecondary }]}>
-            {formatDateTime(libraryLastFetchedAt ? new Date(libraryLastFetchedAt) : null)}
+            {formatShortDateTime(libraryLastFetchedAt ? new Date(libraryLastFetchedAt) : null)}
           </Text>
         </View>
         <View style={settingsStyles.actionRow}>

@@ -14,6 +14,7 @@ import { useSongCoverArt } from '../hooks/useSongCoverArt';
 import { useTheme } from '../hooks/useTheme';
 import type { Child } from '../services/subsonicService';
 import { formatTrackDuration } from '../utils/formatters';
+import { formatLongDate } from '../utils/dateFormat';
 import { getGenreNames } from '../utils/genreHelpers';
 
 export interface TrackDetailsModalProps {
@@ -31,15 +32,6 @@ function formatSize(bytes: number): string {
   if (gb >= 1) return `${gb.toFixed(2)} GB`;
   const mb = bytes / (1024 * 1024);
   return `${mb.toFixed(1)} MB`;
-}
-
-function formatDate(date: Date | string): string {
-  const d = typeof date === 'string' ? new Date(date) : date;
-  return d.toLocaleDateString(i18next.language, {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-  });
 }
 
 function formatTrackNumber(track: Child, t: (key: string, opts?: Record<string, unknown>) => string): string | null {
@@ -128,11 +120,11 @@ export function TrackDetailsModal({ track, visible, onClose }: TrackDetailsModal
     }
 
     if (track.created) {
-      result.push({ label: t('detailAdded'), value: formatDate(track.created) });
+      result.push({ label: t('detailAdded'), value: formatLongDate(track.created) });
     }
 
     if (track.played) {
-      result.push({ label: t('detailLastPlayed'), value: formatDate(track.played) });
+      result.push({ label: t('detailLastPlayed'), value: formatLongDate(track.played) });
     }
 
     return result;

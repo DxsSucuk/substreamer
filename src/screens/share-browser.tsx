@@ -23,6 +23,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import i18next from 'i18next';
+import { formatShortDate, formatShortDateTime } from '../utils/dateFormat';
 import { useTranslation } from 'react-i18next';
 
 import { EditShareSheet } from '../components/EditShareSheet';
@@ -38,30 +39,6 @@ import { rewriteShareUrl } from '../store/shareSettingsStore';
 import { sharesStore } from '../store/sharesStore';
 import { settingsStyles } from '../styles/settingsStyles';
 import { minDelay } from '../utils/stringHelpers';
-
-function formatDate(date: Date | string | undefined | null): string {
-  if (!date) return '—';
-  const d = typeof date === 'string' ? new Date(date) : date;
-  if (isNaN(d.getTime())) return '—';
-  return d.toLocaleDateString(i18next.language, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
-}
-
-function formatDateTime(date: Date | string | undefined | null): string {
-  if (!date) return '—';
-  const d = typeof date === 'string' ? new Date(date) : date;
-  if (isNaN(d.getTime())) return '—';
-  return d.toLocaleString(i18next.language, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
 
 function isExpired(share: SubsonicShare): boolean {
   if (!share.expires) return false;
@@ -273,13 +250,13 @@ export function ShareBrowserScreen() {
                     <View style={styles.metaItem}>
                       <Ionicons name="calendar-outline" size={12} color={colors.textSecondary} />
                       <Text style={[styles.metaText, dynamicStyles.shareMeta]}>
-                        {formatDate(share.created)}
+                        {formatShortDate(share.created)}
                       </Text>
                     </View>
                     <View style={styles.metaItem}>
                       <Ionicons name="time-outline" size={12} color={colors.textSecondary} />
                       <Text style={[styles.metaText, dynamicStyles.shareMeta]}>
-                        {share.expires ? formatDate(share.expires) : t('never')}
+                        {share.expires ? formatShortDate(share.expires) : t('never')}
                       </Text>
                     </View>
                     <View style={styles.metaItem}>
@@ -291,7 +268,7 @@ export function ShareBrowserScreen() {
                   </View>
                   {share.lastVisited && (
                     <Text style={[styles.lastVisited, dynamicStyles.shareMeta]}>
-                      {t('lastVisited', { date: formatDateTime(share.lastVisited) })}
+                      {t('lastVisited', { date: formatShortDateTime(share.lastVisited) })}
                     </Text>
                   )}
                 </View>

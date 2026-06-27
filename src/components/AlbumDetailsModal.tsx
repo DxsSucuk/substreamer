@@ -13,6 +13,7 @@ import { CachedImage } from './CachedImage';
 import { useTheme } from '../hooks/useTheme';
 import type { AlbumID3, AlbumWithSongsID3, Child } from '../services/subsonicService';
 import { formatCompactDuration } from '../utils/formatters';
+import { formatLongDate } from '../utils/dateFormat';
 import { getGenreNames } from '../utils/genreHelpers';
 
 export interface AlbumDetailsModalProps {
@@ -76,15 +77,6 @@ function getDiscCount(songs: Child[]): number {
   return discs.size;
 }
 
-function formatDate(date: Date | string): string {
-  const d = typeof date === 'string' ? new Date(date) : date;
-  return d.toLocaleDateString(i18next.language, {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-  });
-}
-
 /* ------------------------------------------------------------------ */
 /*  Component                                                         */
 /* ------------------------------------------------------------------ */
@@ -138,7 +130,7 @@ export function AlbumDetailsModal({ album, visible, onClose }: AlbumDetailsModal
     }
 
     if (album.created) {
-      result.push({ label: t('detailAdded'), value: formatDate(album.created) });
+      result.push({ label: t('detailAdded'), value: formatLongDate(album.created) });
     }
 
     return result;
