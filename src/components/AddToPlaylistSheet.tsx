@@ -37,7 +37,7 @@ import {
 import { musicCacheStore } from '../store/musicCacheStore';
 import { playlistDetailStore } from '../store/playlistDetailStore';
 import { playlistLibraryStore } from '../store/playlistLibraryStore';
-import { processingOverlayStore } from '../store/processingOverlayStore';
+import { processingOverlayStore, runWithOverlay } from '../store/processingOverlayStore';
 
 import type { Playlist } from '../services/subsonicService';
 
@@ -173,27 +173,25 @@ export function AddToPlaylistSheet() {
       setBusy(true);
       setError(null);
       handleClose();
-      processingOverlayStore.getState().show(t('adding'));
+      await runWithOverlay(
+        async () => {
+          const songIds = await resolveSongIds(target);
+          if (!songIds) throw new Error('Could not resolve songs');
 
-      try {
-        const songIds = await resolveSongIds(target);
-        if (!songIds) throw new Error('Could not resolve songs');
+          const success = await addToPlaylist(playlist.id, songIds);
+          if (!success) throw new Error('API returned false');
 
-        const success = await addToPlaylist(playlist.id, songIds);
-        if (!success) throw new Error('API returned false');
-
-        if (playlist.id in playlistDetailStore.getState().playlists) {
-          const updated = await playlistDetailStore.getState().fetchPlaylist(playlist.id);
-          if (updated && playlist.id in musicCacheStore.getState().cachedItems) {
-            syncCachedItemTracks(playlist.id, updated.entry ?? []);
+          if (playlist.id in playlistDetailStore.getState().playlists) {
+            const updated = await playlistDetailStore.getState().fetchPlaylist(playlist.id);
+            if (updated && playlist.id in musicCacheStore.getState().cachedItems) {
+              syncCachedItemTracks(playlist.id, updated.entry ?? []);
+            }
           }
-        }
 
-        playlistLibraryStore.getState().fetchAllPlaylists();
-        processingOverlayStore.getState().showSuccess(t('addedToPlaylist'));
-      } catch {
-        processingOverlayStore.getState().showError(t('failedToAddToPlaylist'));
-      }
+          playlistLibraryStore.getState().fetchAllPlaylists();
+        },
+        { loading: t('adding'), success: t('addedToPlaylist'), error: t('failedToAddToPlaylist') },
+      );
     },
     [target, busy, handleClose],
   );

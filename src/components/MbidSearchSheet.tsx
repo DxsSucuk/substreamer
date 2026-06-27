@@ -24,7 +24,7 @@ import { albumInfoStore } from '../store/albumInfoStore';
 import { artistDetailStore } from '../store/artistDetailStore';
 import { mbidOverrideStore } from '../store/mbidOverrideStore';
 import { mbidSearchStore } from '../store/mbidSearchStore';
-import { processingOverlayStore } from '../store/processingOverlayStore';
+import { runWithOverlay } from '../store/processingOverlayStore';
 
 const ROW_HEIGHT = 80;
 const DEBOUNCE_MS = 400;
@@ -213,21 +213,17 @@ export function MbidSearchSheet() {
       hide();
 
       if (type === 'artist') {
-        processingOverlayStore.getState().show(t('updatingArtist'));
-        try {
-          await artistDetailStore.getState().fetchArtist(entityId);
-          processingOverlayStore.getState().showSuccess(t('mbidOverrideSaved'));
-        } catch {
-          processingOverlayStore.getState().showError(t('failedToUpdateArtist'));
-        }
+        await runWithOverlay(() => artistDetailStore.getState().fetchArtist(entityId), {
+          loading: t('updatingArtist'),
+          success: t('mbidOverrideSaved'),
+          error: t('failedToUpdateArtist'),
+        });
       } else {
-        processingOverlayStore.getState().show(t('updatingAlbum'));
-        try {
-          await albumInfoStore.getState().fetchAlbumInfo(entityId);
-          processingOverlayStore.getState().showSuccess(t('mbidOverrideSaved'));
-        } catch {
-          processingOverlayStore.getState().showError(t('failedToUpdateAlbum'));
-        }
+        await runWithOverlay(() => albumInfoStore.getState().fetchAlbumInfo(entityId), {
+          loading: t('updatingAlbum'),
+          success: t('mbidOverrideSaved'),
+          error: t('failedToUpdateAlbum'),
+        });
       }
     },
     [entityId, hide],

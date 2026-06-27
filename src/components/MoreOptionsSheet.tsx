@@ -65,7 +65,7 @@ import { offlineModeStore } from '../store/offlineModeStore';
 import { playerStore } from '../store/playerStore';
 import { playlistDetailStore } from '../store/playlistDetailStore';
 import { playlistLibraryStore } from '../store/playlistLibraryStore';
-import { processingOverlayStore } from '../store/processingOverlayStore';
+import { runWithOverlay } from '../store/processingOverlayStore';
 import { canUserShare, supports } from '../services/serverCapabilityService';
 import { setRatingStore } from '../store/setRatingStore';
 
@@ -514,32 +514,30 @@ export function MoreOptionsSheet() {
           text: t('delete'),
           style: 'destructive',
           onPress: async () => {
-            processingOverlayStore.getState().show(t('deleting'));
-            try {
-              const success = await deletePlaylist(playlistId);
-              if (!success) throw new Error('API returned false');
+            const deleted = await runWithOverlay(
+              async () => {
+                const success = await deletePlaylist(playlistId);
+                if (!success) throw new Error('API returned false');
 
-              playlistDetailStore.getState().removePlaylist(playlistId);
-              playlistLibraryStore.getState().removePlaylist(playlistId);
-              if (playlistId in musicCacheStore.getState().cachedItems) {
-                deleteCachedItem(playlistId);
-              }
+                playlistDetailStore.getState().removePlaylist(playlistId);
+                playlistLibraryStore.getState().removePlaylist(playlistId);
+                if (playlistId in musicCacheStore.getState().cachedItems) {
+                  deleteCachedItem(playlistId);
+                }
+                return true;
+              },
+              { loading: t('deleting'), success: t('playlistDeleted'), error: t('failedToDeletePlaylist') },
+            );
 
-              processingOverlayStore.getState().showSuccess(t('playlistDeleted'));
-
-              if (onDetailView) {
-                // The sheet has already unmounted by this point, so a
-                // useEffect cleanup can't cancel this timer. Guard with
-                // canGoBack + a live pathname check so we never pop a
-                // stack the user navigated into during the success-
-                // overlay window.
-                setTimeout(() => {
-                  if (!router.canGoBack()) return;
-                  router.back();
-                }, 800);
-              }
-            } catch {
-              processingOverlayStore.getState().showError(t('failedToDeletePlaylist'));
+            if (deleted && onDetailView) {
+              // The sheet has already unmounted by this point, so a useEffect
+              // cleanup can't cancel this timer. Guard with canGoBack so we
+              // never pop a stack the user navigated into during the
+              // success-overlay window.
+              setTimeout(() => {
+                if (!router.canGoBack()) return;
+                router.back();
+              }, 800);
             }
           },
         },
