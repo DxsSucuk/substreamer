@@ -219,6 +219,13 @@ async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
     }
   };
 
+  // Schedule a non-critical housekeeping stage in an idle window instead of
+  // blocking the chain. For heavy, best-effort work that must never gate the
+  // user-facing stages (it would otherwise run serially ahead of them).
+  const idleStage = (name: string, fn: () => Promise<void> | void) => {
+    runWhenIdle(() => { if (!getCancelled()) void stage(name, fn); });
+  };
+
   // Explicit boot-owned subscription setup (moved here from module scope
   // in Phase 5 so test imports don't trigger the cross-store side effect).
   await stage('initializeOfflineFilterBarSync', () => { initializeOfflineFilterBarSync(); });
@@ -232,7 +239,9 @@ async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
   // imageCacheStore aggregates come from SQL now (via `rehydrateAllStores`
   // at splash and `reconcileImageCache` inside `deferredImageCacheInit`),
   // so the one-time recalculate-from-stats call is gone.
-  await stage('musicCacheStats', async () => {
+  // Settings-only "used space" total from a full recursive cache-dir walk —
+  // defer to idle; the store already shows the SQL-derived aggregate.
+  idleStage('musicCacheStats', async () => {
     musicCacheStore.getState().recalculate(await getMusicCacheStats());
   });
   if (getCancelled()) return;
@@ -240,13 +249,16 @@ async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
   await stage('checkStorageLimit', () => { checkStorageLimit(); });
   if (getCancelled()) return;
 
-  await stage('runAutoBackupIfNeeded', () => runAutoBackupIfNeeded());
+  // Auto-backup serializes the full scrobble history + writes files — pure,
+  // interval-gated housekeeping with no first-render relevance. Defer to idle.
+  idleStage('runAutoBackupIfNeeded', () => runAutoBackupIfNeeded());
   if (getCancelled()) return;
 
-  // Resume any stalled album-detail walk from a previous session. Runs
-  // after the image/music cache init so the walk doesn't race with
-  // their synchronous SQLite setup.
-  await stage('deferredDataSyncInit', () => deferredDataSyncInit());
+  // Resume any stalled album-detail walk from a previous session — background
+  // reconciliation, not first-render. Deferred to idle (scheduled here, after
+  // the awaited image/music cache init, so it still won't race their SQLite
+  // setup).
+  idleStage('deferredDataSyncInit', () => deferredDataSyncInit());
   if (getCancelled()) return;
 
   // Build the songs-library list once, now that the startup data-load/refresh
