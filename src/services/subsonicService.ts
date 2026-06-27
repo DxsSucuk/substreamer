@@ -48,6 +48,10 @@ export function normalizeServerUrl(url: string): string {
   return base.replace(/\/+$/, '');
 }
 
+// Subsonic protocol identity sent on every request (SDK ctor + hand-built URLs).
+const SUBSONIC_CLIENT_NAME = 'substreamer8';
+const SUBSONIC_API_VERSION = '1.15.0';
+
 let cachedApi: SubsonicAPI | null = null;
 let cachedKey: string | null = null;
 
@@ -73,8 +77,8 @@ export async function login(
     legacyAuth,
     reuseSalt: true,
     crypto: reactNativeCrypto,
-    clientName: 'substreamer8',
-    clientVersion: '1.15.0',
+    clientName: SUBSONIC_CLIENT_NAME,
+    clientVersion: SUBSONIC_API_VERSION,
   });
 
   try {
@@ -144,8 +148,8 @@ export function getApiUnchecked(): SubsonicAPI | null {
     legacyAuth,
     reuseSalt: true,
     crypto: reactNativeCrypto,
-    clientName: 'substreamer8',
-    clientVersion: '1.15.0',
+    clientName: SUBSONIC_CLIENT_NAME,
+    clientVersion: SUBSONIC_API_VERSION,
   });
   cachedKey = key;
   return cachedApi;
@@ -178,8 +182,8 @@ export function buildPingApi(url: string): SubsonicAPI | null {
     legacyAuth,
     reuseSalt: true,
     crypto: reactNativeCrypto,
-    clientName: 'substreamer8',
-    clientVersion: '1.15.0',
+    clientName: SUBSONIC_CLIENT_NAME,
+    clientVersion: SUBSONIC_API_VERSION,
   });
 }
 
@@ -250,8 +254,8 @@ export function getCoverArtUrl(
   const base = `${normalizeServerUrl(serverUrl)}/rest/getCoverArt.view`;
   const params = new URLSearchParams({
     id: coverArtId,
-    v: '1.15.0',
-    c: 'substreamer8',
+    v: SUBSONIC_API_VERSION,
+    c: SUBSONIC_CLIENT_NAME,
   });
   applyUrlAuth(params, username);
   if (size != null && size > 0) params.set('size', String(size));
@@ -305,8 +309,8 @@ export function getStreamUrl(trackId: string): string | null {
   const base = `${resolveServerBase(normalizeServerUrl(serverUrl))}/rest/stream.view`;
   const params = new URLSearchParams({
     id: trackId,
-    v: '1.15.0',
-    c: 'substreamer8',
+    v: SUBSONIC_API_VERSION,
+    c: SUBSONIC_CLIENT_NAME,
   });
   applyUrlAuth(params, username);
 
@@ -336,8 +340,8 @@ export function getDownloadStreamUrl(trackId: string): string | null {
   const base = `${normalizeServerUrl(serverUrl)}/rest/stream.view`;
   const params = new URLSearchParams({
     id: trackId,
-    v: '1.15.0',
-    c: 'substreamer8',
+    v: SUBSONIC_API_VERSION,
+    c: SUBSONIC_CLIENT_NAME,
     estimateContentLength: 'true',
   });
   applyUrlAuth(params, username);
