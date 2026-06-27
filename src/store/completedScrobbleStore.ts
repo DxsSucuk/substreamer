@@ -10,6 +10,7 @@ import {
 } from './persistence/scrobbleTable';
 
 import { type Child } from '../services/subsonicService';
+import { dateKey } from '../utils/dateKey';
 import { getPrimaryGenre } from '../utils/genreHelpers';
 
 export interface CompletedScrobble {
@@ -50,14 +51,6 @@ const EMPTY_AGGREGATES: AnalyticsAggregates = {
   hourBuckets: new Array(24).fill(0),
   dayCounts: {},
 };
-
-function aggregateDateKey(ts: number): string {
-  const d = new Date(ts);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
 
 export interface CompletedScrobbleState {
   completedScrobbles: CompletedScrobble[];
@@ -154,7 +147,7 @@ function buildAggregates(scrobbles: CompletedScrobble[]): AnalyticsAggregates {
 
     hourBuckets[new Date(s.time).getHours()]++;
 
-    const dk = aggregateDateKey(s.time);
+    const dk = dateKey(s.time);
     dayCounts[dk] = (dayCounts[dk] ?? 0) + 1;
   }
 
@@ -237,7 +230,7 @@ export const completedScrobbleStore = create<CompletedScrobbleState>()((set, get
     const newHourBuckets = [...agg.hourBuckets];
     newHourBuckets[new Date(scrobble.time).getHours()]++;
 
-    const dk = aggregateDateKey(scrobble.time);
+    const dk = dateKey(scrobble.time);
     const newDayCounts = { ...agg.dayCounts, [dk]: (agg.dayCounts[dk] ?? 0) + 1 };
 
     set({

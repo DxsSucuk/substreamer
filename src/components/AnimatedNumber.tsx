@@ -8,6 +8,8 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
+import { formatCompactDuration } from '../utils/formatters';
+
 function formatNumber(v: number): string {
   return v.toLocaleString();
 }
@@ -23,19 +25,6 @@ function formatNumber(v: number): string {
  * The day-tier switch keeps "107h 10m" from wrapping the column on
  * heavy listeners; the same value renders as "4d 11h" instead.
  */
-export function formatDuration(v: number): string {
-  const totalMinutes = Math.floor(v / 60);
-  if (totalMinutes < 60) return `${totalMinutes}m`;
-  const totalHours = Math.floor(totalMinutes / 60);
-  if (totalHours < 24) {
-    const m = totalMinutes - totalHours * 60;
-    return `${totalHours}h ${m}m`;
-  }
-  const days = Math.floor(totalHours / 24);
-  const hours = totalHours - days * 24;
-  return `${days}d ${hours}h`;
-}
-
 const EXIT_DURATION = 200;
 const ENTER_DURATION = 400;
 const SLIDE_DISTANCE = 10;
@@ -51,7 +40,7 @@ export const AnimatedNumber = memo(function AnimatedNumber({
   format?: 'number' | 'duration';
   suffix?: string;
 }) {
-  const formatter = format === 'duration' ? formatDuration : formatNumber;
+  const formatter = format === 'duration' ? formatCompactDuration : formatNumber;
   const [displayText, setDisplayText] = useState(() => formatter(value));
   const translateY = useSharedValue(0);
   const opacity = useSharedValue(1);
