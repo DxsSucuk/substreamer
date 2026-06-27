@@ -71,13 +71,6 @@ interface MigrationTask {
 /* ------------------------------------------------------------------ */
 
 /**
- * Shared body for Migration 7 (forward run) and Migration 9 (repair).
- * Reads auth credentials directly from the persisted SQLite blob rather
- * than from authStore.getState(), avoiding a race with Zustand rehydration.
- * The underlying migrateV3BackupMetas is idempotent — it only rewrites
- * files that are still at v3, so running this twice is safe.
- */
-/**
  * Shared body for Migration 14 (forward run) and Migration 15 (recovery).
  * Reads the v1 `substreamer-music-cache` blob, resolves every track's parent
  * albumId, transforms into v2 rows, commits via `bulkReplaceMusicCache`,
@@ -516,6 +509,13 @@ async function migrateMusicCacheFromBlob(
   return true;
 }
 
+/**
+ * Shared body for Migration 7 (forward run) and Migration 9 (repair).
+ * Reads auth credentials directly from the persisted SQLite blob rather
+ * than from authStore.getState(), avoiding a race with Zustand rehydration.
+ * The underlying migrateV3BackupMetas is idempotent — it only rewrites
+ * files that are still at v3, so running this twice is safe.
+ */
 async function stampV3BackupsFromStoredAuth(
   log: (message: string) => void,
 ): Promise<void> {

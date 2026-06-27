@@ -1110,10 +1110,6 @@ async function downloadItem(queueItem: DownloadQueueItem, myId: number): Promise
     return;
   }
 
-  // Edges created during this run — tracked so cancel() can reverse them.
-  const runEdges: Array<{ itemId: string; position: number; songId: string }> = [];
-  // Songs fully landed during this run — for cancel() refcount adjustments.
-  const runDownloadedSongs = new Set<string>();
   // Ordered list of (position, songId) pairs to commit at markItemComplete.
   const itemEdges: Array<{ position: number; songId: string }> = [];
   // Accumulated song metadata to upsert at markItemComplete.
@@ -1183,7 +1179,6 @@ async function downloadItem(queueItem: DownloadQueueItem, myId: number): Promise
         if (result) {
           itemSongsForCommit.set(song.id, result);
           itemEdges.push({ position, songId: song.id });
-          runDownloadedSongs.add(song.id);
           trackUriMap.set(song.id, resolveSongFile(result).uri);
 
           // Also ensure the partial-album edge (for non-album items).
@@ -1246,12 +1241,7 @@ async function downloadItem(queueItem: DownloadQueueItem, myId: number): Promise
 
     for (const e of edgesForCommit) {
       registerTrackToItem(e.songId, queueItem.itemId);
-      runEdges.push({ itemId: queueItem.itemId, position: e.position, songId: e.songId });
     }
-    // runEdges is used only for cancellation; on successful finalise we
-    // don't need to reverse anything. Leaving the array here for clarity.
-    void runEdges;
-    void runDownloadedSongs;
   } else {
     musicCacheStore.getState().updateQueueItem(queueItem.queueId, {
       status: 'error',
