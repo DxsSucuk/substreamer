@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { bumpPlayStats } from './playStats';
 import { persist } from 'zustand/middleware';
 
 import i18n from '../i18n/i18n';
@@ -123,11 +124,7 @@ export const favoritesStore = create<FavoritesState>()(
         const songIdx = current.songs.findIndex((s) => s.id === songId);
         if (songIdx !== -1) {
           const oldSong = current.songs[songIdx];
-          const nextSong: Child = {
-            ...oldSong,
-            playCount: (oldSong.playCount ?? 0) + 1,
-            played: now,
-          };
+          const nextSong: Child = bumpPlayStats(oldSong, now);
           songs = current.songs.map((s, i) => (i === songIdx ? nextSong : s));
           changed = true;
         }
@@ -136,11 +133,7 @@ export const favoritesStore = create<FavoritesState>()(
           const albumIdx = current.albums.findIndex((a) => a.id === albumId);
           if (albumIdx !== -1) {
             const oldAlbum = current.albums[albumIdx];
-            const nextAlbum: AlbumID3 = {
-              ...oldAlbum,
-              playCount: (oldAlbum.playCount ?? 0) + 1,
-              played: now,
-            };
+            const nextAlbum: AlbumID3 = bumpPlayStats(oldAlbum, now);
             albums = current.albums.map((a, i) => (i === albumIdx ? nextAlbum : a));
             changed = true;
           }

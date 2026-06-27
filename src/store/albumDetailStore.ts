@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { bumpPlayStats } from './playStats';
 
 import { ensureCached, prefetchCoverArt } from '../services/imageCacheService';
 import { albumLibraryStore } from './albumLibraryStore';
@@ -135,27 +136,17 @@ export const albumDetailStore = create<AlbumDetailState>()((set, get) => ({
       // Album in cache but song not in its song list — still bump the album's
       // own play stats (the user is playing a track that belongs to this
       // album, even if our cached song list hasn't been refreshed yet).
-      const updatedAlbum: AlbumWithSongsID3 = {
-        ...entry.album,
-        playCount: (entry.album.playCount ?? 0) + 1,
-        played: now,
-      };
+      const updatedAlbum: AlbumWithSongsID3 = bumpPlayStats(entry.album, now);
       const updatedEntry: AlbumDetailEntry = { ...entry, album: updatedAlbum };
       set({ albums: { ...get().albums, [albumId]: updatedEntry } });
       void upsertAlbumDetailAsync(albumId, updatedAlbum, entry.retrievedAt);
       return;
     }
     const oldSong = songs[songIdx];
-    const updatedSong = {
-      ...oldSong,
-      playCount: (oldSong.playCount ?? 0) + 1,
-      played: now,
-    };
+    const updatedSong = bumpPlayStats(oldSong, now);
     const updatedSongs = songs.map((s, i) => (i === songIdx ? updatedSong : s));
     const updatedAlbum: AlbumWithSongsID3 = {
-      ...entry.album,
-      playCount: (entry.album.playCount ?? 0) + 1,
-      played: now,
+      ...bumpPlayStats(entry.album, now),
       song: updatedSongs,
     };
     const updatedEntry: AlbumDetailEntry = { ...entry, album: updatedAlbum };

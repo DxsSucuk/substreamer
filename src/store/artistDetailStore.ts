@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { bumpPlayStats } from './playStats';
 import { persist } from 'zustand/middleware';
 
 import { getOverride, mbidOverrideStore } from './mbidOverrideStore';
@@ -221,11 +222,7 @@ export const artistDetailStore = create<ArtistDetailState>()(
             const albumIdx = entry.artist.album.findIndex((a) => a.id === albumId);
             if (albumIdx !== -1) {
               const oldAlbum = entry.artist.album[albumIdx];
-              const nextAlbum = {
-                ...oldAlbum,
-                playCount: (oldAlbum.playCount ?? 0) + 1,
-                played: now,
-              };
+              const nextAlbum = bumpPlayStats(oldAlbum, now);
               const nextAlbums = entry.artist.album.map((a, i) =>
                 i === albumIdx ? nextAlbum : a,
               );
@@ -239,11 +236,7 @@ export const artistDetailStore = create<ArtistDetailState>()(
           const topSongIdx = entry.topSongs.findIndex((s) => s.id === songId);
           if (topSongIdx !== -1) {
             const oldSong = entry.topSongs[topSongIdx];
-            const nextSong: Child = {
-              ...oldSong,
-              playCount: (oldSong.playCount ?? 0) + 1,
-              played: now,
-            };
+            const nextSong: Child = bumpPlayStats(oldSong, now);
             updatedTopSongs = entry.topSongs.map((s, i) =>
               i === topSongIdx ? nextSong : s,
             );

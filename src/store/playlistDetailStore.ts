@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { bumpPlayStats } from './playStats';
 import { persist } from 'zustand/middleware';
 
 import { createDebouncedPersistStorage } from './persistence';
@@ -132,11 +133,7 @@ export const playlistDetailStore = create<PlaylistDetailState>()(
           const updatedEntries = entries.map((track) => {
             if (track.id !== songId) return track;
             matched = true;
-            return {
-              ...track,
-              playCount: (track.playCount ?? 0) + 1,
-              played: now,
-            };
+            return bumpPlayStats(track, now);
           });
           if (matched) {
             touched = true;

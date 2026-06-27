@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { bumpPlayStats } from './playStats';
 import { persist } from 'zustand/middleware';
 
 import i18n from '../i18n/i18n';
@@ -177,11 +178,7 @@ export const albumLibraryStore = create<AlbumLibraryState>()(
         const idx = current.findIndex((a) => a.id === albumId);
         if (idx === -1) return;
         const oldAlbum = current[idx];
-        const nextAlbum: AlbumID3 = {
-          ...oldAlbum,
-          playCount: (oldAlbum.playCount ?? 0) + 1,
-          played: now,
-        };
+        const nextAlbum: AlbumID3 = bumpPlayStats(oldAlbum, now);
         const nextAlbums = current.map((a, i) => (i === idx ? nextAlbum : a));
         set({ albums: nextAlbums });
       },
