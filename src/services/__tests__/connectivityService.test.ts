@@ -56,17 +56,15 @@ jest.mock('../../../modules/expo-ssl-trust/src', () => ({
 const mockPing = jest.fn();
 jest.mock('../subsonicService');
 
-// Hooks set via setServerDownHook / setConnectivityRestoredHook — the
-// service-under-test invokes these instead of importing failoverService
-// directly. Tests register their own spies before each scenario.
+// Hook set via setServerDownHook — the service-under-test invokes this
+// instead of importing failoverService directly. Tests register their
+// own spy before each scenario.
 const mockServerDownHook = jest.fn(async () => {});
-const mockConnectivityRestoredHook = jest.fn(async () => {});
 
 import { isSSLError } from '../../../modules/expo-ssl-trust/src';
 import { getApiUnchecked } from '../subsonicService';
 import {
   awaitFirstPing,
-  setConnectivityRestoredHook,
   setServerDownHook,
   startMonitoring,
   stopMonitoring,
@@ -385,14 +383,11 @@ describe('awaitFirstPing', () => {
 describe('failover wiring (registered hooks)', () => {
   beforeEach(() => {
     mockServerDownHook.mockClear();
-    mockConnectivityRestoredHook.mockClear();
     setServerDownHook(mockServerDownHook);
-    setConnectivityRestoredHook(mockConnectivityRestoredHook);
   });
 
   afterEach(() => {
     setServerDownHook(null);
-    setConnectivityRestoredHook(null);
   });
 
   it('invokes server-down hook when ping threshold trips', async () => {
@@ -419,24 +414,6 @@ describe('failover wiring (registered hooks)', () => {
     await jest.advanceTimersByTimeAsync(6000);
 
     expect(mockServerDownHook).not.toHaveBeenCalled();
-  });
-
-  it('invokes connectivity-restored hook when NetInfo reports internet restored', () => {
-    startMonitoring();
-    mockConnectivityRestoredHook.mockClear();
-
-    mockNetInfoCallback!({ isInternetReachable: true });
-
-    expect(mockConnectivityRestoredHook).toHaveBeenCalled();
-  });
-
-  it('invokes connectivity-restored hook when AppState transitions to active', () => {
-    startMonitoring();
-    mockConnectivityRestoredHook.mockClear();
-
-    mockAppStateCallback!('active');
-
-    expect(mockConnectivityRestoredHook).toHaveBeenCalled();
   });
 
   it('is a no-op when no hook is registered (failover service not initialised)', async () => {

@@ -18,13 +18,9 @@ import { getApiUnchecked } from './subsonicService';
  */
 type ConnectivityHook = () => unknown;
 let onServerDownHook: ConnectivityHook | null = null;
-let onConnectivityRestoredHook: ConnectivityHook | null = null;
 
 export function setServerDownHook(hook: ConnectivityHook | null): void {
   onServerDownHook = hook;
-}
-export function setConnectivityRestoredHook(hook: ConnectivityHook | null): void {
-  onConnectivityRestoredHook = hook;
 }
 
 function invokeHook(hook: ConnectivityHook | null, tag: string): void {
@@ -254,13 +250,6 @@ function handleNetInfoChange(state: NetInfoState): void {
     clearPingTimer();
     pingServer();
   }
-
-  // Network restored AND user is in auto mode on secondary → eagerly
-  // probe primary so we switch back as soon as it's reachable, without
-  // waiting for the next 60s recovery tick.
-  if (reachable) {
-    invokeHook(onConnectivityRestoredHook, 'probe-primary');
-  }
 }
 
 export function startMonitoring(): void {
@@ -277,10 +266,6 @@ export function startMonitoring(): void {
     if (next === 'active') {
       clearPingTimer();
       pingServer();
-      // Eagerly probe primary on foreground if we're stuck on secondary
-      // in auto mode — saves up to a full recovery interval if the user
-      // returned to a network where primary is reachable.
-      invokeHook(onConnectivityRestoredHook, 'probe-primary');
     }
   });
 }
