@@ -111,8 +111,7 @@ export function initSslTrustStore(): void {
 
 /**
  * Idempotently install the native trust store. On stripped OEM ROMs the
- * install can fail; the failure is recorded on `sslCertStore.installFailed`
- * so the UI can surface a banner. Returns true on success.
+ * install can fail (logged). Returns true on success.
  */
 export async function ensureNativeTrustStoreInstalled(): Promise<boolean> {
   if (nativeInstalled) return true;
@@ -123,18 +122,14 @@ export async function ensureNativeTrustStoreInstalled(): Promise<boolean> {
       const status = await initTrustStore();
       if (status.installed) {
         nativeInstalled = true;
-        sslCertStore.getState().clearInstallFailed();
         return true;
       }
       const message =
         status.error ??
         'SSL trust store could not be installed on this device.';
-      sslCertStore.getState().setInstallFailed(message);
       console.warn('[sslTrustService] native trust store install failed:', message);
       return false;
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      sslCertStore.getState().setInstallFailed(message);
       console.warn('[sslTrustService] native trust store install threw:', err);
       return false;
     } finally {

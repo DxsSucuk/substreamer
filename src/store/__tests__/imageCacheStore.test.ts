@@ -38,13 +38,12 @@ beforeEach(() => {
     imageCount: 0,
     incompleteCount: 0,
     maxConcurrentImageDownloads: 5,
-    hasHydrated: false,
   });
   kvStorage.removeItem('substreamer-image-cache-settings');
 });
 
 describe('imageCacheStore — hydrateFromDbAsync', () => {
-  it('pulls the four aggregates from SQL and marks hasHydrated', async () => {
+  it('pulls the four aggregates from SQL', async () => {
     mockAggregates = { totalBytes: 12000, fileCount: 17, imageCount: 5, incompleteCount: 1 };
     await imageCacheStore.getState().hydrateFromDbAsync();
     const state = imageCacheStore.getState();
@@ -52,7 +51,6 @@ describe('imageCacheStore — hydrateFromDbAsync', () => {
     expect(state.fileCount).toBe(17);
     expect(state.imageCount).toBe(5);
     expect(state.incompleteCount).toBe(1);
-    expect(state.hasHydrated).toBe(true);
   });
 
   it('defaults maxConcurrentImageDownloads=5 when no settings blob is persisted', async () => {
@@ -89,14 +87,12 @@ describe('imageCacheStore — hydrateFromDbAsync', () => {
     await imageCacheStore.getState().hydrateFromDbAsync();
     await imageCacheStore.getState().hydrateFromDbAsync();
     expect(imageCacheStore.getState().totalBytes).toBe(500);
-    expect(imageCacheStore.getState().hasHydrated).toBe(true);
   });
 });
 
 describe('imageCacheStore — recalculateFromDb', () => {
-  it('updates the four aggregates without touching hasHydrated or maxConcurrent', async () => {
+  it('updates the four aggregates without touching maxConcurrent', async () => {
     imageCacheStore.setState({
-      hasHydrated: true,
       maxConcurrentImageDownloads: 10,
     });
     mockAggregates = { totalBytes: 777, fileCount: 3, imageCount: 1, incompleteCount: 1 };
@@ -106,7 +102,6 @@ describe('imageCacheStore — recalculateFromDb', () => {
     expect(state.fileCount).toBe(3);
     expect(state.imageCount).toBe(1);
     expect(state.incompleteCount).toBe(1);
-    expect(state.hasHydrated).toBe(true);
     expect(state.maxConcurrentImageDownloads).toBe(10);
   });
 });

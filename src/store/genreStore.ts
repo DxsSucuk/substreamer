@@ -7,7 +7,6 @@ import { getGenres, type Genre } from '../services/subsonicService';
 
 export interface GenreState {
   genres: Genre[];
-  lastFetchedAt: number | null;
   fetchGenres: () => Promise<void>;
 }
 
@@ -17,12 +16,11 @@ export const genreStore = create<GenreState>()(
   persist(
     (set) => ({
       genres: [],
-      lastFetchedAt: null,
 
       fetchGenres: async () => {
         const genres = await getGenres();
         if (genres) {
-          set({ genres, lastFetchedAt: Date.now() });
+          set({ genres });
         }
       },
     }),
@@ -31,7 +29,6 @@ export const genreStore = create<GenreState>()(
       storage: createDebouncedPersistStorage(),
       partialize: (state) => ({
         genres: state.genres,
-        lastFetchedAt: state.lastFetchedAt,
       }),
     }
   )

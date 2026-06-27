@@ -15,16 +15,12 @@ import type { Child } from '../services/subsonicService';
  * The persisted rows in SQLite are the source of truth. This store holds only
  * coordination state:
  *  - `totalCount` — running total of songs in the table (for settings UI)
- *  - `mutationCounter` — monotonic tick incremented on every write. UI code
- *    (the eventual Songs browser in Phase 7) subscribes to this and re-queries
- *    the database via paginated SELECTs when it changes.
  *
  * No in-memory copy of the songs themselves — the table is too large to keep
  * fully in JS, and we want the UI driven by SQL pagination.
  */
 export interface SongIndexState {
   totalCount: number;
-  mutationCounter: number;
   hasHydrated: boolean;
 
   /** Write one album's songs into the index, replacing any prior entries for that album. */
@@ -37,20 +33,18 @@ export interface SongIndexState {
   refreshCount: () => void;
 }
 
-export const songIndexStore = create<SongIndexState>()((set, get) => ({
+export const songIndexStore = create<SongIndexState>()((set) => ({
   totalCount: 0,
-  mutationCounter: 0,
   hasHydrated: false,
 
   upsertSongsForAlbum: (albumId, songs) => {
-    // Optimistically patch the in-memory songs list + bump the counter
-    // synchronously so the UI updates immediately; the SQL write runs
-    // off-thread. song_index is write-through and idempotent (DELETE + INSERT
-    // OR REPLACE in one async transaction), so a fire-and-forget write is safe
-    // — a late/partial write self-heals on the next fetch. The totalCount
-    // (settings-only) refreshes when the async write resolves.
+    // Optimistically patch the in-memory songs list synchronously so the UI
+    // updates immediately; the SQL write runs off-thread. song_index is
+    // write-through and idempotent (DELETE + INSERT OR REPLACE in one async
+    // transaction), so a fire-and-forget write is safe — a late/partial write
+    // self-heals on the next fetch. The totalCount (settings-only) refreshes
+    // when the async write resolves.
     songLibraryStore.getState().patchAlbum(albumId, songs);
-    set({ mutationCounter: get().mutationCounter + 1 });
     void (async () => {
       await dbUpsertSongsForAlbumAsync(albumId, songs);
       set({ totalCount: await countSongIndexAsync() });
@@ -60,7 +54,6 @@ export const songIndexStore = create<SongIndexState>()((set, get) => ({
   deleteSongsForAlbums: (albumIds) => {
     if (albumIds.length === 0) return;
     songLibraryStore.getState().removeAlbums(albumIds);
-    set({ mutationCounter: get().mutationCounter + 1 });
     void (async () => {
       await dbDeleteSongsForAlbumsAsync(albumIds);
       set({ totalCount: await countSongIndexAsync() });

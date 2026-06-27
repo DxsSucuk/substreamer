@@ -20,8 +20,6 @@ export interface PendingScrobble {
 
 export interface PendingScrobbleState {
   pendingScrobbles: PendingScrobble[];
-  /** True after the on-start hydration from SQLite has populated the store. */
-  hasHydrated: boolean;
 
   addScrobble: (song: Child, time: number) => void;
   removeScrobble: (id: string) => void;
@@ -32,7 +30,6 @@ export interface PendingScrobbleState {
 
 export const pendingScrobbleStore = create<PendingScrobbleState>()((set, get) => ({
   pendingScrobbles: [],
-  hasHydrated: false,
 
   addScrobble: (song, time) => {
     if (!song?.id || !song.title) return;
@@ -60,7 +57,7 @@ export const pendingScrobbleStore = create<PendingScrobbleState>()((set, get) =>
 
   hydrateFromDbAsync: async () => {
     const restored = await hydratePendingScrobblesAsync();
-    set({ pendingScrobbles: restored, hasHydrated: true });
+    set({ pendingScrobbles: restored });
   },
 }));
 

@@ -242,8 +242,6 @@ beforeEach(() => {
   syncStatusStore.setState({
     detailSyncPhase: 'idle',
     detailSyncTotal: 0,
-    detailSyncStartedAt: null,
-    detailSyncError: null,
     bannerDismissedAt: null,
     lastChangeDetectionAt: null,
     lastKnownServerUrl: null,
@@ -611,11 +609,11 @@ describe('dataSyncService — runFullAlbumDetailSync', () => {
     expect(mockFetchAlbum).toHaveBeenCalledTimes(2); // not 4
   });
 
-  it('classifies null returns as rejected so users see a real error count', async () => {
+  it('treats null returns as failures and completes the walk (phase idle)', async () => {
     albumLibraryState.albums = [{ id: 'a1' }, { id: 'a2' }, { id: 'a3' }];
     mockFetchAlbum.mockImplementation(() => Promise.resolve(null));
     await runFullAlbumDetailSync();
-    expect(syncStatusStore.getState().detailSyncError).toMatch(/3 album\(s\) failed/);
+    expect(mockFetchAlbum).toHaveBeenCalledTimes(3);
     expect(syncStatusStore.getState().detailSyncPhase).toBe('idle');
   });
 
@@ -652,7 +650,7 @@ describe('dataSyncService — runFullAlbumDetailSync', () => {
     expect(mockFetchAlbum.mock.calls.length).toBeLessThan(10);
   });
 
-  it('records a non-fatal error summary when some fetches fail', async () => {
+  it('completes the walk (phase idle) when some fetches fail', async () => {
     albumLibraryState.albums = [{ id: 'a1' }, { id: 'a2' }];
     mockFetchAlbum.mockImplementationOnce(() => Promise.reject(new Error('flaky')));
     mockFetchAlbum.mockImplementationOnce((id: string) => {
@@ -660,7 +658,6 @@ describe('dataSyncService — runFullAlbumDetailSync', () => {
       return Promise.resolve({ id } as any);
     });
     await runFullAlbumDetailSync();
-    expect(syncStatusStore.getState().detailSyncError).toMatch(/1 album\(s\) failed/);
     expect(syncStatusStore.getState().detailSyncPhase).toBe('idle');
   });
 

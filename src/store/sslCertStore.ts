@@ -21,33 +21,20 @@ interface SslCertState {
    * directly — go through the native store so the two can't drift.
    */
   trustedCerts: Record<string, TrustedCertEntry>;
-  /**
-   * Set when the native trust store could not be installed (e.g. broken JSSE
-   * provider on a stripped Android OEM ROM). Null when healthy.
-   */
-  installFailed: string | null;
   /** Replace the cache with the latest snapshot read from the native store. */
   setTrustedCerts: (certs: Record<string, TrustedCertEntry>) => void;
   /** Check if a hostname has a trusted certificate (reads the mirror). */
   isTrusted: (hostname: string) => boolean;
   /** Get the trusted fingerprint for a hostname, or null. */
   getTrustedFingerprint: (hostname: string) => string | null;
-  /** Record that the native trust store install failed. */
-  setInstallFailed: (error: string | null) => void;
-  /** Clear any previously recorded install failure. */
-  clearInstallFailed: () => void;
 }
 
 export const sslCertStore = create<SslCertState>()((set, get) => ({
   trustedCerts: {},
-  installFailed: null,
 
   setTrustedCerts: (certs) => set({ trustedCerts: certs }),
 
   isTrusted: (hostname) => hostname in get().trustedCerts,
 
   getTrustedFingerprint: (hostname) => get().trustedCerts[hostname]?.sha256 ?? null,
-
-  setInstallFailed: (error) => set({ installFailed: error }),
-  clearInstallFailed: () => set({ installFailed: null }),
 }));

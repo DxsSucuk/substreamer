@@ -733,10 +733,8 @@ async function doWalk(): Promise<void> {
 
   // --- start walk ---
   const capturedGen = syncStatusStore.getState().generation;
-  const startedAt = Date.now();
   syncStatusStore.getState().setDetailSyncPhase('syncing');
-  syncStatusStore.getState().setDetailSyncTotal(missing.length, startedAt);
-  syncStatusStore.getState().setDetailSyncError(null);
+  syncStatusStore.getState().setDetailSyncTotal(missing.length);
 
   // External abort signals: generation bump (cancel/force-resync/logout) or
   // offline-mode flip. These subscribe for the duration of the walk.
@@ -749,7 +747,7 @@ async function doWalk(): Promise<void> {
   });
 
   try {
-    const { rejected } = await runPool(
+    await runPool(
       missing,
       async (id) => {
         // Inner bail — generation may have moved between iterations.
@@ -788,18 +786,10 @@ async function doWalk(): Promise<void> {
       syncStatusStore.getState().setDetailSyncPhase('paused-offline');
       return;
     }
-    if (rejected.length > 0) {
-      syncStatusStore.getState().setDetailSyncError(
-        `${rejected.length} album(s) failed; pull-to-refresh will retry.`,
-      );
-    } else {
-      // Successful completion clears any stale error from a prior walk.
-      syncStatusStore.getState().setDetailSyncError(null);
-    }
     // Partial failure is acceptable; phase returns to idle either way and
     // the next walk picks up remaining missing IDs via reconciliation.
     syncStatusStore.getState().setDetailSyncPhase('idle');
-    syncStatusStore.getState().setDetailSyncTotal(0, null);
+    syncStatusStore.getState().setDetailSyncTotal(0);
   } finally {
     unsubGen();
     unsubOffline();

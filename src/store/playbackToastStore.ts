@@ -6,7 +6,6 @@ const MIN_LOADING_MS = 1200;
 
 export interface PlaybackToastState {
   status: PlaybackToastStatus;
-  errorMessage: string | null;
   /**
    * Optional label override for the success state. When set, `PlaybackToast`
    * renders this instead of the default `t('nowPlaying')` — lets the same
@@ -25,36 +24,34 @@ export interface PlaybackToastState {
    * user just needs a quick confirmation (download enqueued, etc.).
    */
   flashSuccess: (label: string) => void;
-  fail: (message: string) => void;
+  fail: () => void;
   hide: () => void;
 }
 
 export const playbackToastStore = create<PlaybackToastState>()((set, get) => ({
   status: 'idle',
-  errorMessage: null,
   successLabel: null,
   _showedAt: 0,
 
-  show: () => set({ status: 'loading', errorMessage: null, successLabel: null, _showedAt: Date.now() }),
+  show: () => set({ status: 'loading', successLabel: null, _showedAt: Date.now() }),
 
   succeed: () => {
     const elapsed = Date.now() - get()._showedAt;
     const remaining = Math.max(0, MIN_LOADING_MS - elapsed);
-    setTimeout(() => set({ status: 'success', errorMessage: null }), remaining);
+    setTimeout(() => set({ status: 'success' }), remaining);
   },
 
   flashSuccess: (label) => set({
     status: 'success',
-    errorMessage: null,
     successLabel: label,
     _showedAt: Date.now(),
   }),
 
-  fail: (message) => {
+  fail: () => {
     const elapsed = Date.now() - get()._showedAt;
     const remaining = Math.max(0, MIN_LOADING_MS - elapsed);
-    setTimeout(() => set({ status: 'error', errorMessage: message }), remaining);
+    setTimeout(() => set({ status: 'error' }), remaining);
   },
 
-  hide: () => set({ status: 'idle', errorMessage: null, successLabel: null }),
+  hide: () => set({ status: 'idle', successLabel: null }),
 }));

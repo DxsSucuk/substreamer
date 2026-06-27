@@ -7,8 +7,6 @@ function resetStore() {
     detailSyncPhase: 'idle',
     detailSyncTotal: 0,
     detailSyncCompleted: 0,
-    detailSyncStartedAt: null,
-    detailSyncError: null,
     bannerDismissedAt: null,
     lastChangeDetectionAt: null,
     lastKnownServerUrl: null,
@@ -45,18 +43,12 @@ describe('syncStatusStore', () => {
     });
   });
 
-  describe('total / started-at / completed', () => {
-    it('setDetailSyncTotal stores both values and resets completed', () => {
+  describe('total / completed', () => {
+    it('setDetailSyncTotal stores the total and resets completed', () => {
       syncStatusStore.setState({ detailSyncCompleted: 42 });
-      syncStatusStore.getState().setDetailSyncTotal(1000, 1700000000000);
+      syncStatusStore.getState().setDetailSyncTotal(1000);
       expect(syncStatusStore.getState().detailSyncTotal).toBe(1000);
-      expect(syncStatusStore.getState().detailSyncStartedAt).toBe(1700000000000);
       expect(syncStatusStore.getState().detailSyncCompleted).toBe(0);
-    });
-
-    it('setDetailSyncTotal accepts null startedAt', () => {
-      syncStatusStore.getState().setDetailSyncTotal(0, null);
-      expect(syncStatusStore.getState().detailSyncStartedAt).toBe(null);
     });
 
     it('incrementDetailSyncCompleted bumps by one', () => {
@@ -65,15 +57,6 @@ describe('syncStatusStore', () => {
       expect(syncStatusStore.getState().detailSyncCompleted).toBe(1);
       syncStatusStore.getState().incrementDetailSyncCompleted();
       expect(syncStatusStore.getState().detailSyncCompleted).toBe(2);
-    });
-  });
-
-  describe('error state', () => {
-    it('setDetailSyncError toggles the error message', () => {
-      syncStatusStore.getState().setDetailSyncError('something bad');
-      expect(syncStatusStore.getState().detailSyncError).toBe('something bad');
-      syncStatusStore.getState().setDetailSyncError(null);
-      expect(syncStatusStore.getState().detailSyncError).toBe(null);
     });
   });
 
@@ -110,8 +93,6 @@ describe('syncStatusStore', () => {
       syncStatusStore.setState({
         detailSyncPhase: 'syncing',
         detailSyncTotal: 500,
-        detailSyncStartedAt: 1000,
-        detailSyncError: 'oops',
         bannerDismissedAt: 42,
         lastKnownServerSongCount: 999,
       });
@@ -119,8 +100,6 @@ describe('syncStatusStore', () => {
       const s = syncStatusStore.getState();
       expect(s.detailSyncPhase).toBe('idle');
       expect(s.detailSyncTotal).toBe(0);
-      expect(s.detailSyncStartedAt).toBe(null);
-      expect(s.detailSyncError).toBe(null);
       expect(s.bannerDismissedAt).toBe(null);
       // Last-known markers preserved (they have separate lifecycle).
       expect(s.lastKnownServerSongCount).toBe(999);

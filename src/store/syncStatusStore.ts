@@ -40,8 +40,6 @@ export interface SyncStatusState extends LastKnownMarkers {
    *  walk. Frozen-reset to zero at walk start via `setDetailSyncTotal`. UI
    *  reads this directly so progress displays don't do an O(N) library scan. */
   detailSyncCompleted: number;
-  detailSyncStartedAt: number | null;
-  detailSyncError: string | null;
   /** Ephemeral — session-only. Set when the user dismisses the pill banner;
    *  cleared when the walk phase transitions back to 'idle' (or on app
    *  restart since this field is not persisted). */
@@ -53,11 +51,10 @@ export interface SyncStatusState extends LastKnownMarkers {
 
   // Actions
   setDetailSyncPhase: (phase: DetailSyncPhase) => void;
-  setDetailSyncTotal: (total: number, startedAt: number | null) => void;
+  setDetailSyncTotal: (total: number) => void;
   /** Increment `detailSyncCompleted` by 1 — called by the walk after each
    *  successful `fetchAlbum`. */
   incrementDetailSyncCompleted: () => void;
-  setDetailSyncError: (message: string | null) => void;
   setLastKnownMarkers: (partial: Partial<LastKnownMarkers>) => void;
   setBannerDismissedAt: (at: number | null) => void;
   resetDetailSync: () => void;
@@ -75,8 +72,6 @@ export const syncStatusStore = create<SyncStatusState>()(
       detailSyncPhase: 'idle',
       detailSyncTotal: 0,
       detailSyncCompleted: 0,
-      detailSyncStartedAt: null,
-      detailSyncError: null,
       bannerDismissedAt: null,
 
       lastChangeDetectionAt: null,
@@ -96,11 +91,10 @@ export const syncStatusStore = create<SyncStatusState>()(
           set({ bannerDismissedAt: null });
         }
       },
-      setDetailSyncTotal: (total, startedAt) =>
-        set({ detailSyncTotal: total, detailSyncStartedAt: startedAt, detailSyncCompleted: 0 }),
+      setDetailSyncTotal: (total) =>
+        set({ detailSyncTotal: total, detailSyncCompleted: 0 }),
       incrementDetailSyncCompleted: () =>
         set({ detailSyncCompleted: get().detailSyncCompleted + 1 }),
-      setDetailSyncError: (message) => set({ detailSyncError: message }),
       setLastKnownMarkers: (partial) => set({ ...get(), ...partial }),
       setBannerDismissedAt: (at) => set({ bannerDismissedAt: at }),
       resetDetailSync: () =>
@@ -108,8 +102,6 @@ export const syncStatusStore = create<SyncStatusState>()(
           detailSyncPhase: 'idle',
           detailSyncTotal: 0,
           detailSyncCompleted: 0,
-          detailSyncStartedAt: null,
-          detailSyncError: null,
           bannerDismissedAt: null,
         }),
       bumpGeneration: () => set({ generation: get().generation + 1 }),
@@ -135,8 +127,6 @@ export const syncStatusStore = create<SyncStatusState>()(
         detailSyncPhase: state.detailSyncPhase,
         detailSyncTotal: state.detailSyncTotal,
         detailSyncCompleted: state.detailSyncCompleted,
-        detailSyncStartedAt: state.detailSyncStartedAt,
-        detailSyncError: state.detailSyncError,
         // bannerDismissedAt is session-only by design — the banner comes
         // back on the next app launch if the walk is still active. Not
         // persisted.

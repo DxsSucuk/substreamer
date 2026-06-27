@@ -7,19 +7,11 @@ jest.mock('expo-sqlite', () => ({
 import { songIndexStore } from '../songIndexStore';
 
 beforeEach(() => {
-  songIndexStore.setState({ totalCount: 0, mutationCounter: 0, hasHydrated: false });
+  songIndexStore.setState({ totalCount: 0, hasHydrated: false });
 });
 
 describe('songIndexStore', () => {
   describe('upsertSongsForAlbum', () => {
-    it('increments the mutation counter on every call', () => {
-      expect(songIndexStore.getState().mutationCounter).toBe(0);
-      songIndexStore.getState().upsertSongsForAlbum('a1', []);
-      expect(songIndexStore.getState().mutationCounter).toBe(1);
-      songIndexStore.getState().upsertSongsForAlbum('a1', [{ id: 's1', title: 'x' } as any]);
-      expect(songIndexStore.getState().mutationCounter).toBe(2);
-    });
-
     it('keeps the totalCount in sync with the (disabled) DB — 0 here', async () => {
       songIndexStore.getState().upsertSongsForAlbum('a1', [{ id: 's1' } as any]);
       // The DB write + count refresh are now fire-and-forget async; flush a
@@ -33,15 +25,14 @@ describe('songIndexStore', () => {
 
   describe('deleteSongsForAlbums', () => {
     it('is a no-op for an empty list', () => {
-      const before = songIndexStore.getState().mutationCounter;
-      songIndexStore.getState().deleteSongsForAlbums([]);
-      expect(songIndexStore.getState().mutationCounter).toBe(before);
+      expect(() => songIndexStore.getState().deleteSongsForAlbums([])).not.toThrow();
+      expect(songIndexStore.getState().totalCount).toBe(0);
     });
 
-    it('increments the counter for non-empty input', () => {
-      const before = songIndexStore.getState().mutationCounter;
+    it('handles non-empty input', async () => {
       songIndexStore.getState().deleteSongsForAlbums(['a1']);
-      expect(songIndexStore.getState().mutationCounter).toBe(before + 1);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(songIndexStore.getState().totalCount).toBe(0);
     });
   });
 
@@ -56,10 +47,8 @@ describe('songIndexStore', () => {
   });
 
   describe('refreshCount', () => {
-    it('reads from the DB without touching the mutation counter', () => {
-      const before = songIndexStore.getState().mutationCounter;
+    it('reads from the DB', () => {
       songIndexStore.getState().refreshCount();
-      expect(songIndexStore.getState().mutationCounter).toBe(before);
       expect(songIndexStore.getState().totalCount).toBe(0);
     });
   });

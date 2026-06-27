@@ -10,14 +10,12 @@ import { genreStore } from '../genreStore';
 
 beforeEach(() => {
   mockGetGenres.mockReset();
-  genreStore.setState({ genres: [], lastFetchedAt: null });
+  genreStore.setState({ genres: [] });
 });
 
 describe('genreStore', () => {
-  it('starts with empty genres and null timestamp', () => {
-    const state = genreStore.getState();
-    expect(state.genres).toEqual([]);
-    expect(state.lastFetchedAt).toBeNull();
+  it('starts with empty genres', () => {
+    expect(genreStore.getState().genres).toEqual([]);
   });
 
   it('fetchGenres populates genres on success', async () => {
@@ -27,38 +25,25 @@ describe('genreStore', () => {
     ];
     mockGetGenres.mockResolvedValue(genres);
 
-    const before = Date.now();
     await genreStore.getState().fetchGenres();
-    const after = Date.now();
 
-    const state = genreStore.getState();
-    expect(state.genres).toEqual(genres);
-    expect(state.lastFetchedAt).toBeGreaterThanOrEqual(before);
-    expect(state.lastFetchedAt).toBeLessThanOrEqual(after);
+    expect(genreStore.getState().genres).toEqual(genres);
   });
 
   it('fetchGenres does not update state when API returns null', async () => {
-    genreStore.setState({
-      genres: [{ value: 'Rock', songCount: 10, albumCount: 1 }],
-      lastFetchedAt: 1000,
-    });
+    genreStore.setState({ genres: [{ value: 'Rock', songCount: 10, albumCount: 1 }] });
     mockGetGenres.mockResolvedValue(null);
 
     await genreStore.getState().fetchGenres();
 
-    const state = genreStore.getState();
-    expect(state.genres).toEqual([{ value: 'Rock', songCount: 10, albumCount: 1 }]);
-    expect(state.lastFetchedAt).toBe(1000);
+    expect(genreStore.getState().genres).toEqual([
+      { value: 'Rock', songCount: 10, albumCount: 1 },
+    ]);
   });
 
   it('fetchGenres replaces existing genres on refresh', async () => {
-    genreStore.setState({
-      genres: [{ value: 'Rock', songCount: 10, albumCount: 1 }],
-      lastFetchedAt: 1000,
-    });
-    const newGenres = [
-      { value: 'Pop', songCount: 200, albumCount: 20 },
-    ];
+    genreStore.setState({ genres: [{ value: 'Rock', songCount: 10, albumCount: 1 }] });
+    const newGenres = [{ value: 'Pop', songCount: 200, albumCount: 20 }];
     mockGetGenres.mockResolvedValue(newGenres);
 
     await genreStore.getState().fetchGenres();
@@ -66,11 +51,9 @@ describe('genreStore', () => {
     expect(genreStore.getState().genres).toEqual(newGenres);
   });
 
-  it('partialize excludes fetchGenres from persistence', () => {
+  it('partialize keeps genres but not fetchGenres', () => {
     const state = genreStore.getState();
-    // The persist config's partialize should only include genres and lastFetchedAt
     expect(typeof state.fetchGenres).toBe('function');
     expect(state).toHaveProperty('genres');
-    expect(state).toHaveProperty('lastFetchedAt');
   });
 });

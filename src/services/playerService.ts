@@ -789,7 +789,7 @@ async function hydrateRestoredQueue(): Promise<void> {
       // cached files). Surface a toast and clear the stale queue so the
       // mini player doesn't linger on an unplayable track. Call the
       // internal helper — clearQueue() would deadlock awaiting us.
-      playbackToastStore.getState().fail(i18n.t('noOfflineTracksInQueue'));
+      playbackToastStore.getState().fail();
       await clearPlayerStateInternal();
       return;
     }
@@ -840,7 +840,7 @@ async function hydrateRestoredQueue(): Promise<void> {
       // unplayable queue, and unmute so the next action isn't silent.
       // Internal helper — clearQueue() would deadlock awaiting us.
       await TrackPlayer.setVolume(1).catch(() => {});
-      playbackToastStore.getState().fail(i18n.t('playbackError'));
+      playbackToastStore.getState().fail();
       await clearPlayerStateInternal();
       return;
     }
@@ -966,7 +966,7 @@ export async function playTrack(
     const { rnTracks, filteredQueue } = await buildPlayableQueue(queue);
 
     if (rnTracks.length === 0) {
-      playbackToastStore.getState().fail(i18n.t('noOfflineTracksInQueue'));
+      playbackToastStore.getState().fail();
       await clearQueue();
       return;
     }
@@ -998,10 +998,8 @@ export async function playTrack(
 
     await TrackPlayer.play();
     persistQueue(filteredQueue, startIndex);
-  } catch (e) {
-    playbackToastStore.getState().fail(
-      e instanceof Error ? e.message : i18n.t('playbackError'),
-    );
+  } catch {
+    playbackToastStore.getState().fail();
   } finally {
     isSettingQueue = false;
     playerStore.getState().setQueueLoading(false);
@@ -1326,7 +1324,7 @@ export async function addToQueue(
   const { rnTracks, filteredQueue: playable } = await buildPlayableQueue(tracks);
 
   if (rnTracks.length === 0) {
-    playbackToastStore.getState().fail(i18n.t('noOfflineTracksInQueue'));
+    playbackToastStore.getState().fail();
     return;
   }
 
@@ -1370,7 +1368,7 @@ export async function playSongNext(song: Child): Promise<void> {
 
   const { rnTracks, filteredQueue: playable } = await buildPlayableQueue([song]);
   if (rnTracks.length === 0) {
-    playbackToastStore.getState().fail(i18n.t('noOfflineTracksInQueue'));
+    playbackToastStore.getState().fail();
     return;
   }
 
@@ -1572,7 +1570,7 @@ export async function shuffleQueue(): Promise<void> {
     const { rnTracks, filteredQueue } = await buildPlayableQueue(shuffled);
 
     if (rnTracks.length === 0) {
-      playbackToastStore.getState().fail(i18n.t('noOfflineTracksInQueue'));
+      playbackToastStore.getState().fail();
       await clearPlayerStateInternal();
       return;
     }
@@ -1584,10 +1582,8 @@ export async function shuffleQueue(): Promise<void> {
     await TrackPlayer.add(rnTracks);
     await TrackPlayer.play();
     persistQueue(filteredQueue, 0);
-  } catch (e) {
-    playbackToastStore.getState().fail(
-      e instanceof Error ? e.message : i18n.t('playbackError'),
-    );
+  } catch {
+    playbackToastStore.getState().fail();
   } finally {
     isSettingQueue = false;
   }

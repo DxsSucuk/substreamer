@@ -44,8 +44,6 @@ beforeEach(() => {
   setSyncState({
     detailSyncPhase: 'idle',
     detailSyncTotal: 0,
-    detailSyncStartedAt: null,
-    detailSyncError: null,
     bannerDismissedAt: null,
   });
   albumLibraryStore.setState({ albums: [] } as any);

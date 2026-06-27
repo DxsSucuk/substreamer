@@ -20,8 +20,6 @@ jest.mock('../../../modules/expo-ssl-trust/src', () => ({
 
 // sslCertStore is a non-persisted mirror. The mock setter updates the local
 // snapshot so the service's "any certs?" check reads what was just mirrored.
-const mockSetInstallFailed = jest.fn();
-const mockClearInstallFailed = jest.fn();
 let mockTrustedCerts: Record<string, { sha256: string; acceptedAt: number; validTo?: string }> = {};
 const mockSetTrustedCerts = jest.fn((certs) => {
   mockTrustedCerts = certs;
@@ -32,8 +30,6 @@ jest.mock('../../store/sslCertStore', () => ({
     getState: jest.fn(() => ({
       trustedCerts: mockTrustedCerts,
       setTrustedCerts: mockSetTrustedCerts,
-      setInstallFailed: mockSetInstallFailed,
-      clearInstallFailed: mockClearInstallFailed,
     })),
   },
 }));
@@ -57,8 +53,6 @@ beforeEach(() => {
   mockRefreshProxyUpstreams.mockReset().mockResolvedValue(null);
   mockRefreshProxyInfo.mockReset().mockResolvedValue(undefined);
   mockSetTrustedCerts.mockClear();
-  mockSetInstallFailed.mockClear();
-  mockClearInstallFailed.mockClear();
   mockTrustedCerts = {};
 });
 
@@ -98,7 +92,6 @@ describe('initSslTrustStore', () => {
       'example.com': { sha256: 'AA:BB', acceptedAt: 1000 },
     });
     expect(mockInitTrustStore).toHaveBeenCalledTimes(1);
-    expect(mockClearInstallFailed).toHaveBeenCalled();
   });
 
   it('is idempotent on repeated calls', async () => {
@@ -120,7 +113,6 @@ describe('ensureNativeTrustStoreInstalled', () => {
     const { ensureNativeTrustStoreInstalled } = loadFreshService();
     const ok = await ensureNativeTrustStoreInstalled();
     expect(ok).toBe(true);
-    expect(mockClearInstallFailed).toHaveBeenCalled();
   });
 
   it('returns false and records failure when install fails', async () => {
@@ -131,7 +123,6 @@ describe('ensureNativeTrustStoreInstalled', () => {
     const ok = await ensureNativeTrustStoreInstalled();
 
     expect(ok).toBe(false);
-    expect(mockSetInstallFailed).toHaveBeenCalledWith('broken');
     warnSpy.mockRestore();
   });
 

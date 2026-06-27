@@ -1,7 +1,7 @@
 import { sslCertStore } from '../sslCertStore';
 
 beforeEach(() => {
-  sslCertStore.setState({ trustedCerts: {}, installFailed: null });
+  sslCertStore.setState({ trustedCerts: {} });
 });
 
 // sslCertStore is now a NON-PERSISTED mirror of the native trust store — the
@@ -44,28 +44,5 @@ describe('sslCertStore (native mirror)', () => {
     });
     expect(sslCertStore.getState().getTrustedFingerprint('example.com')).toBe('AA:BB:CC');
     expect(sslCertStore.getState().getTrustedFingerprint('unknown.com')).toBeNull();
-  });
-
-  describe('installFailed state', () => {
-    it('starts as null', () => {
-      expect(sslCertStore.getState().installFailed).toBeNull();
-    });
-
-    it('setInstallFailed records an error message', () => {
-      sslCertStore.getState().setInstallFailed('JSSE provider broken');
-      expect(sslCertStore.getState().installFailed).toBe('JSSE provider broken');
-    });
-
-    it('setInstallFailed accepts null to clear', () => {
-      sslCertStore.getState().setInstallFailed('something');
-      sslCertStore.getState().setInstallFailed(null);
-      expect(sslCertStore.getState().installFailed).toBeNull();
-    });
-
-    it('clearInstallFailed resets to null', () => {
-      sslCertStore.getState().setInstallFailed('something');
-      sslCertStore.getState().clearInstallFailed();
-      expect(sslCertStore.getState().installFailed).toBeNull();
-    });
   });
 });

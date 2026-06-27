@@ -371,7 +371,7 @@ describe('playTrack', () => {
 
     await playTrack(makeChild('t1'), [makeChild('t1')]);
 
-    expect(mockToastFail).toHaveBeenCalledWith('RNTP error');
+    expect(mockToastFail).toHaveBeenCalled();
   });
 
   it('updates queue in store', async () => {
@@ -768,9 +768,7 @@ describe('offline-mode queue building', () => {
     await playTrack(makeChild('t1'), [makeChild('t1'), makeChild('t2')]);
 
     expect(mockTP.add).not.toHaveBeenCalled();
-    expect(mockToastFail).toHaveBeenCalledWith(
-      expect.stringContaining('No downloaded tracks'),
-    );
+    expect(mockToastFail).toHaveBeenCalled();
     expect(mockSetQueue).toHaveBeenCalledWith([]);
   });
 
@@ -813,9 +811,7 @@ describe('offline-mode queue building', () => {
     await addToQueue([makeChild('a'), makeChild('b')]);
 
     expect(mockTP.add).not.toHaveBeenCalled();
-    expect(mockToastFail).toHaveBeenCalledWith(
-      expect.stringContaining('No downloaded tracks'),
-    );
+    expect(mockToastFail).toHaveBeenCalled();
     // Existing queue must not be cleared.
     expect(mockSetQueue).not.toHaveBeenCalledWith([]);
   });

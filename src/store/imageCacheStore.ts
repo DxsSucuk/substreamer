@@ -103,8 +103,6 @@ export interface ImageCacheState {
   incompleteCount: number;
   /** Max number of images to download concurrently. Persisted separately. */
   maxConcurrentImageDownloads: MaxConcurrentImageDownloads;
-  /** True after the initial SQL aggregate read has populated the store. */
-  hasHydrated: boolean;
 
   /** Re-read every aggregate from SQL on a background native thread (async, so
    *  it never blocks the JS thread). Called by the service layer after writes.
@@ -127,7 +125,6 @@ export const imageCacheStore = create<ImageCacheState>()((set) => ({
   imageCount: 0,
   incompleteCount: 0,
   maxConcurrentImageDownloads: DEFAULT_MAX_CONCURRENT,
-  hasHydrated: false,
 
   recalculateFromDb: async () => {
     const token = ++recalcToken;
@@ -152,7 +149,6 @@ export const imageCacheStore = create<ImageCacheState>()((set) => ({
       imageCount: agg.imageCount,
       incompleteCount: agg.incompleteCount,
       maxConcurrentImageDownloads,
-      hasHydrated: true,
     });
   },
 

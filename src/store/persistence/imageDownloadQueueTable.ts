@@ -78,27 +78,6 @@ export function hydrateImageDownloadQueue(): ImageDownloadQueueRow[] {
 }
 
 /**
- * Async counterpart of {@link hydrateImageDownloadQueue}. Read on the
- * background thread via `getAllAsync` for the boot hydration path. The queue
- * is small (one row per cover_art_id in an active refresh cycle), so the
- * row→object mapping is left unchunked.
- */
-export async function hydrateImageDownloadQueueAsync(): Promise<ImageDownloadQueueRow[]> {
-  const db = getDb();
-  if (db === null) return [];
-  try {
-    const rows = await db.getAllAsync<RawImageQueueRow>(
-      `SELECT cover_art_id, scope, status, error, attempts, added_at, cycle_id
-         FROM image_download_queue
-         ORDER BY added_at ASC;`,
-    );
-    return rows.map(mapRow);
-  } catch {
-    return [];
-  }
-}
-
-/**
  * Pick the next row to process (oldest queued first). Single-threaded JS
  * makes the read+update sequence in the worker effectively atomic; we
  * don't need SELECT … FOR UPDATE.

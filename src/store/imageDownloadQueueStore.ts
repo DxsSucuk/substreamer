@@ -5,20 +5,17 @@
  * image-cache needs (no per-row UI inspection — Settings only needs the
  * cycle summary).
  *
- * The full queue array is rebuilt from SQL on demand via
- * `hydrateFromDbAsync()`. Cycle metadata (cycleId, scope, total, isPaused)
- * is owned by the service-layer kvStorage blob (`substreamer-image-queue-meta`)
- * and re-read on every subscription tick — the store is a thin reactive
- * mirror, not the source of truth.
+ * Cycle metadata (cycleId, scope, total, isPaused) is owned by the
+ * service-layer kvStorage blob (`substreamer-image-queue-meta`) and re-read
+ * on every subscription tick — the store is a thin reactive mirror, not the
+ * source of truth.
  *
  * See plans/2026-05-23-image-cache-queue-rework.md.
  */
 import { create } from 'zustand';
 
 import {
-  type ImageDownloadQueueRow,
   type ImageDownloadQueueScope,
-  hydrateImageDownloadQueueAsync,
 } from './persistence/imageDownloadQueueTable';
 import {
   type ImageQueuePhase,
@@ -27,7 +24,6 @@ import {
 } from '../services/imageCacheService';
 
 export interface ImageDownloadQueueState {
-  queue: ImageDownloadQueueRow[];
   cycleId: string | null;
   cycleScope: ImageDownloadQueueScope | null;
   cycleTotal: number;
@@ -36,15 +32,13 @@ export interface ImageDownloadQueueState {
   isPaused: boolean;
   phase: ImageQueuePhase;
 
-  /** Re-read the SQL queue + cycle meta into the store (queue read on a
-   * background thread). Safe to call repeatedly. */
+  /** Re-read cycle meta into the store. Safe to call repeatedly. */
   hydrateFromDbAsync: () => Promise<void>;
   /** Update only the derived progress fields without re-querying the queue array. */
   refreshProgress: () => void;
 }
 
 export const imageDownloadQueueStore = create<ImageDownloadQueueState>()((set) => ({
-  queue: [],
   cycleId: null,
   cycleScope: null,
   cycleTotal: 0,
@@ -54,10 +48,8 @@ export const imageDownloadQueueStore = create<ImageDownloadQueueState>()((set) =
   phase: 'active',
 
   hydrateFromDbAsync: async () => {
-    const queue = await hydrateImageDownloadQueueAsync();
     const s = getImageQueueState();
     set({
-      queue,
       cycleId: s.cycleId,
       cycleScope: s.cycleScope,
       cycleTotal: s.cycleTotal,
