@@ -38,14 +38,6 @@ export function formatTrackDuration(seconds: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-/**
- * Strip HTML tags from a string.
- * Useful for cleaning biographies from Last.fm or other sources.
- */
-export function stripHtml(html: string): string {
-  return html.replace(/<[^>]*>/g, '').trim();
-}
-
 /** Common HTML named entities for biography text decoding. */
 const HTML_ENTITIES: Record<string, string> = {
   '&amp;': '&',

@@ -1170,8 +1170,7 @@ const pendingRetries = new Map<string, ReturnType<typeof setTimeout>>();
 const retryAttempts = new Map<string, number>();
 const RETRY_BACKOFFS_MS = [5_000, 15_000, 60_000] as const;
 // Default off under jest so retry timers don't bleed across tests. The
-// runtime flips this on at app boot (see initImageCache). Tests can opt in
-// per-test via __setRetriesEnabledForTest.
+// runtime flips this on at app boot (see initImageCache).
 let retriesEnabled = typeof process === 'undefined'
   || (process.env.JEST_WORKER_ID === undefined && process.env.NODE_ENV !== 'test');
 
@@ -1179,8 +1178,7 @@ function scheduleRetry(coverArtId: string): void {
   if (isSentinelCoverArtId(coverArtId)) return;
   if (offlineModeStore.getState().offlineMode) return;
   // Skip timed retries under jest — the timers persist across tests and
-  // mutate queue state mid-assertion. Tests that need to assert retry
-  // behaviour can flip the flag explicitly via __setRetriesEnabledForTest.
+  // mutate queue state mid-assertion.
   if (!retriesEnabled) return;
   const attempt = retryAttempts.get(coverArtId) ?? 0;
   if (attempt >= RETRY_BACKOFFS_MS.length) {
@@ -2015,24 +2013,6 @@ export function __resetRetryStateForTest(): void {
   pendingRetries.clear();
   retryAttempts.clear();
   failedRemoteIds.clear();
-}
-
-/**
- * Test-only: retained as a no-op. Cover-art resolution is now DB-authoritative
- * and async ({@link resolveCachedImageUri}); there is no in-memory index to
- * reset. Kept so existing test setup/teardown keeps compiling.
- */
-export function __resetUriIndexForTest(): void {
-  /* no-op — no in-memory index */
-}
-
-/**
- * Test-only: enable / disable the timed retry scheduler. Default is off
- * under jest (see retriesEnabled module-level init). Tests that assert
- * retry behaviour explicitly call this with `true` and clean up.
- */
-export function __setRetriesEnabledForTest(enabled: boolean): void {
-  retriesEnabled = enabled;
 }
 
 async function tryDownloadCover(coverArtId: string): Promise<boolean> {

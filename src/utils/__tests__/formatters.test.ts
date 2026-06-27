@@ -1,7 +1,6 @@
 import {
   formatCompactDuration,
   formatTrackDuration,
-  stripHtml,
   sanitizeBiographyText,
   formatBytes,
   formatSpeed,
@@ -95,30 +94,6 @@ describe('formatTrackDuration', () => {
   it('handles negative input without crashing', () => {
     const result = formatTrackDuration(-1);
     expect(typeof result).toBe('string');
-  });
-});
-
-describe('stripHtml', () => {
-  it('removes HTML tags', () => {
-    expect(stripHtml('<p>Hello</p>')).toBe('Hello');
-    expect(stripHtml('<b>bold</b> text')).toBe('bold text');
-  });
-
-  it('trims whitespace', () => {
-    expect(stripHtml('  <span>a</span>  ')).toBe('a');
-  });
-
-  it('handles nested tags', () => {
-    expect(stripHtml('<div><p><strong>nested</strong></p></div>')).toBe('nested');
-  });
-
-  it('handles empty input', () => {
-    expect(stripHtml('')).toBe('');
-  });
-
-  it('handles self-closing tags', () => {
-    expect(stripHtml('a<br/>b')).toBe('ab');
-    expect(stripHtml('a<img src="x"/>b')).toBe('ab');
   });
 });
 

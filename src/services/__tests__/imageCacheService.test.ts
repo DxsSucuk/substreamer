@@ -304,8 +304,6 @@ jest.mock('../../store/persistence/imageCacheTable', () => ({
     [...mockDbRows.values()]
       .filter((r) => r.coverArtId === id)
       .sort((a, b) => a.size - b.size),
-  getAllCachedImageRows: () =>
-    [...mockDbRows.values()].map((r) => ({ coverArtId: r.coverArtId, size: r.size, ext: r.ext })),
   countCachedImages: jest.fn(() => mockDbRows.size),
   countIncompleteCovers: jest.fn(() => mockFindIncompleteCovers().length),
 }));
@@ -330,7 +328,6 @@ import {
   repairIncompleteImages,
   prefetchCoverArt,
   __resetRetryStateForTest,
-  __resetUriIndexForTest,
   reportBadRemote,
   isRemoteFailed,
 } from '../imageCacheService';
@@ -417,7 +414,6 @@ beforeEach(() => {
   mockAwaitFirstPing.mockClear();
   mockAwaitFirstPing.mockResolvedValue(undefined);
   __resetRetryStateForTest();
-  __resetUriIndexForTest();
   initImageCache();
 });
 
