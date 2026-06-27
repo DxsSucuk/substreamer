@@ -1,9 +1,8 @@
 /**
  * Central data sync orchestration.
  *
- * Phase 1: pass-through stubs. Entry points fan out to the existing store
- * methods in the same order/concurrency the app uses today. Later phases
- * take over the actual walk / change detection / reconciliation logic.
+ * Entry points fan out to the store methods in the order/concurrency the app
+ * uses, and drive the album-detail walk, change detection, and reconciliation.
  *
  * All entry points are idempotent via a `Map<SyncScope, Promise<void>>` kept
  * on `syncStatusStore.inFlight`. Overlapping calls collapse per the subset
@@ -86,7 +85,7 @@ function isSubsetOf(a: SyncScope, b: SyncScope): boolean {
 }
 
 /**
- * Fan out one scope to the underlying store methods. Phase-1 pass-through.
+ * Fan out one scope to the underlying store methods.
  */
 async function performScope(scope: SyncScope): Promise<void> {
   switch (scope) {
@@ -166,9 +165,8 @@ function dispatch(scope: SyncScope, work: () => Promise<void>): Promise<void> {
 /* ------------------------------------------------------------------ */
 
 /**
- * Called once auth is rehydrated and the app is online. Mirrors the startup
- * prefetch chain currently inlined in `_layout.tsx` — in Phase 1 we don't
- * move the call site; in Phase 2 `_layout.tsx` will delegate here.
+ * Called once auth is rehydrated and the app is online. Runs the startup
+ * prefetch chain (delegated here from `_layout.tsx`).
  */
 export async function onStartup(): Promise<void> {
   if (offlineModeStore.getState().offlineMode) {
@@ -206,7 +204,7 @@ function handleServerSwitchIfNeeded(): void {
   const currentIdentity = `${serverUrl}::${username}`;
   const lastKnown = syncStatusStore.getState().lastKnownServerUrl;
   if (lastKnown == null) {
-    // First session for this session's identity; just record it.
+    // No prior identity recorded — store the current one.
     syncStatusStore.getState().setLastKnownMarkers({
       lastKnownServerUrl: currentIdentity,
     });

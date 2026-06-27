@@ -290,9 +290,10 @@ function applyFormatAndBitrate(
 }
 
 /**
- * Build an authenticated stream URL for a given track ID.
- * Mirrors getCoverArtUrl but targets the /rest/stream.view endpoint.
- * Must call ensureCoverArtAuth() before using this.
+ * Build an authenticated stream URL for a track ID. Routes through
+ * `resolveServerBase` (the loopback proxy on iOS self-signed setups) and
+ * carries the configured playback format/bitrate. Call ensureCoverArtAuth()
+ * first.
  */
 export function getStreamUrl(trackId: string): string | null {
   const { isLoggedIn, serverUrl, username } = authStore.getState();

@@ -1487,10 +1487,6 @@ export async function applyPlaybackRate(rate: PlaybackRate): Promise<void> {
 }
 
 /**
- * Shuffle the current queue using Fisher-Yates, then reload RNTP and
- * start playback from the first track of the new order.
- */
-/**
  * Eagerly bump local play stats for a just-scrobbled song on the ephemeral
  * player copies. Updates every matching entry in the module-scope
  * `currentChildQueue` (repeat-one and queues that include the song

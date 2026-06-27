@@ -2173,7 +2173,7 @@ const MIGRATION_TASKS: MigrationTask[] = [
   // Example:
   //
   // {
-  //   id: 8,
+  //   id: 31,
   //   name: 'Reset playback settings',
   //   run: async () => {
   //     // your migration logic here

@@ -113,7 +113,7 @@ export function PlayerTabletLandscape({
   const gradientColors: readonly [string, string, ...string[]] = [gradientTopColor, backgroundEnd];
   const gradientLocations: readonly [number, number, ...number[]] = [0, 0.6];
 
-  // Right panel mode: queue (default), lyrics placeholder, or album info
+  // Right panel mode: queue (default), lyrics, or album info
   const [rightPanelMode, setRightPanelMode] = useState<'queue' | 'lyrics' | 'info'>('queue');
 
   // Album info — fetch only when the user is actually viewing the info panel.
