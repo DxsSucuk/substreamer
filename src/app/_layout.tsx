@@ -278,14 +278,9 @@ async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
   // re-kick), so deferring it is free; worst case it finishes on a later idle.
   runWhenIdle(() => { if (!getCancelled()) void processImageQueue(); });
 
-  // Refresh the home-screen album lists at every cold-start so plays
-  // from other clients show up without the user having to pull-to-
-  // refresh (#148). `refreshAllIfDue(0)` bypasses the
-  // minimum-since-last-refresh check (we WANT a refresh on every
-  // launch) but still respects offline mode and server reachability.
-  await stage('refreshAlbumLists', async () => {
-    await albumListsStore.getState().refreshAllIfDue(0);
-  });
+  // NB: the cold-start home-list refresh is NOT done here — onStartup's
+  // immediate chain already fires it (gated) right after rehydrate, so
+  // running it again here would just double the network fan-out (#148).
 }
 
 /**

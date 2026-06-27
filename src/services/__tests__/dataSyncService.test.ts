@@ -1,5 +1,6 @@
 // Hoisted mock helpers (jest allows `mock`-prefixed names in factories).
 const mockRefreshAll = jest.fn(() => Promise.resolve());
+const mockRefreshAllIfDue = jest.fn((_ms: number) => Promise.resolve(true));
 const mockRefreshRecentlyPlayed = jest.fn(() => Promise.resolve());
 const mockFetchAllAlbums = jest.fn(() => Promise.resolve());
 const mockUpsertAlbums = jest.fn();
@@ -45,6 +46,7 @@ jest.mock('../../store/albumListsStore', () => ({
   albumListsStore: {
     getState: () => ({
       refreshAll: () =>mockRefreshAll(),
+      refreshAllIfDue: (ms: number) =>mockRefreshAllIfDue(ms),
       refreshRecentlyPlayed: () =>mockRefreshRecentlyPlayed(),
     }),
     subscribe: () => () => {},
@@ -342,7 +344,7 @@ describe('dataSyncService — pass-through invocations', () => {
     await new Promise((r) => setImmediate(r));
     expect(mockFetchServerInfo).toHaveBeenCalledTimes(1);
     expect(mockFetchScanStatus).toHaveBeenCalledTimes(1);
-    expect(mockRefreshAll).toHaveBeenCalledTimes(1);
+    expect(mockRefreshAllIfDue).toHaveBeenCalledWith(0);
     expect(mockFetchStarred).toHaveBeenCalledTimes(1);
   });
 
@@ -365,7 +367,7 @@ describe('dataSyncService — pass-through invocations', () => {
     await onOnlineResume();
     await new Promise((r) => setImmediate(r));
     expect(mockFetchServerInfo).toHaveBeenCalledTimes(1);
-    expect(mockRefreshAll).toHaveBeenCalledTimes(1);
+    expect(mockRefreshAllIfDue).toHaveBeenCalledWith(0);
   });
 
   // NOTE: These functions were Phase-1 stubs. As of Phase 4/5/6 each has a

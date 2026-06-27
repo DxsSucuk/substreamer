@@ -240,7 +240,11 @@ async function startupOrResumeFlow(): Promise<void> {
     if (info) serverInfoStore.getState().setServerInfo(info);
   });
   fetchScanStatus();
-  albumListsStore.getState().refreshAll();
+  // Eager home-list refresh (so the home updates promptly), but gated on
+  // offline/reachability via refreshAllIfDue(0) so we don't fire a doomed
+  // fetch when the server isn't reachable. This is the single cold-start
+  // refresh — runDeferredStartup no longer duplicates it.
+  albumListsStore.getState().refreshAllIfDue(0);
   // Startup sync — metadata only, art pre-caches on user-initiated views.
   favoritesStore.getState().fetchStarred({ prefetchCovers: false });
 
