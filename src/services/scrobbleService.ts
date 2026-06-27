@@ -7,7 +7,7 @@
  * the persisted pending-scrobble queue, retry logic, and periodic processing.
  */
 
-import { AppState } from 'react-native';
+import { onAppForeground } from '../utils/onAppForeground';
 
 import { completedScrobbleStore } from '../store/completedScrobbleStore';
 import { offlineModeStore } from '../store/offlineModeStore';
@@ -76,10 +76,8 @@ export function initScrobbleService(): void {
   // without active audio playback. Re-trigger a processing pass when
   // the app returns to the foreground so the queue drains promptly
   // instead of waiting up to a minute (or longer) for the next tick.
-  AppState.addEventListener('change', (next) => {
-    if (next === 'active') {
-      processScrobbles();
-    }
+  onAppForeground(() => {
+    processScrobbles();
   });
 
   // Flush the pending queue when the user leaves offline mode.

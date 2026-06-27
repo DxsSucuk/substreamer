@@ -24,7 +24,7 @@
 
 import { Directory, File, Paths } from 'expo-file-system';
 import { errMessage } from '../utils/errorMessage';
-import { AppState, type AppStateStatus } from 'react-native';
+import { onAppForeground } from '../utils/onAppForeground';
 import { fetch } from 'expo/fetch';
 
 import { deleteDirectoryAsync, deleteFileAsync, existsAsync, listDirectoryAsync, listDirectoryWithSizesAsync } from 'expo-async-fs';
@@ -451,26 +451,24 @@ export function initImageCache(): void {
     cacheDir = dir;
 
     if (!appStateSubscription) {
-      appStateSubscription = AppState.addEventListener('change', (next: AppStateStatus) => {
-        if (next === 'active') {
-          // Wait for the post-resume ping result so the repair pass uses
-          // confirmed connectivity state. AppState 'active' triggers a
-          // ping in connectivityService; we await its outcome here.
-          fireAndForget(
-            (async () => {
-              if (offlineModeStore.getState().offlineMode) return;
-              await awaitFirstPing();
-              if (offlineModeStore.getState().offlineMode) return;
-              // Foreground recovery: a remote load that failed while the app
-              // was backgrounded (or during a transient blip) stays in
-              // failedRemoteIds until something clears it. The offline→online
-              // toggle didn't fire if offlineMode never flipped, so clear here.
-              clearFailedRemoteIds('appstate-active');
-              await repairIncompleteImages('appstate-active');
-            })(),
-            'imageCache.appStateActive',
-          );
-        }
+      appStateSubscription = onAppForeground(() => {
+        // Wait for the post-resume ping result so the repair pass uses
+        // confirmed connectivity state. AppState 'active' triggers a
+        // ping in connectivityService; we await its outcome here.
+        fireAndForget(
+          (async () => {
+            if (offlineModeStore.getState().offlineMode) return;
+            await awaitFirstPing();
+            if (offlineModeStore.getState().offlineMode) return;
+            // Foreground recovery: a remote load that failed while the app
+            // was backgrounded (or during a transient blip) stays in
+            // failedRemoteIds until something clears it. The offline→online
+            // toggle didn't fire if offlineMode never flipped, so clear here.
+            clearFailedRemoteIds('appstate-active');
+            await repairIncompleteImages('appstate-active');
+          })(),
+          'imageCache.appStateActive',
+        );
       });
     }
   } catch (e) {

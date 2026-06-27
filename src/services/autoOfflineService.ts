@@ -1,6 +1,7 @@
 import NetInfo, { type NetInfoState } from '@react-native-community/netinfo';
 import * as Location from 'expo-location';
-import { AppState, Linking, Platform, type NativeEventSubscription } from 'react-native';
+import { Linking, Platform, type NativeEventSubscription } from 'react-native';
+import { onAppForeground } from '../utils/onAppForeground';
 
 import { autoOfflineStore } from '../store/autoOfflineStore';
 import { offlineModeStore } from '../store/offlineModeStore';
@@ -50,12 +51,10 @@ function subscribe(): void {
 
   unsubscribeNetInfo = NetInfo.addEventListener(handleNetworkChange);
 
-  appStateSubscription = AppState.addEventListener('change', (nextState) => {
-    if (nextState === 'active') {
-      // NetInfo.refresh() is a native bridge call that can reject; never let a
-      // failed probe become an unhandled rejection — just skip this evaluation.
-      NetInfo.refresh().then(handleNetworkChange).catch(() => {});
-    }
+  appStateSubscription = onAppForeground(() => {
+    // NetInfo.refresh() is a native bridge call that can reject; never let a
+    // failed probe become an unhandled rejection — just skip this evaluation.
+    NetInfo.refresh().then(handleNetworkChange).catch(() => {});
   });
 }
 

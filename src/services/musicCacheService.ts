@@ -23,7 +23,7 @@
 
 import { Directory, File, Paths } from 'expo-file-system';
 import { errMessage } from '../utils/errorMessage';
-import { AppState, type AppStateStatus } from 'react-native';
+import { onAppForeground } from '../utils/onAppForeground';
 
 import i18n from '../i18n/i18n';
 import {
@@ -193,10 +193,8 @@ export function initMusicCache(): void {
     cacheDir = dir;
 
     if (!appStateSubscription) {
-      appStateSubscription = AppState.addEventListener('change', (next: AppStateStatus) => {
-        if (next === 'active' && !isProcessing) {
-          recoverStalledDownloadsAsync();
-        }
+      appStateSubscription = onAppForeground(() => {
+        if (!isProcessing) recoverStalledDownloadsAsync();
       });
     }
   } catch (e) {

@@ -1,6 +1,7 @@
 import NetInfo, { type NetInfoState } from '@react-native-community/netinfo';
 import { errMessage } from '../utils/errorMessage';
-import { AppState, type NativeEventSubscription } from 'react-native';
+import { type NativeEventSubscription } from 'react-native';
+import { onAppForeground } from '../utils/onAppForeground';
 
 import { getCertificateInfo, isSSLError } from '../../modules/expo-ssl-trust/src';
 import { authStore } from '../store/authStore';
@@ -262,11 +263,9 @@ export function startMonitoring(): void {
 
   unsubscribeNetInfo = NetInfo.addEventListener(handleNetInfoChange);
 
-  appStateSubscription = AppState.addEventListener('change', (next) => {
-    if (next === 'active') {
-      clearPingTimer();
-      pingServer();
-    }
+  appStateSubscription = onAppForeground(() => {
+    clearPingTimer();
+    pingServer();
   });
 }
 

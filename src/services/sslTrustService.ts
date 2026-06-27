@@ -1,4 +1,4 @@
-import { AppState } from 'react-native';
+import { onAppForeground } from '../utils/onAppForeground';
 
 import {
   initTrustStore,
@@ -88,8 +88,8 @@ export function initSslTrustStore(): void {
   // The local proxy's listener can drop while the app is suspended (no audio
   // playing); refresh the cached port when we return to the foreground so the
   // next request hits the live port. No-op on Android / when no proxy runs.
-  AppState.addEventListener('change', (state) => {
-    if (state === 'active') fireAndForget(refreshProxyInfo(), 'sslTrust.refreshProxyInfo');
+  onAppForeground(() => {
+    fireAndForget(refreshProxyInfo(), 'sslTrust.refreshProxyInfo');
   });
 
   // Mirror the NATIVE store (source of truth) into the JS cache at boot. The
