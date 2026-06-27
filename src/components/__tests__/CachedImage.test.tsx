@@ -284,8 +284,10 @@ describe('decode errors', () => {
 
     // Simulate the Image layer failing to decode.
     const img = tree.UNSAFE_queryAllByType(RNImage)[0];
-    act(() => {
+    await act(async () => {
       img.props.onError();
+      await Promise.resolve();
+      await Promise.resolve();
     });
 
     expect(mockReportBadCache).toHaveBeenCalledWith('abc', 150);
@@ -302,8 +304,10 @@ describe('decode errors', () => {
     const tree = render(<CachedImage coverArtId="abc" size={150} />);
     await flush();
     const img = tree.UNSAFE_queryAllByType(RNImage)[0];
-    act(() => {
+    await act(async () => {
       img.props.onError();
+      await Promise.resolve();
+      await Promise.resolve();
     });
     expect(mockReportBadRemote).toHaveBeenCalledWith('abc');
     expect(mockReportBadCache).not.toHaveBeenCalled();
@@ -314,7 +318,7 @@ describe('decode errors', () => {
     const tree = render(<CachedImage coverArtId="abc" size={150} />);
     await flush();
     const img = tree.UNSAFE_queryAllByType(RNImage)[0];
-    act(() => { img.props.onError(); });
+    await act(async () => { img.props.onError(); await Promise.resolve(); await Promise.resolve(); });
 
     // After fallthrough — remote.
     expect(findImage(tree)?.uri).toContain('id=abc');
@@ -359,7 +363,7 @@ describe('id changes', () => {
 
     // Error on abc — flag goes up, switches to remote on next render.
     const img = tree.UNSAFE_queryAllByType(RNImage)[0];
-    act(() => { img.props.onError(); });
+    await act(async () => { img.props.onError(); await Promise.resolve(); await Promise.resolve(); });
     expect(mockReportBadCache).toHaveBeenCalledWith('abc', 150);
 
     // Re-render with a different id — flag resets, cached file for the new

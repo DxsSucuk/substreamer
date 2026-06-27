@@ -74,9 +74,17 @@ function resetStores() {
 }
 
 beforeEach(() => {
+  // Fake timers keep BottomSheet's RAF-deferred close queued rather than firing
+  // after the test ends — these tests assert on the stores set synchronously by
+  // the press handlers, not on the close animation.
+  jest.useFakeTimers();
   resetStores();
   Platform.OS = 'android';
   jest.clearAllMocks();
+});
+
+afterEach(() => {
+  jest.useRealTimers();
 });
 
 describe('StreamFormatSheet', () => {

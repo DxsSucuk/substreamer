@@ -9,7 +9,7 @@ jest.mock('../../store/persistence/kvStorage', () =>
 );
 
 import React from 'react';
-import { render } from '@testing-library/react-native';
+import { render, act } from '@testing-library/react-native';
 
 import { authStore } from '../../store/authStore';
 import { musicCacheStore } from '../../store/musicCacheStore';
@@ -189,14 +189,14 @@ describe('PlaybackToast status transitions', () => {
 
   it('renders the loading label when status flips to loading', () => {
     const { rerender, getByText } = render(<PlaybackToast />);
-    playbackToastStore.setState({ status: 'loading' });
+    act(() => { playbackToastStore.setState({ status: 'loading' }); });
     rerender(<PlaybackToast />);
     expect(getByText('Starting playback…')).toBeTruthy();
   });
 
   it('renders success state with default nowPlaying label and the success icon', () => {
     const { rerender, getByText } = render(<PlaybackToast />);
-    playbackToastStore.setState({ status: 'success', successLabel: null });
+    act(() => { playbackToastStore.setState({ status: 'success', successLabel: null }); });
     rerender(<PlaybackToast />);
     expect(getByText('Now Playing')).toBeTruthy();
     expect(getByText('checkmark-circle')).toBeTruthy();
@@ -204,14 +204,14 @@ describe('PlaybackToast status transitions', () => {
 
   it('renders success state with a custom successLabel when provided', () => {
     const { rerender, getByText } = render(<PlaybackToast />);
-    playbackToastStore.setState({ status: 'success', successLabel: 'Saved' });
+    act(() => { playbackToastStore.setState({ status: 'success', successLabel: 'Saved' }); });
     rerender(<PlaybackToast />);
     expect(getByText('Saved')).toBeTruthy();
   });
 
   it('renders the error label and icon when status flips to error', () => {
     const { rerender, getByText } = render(<PlaybackToast />);
-    playbackToastStore.setState({ status: 'error' });
+    act(() => { playbackToastStore.setState({ status: 'error' }); });
     rerender(<PlaybackToast />);
     expect(getByText('Playback Error')).toBeTruthy();
     expect(getByText('close-circle')).toBeTruthy();
@@ -219,18 +219,18 @@ describe('PlaybackToast status transitions', () => {
 
   it('skips loading entrance when transitioning loading → success', () => {
     const { rerender, getByText } = render(<PlaybackToast />);
-    playbackToastStore.setState({ status: 'loading' });
+    act(() => { playbackToastStore.setState({ status: 'loading' }); });
     rerender(<PlaybackToast />);
-    playbackToastStore.setState({ status: 'success', successLabel: null });
+    act(() => { playbackToastStore.setState({ status: 'success', successLabel: null }); });
     rerender(<PlaybackToast />);
     expect(getByText('Now Playing')).toBeTruthy();
   });
 
   it('returns to idle clears state without crashing', () => {
     const { rerender } = render(<PlaybackToast />);
-    playbackToastStore.setState({ status: 'success', successLabel: 'Hi' });
+    act(() => { playbackToastStore.setState({ status: 'success', successLabel: 'Hi' }); });
     rerender(<PlaybackToast />);
-    playbackToastStore.setState({ status: 'idle', successLabel: null });
+    act(() => { playbackToastStore.setState({ status: 'idle', successLabel: null }); });
     expect(() => rerender(<PlaybackToast />)).not.toThrow();
   });
 });

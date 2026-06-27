@@ -59,6 +59,10 @@ import { sleepTimerStore } from '../../store/sleepTimerStore';
 const { SleepTimerSheet } = require('../SleepTimerSheet');
 
 beforeEach(() => {
+  // Fake timers keep BottomSheet's RAF-deferred close (setInternalVisible(false))
+  // queued rather than firing after the test ends — these tests assert on the
+  // store, which the press handler sets synchronously, not on the close anim.
+  jest.useFakeTimers();
   sleepTimerStore.setState({
     endTime: null,
     endOfTrack: false,
@@ -66,6 +70,10 @@ beforeEach(() => {
     sheetVisible: true,
   });
   jest.clearAllMocks();
+});
+
+afterEach(() => {
+  jest.useRealTimers();
 });
 
 describe('SleepTimerSheet', () => {

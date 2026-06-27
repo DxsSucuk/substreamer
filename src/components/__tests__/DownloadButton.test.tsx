@@ -1,6 +1,7 @@
 jest.mock('../../store/persistence/kvStorage', () => require('../../store/persistence/__mocks__/kvStorage'));
 
 import React from 'react';
+import { ActivityIndicator } from 'react-native';
 import { render, fireEvent } from '@testing-library/react-native';
 
 const mockEnqueueAlbumDownload = jest.fn();
@@ -182,23 +183,17 @@ describe('DownloadButton', () => {
   });
 
   it('cancels download on press when status is queued', () => {
-    // Render at 'none' first so we have a reachable Pressable (the outline
-    // arrow), then seed the queue and press it. The handler reads fresh
-    // state at press time.
-    const { getByText } = render(<DownloadButton itemId="a1" type="album" />);
+    // Queued state renders an ActivityIndicator; pressing the button cancels
+    // the in-flight queue entry by its queueId.
     musicCacheStore.setState({
       cachedItems: {},
       downloadQueue: [
         { queueId: 'q1', itemId: 'a1', type: 'album', status: 'queued' },
       ],
     } as any);
-    fireEvent.press(getByText('arrow-down-circle-outline').parent!);
-    // onPress re-reads from musicCacheStore.getState() for the queue lookup,
-    // but the render-time `downloadStatus` derives from the hook's snapshot
-    // that captured "none" (because we mutated after render). However the
-    // branch we exercise is the re-read path.
-    // So instead — just verify that with downloadStatus=='none' we enqueue.
-    expect(mockEnqueueAlbumDownload).toHaveBeenCalledWith('a1');
+    const { UNSAFE_getByType } = render(<DownloadButton itemId="a1" type="album" />);
+    fireEvent.press(UNSAFE_getByType(ActivityIndicator).parent!);
+    expect(mockCancelDownload).toHaveBeenCalledWith('q1');
   });
 
   it('renders CircularProgress while downloading and press cancels', () => {
