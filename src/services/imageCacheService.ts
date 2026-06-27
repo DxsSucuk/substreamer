@@ -68,7 +68,7 @@ import {
   resetStalledImageRows,
 } from '../store/persistence/imageDownloadQueueTable';
 // Synchronous adapter: the image-queue meta blob is read/written through a
-// synchronous hand-rolled API (see readImageQueueState / writeImageQueueState).
+// synchronous hand-rolled API (see readImageQueueMeta / writeImageQueueMeta).
 import { kvStorageSync as kvStorage } from '../store/persistence';
 import { awaitFirstPing } from './connectivityService';
 import { logImageCache } from './imageCacheLogger';
@@ -231,7 +231,7 @@ const cacheUpdateListeners = new Map<string, Set<() => void>>();
  * Subscribe to cache-update events for a specific coverArtId. The
  * listener fires exactly once per (download-success OR resize-success)
  * event after subscribing — fire-and-forget; the listener is
- * responsible for calling `getCachedImageUri` to read the new state.
+ * responsible for calling `resolveCachedImageUri` to read the new state.
  *
  * Returns an unsubscribe function. Safe to call from useEffect.
  */

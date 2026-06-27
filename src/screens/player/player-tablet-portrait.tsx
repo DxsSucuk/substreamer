@@ -260,7 +260,6 @@ export function PlayerTabletPortrait() {
               currentTrackIndex={currentTrackIndex}
               colors={colors}
               queueColors={queueColors}
-              offlineMode={offlineMode}
               onQueueItemPress={handleQueueItemPress}
               onQueueItemLongPress={handleQueueItemLongPress}
               onShareQueue={handleShareQueue}

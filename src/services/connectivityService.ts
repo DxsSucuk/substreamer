@@ -191,10 +191,9 @@ function handleServerResult(reachable: boolean): void {
       store.setServerReachable(false);
       clearReconnectedTimer();
       store.setBannerState('unreachable');
-      // Trigger auto-failover via the registered hook (failoverService).
-      // Gated internally by mode + slot + secondary configured + min-dwell.
-      // Manual-mode users see the unreachable banner as today; auto-mode
-      // users get a transparent switch to secondary on the next event loop tick.
+      // Offer failover via the registered hook (failoverService): if the
+      // other slot pings OK, the unreachable banner becomes a one-tap "switch"
+      // offer. There is no automatic switching — the user decides.
       invokeHook(onServerDownHook, 'failover');
     }
   }

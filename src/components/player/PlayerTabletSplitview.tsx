@@ -367,9 +367,6 @@ const PanelHeader = memo(function PanelHeader({
 /* ------------------------------------------------------------------ */
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
   loadingFallback: {
     flex: 1,
     alignItems: 'center',

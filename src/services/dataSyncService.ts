@@ -886,4 +886,4 @@ albumListsStore.subscribe((state, prev) => {
 /*  Internals exposed for tests                                        */
 /* ------------------------------------------------------------------ */
 
-export const __internal = { isSubsetOf, performScope, dispatch };
+export const __internal = { isSubsetOf, performScope };

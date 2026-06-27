@@ -26,7 +26,6 @@ export interface PlayerModeContentProps {
   colors: ThemeColors;
   /** Muted-primary variant for the active queue row highlight. */
   queueColors: ThemeColors;
-  offlineMode: boolean;
   onQueueItemPress: (index: number) => void;
   onQueueItemLongPress: (track: Child) => void;
   onShareQueue: () => void;
