@@ -1,7 +1,6 @@
 import NetInfo, { type NetInfoState } from '@react-native-community/netinfo';
 import { errMessage } from '../utils/errorMessage';
-import { type NativeEventSubscription } from 'react-native';
-import { onAppForeground } from '../utils/onAppForeground';
+import { AppState, type NativeEventSubscription } from 'react-native';
 
 import { getCertificateInfo, isSSLError } from '../../modules/expo-ssl-trust/src';
 import { authStore } from '../store/authStore';
@@ -61,6 +60,9 @@ let consecutiveFailures = 0;
 // Last (isConnected, type, isInternetReachable) seen — used to skip the
 // immediate ping on WiFi signal/BSSID noise that doesn't change connectivity.
 let lastNetKey: string | null = null;
+// Paused while the app is backgrounded — stops the ping heartbeat (and the
+// WiFi-event-driven pings) from running during background audio playback.
+let monitoringPaused = false;
 
 // First-ping signal: lets background tasks (e.g. image-cache repair) gate
 // destructive decisions on a confirmed server-reachability result rather
@@ -116,6 +118,9 @@ function clearReconnectedTimer(): void {
 
 function schedulePing(): void {
   clearPingTimer();
+  // Don't reschedule while backgrounded — an in-flight ping's completion must
+  // not restart the heartbeat. Foreground resume re-pings explicitly.
+  if (monitoringPaused) return;
   const { isServerReachable } = connectivityStore.getState();
   // Speed up polling as soon as we see ANY failure (not only after we've
   // flipped to unreachable). Catches transient blips faster so the
@@ -258,8 +263,9 @@ function handleNetInfoChange(state: NetInfoState): void {
   lastNetKey = netKey;
 
   // NetInfo change is a hint — trigger an immediate ping for fast response.
-  // The ping result is the ground truth for server reachability.
-  if (!pingInFlight) {
+  // The ping result is the ground truth for server reachability. Skip while
+  // backgrounded so background audio playback doesn't drive a ping per event.
+  if (!pingInFlight && !monitoringPaused) {
     clearPingTimer();
     pingServer();
   }
@@ -273,12 +279,22 @@ export function startMonitoring(): void {
   firstPingCompleted = false;
   consecutiveFailures = 0;
   lastNetKey = null;
+  monitoringPaused = false;
 
   unsubscribeNetInfo = NetInfo.addEventListener(handleNetInfoChange);
 
-  appStateSubscription = onAppForeground(() => {
-    clearPingTimer();
-    pingServer();
+  appStateSubscription = AppState.addEventListener('change', (next) => {
+    if (next === 'active') {
+      // Resume: re-ping immediately and restart the heartbeat.
+      monitoringPaused = false;
+      clearPingTimer();
+      pingServer();
+    } else {
+      // Background / inactive: stop the heartbeat so it doesn't keep pinging
+      // (and churning on WiFi NetInfo events) during background playback (#200).
+      monitoringPaused = true;
+      clearPingTimer();
+    }
   });
 }
 
