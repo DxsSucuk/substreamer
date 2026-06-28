@@ -15,6 +15,7 @@ import { useGridColumns, getGridItemPadding, GRID_GAP, LIST_PADDING } from '../h
 import { useRefreshControlKey } from '../hooks/useRefreshControlKey';
 import { useTheme } from '../hooks/useTheme';
 import { EmptyState } from './EmptyState';
+import { type IoniconsName } from '../utils/iconNames';
 import type { ArtistID3 } from '../services/subsonicService';
 import { getSortFirstLetter } from '../utils/sortHelpers';
 import { serverInfoStore } from '../store/serverInfoStore';
@@ -48,7 +49,7 @@ export interface ArtistListViewProps {
   /** Custom empty-state subtitle */
   emptySubtitle?: string;
   /** Optional Ionicons icon name for empty state */
-  emptyIcon?: string;
+  emptyIcon?: IoniconsName;
   /** Show the A-Z alphabet scroller on the right */
   showAlphabetScroller?: boolean;
   /** When this value changes, the list scrolls to the top */
@@ -118,7 +119,7 @@ export function ArtistListView({
   const EmptyComponent = useMemo(
     () => (
       <EmptyState
-        icon={(emptyIcon as any) ?? 'people-outline'}
+        icon={emptyIcon ?? 'people-outline'}
         title={resolvedEmptyMessage}
         subtitle={resolvedEmptySubtitle}
       />

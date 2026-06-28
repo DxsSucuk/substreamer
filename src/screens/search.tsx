@@ -116,25 +116,28 @@ export function SearchScreen() {
     filtered.albums.length > 0 ||
     filtered.songs.length > 0;
 
-  const sections: ResultSection[] = [];
-  if (filtered.artists.length > 0) {
-    sections.push({
-      titleKey: 'artists',
-      data: filtered.artists.map((a) => ({ type: 'artist' as const, data: a })),
-    });
-  }
-  if (filtered.albums.length > 0) {
-    sections.push({
-      titleKey: 'albums',
-      data: filtered.albums.map((a) => ({ type: 'album' as const, data: a })),
-    });
-  }
-  if (filtered.songs.length > 0) {
-    sections.push({
-      titleKey: 'songs',
-      data: filtered.songs.map((s) => ({ type: 'song' as const, data: s })),
-    });
-  }
+  const sections: ResultSection[] = useMemo(() => {
+    const result: ResultSection[] = [];
+    if (filtered.artists.length > 0) {
+      result.push({
+        titleKey: 'artists',
+        data: filtered.artists.map((a) => ({ type: 'artist' as const, data: a })),
+      });
+    }
+    if (filtered.albums.length > 0) {
+      result.push({
+        titleKey: 'albums',
+        data: filtered.albums.map((a) => ({ type: 'album' as const, data: a })),
+      });
+    }
+    if (filtered.songs.length > 0) {
+      result.push({
+        titleKey: 'songs',
+        data: filtered.songs.map((s) => ({ type: 'song' as const, data: s })),
+      });
+    }
+    return result;
+  }, [filtered]);
 
   const [refreshing, setRefreshing] = useState(false);
 

@@ -18,6 +18,7 @@ import type { Playlist } from '../services/subsonicService';
 import { getSortFirstLetter } from '../utils/sortHelpers';
 import { serverInfoStore } from '../store/serverInfoStore';
 import { EmptyState } from './EmptyState';
+import { type IoniconsName } from '../utils/iconNames';
 import { InsetRefreshSpacer } from './InsetRefreshSpacer';
 import { PlaylistCard } from './PlaylistCard';
 import { PlaylistRow } from './PlaylistRow';
@@ -50,7 +51,7 @@ export interface PlaylistListViewProps {
   /** Custom empty-state subtitle */
   emptySubtitle?: string;
   /** Ionicons icon name for the empty state */
-  emptyIcon?: string;
+  emptyIcon?: IoniconsName;
   /** When this value changes, the list scrolls to the top */
   scrollToTopTrigger?: string;
   /** Extra top padding so content starts below a floating header but scrolls behind it */
@@ -118,7 +119,7 @@ export function PlaylistListView({
   const EmptyComponent = useMemo(
     () => (
       <EmptyState
-        icon={emptyIcon as any}
+        icon={emptyIcon}
         title={resolvedEmptyMessage}
         subtitle={resolvedEmptySubtitle}
       />

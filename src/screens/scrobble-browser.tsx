@@ -105,7 +105,10 @@ export function ScrobbleBrowserScreen() {
     [pendingScrobbles],
   );
 
-  const keyExtractor = useCallback((item: Scrobble, index: number) => `${item.id}-${index}`, []);
+  // `item.id` is a unique per-event id (`${time}-${random}`) for both pending
+  // and completed scrobbles, so it needs no index suffix — and an index-free
+  // key lets FlashList recycle rows when a new scrobble is prepended.
+  const keyExtractor = useCallback((item: Scrobble) => item.id, []);
 
   const renderItem = useCallback(
     ({ item }: { item: Scrobble }) => <ScrobbleRow scrobble={item} colors={colors} />,

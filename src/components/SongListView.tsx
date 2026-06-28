@@ -16,6 +16,7 @@ import { useRefreshControlKey } from '../hooks/useRefreshControlKey';
 import { useTheme } from '../hooks/useTheme';
 import { AlphabetScroller } from './AlphabetScroller';
 import { EmptyState } from './EmptyState';
+import { type IoniconsName } from '../utils/iconNames';
 import { InsetRefreshSpacer } from './InsetRefreshSpacer';
 import type { Child } from '../services/subsonicService';
 import { SongCard } from './SongCard';
@@ -52,7 +53,7 @@ export interface SongListViewProps {
   /** Custom empty-state subtitle */
   emptySubtitle?: string;
   /** Optional Ionicons icon name for empty state */
-  emptyIcon?: string;
+  emptyIcon?: IoniconsName;
   /** When this value changes, the list scrolls to the top */
   scrollToTopTrigger?: string;
   /** Extra top padding so content starts below a floating header but scrolls behind it */
@@ -159,7 +160,7 @@ export function SongListView({
   const EmptyComponent = useMemo(
     () => (
       <EmptyState
-        icon={(emptyIcon as any) ?? 'musical-notes-outline'}
+        icon={emptyIcon ?? 'musical-notes-outline'}
         title={resolvedEmptyMessage}
         subtitle={resolvedEmptySubtitle}
       />

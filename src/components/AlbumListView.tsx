@@ -15,6 +15,7 @@ import { useGridColumns, getGridItemPadding, GRID_GAP, LIST_PADDING } from '../h
 import { useRefreshControlKey } from '../hooks/useRefreshControlKey';
 import { useTheme } from '../hooks/useTheme';
 import { EmptyState } from './EmptyState';
+import { type IoniconsName } from '../utils/iconNames';
 import type { AlbumID3 } from '../services/subsonicService';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import { getSortFirstLetter } from '../utils/sortHelpers';
@@ -49,7 +50,7 @@ export interface AlbumListViewProps {
   /** Custom empty-state subtitle */
   emptySubtitle?: string;
   /** Optional Ionicons icon name for empty state */
-  emptyIcon?: string;
+  emptyIcon?: IoniconsName;
   /** Show the A-Z alphabet scroller on the right */
   showAlphabetScroller?: boolean;
   /** When this value changes, the list scrolls to the top */
@@ -119,7 +120,7 @@ export function AlbumListView({
   const EmptyComponent = useMemo(
     () => (
       <EmptyState
-        icon={(emptyIcon as any) ?? 'albums-outline'}
+        icon={emptyIcon ?? 'albums-outline'}
         title={resolvedEmptyMessage}
         subtitle={resolvedEmptySubtitle}
       />
