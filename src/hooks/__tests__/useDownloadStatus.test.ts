@@ -1,9 +1,7 @@
 jest.mock('../../store/persistence/kvStorage', () => require('../../store/persistence/__mocks__/kvStorage'));
 
-const mockGetLocalTrackUri = jest.fn();
 const mockGetTrackQueueStatus = jest.fn();
 jest.mock('../../services/musicCacheService', () => ({
-  getLocalTrackUri: (...a: unknown[]) => (mockGetLocalTrackUri as any)(...a),
   getTrackQueueStatus: (...a: unknown[]) => (mockGetTrackQueueStatus as any)(...a),
 }));
 
@@ -27,9 +25,8 @@ function makeItem(overrides: Partial<CachedItemMeta> = {}): CachedItemMeta {
 }
 
 beforeEach(() => {
-  mockGetLocalTrackUri.mockReset();
   mockGetTrackQueueStatus.mockReset();
-  musicCacheStore.setState({ cachedItems: {}, downloadQueue: [] } as any);
+  musicCacheStore.setState({ cachedItems: {}, cachedSongs: {}, downloadQueue: [] } as any);
 });
 
 describe('useDownloadStatus', () => {
@@ -39,21 +36,19 @@ describe('useDownloadStatus', () => {
   });
 
   describe('song', () => {
-    it('returns "complete" when song has a local URI', () => {
-      mockGetLocalTrackUri.mockReturnValue('file:///song.mp3');
+    it('returns "complete" when the song has a cached_songs row', () => {
+      musicCacheStore.setState({ cachedSongs: { s1: { id: 's1' } } } as any);
       const { result } = renderHook(() => useDownloadStatus('song', 's1'));
       expect(result.current).toBe('complete');
     });
 
-    it('returns queue status when not locally present', () => {
-      mockGetLocalTrackUri.mockReturnValue(null);
+    it('returns queue status when not cached', () => {
       mockGetTrackQueueStatus.mockReturnValue('downloading');
       const { result } = renderHook(() => useDownloadStatus('song', 's1'));
       expect(result.current).toBe('downloading');
     });
 
     it('returns "none" for a song not cached or queued', () => {
-      mockGetLocalTrackUri.mockReturnValue(null);
       mockGetTrackQueueStatus.mockReturnValue(null);
       const { result } = renderHook(() => useDownloadStatus('song', 's1'));
       expect(result.current).toBe('none');

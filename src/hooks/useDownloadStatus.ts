@@ -9,7 +9,7 @@
 
 import { useCallback } from 'react';
 
-import { getLocalTrackUri, getTrackQueueStatus } from '../services/musicCacheService';
+import { getTrackQueueStatus } from '../services/musicCacheService';
 import { musicCacheStore, type MusicCacheState } from '../store/musicCacheStore';
 import { isPartialAlbum } from '../store/persistence/cachedItemHelpers';
 
@@ -23,8 +23,8 @@ export type DownloadStatus =
 /**
  * Returns the download status for the given item.
  *
- * - **song:** checks the in-memory track URI map for `'complete'`,
- *   then falls back to queue membership for `'queued'`/`'downloading'`.
+ * - **song:** a cached_songs row means `'complete'`, then falls back to
+ *   queue membership for `'queued'`/`'downloading'`.
  * - **album/playlist:** a complete cached row wins outright. A partial album
  *   row with an active queue entry (top-up in flight) reports as
  *   `'downloading'` / `'queued'` so the download button reflects in-progress
@@ -41,7 +41,13 @@ export function useDownloadStatus(
         if (!id) return 'none';
 
         if (type === 'song') {
-          if (getLocalTrackUri(id)) return 'complete';
+          // Read the store row, NOT the in-memory `trackUriMap`, so this
+          // selector re-runs reactively. `removeCachedItem` drops the
+          // cached_songs row synchronously with its store notification,
+          // whereas `trackUriMap.delete` runs afterwards (off-thread delete
+          // path) and wouldn't re-trigger subscribers — which left a stale
+          // "downloaded" icon until the next unrelated cache change.
+          if (s.cachedSongs[id]) return 'complete';
           const queueStatus = getTrackQueueStatus(id);
           if (queueStatus) return queueStatus;
           return 'none';
