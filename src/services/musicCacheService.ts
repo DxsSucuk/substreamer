@@ -392,17 +392,9 @@ export async function reconcileMusicCacheAsync(): Promise<void> {
   const dir = ensureCacheDir();
   if (!dir.exists) return;
 
-  let orphanFilesDeleted = 0;
-  let staleTmpDeleted = 0;
-  let missingSongIds = 0;
-  let orphanItemIds = 0;
-
-  /* -------- Pass 1: FS -> SQL --------
-   * Walk each top-level album directory (every cached song lives at
-   * {music-cache}/{albumId}/{songId}.{ext} in v2). Top-level entries
-   * whose name isn't a valid album_id from SQL are swept at the end —
-   * anything here that isn't an albumId is stale v1 playlist/starred
-   * directory leftovers from a partial migration. */
+  // Top-level entries on disk. Every cached song lives at
+  // {music-cache}/{albumId}/{songId}.{ext} in v2; top-level names that
+  // aren't valid album_ids are stale v1 leftovers, swept in pass 4.
   let topLevelNames: string[];
   try {
     const result = await listDirectoryAsync(dir.uri);
@@ -413,11 +405,53 @@ export async function reconcileMusicCacheAsync(): Promise<void> {
 
   // Set of album_ids the SQL store knows about. Anything else at top level
   // is stale (v1 playlist/__starred__/partially-migrated stragglers).
+  // Snapshotted before passes 2–3 mutate the store, so pass 4's safety gate
+  // reflects the pre-reconcile state.
   const validAlbumIds = new Set<string>();
-  const { cachedSongs: allCachedSongs } = musicCacheStore.getState();
-  for (const s of Object.values(allCachedSongs)) {
+  for (const s of Object.values(musicCacheStore.getState().cachedSongs)) {
     validAlbumIds.add(s.albumId || UNKNOWN_ALBUM_ID);
   }
+
+  const { orphanFilesDeleted, staleTmpDeleted } = await reconcileFilesToRows(
+    dir,
+    topLevelNames,
+    validAlbumIds,
+  );
+  const missingSongIds = reconcileRowsToFiles();
+  const orphanItemIds = removeOrphanItemRows();
+  const staleDirsDeleted = sweepStaleTopLevelDirs(dir, topLevelNames, validAlbumIds);
+
+  if (
+    orphanFilesDeleted > 0 ||
+    staleTmpDeleted > 0 ||
+    missingSongIds > 0 ||
+    orphanItemIds > 0 ||
+    staleDirsDeleted > 0
+  ) {
+    // eslint-disable-next-line no-console
+    console.warn('[musicCacheService] reconciliation healed drift:', {
+      orphanFilesDeleted,
+      staleTmpDeleted,
+      missingSongIds,
+      orphanItemIds,
+      staleDirsDeleted,
+    });
+  }
+}
+
+/**
+ * Pass 1 (FS → SQL): walk each known album directory and delete files with no
+ * matching SQL row (orphans) plus any stale `.tmp` remnants, then remove an
+ * album dir that no song references once it's empty on disk. Non-album
+ * top-level entries are left to {@link sweepStaleTopLevelDirs}.
+ */
+async function reconcileFilesToRows(
+  dir: Directory,
+  topLevelNames: string[],
+  validAlbumIds: Set<string>,
+): Promise<{ orphanFilesDeleted: number; staleTmpDeleted: number }> {
+  let orphanFilesDeleted = 0;
+  let staleTmpDeleted = 0;
 
   for (const albumId of topLevelNames) {
     // Stale non-album top-level entry — delete it wholesale in the sweep.
@@ -474,7 +508,15 @@ export async function reconcileMusicCacheAsync(): Promise<void> {
     }
   }
 
-  /* -------- Pass 2: SQL -> FS -------- */
+  return { orphanFilesDeleted, staleTmpDeleted };
+}
+
+/**
+ * Pass 2 (SQL → FS): for every cached song whose file is missing on disk,
+ * unwind its edges from every item that references it and drop its in-memory
+ * map entries. The store purges orphaned song rows by refcount.
+ */
+function reconcileRowsToFiles(): number {
   // Snapshot cachedSongs before mutation — iterating while removing edges
   // is unsafe.
   const songsSnapshot = Object.values(musicCacheStore.getState().cachedSongs);
@@ -484,6 +526,7 @@ export async function reconcileMusicCacheAsync(): Promise<void> {
     if (!file.exists) missingSongs.push(song);
   }
 
+  let missingSongIds = 0;
   for (const song of missingSongs) {
     missingSongIds++;
 
@@ -519,33 +562,44 @@ export async function reconcileMusicCacheAsync(): Promise<void> {
     trackToItems.delete(song.id);
   }
 
-  /* -------- Pass 3: orphan item rows -------- */
+  return missingSongIds;
+}
+
+/** Pass 3: remove item rows left with no songs after pass 2. */
+function removeOrphanItemRows(): number {
   const orphanItems: string[] = [];
   for (const item of Object.values(musicCacheStore.getState().cachedItems)) {
     if (item.songIds.length === 0) orphanItems.push(item.itemId);
   }
+  let orphanItemIds = 0;
   for (const itemId of orphanItems) {
     musicCacheStore.getState().removeCachedItem(itemId);
     orphanItemIds++;
   }
+  return orphanItemIds;
+}
 
-  /* -------- Pass 4: sweep non-album top-level directories --------
-   * Anything under {music-cache}/ whose name isn't a known album_id is
-   * stale — leftover v1 playlist/__starred__ directories from a partial
-   * Task-14 migration, or other junk. Delete it.
-   *
-   * CRITICAL SAFETY GATE: skip this pass entirely if we have no valid
-   * album_ids. `cached_songs` is empty in two scenarios, neither of which
-   * should trigger a sweep:
-   *   (a) Fresh install — there's nothing on disk to sweep, so skipping
-   *       is a cheap no-op.
-   *   (b) Migration task #14 hasn't completed yet (an earlier task
-   *       threw and runMigrations halted) — the v1 cache directories are
-   *       still on disk in their original shape waiting to be migrated.
-   *       Sweeping them here would be catastrophic data loss.
-   * Without this gate, scenario (b) would wipe every cached file the
-   * user has before task #14 ever gets a chance to run on the next
-   * launch. */
+/**
+ * Pass 4: sweep non-album top-level directories — leftover v1 playlist /
+ * __starred__ dirs from a partial Task-14 migration, or other junk.
+ *
+ * CRITICAL SAFETY GATE: skip this pass entirely if we have no valid
+ * album_ids. `cached_songs` is empty in two scenarios, neither of which
+ * should trigger a sweep:
+ *   (a) Fresh install — there's nothing on disk to sweep, so skipping
+ *       is a cheap no-op.
+ *   (b) Migration task #14 hasn't completed yet (an earlier task threw and
+ *       runMigrations halted) — the v1 cache directories are still on disk
+ *       in their original shape waiting to be migrated. Sweeping them here
+ *       would be catastrophic data loss.
+ * Without this gate, scenario (b) would wipe every cached file the user has
+ * before task #14 ever gets a chance to run on the next launch.
+ */
+function sweepStaleTopLevelDirs(
+  dir: Directory,
+  topLevelNames: string[],
+  validAlbumIds: Set<string>,
+): number {
   let staleDirsDeleted = 0;
   if (validAlbumIds.size > 0) {
     for (const name of topLevelNames) {
@@ -559,23 +613,7 @@ export async function reconcileMusicCacheAsync(): Promise<void> {
       } catch { /* best-effort */ }
     }
   }
-
-  if (
-    orphanFilesDeleted > 0 ||
-    staleTmpDeleted > 0 ||
-    missingSongIds > 0 ||
-    orphanItemIds > 0 ||
-    staleDirsDeleted > 0
-  ) {
-    // eslint-disable-next-line no-console
-    console.warn('[musicCacheService] reconciliation healed drift:', {
-      orphanFilesDeleted,
-      staleTmpDeleted,
-      missingSongIds,
-      orphanItemIds,
-      staleDirsDeleted,
-    });
-  }
+  return staleDirsDeleted;
 }
 
 /**
