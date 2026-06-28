@@ -684,297 +684,26 @@ export function MoreOptionsSheet() {
         onClose={handleClose}
         onCloseComplete={() => moreOptionsStore.getState()._signalCloseComplete()}
       >
-          {isPlayerSource && showAddQueueToPlaylist ? (
+          {isPlayerSource && showAddQueueToPlaylist && (
             <>
-              {/* Section 1: Player Queue */}
+              {/* Player Queue: add the whole queue to a playlist, then a divider
+                  before the per-entity options below. */}
               <Text
                 style={[styles.sheetTitle, { color: colors.textPrimary }]}
                 numberOfLines={1}
               >
                 {t('playerQueue')}
               </Text>
-              <Pressable
+              <MoreOptionsRow
+                icon={<MaterialCommunityIcons name="playlist-music-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                label={t('addQueueToPlaylist')}
                 onPress={handleAddQueueToPlaylist}
-                style={({ pressed }) => [
-                  styles.option,
-                  pressed && styles.optionPressed,
-                ]}
-              >
-                <MaterialCommunityIcons
-                  name="playlist-music-outline"
-                  size={22}
-                  color={colors.textPrimary}
-                  style={styles.optionIcon}
-                />
-                <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                  {t('addQueueToPlaylist')}
-                </Text>
-              </Pressable>
-
-              {/* Section divider */}
+              />
               <View style={styles.sectionDivider} />
-
-              {/* Section 2: Song header and options */}
-              <View style={styles.sheetHeader}>
-                {getCoverArtId(entity) && (
-                  <CachedImage coverArtId={getCoverArtId(entity)!} size={150} style={styles.sheetCoverArt} resizeMode="cover" />
-                )}
-                <View style={styles.sheetHeaderText}>
-                  <Text
-                    style={[styles.sheetTitle, { color: colors.textPrimary }]}
-                    numberOfLines={1}
-                  >
-                    {getTitle(entity, t)}
-                  </Text>
-                  <Text
-                    style={[styles.sheetSubtitle, { color: colors.textSecondary }]}
-                    numberOfLines={1}
-                  >
-                    {getSubtitle(entity, t)}
-                  </Text>
-                </View>
-              </View>
-
-              {/* Favorite / Unfavorite */}
-              {starrable && (
-                <MoreOptionsRow
-                  icon={
-                    busy ? (
-                      <ActivityIndicator size="small" color={colors.primary} style={styles.optionIcon} />
-                    ) : (
-                      <Ionicons
-                        name={starred ? 'heart' : 'heart-outline'}
-                        size={22}
-                        color={starred ? colors.red : colors.textPrimary}
-                        style={styles.optionIcon}
-                      />
-                    )
-                  }
-                  label={starred ? t('removeFromFavorites') : t('addToFavorites')}
-                  onPress={handleToggleStar}
-                  disabled={busy}
-                />
-              )}
-
-              {/* Set Rating (player section) */}
-              {showRating && (
-                <MoreOptionsRow
-                  icon={<Ionicons name="star-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
-                  label={t('setRating')}
-                  onPress={handleSetRating}
-                  right={
-                    entityRating > 0 && (
-                      <View style={styles.ratingBadge}>
-                        <StarRatingDisplay
-                          rating={entityRating}
-                          size={14}
-                          color={colors.primary}
-                          emptyColor={colors.primary}
-                        />
-                      </View>
-                    )
-                  }
-                />
-              )}
-
-              {/* Save Top Songs Playlist (artist only) */}
-              {showSaveTopSongsPlaylist && (
-                <MoreOptionsRow
-                  icon={<MaterialCommunityIcons name="playlist-star" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
-                  label={t('saveTopSongsPlaylist')}
-                  onPress={handleSaveTopSongsPlaylist}
-                />
-              )}
-
-              {/* Play Similar Artists (artist only) */}
-              {showPlaySimilarArtistsMix && (
-                <MoreOptionsRow
-                  icon={<MaterialCommunityIcons name="account-group-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
-                  label={t('playSimilarArtists')}
-                  onPress={handlePlaySimilarArtistsMix}
-                />
-              )}
-
-              {/* Add to Playlist */}
-              {showAddToPlaylist && (
-                <MoreOptionsRow
-                  icon={<MaterialCommunityIcons name="playlist-plus" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
-                  label={t('addToPlaylist')}
-                  onPress={handleAddToPlaylist}
-                />
-              )}
-
-              {/* Play More Like This */}
-              {showPlayMoreLikeThis && (
-                <MoreOptionsRow
-                  icon={<Ionicons name="radio-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
-                  label={t('playMoreLikeThis')}
-                  onPress={handlePlayMoreLikeThis}
-                />
-              )}
-
-              {/* Play More by This Artist */}
-              {showPlayMoreByArtist && (
-                <MoreOptionsRow
-                  icon={<MaterialCommunityIcons name="account-music-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
-                  label={t('playMoreByThisArtist')}
-                  onPress={handlePlayMoreByArtist}
-                />
-              )}
-
-              {/* Play Next (songs only) — insert immediately after current */}
-              {showPlayNext && (
-                <MoreOptionsRow
-                  icon={<MaterialCommunityIcons name="playlist-music-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
-                  label={t('playNext')}
-                  onPress={handlePlayNext}
-                />
-              )}
-
-              {/* Add to Queue */}
-              {showAddToQueue && (
-                <MoreOptionsRow
-                  icon={<MaterialCommunityIcons name="playlist-play" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
-                  label={t('addToQueue')}
-                  onPress={handleAddToQueue}
-                />
-              )}
-
-              {/* Go to Album (songs only) */}
-              {showAlbumLink && (
-                <MoreOptionsRow
-                  icon={<Ionicons name="disc-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
-                  label={t('goToAlbum')}
-                  onPress={handleGoToAlbum}
-                />
-              )}
-
-              {/* Go to Artist */}
-              {showArtistLink && (
-                <MoreOptionsRow
-                  icon={<Ionicons name="person-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
-                  label={t('goToArtist')}
-                  onPress={handleGoToArtist}
-                />
-              )}
-
-              {/* Share */}
-              {showShare && (
-                <MoreOptionsRow
-                  icon={<Ionicons name="share-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
-                  label={t('share')}
-                  onPress={handleShare}
-                />
-              )}
-
-              {/* Album Details */}
-              {showDetails && (
-                <MoreOptionsRow
-                  icon={<Ionicons name="information-circle-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
-                  label={t('albumDetails')}
-                  onPress={handleShowDetails}
-                />
-              )}
-
-              {/* Track Details */}
-              {showTrackDetails && (
-                <MoreOptionsRow
-                  icon={<Ionicons name="information-circle-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
-                  label={t('trackDetails')}
-                  onPress={handleShowTrackDetails}
-                />
-              )}
-
-              {/* Set MusicBrainz ID (artist/album) */}
-              {showSetMbid && (
-                <MoreOptionsRow
-                  icon={<Ionicons name="finger-print-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
-                  label={t('setMusicBrainzId')}
-                  onPress={handleSetMbid}
-                />
-              )}
-
-              {/* Exclude / Include in Scrobbling */}
-              {showScrobbleExclusion && (
-                <MoreOptionsRow
-                  icon={<Ionicons name={isScrobbleExcluded ? 'eye-outline' : 'eye-off-outline'} size={22} color={colors.textPrimary} style={styles.optionIcon} />}
-                  label={isScrobbleExcluded ? t('includeInScrobbling') : t('excludeFromScrobbling')}
-                  onPress={handleToggleScrobbleExclusion}
-                />
-              )}
-
-              {/* Download Song (single-song download) */}
-              {showDownloadSong && (
-                <MoreOptionsRow
-                  icon={<Ionicons name="arrow-down-circle-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
-                  label={t('downloadSong')}
-                  onPress={handleSongDownload}
-                  divider
-                />
-              )}
-
-              {/* Remove Song Download (single-song) */}
-              {showRemoveSongDownload && (
-                <MoreOptionsRow
-                  icon={<Ionicons name="trash-outline" size={22} color={colors.red} style={styles.optionIcon} />}
-                  label={t('removeDownload')}
-                  onPress={handleSongRemoveDownload}
-                  destructive
-                  divider
-                />
-              )}
-
-              {/* Download / Cancel Download */}
-              {showDownload && downloadStatus !== 'complete' && (
-                <MoreOptionsRow
-                  icon={
-                    <Ionicons
-                      name={
-                        downloadStatus === 'queued' || downloadStatus === 'downloading'
-                          ? 'close-circle-outline'
-                          : 'arrow-down-circle-outline'
-                      }
-                      size={22}
-                      color={colors.textPrimary}
-                      style={styles.optionIcon}
-                    />
-                  }
-                  label={
-                    downloadStatus === 'queued' || downloadStatus === 'downloading'
-                      ? t('cancelDownload')
-                      : downloadStatus === 'partial'
-                        ? t('downloadRemaining')
-                        : t('download')
-                  }
-                  onPress={handleDownload}
-                  divider
-                />
-              )}
-
-              {/* Remove Download */}
-              {showDownload && downloadStatus === 'complete' && (
-                <MoreOptionsRow
-                  icon={<Ionicons name="trash-outline" size={22} color={colors.red} style={styles.optionIcon} />}
-                  label={t('removeDownload')}
-                  onPress={handleDownload}
-                  destructive
-                  divider
-                />
-              )}
-
-              {/* Delete Playlist */}
-              {showDelete && (
-                <MoreOptionsRow
-                  icon={<Ionicons name="trash-outline" size={22} color={colors.red} style={styles.optionIcon} />}
-                  label={t('deletePlaylist')}
-                  onPress={handleDeletePlaylist}
-                  destructive
-                  divider
-                />
-              )}
             </>
-          ) : (
-            <>
+          )}
+
+          <>
               {/* Title / Subtitle */}
               <View style={styles.sheetHeader}>
                 {getCoverArtId(entity) && (
@@ -1244,7 +973,6 @@ export function MoreOptionsSheet() {
                 />
               )}
             </>
-          )}
       </BottomSheet>
 
       {detailsAlbum && (
