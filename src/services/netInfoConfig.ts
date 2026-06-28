@@ -1,4 +1,5 @@
 import NetInfo from '@react-native-community/netinfo';
+import { AppState } from 'react-native';
 
 import { autoOfflineStore } from '../store/autoOfflineStore';
 import { errMessage } from '../utils/errorMessage';
@@ -23,6 +24,16 @@ export function configureNetInfo(): void {
   try {
     NetInfo.configure({
       shouldFetchWiFiSSID: needsWiFiSSID(),
+      // Stop NetInfo's own internet-reachability probe (periodic HTTP to a
+      // generate_204 endpoint) from running in the background — a known
+      // battery drain (netinfo#178). The app's server ping is the ground
+      // truth; this probe only feeds `isInternetReachable`, used as a
+      // foreground hint. Tighten the request timeout so hanging probes are
+      // dropped quickly rather than lingering.
+      reachabilityShouldRun: () => AppState.currentState === 'active',
+      reachabilityLongTimeout: 60_000,
+      reachabilityShortTimeout: 5_000,
+      reachabilityRequestTimeout: 5_000,
     });
   } catch (e) {
     // eslint-disable-next-line no-console
