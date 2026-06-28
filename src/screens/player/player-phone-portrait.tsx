@@ -44,7 +44,7 @@ import { QueueItemRow } from '@/components/QueueItemRow';
 import { closeOpenRow } from '@/components/SwipeableRow';
 import { type ThemeColors } from '@/constants/theme';
 import { useCanSkip } from '@/hooks/useCanSkip';
-import { useImagePalette } from '@/hooks/useImagePalette';
+import { useCoverGradient } from '@/hooks/useCoverGradient';
 import { useSongCoverArt } from '@/hooks/useSongCoverArt';
 import { usePlayerActions } from '@/hooks/usePlayerActions';
 import { usePlaybackState } from '@/hooks/usePlaybackState';
@@ -107,17 +107,10 @@ export function PlayerPhonePortrait() {
     }
   }, [currentTrack, wasPopulated, onClose]);
 
-  const { primary, secondary, gradientOpacity } = useImagePalette(songCoverArtId);
-
-  // 2-stop gradient: extracted secondary (prefer) → theme background. We
-  // drop the more-vibrant `primary` from the render here because on small
-  // phone screens it reads as too busy over the hero — `secondary` (the
-  // most-common hue distinct from primary) is calmer. `primary` still
-  // extracts and is available in the hook for future tablet/landscape
-  // layouts that have more room for the richer bi-tone.
-  const gradientTopColor = secondary ?? primary ?? colors.background;
-  const gradientColors: readonly [string, string, ...string[]] = [gradientTopColor, colors.background];
-  const gradientLocations: readonly [number, number, ...number[]] = [0, 0.6];
+  const { gradientColors, gradientLocations, gradientOpacity } = useCoverGradient(
+    songCoverArtId,
+    colors.background,
+  );
 
   const offlineMode = offlineModeStore((s) => s.offlineMode);
 

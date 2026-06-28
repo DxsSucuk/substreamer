@@ -38,7 +38,7 @@ import { SleepTimerButton } from '@/components/SleepTimerButton';
 import { SleepTimerCapsule } from '@/components/SleepTimerCapsule';
 import { closeOpenRow } from '@/components/SwipeableRow';
 import { useCanSkip } from '@/hooks/useCanSkip';
-import { useImagePalette } from '@/hooks/useImagePalette';
+import { useCoverGradient } from '@/hooks/useCoverGradient';
 import { useSongCoverArt } from '@/hooks/useSongCoverArt';
 import { mixHexColors } from '@/utils/colors';
 import { usePlayerActions } from '@/hooks/usePlayerActions';
@@ -95,19 +95,10 @@ export function PlayerTabletLandscape({
   // Own palette extraction for gradient background. Primary is already
   // lightness-clamped for the active theme so the previous manual
   // darkening call is no longer necessary — we just use the hook output.
-  const { primary, secondary, gradientOpacity: extractedGradientOpacity } =
-    useImagePalette(songCoverArtId);
-
-  // 2-stop diagonal gradient: extracted secondary (prefer) → a
-  // slightly-darkened theme background. We drop the more-vibrant
-  // `primary` from the render and use `secondary` as the calmer top
-  // colour so the two extracted hues don't fight with each other
-  // across the large hero area. `primary` still extracts and is
-  // available in the hook for future bi-tone tablet layouts.
+  // Slightly-darkened theme background as the gradient's lower stop.
   const backgroundEnd = mixHexColors(colors.background, '#000000', 0.15);
-  const gradientTopColor = secondary ?? primary ?? colors.background;
-  const gradientColors: readonly [string, string, ...string[]] = [gradientTopColor, backgroundEnd];
-  const gradientLocations: readonly [number, number, ...number[]] = [0, 0.6];
+  const { gradientColors, gradientLocations, gradientOpacity: extractedGradientOpacity } =
+    useCoverGradient(songCoverArtId, backgroundEnd);
 
   // Right panel mode: queue (default), lyrics, or album info
   const [rightPanelMode, setRightPanelMode] = useState<'queue' | 'lyrics' | 'info'>('queue');

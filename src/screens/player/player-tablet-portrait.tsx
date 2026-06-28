@@ -34,7 +34,7 @@ import { SleepTimerCapsule } from '@/components/SleepTimerCapsule';
 import { PlayerModeContent, type PlayerMode } from '@/components/player/PlayerModeContent';
 import { type ThemeColors } from '@/constants/theme';
 import { useCanSkip } from '@/hooks/useCanSkip';
-import { useImagePalette } from '@/hooks/useImagePalette';
+import { useCoverGradient } from '@/hooks/useCoverGradient';
 import { useSongCoverArt } from '@/hooks/useSongCoverArt';
 import { usePlayerActions } from '@/hooks/usePlayerActions';
 import { usePlaybackState } from '@/hooks/usePlaybackState';
@@ -120,10 +120,10 @@ export function PlayerTabletPortrait() {
     }
   }, [currentTrack, wasPopulated, onClose]);
 
-  const { primary, secondary, gradientOpacity } = useImagePalette(songCoverArtId);
-  const gradientTopColor = secondary ?? primary ?? colors.background;
-  const gradientColors: readonly [string, string, ...string[]] = [gradientTopColor, colors.background];
-  const gradientLocations: readonly [number, number, ...number[]] = [0, 0.6];
+  const { gradientColors, gradientLocations, gradientOpacity } = useCoverGradient(
+    songCoverArtId,
+    colors.background,
+  );
 
   const gradientAnimatedStyle = useAnimatedStyle(() => ({
     opacity: gradientOpacity.value,
