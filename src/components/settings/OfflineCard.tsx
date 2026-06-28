@@ -1,13 +1,14 @@
 import Ionicons from '@react-native-vector-icons/ionicons/static';
 import { useNavigation } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, Modal, Platform, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { Alert, Platform, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
 import { useHomeWifiSetup } from '../../hooks/useHomeWifiSetup';
 import { useTheme } from '../../hooks/useTheme';
 import { useThemedAlert } from '../../hooks/useThemedAlert';
 import { settingsStyles } from '../../styles/settingsStyles';
+import { BottomSheet } from '../BottomSheet';
 import {
   checkLocationPermission,
   openAppSettings,
@@ -172,6 +173,10 @@ export function OfflineCard() {
     }
     setSsidPromptVisible(false);
   }, [ssidPromptValue, ssidEditTarget]);
+
+  const handleSsidPromptClose = useCallback(() => {
+    setSsidPromptVisible(false);
+  }, []);
 
   const handleRemoveSSID = useCallback((ssid: string) => {
     confirm({
@@ -429,46 +434,41 @@ export function OfflineCard() {
         </View>
       </View>
 
-      {/* Android SSID prompt modal */}
-      <Modal
-        visible={ssidPromptVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setSsidPromptVisible(false)}
-      >
-        <Pressable style={styles.modalBackdrop} onPress={() => setSsidPromptVisible(false)}>
-          <Pressable style={[styles.modalCard, { backgroundColor: colors.card }]} onPress={() => {}}>
-            <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>
-              {ssidEditTarget ? t('editNetwork') : t('addNetwork')}
+      {/* Android SSID prompt sheet */}
+      <BottomSheet visible={ssidPromptVisible} onClose={handleSsidPromptClose}>
+        <View style={styles.sheetHeader}>
+          <Text style={[styles.sheetTitle, { color: colors.textPrimary }]} numberOfLines={1}>
+            {ssidEditTarget ? t('editNetwork') : t('addNetwork')}
+          </Text>
+        </View>
+        <View style={styles.sheetForm}>
+          <TextInput
+            style={[styles.sheetInput, { color: colors.textPrimary, backgroundColor: colors.inputBg, borderColor: colors.border }]}
+            value={ssidPromptValue}
+            onChangeText={setSsidPromptValue}
+            placeholder={t('wifiNetworkName')}
+            placeholderTextColor={colors.textSecondary}
+            autoFocus
+            onSubmitEditing={handleSsidPromptSubmit}
+            returnKeyType="done"
+          />
+          <Pressable
+            onPress={handleSsidPromptSubmit}
+            style={({ pressed }) => [
+              styles.sheetSaveButton,
+              { backgroundColor: colors.primary },
+              pressed && styles.sheetButtonPressed,
+            ]}
+          >
+            <Text style={styles.sheetSaveButtonText}>
+              {ssidEditTarget ? t('save') : t('add')}
             </Text>
-            <TextInput
-              style={[styles.modalInput, { color: colors.textPrimary, backgroundColor: colors.inputBg, borderColor: colors.border }]}
-              value={ssidPromptValue}
-              onChangeText={setSsidPromptValue}
-              placeholder={t('wifiNetworkName')}
-              placeholderTextColor={colors.textSecondary}
-              autoFocus
-              onSubmitEditing={handleSsidPromptSubmit}
-            />
-            <View style={styles.modalButtons}>
-              <Pressable
-                onPress={() => setSsidPromptVisible(false)}
-                style={({ pressed }) => [styles.modalButton, pressed && settingsStyles.pressed]}
-              >
-                <Text style={[styles.modalButtonText, { color: colors.textSecondary }]}>{t('cancel')}</Text>
-              </Pressable>
-              <Pressable
-                onPress={handleSsidPromptSubmit}
-                style={({ pressed }) => [styles.modalButton, pressed && settingsStyles.pressed]}
-              >
-                <Text style={[styles.modalButtonText, { color: colors.primary }]}>
-                  {ssidEditTarget ? t('save') : t('add')}
-                </Text>
-              </Pressable>
-            </View>
           </Pressable>
-        </Pressable>
-      </Modal>
+          <Pressable onPress={handleSsidPromptClose} style={styles.sheetCancelButton}>
+            <Text style={[styles.sheetCancelButtonText, { color: colors.primary }]}>{t('cancel')}</Text>
+          </Pressable>
+        </View>
+      </BottomSheet>
     </>
   );
 }
@@ -514,22 +514,28 @@ const styles = StyleSheet.create({
   setupHint: { fontSize: 12, marginTop: 6 },
   addSsidRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 12 },
   addSsidText: { fontSize: 16, fontWeight: '500' },
-  modalBackdrop: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.5)',
-  },
-  modalCard: { width: '80%', borderRadius: 14, padding: 20 },
-  modalTitle: { fontSize: 16, fontWeight: '600', marginBottom: 16 },
-  modalInput: {
+  sheetHeader: { paddingHorizontal: 4, marginBottom: 12 },
+  sheetTitle: { fontSize: 18, fontWeight: '700' },
+  sheetForm: { paddingHorizontal: 4 },
+  sheetInput: {
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     fontSize: 16,
-    borderWidth: 1,
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 16,
   },
-  modalButtons: { flexDirection: 'row', justifyContent: 'flex-end', gap: 16 },
-  modalButton: { paddingVertical: 6, paddingHorizontal: 4 },
-  modalButtonText: { fontSize: 16, fontWeight: '600' },
+  sheetSaveButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderRadius: 12,
+    paddingVertical: 14,
+    marginTop: 20,
+    marginBottom: 8,
+  },
+  sheetSaveButtonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  sheetButtonPressed: { opacity: 0.8 },
+  sheetCancelButton: { alignItems: 'center', paddingVertical: 12, marginBottom: 4 },
+  sheetCancelButtonText: { fontSize: 16, fontWeight: '500' },
 });
