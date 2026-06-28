@@ -12,8 +12,6 @@ import {
 import Ionicons from "@react-native-vector-icons/ionicons/static";
 import { FlashList } from '@shopify/flash-list';
 import { LIST_DRAW_DISTANCE } from '../constants/layout';
-import { LinearGradient } from 'expo-linear-gradient';
-import Animated, { useAnimatedStyle } from 'react-native-reanimated';
 import { useTranslation } from 'react-i18next';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -31,19 +29,12 @@ import { BottomChrome } from '../components/BottomChrome';
 import { MoreOptionsButton } from '../components/MoreOptionsButton';
 import { closeOpenRow, SwipeableRow, type SwipeAction } from '../components/SwipeableRow';
 import { TrackRow } from '../components/TrackRow';
-import {
-  DARK_MIX,
-  GRADIENT_LOCATIONS,
-  GRADIENT_MIX_CURVE,
-  LIGHT_MIX,
-} from '../components/GradientBackground';
-import { SKIP_COLOR_EXTRACTION, useImagePalette } from '../hooks/useImagePalette';
+import { DetailScreenBackground } from '../components/DetailScreenBackground';
 import { useDownloadStatus } from '../hooks/useDownloadStatus';
 import { useLayoutMode } from '../hooks/useLayoutMode';
 import { useRefreshControlKey } from '../hooks/useRefreshControlKey';
 import { useSongCoverArt } from '../hooks/useSongCoverArt';
 import { useTheme } from '../hooks/useTheme';
-import { mixHexColors } from '../utils/colors';
 import { useTransitionComplete } from '../hooks/useTransitionComplete';
 import { ensureCached, refreshCoverArt } from '../services/imageCacheService';
 import { enqueuePlaylistDownload, syncCachedPlaylistTracks } from '../services/musicCacheService';
@@ -61,7 +52,6 @@ import { formatCompactDuration } from '../utils/formatters';
 
 import { type Child, type PlaylistWithSongs } from '../services/subsonicService';
 
-import { absoluteFill } from '../utils/styles';
 const HERO_PADDING = 24;
 const HERO_COVER_SIZE = 600;
 const HEADER_BAR_HEIGHT = 44;
@@ -136,7 +126,7 @@ const EditTrackRow = memo(function EditTrackRow({
 
 export function PlaylistDetailScreen() {
   const { t } = useTranslation();
-  const { colors, theme } = useTheme();
+  const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -154,18 +144,6 @@ export function PlaylistDetailScreen() {
   const [editing, setEditing] = useState(false);
   const [editedTracks, setEditedTracks] = useState<Child[]>([]);
   const [saving, setSaving] = useState(false);
-
-  const { primary, secondary, gradientOpacity } = useImagePalette(
-    isWide ? SKIP_COLOR_EXTRACTION : playlist?.coverArt,
-  );
-
-  const themeGradientColors = useMemo(() => {
-    if (!isWide) return null;
-    const peak = theme === 'dark' ? DARK_MIX : LIGHT_MIX;
-    return GRADIENT_MIX_CURVE.map((m) =>
-      mixHexColors(colors.background, colors.primary, peak * m),
-    ) as [string, string, ...string[]];
-  }, [isWide, theme, colors.primary, colors.background]);
 
   /* ---- Data fetching ---- */
   const { fetchPlaylist } = playlistDetailStore.getState();
@@ -476,20 +454,6 @@ export function PlaylistDetailScreen() {
     [colors.textPrimary, colors.textSecondary, t],
   );
 
-  // 2-stop gradient: extracted secondary (prefer) → theme background.
-  // On smaller screens the richer 3-stop bi-tone read as too busy over
-  // the hero, so we drop the more-vibrant `primary` from the render and
-  // use `secondary` (the most-common hue distinct from primary) as the
-  // calmer top colour. `primary` still extracts and is available in the
-  // hook for future tablet/landscape layouts with more room.
-  const gradientTopColor = secondary ?? primary ?? colors.background;
-  const gradientColors: readonly [string, string, ...string[]] = [gradientTopColor, colors.background];
-  const gradientLocations: readonly [number, number, ...number[]] = [0, 0.5];
-
-  const gradientAnimatedStyle = useAnimatedStyle(() => ({
-    opacity: gradientOpacity.value,
-  }));
-
   if (loading || !transitionComplete) {
     return (
       <View style={[styles.centered, { backgroundColor: colors.background }]}>
@@ -509,11 +473,6 @@ export function PlaylistDetailScreen() {
       </View>
     );
   }
-
-  const gradientFillStyle = [
-    absoluteFill,
-    { top: -insets.top, left: 0, right: 0, bottom: 0 },
-  ];
 
   // Unified paddingTop for iOS + Android. iOS previously used
   // contentInset+contentOffset to position content under the floating
@@ -561,25 +520,7 @@ export function PlaylistDetailScreen() {
         </>
       )}
       <View style={styles.container}>
-        <View style={[gradientFillStyle, { backgroundColor: colors.background }]} />
-      <Animated.View
-        style={[gradientFillStyle, gradientAnimatedStyle]}
-        pointerEvents="none"
-      >
-        <LinearGradient
-          colors={gradientColors}
-          locations={gradientLocations}
-          style={absoluteFill}
-        />
-      </Animated.View>
-        {themeGradientColors && (
-          <LinearGradient
-            colors={themeGradientColors}
-            locations={[...GRADIENT_LOCATIONS]}
-            style={gradientFillStyle}
-            pointerEvents="none"
-          />
-        )}
+        <DetailScreenBackground coverArt={playlist?.coverArt} isWide={isWide} />
 
       {editing ? (
         <ReorderableList

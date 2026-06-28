@@ -13,8 +13,6 @@ import {
 import { FlashList } from '@shopify/flash-list';
 import { LIST_DRAW_DISTANCE } from '../constants/layout';
 import Ionicons from "@react-native-vector-icons/ionicons/static";
-import { LinearGradient } from 'expo-linear-gradient';
-import Animated, { useAnimatedStyle } from 'react-native-reanimated';
 import { useTranslation } from 'react-i18next';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -27,18 +25,11 @@ import { MoreOptionsButton } from '../components/MoreOptionsButton';
 import { SectionTitle } from '../components/SectionTitle';
 import { SongCard } from '../components/SongCard';
 import { closeOpenRow } from '../components/SwipeableRow';
-import {
-  DARK_MIX,
-  GRADIENT_LOCATIONS,
-  GRADIENT_MIX_CURVE,
-  LIGHT_MIX,
-} from '../components/GradientBackground';
-import { SKIP_COLOR_EXTRACTION, useImagePalette } from '../hooks/useImagePalette';
+import { DetailScreenBackground } from '../components/DetailScreenBackground';
 import { useIsStarred } from '../hooks/useIsStarred';
 import { useLayoutMode } from '../hooks/useLayoutMode';
 import { useRefreshControlKey } from '../hooks/useRefreshControlKey';
 import { useTheme } from '../hooks/useTheme';
-import { mixHexColors } from '../utils/colors';
 import { useTransitionComplete } from '../hooks/useTransitionComplete';
 import { refreshCoverArt } from '../services/imageCacheService';
 import { PillToggle } from '../components/PillToggle';
@@ -52,7 +43,6 @@ import { moreOptionsStore } from '../store/moreOptionsStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { playbackSettingsStore, type ArtistPlayMode } from '../store/playbackSettingsStore';
 
-import { absoluteFill } from '../utils/styles';
 import {
   type AlbumID3,
   type ArtistInfo2,
@@ -73,7 +63,7 @@ const HORIZONTAL_GAP = 10;
 
 export function ArtistDetailScreen() {
   const { t } = useTranslation();
-  const { colors, theme } = useTheme();
+  const { colors } = useTheme();
   const offlineMode = offlineModeStore((s) => s.offlineMode);
   const artistPlayMode = playbackSettingsStore((s) => s.artistPlayMode);
   const { width: screenWidth } = useWindowDimensions();
@@ -106,18 +96,6 @@ export function ArtistDetailScreen() {
   const ready = useTransitionComplete(!cachedEntry);
   const isWide = useLayoutMode() === 'wide';
   const refreshControlKey = useRefreshControlKey();
-
-  const { primary, secondary, gradientOpacity } = useImagePalette(
-    isWide ? SKIP_COLOR_EXTRACTION : artist?.coverArt,
-  );
-
-  const themeGradientColors = useMemo(() => {
-    if (!isWide) return null;
-    const peak = theme === 'dark' ? DARK_MIX : LIGHT_MIX;
-    return GRADIENT_MIX_CURVE.map((m) =>
-      mixHexColors(colors.background, colors.primary, peak * m),
-    ) as [string, string, ...string[]];
-  }, [isWide, theme, colors.primary, colors.background]);
 
   // Sync local state when the store entry is updated externally (e.g. after
   // an MBID override triggers a background refetch).
@@ -201,20 +179,6 @@ export function ArtistDetailScreen() {
   const onRefresh = useCallback(() => fetchData(true), [fetchData]);
 
   /* ---- Derived values ---- */
-  // 2-stop gradient: extracted secondary (prefer) → theme background.
-  // On smaller screens the richer 3-stop bi-tone read as too busy over
-  // the hero, so we drop the more-vibrant `primary` from the render and
-  // use `secondary` (the most-common hue distinct from primary) as the
-  // calmer top colour. `primary` still extracts and is available in the
-  // hook for future tablet/landscape layouts with more room.
-  const gradientTopColor = secondary ?? primary ?? colors.background;
-  const gradientColors: readonly [string, string, ...string[]] = [gradientTopColor, colors.background];
-  const gradientLocations: readonly [number, number, ...number[]] = [0, 0.5];
-
-  const gradientAnimatedStyle = useAnimatedStyle(() => ({
-    opacity: gradientOpacity.value,
-  }));
-
   const albums = artist?.album ?? [];
   const similarArtists = artistInfo?.similarArtist ?? [];
 
@@ -488,11 +452,6 @@ export function ArtistDetailScreen() {
     );
   }
 
-  const gradientFillStyle = [
-    absoluteFill,
-    { top: -insets.top, left: 0, right: 0, bottom: 0 },
-  ];
-
   return (
     <>
       {Platform.OS === 'ios' && artist && (
@@ -511,26 +470,7 @@ export function ArtistDetailScreen() {
         </Stack.Toolbar>
       )}
       <View style={styles.container}>
-        {/* Background layers */}
-        <View style={[gradientFillStyle, { backgroundColor: colors.background }]} />
-        <Animated.View
-          style={[gradientFillStyle, gradientAnimatedStyle]}
-          pointerEvents="none"
-        >
-          <LinearGradient
-            colors={gradientColors}
-            locations={gradientLocations}
-            style={absoluteFill}
-          />
-        </Animated.View>
-        {themeGradientColors && (
-          <LinearGradient
-            colors={themeGradientColors}
-            locations={[...GRADIENT_LOCATIONS]}
-            style={gradientFillStyle}
-            pointerEvents="none"
-          />
-        )}
+        <DetailScreenBackground coverArt={artist?.coverArt} isWide={isWide} />
 
         <FlashList
           data={sortedAlbums}
