@@ -1,16 +1,15 @@
 import Ionicons from '@react-native-vector-icons/ionicons/static';
-import NetInfo from '@react-native-community/netinfo';
 import { useNavigation } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { Alert, Modal, Platform, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
+import { useHomeWifiSetup } from '../../hooks/useHomeWifiSetup';
 import { useTheme } from '../../hooks/useTheme';
 import { useThemedAlert } from '../../hooks/useThemedAlert';
 import { settingsStyles } from '../../styles/settingsStyles';
 import {
   checkLocationPermission,
-  getCurrentSSIDWithRetry,
   openAppSettings,
   requestLocationPermission,
 } from '../../services/autoOfflineService';
@@ -34,31 +33,17 @@ export function OfflineCard() {
   const homeSSIDs = autoOfflineStore((s) => s.homeSSIDs);
   const locationGranted = autoOfflineStore((s) => s.locationPermissionGranted);
 
-  const [currentSSID, setCurrentSSID] = useState<string | null>(null);
+  const { currentSSID, ssidReadFailed, notOnWifi, refreshSSID } = useHomeWifiSetup();
   const [ssidPromptVisible, setSsidPromptVisible] = useState(false);
   const [ssidPromptValue, setSsidPromptValue] = useState('');
   const [ssidEditTarget, setSsidEditTarget] = useState<string | null>(null);
   const [ssidSetupValue, setSsidSetupValue] = useState('');
-  const [ssidReadFailed, setSsidReadFailed] = useState(false);
-  const [notOnWifi, setNotOnWifi] = useState(false);
 
   useEffect(() => {
     if (autoMode === 'home-wifi') {
-      checkLocationPermission().then(async (granted) => {
-        const state = await NetInfo.refresh();
-        if (state.type !== 'wifi') {
-          setCurrentSSID(null);
-          setSsidReadFailed(false);
-          setNotOnWifi(true);
-          return;
-        }
-        setNotOnWifi(false);
-        const ssid = await getCurrentSSIDWithRetry();
-        setCurrentSSID(ssid);
-        setSsidReadFailed(granted && ssid == null);
-      });
+      checkLocationPermission().then((granted) => refreshSSID(granted));
     }
-  }, [autoMode]);
+  }, [autoMode, refreshSSID]);
 
   useEffect(() => {
     if (currentSSID && homeSSIDs.length === 0) {
@@ -104,54 +89,22 @@ export function OfflineCard() {
   const handleModeSelect = useCallback((mode: AutoOfflineMode) => {
     autoOfflineStore.getState().setMode(mode);
     if (mode === 'home-wifi') {
-      checkLocationPermission().then(async (granted) => {
-        const state = await NetInfo.refresh();
-        if (state.type !== 'wifi') {
-          setCurrentSSID(null);
-          setSsidReadFailed(false);
-          setNotOnWifi(true);
-          return;
-        }
-        setNotOnWifi(false);
-        const ssid = await getCurrentSSIDWithRetry();
-        setCurrentSSID(ssid);
-        setSsidReadFailed(granted && ssid == null);
-      });
+      checkLocationPermission().then((granted) => refreshSSID(granted));
     }
-  }, []);
+  }, [refreshSSID]);
 
   const handleGrantPermission = useCallback(async () => {
     const granted = await requestLocationPermission();
     if (granted) {
-      const state = await NetInfo.refresh();
-      if (state.type !== 'wifi') {
-        setCurrentSSID(null);
-        setSsidReadFailed(false);
-        setNotOnWifi(true);
-        return;
-      }
-      setNotOnWifi(false);
-      const ssid = await getCurrentSSIDWithRetry();
-      setCurrentSSID(ssid);
-      setSsidReadFailed(ssid == null);
+      await refreshSSID(true);
     } else {
       openAppSettings();
     }
-  }, []);
+  }, [refreshSSID]);
 
   const handleRetrySSID = useCallback(async () => {
-    const state = await NetInfo.refresh();
-    if (state.type !== 'wifi') {
-      setCurrentSSID(null);
-      setSsidReadFailed(false);
-      setNotOnWifi(true);
-      return;
-    }
-    setNotOnWifi(false);
-    const ssid = await getCurrentSSIDWithRetry();
-    setCurrentSSID(ssid);
-    setSsidReadFailed(ssid == null);
-  }, []);
+    await refreshSSID(true);
+  }, [refreshSSID]);
 
   const handleAddCurrentSSID = useCallback(() => {
     if (currentSSID) {
