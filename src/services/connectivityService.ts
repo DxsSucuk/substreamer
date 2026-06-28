@@ -35,7 +35,14 @@ function invokeHook(hook: ConnectivityHook | null, tag: string): void {
   }
 }
 
-const PING_INTERVAL_REACHABLE_MS = 10_000;
+// Healthy-state heartbeat. Deliberately slow: this only proactively catches a
+// *server-side* death (server dies while the network stays up) while the app is
+// idle. Every other case is covered faster elsewhere — an active request fails
+// on its own, a network change triggers an immediate ping (handleNetInfoChange),
+// foreground resume re-pings, and the moment any ping fails we drop to the
+// UNREACHABLE cadence below. So a frequent healthy poll buys little and keeps the
+// radio warm (battery, #200); 60s is plenty for the idle backstop.
+const PING_INTERVAL_REACHABLE_MS = 60_000;
 const PING_INTERVAL_UNREACHABLE_MS = 5_000;
 const PING_TIMEOUT_MS = 5_000;
 const RECONNECTED_DISPLAY_MS = 2_500;
