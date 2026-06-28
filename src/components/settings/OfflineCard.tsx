@@ -16,6 +16,7 @@ import {
 } from '../../services/autoOfflineService';
 import { autoOfflineStore, type AutoOfflineMode } from '../../store/autoOfflineStore';
 import { offlineModeStore } from '../../store/offlineModeStore';
+import { SettingsRow } from './SettingsRow';
 import { SettingsSectionTitle } from './SettingsSectionTitle';
 
 export function OfflineCard() {
@@ -199,85 +200,65 @@ export function OfflineCard() {
       <View style={settingsStyles.section}>
         <SettingsSectionTitle>{t('offline')}</SettingsSectionTitle>
         <View style={[settingsStyles.card, settingsStyles.cardPadded, { backgroundColor: colors.card }]}>
-          <View style={[styles.toggleRow, { borderBottomColor: colors.border }]}>
-            <View style={styles.toggleTextWrap}>
-              <Text style={[styles.label, { color: colors.textPrimary }]}>{t('offlineMode')}</Text>
-              <Text style={[styles.toggleHint, { color: colors.textSecondary }]}>
-                {t('offlineModeHint')}
-              </Text>
-            </View>
-            <Switch
-              value={offlineMode}
-              onValueChange={toggleOfflineMode}
-              trackColor={{ false: colors.border, true: colors.primary }}
-            />
-          </View>
-          <View style={[styles.toggleRow, { borderBottomColor: colors.border }]}>
-            <View style={styles.toggleTextWrap}>
-              <Text style={[styles.label, { color: colors.textPrimary }]}>{t('showInFilterBar')}</Text>
-              <Text style={[styles.toggleHint, { color: colors.textSecondary }]}>
-                {t('showInFilterBarHint')}
-              </Text>
-            </View>
-            <Switch
-              value={showInFilterBar}
-              onValueChange={setShowInFilterBar}
-              trackColor={{ false: colors.border, true: colors.primary }}
-            />
-          </View>
-          <View style={[styles.toggleRow, autoEnabled ? { borderBottomColor: colors.border } : styles.toggleRowLast]}>
-            <View style={styles.toggleTextWrap}>
-              <Text style={[styles.label, { color: colors.textPrimary }]}>{t('autoOffline')}</Text>
-              <Text style={[styles.toggleHint, { color: colors.textSecondary }]}>
-                {t('autoOfflineHint')}
-              </Text>
-            </View>
-            <Switch
-              value={autoEnabled}
-              onValueChange={handleAutoEnabledChange}
-              trackColor={{ false: colors.border, true: colors.primary }}
-            />
-          </View>
+          <SettingsRow
+            label={t('offlineMode')}
+            hint={t('offlineModeHint')}
+            right={
+              <Switch
+                value={offlineMode}
+                onValueChange={toggleOfflineMode}
+                trackColor={{ false: colors.border, true: colors.primary }}
+              />
+            }
+          />
+          <SettingsRow
+            label={t('showInFilterBar')}
+            hint={t('showInFilterBarHint')}
+            right={
+              <Switch
+                value={showInFilterBar}
+                onValueChange={setShowInFilterBar}
+                trackColor={{ false: colors.border, true: colors.primary }}
+              />
+            }
+          />
+          <SettingsRow
+            label={t('autoOffline')}
+            hint={t('autoOfflineHint')}
+            isLast={!autoEnabled}
+            right={
+              <Switch
+                value={autoEnabled}
+                onValueChange={handleAutoEnabledChange}
+                trackColor={{ false: colors.border, true: colors.primary }}
+              />
+            }
+          />
 
           {autoEnabled && (
             <>
-              <Pressable
+              <SettingsRow
+                label={t('wifiOnly')}
+                hint={t('wifiOnlyHint')}
                 onPress={() => handleModeSelect('wifi-only')}
-                style={({ pressed }) => [
-                  styles.toggleRow,
-                  { borderBottomColor: colors.border },
-                  pressed && settingsStyles.pressed,
-                ]}
-              >
-                <View style={styles.toggleTextWrap}>
-                  <Text style={[styles.label, { color: colors.textPrimary }]}>{t('wifiOnly')}</Text>
-                  <Text style={[styles.toggleHint, { color: colors.textSecondary }]}>
-                    {t('wifiOnlyHint')}
-                  </Text>
-                </View>
-                {autoMode === 'wifi-only' && (
-                  <Ionicons name="checkmark-circle" size={22} color={colors.primary} />
-                )}
-              </Pressable>
+                right={
+                  autoMode === 'wifi-only' && (
+                    <Ionicons name="checkmark-circle" size={22} color={colors.primary} />
+                  )
+                }
+              />
 
-              <Pressable
+              <SettingsRow
+                label={t('homeWifi')}
+                hint={t('homeWifiHint')}
                 onPress={() => handleModeSelect('home-wifi')}
-                style={({ pressed }) => [
-                  styles.toggleRow,
-                  autoMode !== 'home-wifi' || !locationGranted || ssidReadFailed ? styles.toggleRowLast : { borderBottomColor: colors.border },
-                  pressed && settingsStyles.pressed,
-                ]}
-              >
-                <View style={styles.toggleTextWrap}>
-                  <Text style={[styles.label, { color: colors.textPrimary }]}>{t('homeWifi')}</Text>
-                  <Text style={[styles.toggleHint, { color: colors.textSecondary }]}>
-                    {t('homeWifiHint')}
-                  </Text>
-                </View>
-                {autoMode === 'home-wifi' && (
-                  <Ionicons name="checkmark-circle" size={22} color={colors.primary} />
-                )}
-              </Pressable>
+                isLast={autoMode !== 'home-wifi' || !locationGranted || ssidReadFailed}
+                right={
+                  autoMode === 'home-wifi' && (
+                    <Ionicons name="checkmark-circle" size={22} color={colors.primary} />
+                  )
+                }
+              />
 
               {autoMode === 'home-wifi' && !locationGranted && (
                 <View style={styles.permissionWarning}>
@@ -474,16 +455,6 @@ export function OfflineCard() {
 }
 
 const styles = StyleSheet.create({
-  toggleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  toggleRowLast: { borderBottomWidth: 0 },
-  toggleTextWrap: { flex: 1, marginRight: 12 },
-  label: { fontSize: 16, fontWeight: '500' },
   toggleHint: { fontSize: 12, marginTop: 4, lineHeight: 16 },
   permissionWarning: {
     flexDirection: 'row',
