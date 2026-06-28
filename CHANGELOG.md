@@ -1,5 +1,50 @@
 # Changelog
 
+## [8.0.76] - 2026-06-28
+
+- fix(download): make song download-status reactive on removal
+- ci: update coverage badge [skip ci]
+- refactor(moreOptions): collapse the duplicated isPlayerSource branches
+- refactor(moreOptions): extract MoreOptionsRow primitive
+- refactor(player): extract useCoverGradient hook
+- refactor(player): extract usePlaybackState hook
+- refactor(offline): extract reusable SettingsRow primitive
+- refactor(offline): SSID prompt Modal → BottomSheet
+- refactor(offline): extract useHomeWifiSetup hook
+- refactor(musicCache): split reconcile god-function into named passes
+- perf: small Phase-5 polish (search memo, icon types, scrobble key)
+- perf: derive row tap action from props, not inline closures
+- refactor: extract DetailHeroButtons (shuffle + play-all)
+- refactor: extract useDetailFetch for the 3 detail screens
+- refactor: extract DetailScreenBackground for the 3 detail screens
+- refactor: extract confirm() for two-button confirmation dialogs
+- refactor: extract runWithOverlay() for the processing-overlay flow
+- refactor: extract mergeExistingWins() for backup-restore merges
+- refactor: extract bumpPlayStats() store helper
+- refactor: extract onAppForeground() for the AppState foreground listeners
+- refactor: route date formatting through a cached Intl util
+- docs: relocate misplaced JSDoc; drop dead download accumulators
+- refactor: hoist Subsonic client/version to named constants
+- docs: fix stale and misleading comments
+- refactor: drop two verbatim formatter copies for shared utils
+- refactor: centralize unknown-error to message coercion in errMessage()
+- fix: correctness hardening from holistic review
+- fix(sync): consume change-detection markers once at startup
+- chore(i18n): remove unused translation keys
+- chore: drop redundant export keywords
+- chore(store): remove superseded dead actions
+- chore: fix stale comments and remove component orphans
+- test: eliminate React act() warnings from async state updates
+- refactor(store): drop write-only dead state fields
+- chore: remove dead test hooks and orphaned helpers
+- ci: update coverage badge [skip ci]
+- chore: remove dead connectivity-restored hook
+- perf(startup): de-duplicate the cold-start home-list refresh
+- perf(startup): defer heavy housekeeping stages to idle
+- refactor(startup): shared runWhenIdle util; defer recache drain to idle
+- feat(image-cache): dismissible error banner when a refresh cycle fails
+- fix(boot): defer persisted-queue restore until after the animated splash
+- chore(i18n): drop stale failover keys from locale files
 ## [8.0.75] - 2026-06-26
 
 - refactor(player): remove transcode-offset resume mechanism (#197)
