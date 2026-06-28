@@ -47,6 +47,7 @@ import { useCanSkip } from '@/hooks/useCanSkip';
 import { useImagePalette } from '@/hooks/useImagePalette';
 import { useSongCoverArt } from '@/hooks/useSongCoverArt';
 import { usePlayerActions } from '@/hooks/usePlayerActions';
+import { usePlaybackState } from '@/hooks/usePlaybackState';
 import { useShuffleOverlay } from '@/hooks/useShuffleOverlay';
 import { getPlayerSize } from '@/hooks/playerSize';
 import { useTheme } from '@/hooks/useTheme';
@@ -444,7 +445,7 @@ const PlayerContent = memo(function PlayerContent({
   const songCoverArtId = useSongCoverArt(currentTrack);
   const { height: windowHeight, width: windowWidth } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const playbackState = playerStore((s) => s.playbackState);
+  const { isPlaying, isBuffering } = usePlaybackState();
   const position = playerStore((s) => s.position);
   const duration = playerStore((s) => s.duration);
   const bufferedPosition = playerStore((s) => s.bufferedPosition);
@@ -490,11 +491,6 @@ const PlayerContent = memo(function PlayerContent({
     const fitted = Math.max(Math.min(naturalWidth, maxHero), m.heroFloor);
     return Math.round(fitted * 0.9);
   }, [windowHeight, windowWidth, insets.top, insets.bottom, m.reserved, m.heroFloor]);
-
-  const isPlaying =
-    playbackState === 'playing' || playbackState === 'buffering';
-  const isBuffering =
-    playbackState === 'buffering' || playbackState === 'loading';
 
   const marqueeStyle = useMemo(
     () => [styles.trackTitle, { color: colors.textPrimary, fontSize: m.titleFont }],

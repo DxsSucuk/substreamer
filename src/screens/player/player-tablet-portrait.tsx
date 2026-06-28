@@ -37,6 +37,7 @@ import { useCanSkip } from '@/hooks/useCanSkip';
 import { useImagePalette } from '@/hooks/useImagePalette';
 import { useSongCoverArt } from '@/hooks/useSongCoverArt';
 import { usePlayerActions } from '@/hooks/usePlayerActions';
+import { usePlaybackState } from '@/hooks/usePlaybackState';
 import { useShuffleOverlay } from '@/hooks/useShuffleOverlay';
 import { useTheme } from '@/hooks/useTheme';
 import {
@@ -362,10 +363,9 @@ const ProgressBar = memo(function ProgressBar({
   const position = playerStore((s) => s.position);
   const duration = playerStore((s) => s.duration);
   const bufferedPosition = playerStore((s) => s.bufferedPosition);
-  const playbackState = playerStore((s) => s.playbackState);
+  const { isBuffering } = usePlaybackState();
   const error = playerStore((s) => s.error);
   const retrying = playerStore((s) => s.retrying);
-  const isBuffering = playbackState === 'buffering' || playbackState === 'loading';
 
   return (
     <PlayerProgressBar
@@ -397,13 +397,10 @@ const PlaybackControls = memo(function PlaybackControls({
   handleShuffle: () => void;
   queueLength: number;
 }) {
-  const playbackState = playerStore((s) => s.playbackState);
+  const { isPlaying, isBuffering } = usePlaybackState();
   const showSkipInterval = playbackSettingsStore((s) => s.showSkipIntervalButtons);
   const showSleepTimer = playbackSettingsStore((s) => s.showSleepTimerButton);
   const { canSkipNext, canSkipPrevious } = useCanSkip();
-
-  const isPlaying = playbackState === 'playing' || playbackState === 'buffering';
-  const isBuffering = playbackState === 'buffering' || playbackState === 'loading';
 
   return (
     <>

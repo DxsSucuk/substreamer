@@ -29,6 +29,7 @@ import { useCanSkip } from '@/hooks/useCanSkip';
 import { useSongCoverArt } from '@/hooks/useSongCoverArt';
 import { mixHexColors } from '@/utils/colors';
 import { usePlayerActions } from '@/hooks/usePlayerActions';
+import { usePlaybackState } from '@/hooks/usePlaybackState';
 import { useShuffleOverlay } from '@/hooks/useShuffleOverlay';
 import { useTheme } from '@/hooks/useTheme';
 import {
@@ -217,7 +218,7 @@ const PanelHeader = memo(function PanelHeader({
 }: PanelHeaderProps) {
   const { t } = useTranslation();
   const songCoverArtId = useSongCoverArt(currentTrack);
-  const playbackState = playerStore((s) => s.playbackState);
+  const { isPlaying, isBuffering } = usePlaybackState();
   const position = playerStore((s) => s.position);
   const duration = playerStore((s) => s.duration);
   const bufferedPosition = playerStore((s) => s.bufferedPosition);
@@ -225,11 +226,6 @@ const PanelHeader = memo(function PanelHeader({
   const retrying = playerStore((s) => s.retrying);
 
   const { canSkipNext, canSkipPrevious } = useCanSkip();
-
-  const isPlaying =
-    playbackState === 'playing' || playbackState === 'buffering';
-  const isBuffering =
-    playbackState === 'buffering' || playbackState === 'loading';
 
   const marqueeStyle = useMemo(
     () => [styles.trackTitle, { color: colors.textPrimary }],

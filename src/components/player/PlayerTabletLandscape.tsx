@@ -42,6 +42,7 @@ import { useImagePalette } from '@/hooks/useImagePalette';
 import { useSongCoverArt } from '@/hooks/useSongCoverArt';
 import { mixHexColors } from '@/utils/colors';
 import { usePlayerActions } from '@/hooks/usePlayerActions';
+import { usePlaybackState } from '@/hooks/usePlaybackState';
 import { useShuffleOverlay } from '@/hooks/useShuffleOverlay';
 import { useTheme } from '@/hooks/useTheme';
 import {
@@ -79,7 +80,7 @@ export function PlayerTabletLandscape({
   const songCoverArtId = useSongCoverArt(currentTrack);
   const currentTrackIndex = playerStore((s) => s.currentTrackIndex);
   const queue = playerStore((s) => s.queue);
-  const playbackState = playerStore((s) => s.playbackState);
+  const { isPlaying, isBuffering } = usePlaybackState();
   const position = playerStore((s) => s.position);
   const duration = playerStore((s) => s.duration);
   const bufferedPosition = playerStore((s) => s.bufferedPosition);
@@ -90,11 +91,6 @@ export function PlayerTabletLandscape({
   const showSleepTimer = playbackSettingsStore((s) => s.showSleepTimerButton);
   const offlineMode = offlineModeStore((s) => s.offlineMode);
   const { canSkipNext, canSkipPrevious } = useCanSkip();
-
-  const isPlaying =
-    playbackState === 'playing' || playbackState === 'buffering';
-  const isBuffering =
-    playbackState === 'buffering' || playbackState === 'loading';
 
   // Own palette extraction for gradient background. Primary is already
   // lightness-clamped for the active theme so the previous manual
