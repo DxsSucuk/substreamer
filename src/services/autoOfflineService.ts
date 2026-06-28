@@ -5,6 +5,7 @@ import { onAppForeground } from '../utils/onAppForeground';
 
 import { autoOfflineStore } from '../store/autoOfflineStore';
 import { offlineModeStore } from '../store/offlineModeStore';
+import { configureNetInfo } from './netInfoConfig';
 
 let unsubscribeNetInfo: (() => void) | null = null;
 let unsubscribeStore: (() => void) | null = null;
@@ -71,6 +72,10 @@ function unsubscribe(): void {
 
 export function startAutoOffline(): void {
   if (!autoOfflineStore.getState().enabled) return;
+  // Ensure SSID fetching is enabled before our listener registers — home-wifi
+  // mode reads the SSID off NetInfo state. The global config subscription also
+  // keeps `shouldFetchWiFiSSID` in sync as the setting changes.
+  configureNetInfo();
   subscribe();
 
   // Fresh evaluation on cold start. The first NetInfo result on Android

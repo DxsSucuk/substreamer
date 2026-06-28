@@ -75,7 +75,7 @@ import { deferredMusicCacheInit, getMusicCacheStats, initMusicCache } from '../s
 import { checkStorageLimit } from '../services/storageService';
 import { initPlayer, removeNonDownloadedTracks, restorePersistedQueueAfterBoot } from '../services/playerService';
 import { flushPersistedQueue } from '../services/queuePersistenceService';
-import NetInfo from '@react-native-community/netinfo';
+import { initNetInfoConfig } from '../services/netInfoConfig';
 import { startMonitoring, stopMonitoring } from '../services/connectivityService';
 import { initFailover } from '../services/failoverService';
 import { initScrobbleService } from '../services/scrobbleService';
@@ -111,14 +111,15 @@ import i18n from '../i18n/i18n';
 // app can render its login screen, leaving the user with a black screen.
 // Better to log the failure and let the affected feature degrade gracefully.
 
-// Enable SSID fetching globally — must be called before any NetInfo listener
-// is registered (connectivityService, autoOfflineService). Safe to always
-// enable; it simply tells the native module to include SSID in state updates.
+// Configure NetInfo once, before any listener registers. SSID fetching is
+// enabled only while home-WiFi auto-offline needs it (see netInfoConfig);
+// keeping it always-on calls iOS's location-gated SSID API on every WiFi
+// state update — a needless battery/CPU drain (#200).
 try {
-  NetInfo.configure({ shouldFetchWiFiSSID: true });
+  initNetInfoConfig();
 } catch (e) {
   // eslint-disable-next-line no-console
-  console.warn('[layout] NetInfo.configure failed:', errMessage(e));
+  console.warn('[layout] initNetInfoConfig failed:', errMessage(e));
 }
 
 // Initialise the on-disk cache directories at module load (fast mkdir only).
