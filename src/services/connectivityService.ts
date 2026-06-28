@@ -58,6 +58,9 @@ let reconnectedTimer: ReturnType<typeof setTimeout> | null = null;
 let initialCheck = true;
 let pingInFlight = false;
 let consecutiveFailures = 0;
+// Last (isConnected, type, isInternetReachable) seen — used to skip the
+// immediate ping on WiFi signal/BSSID noise that doesn't change connectivity.
+let lastNetKey: string | null = null;
 
 // First-ping signal: lets background tasks (e.g. image-cache repair) gate
 // destructive decisions on a confirmed server-reachability result rather
@@ -245,6 +248,15 @@ function handleNetInfoChange(state: NetInfoState): void {
   const reachable = state.isInternetReachable ?? true;
   connectivityStore.getState().setInternetReachable(reachable);
 
+  // WiFi emits frequent events for signal-strength / BSSID-roaming changes
+  // that don't alter connectivity. Re-ping only when isConnected / type /
+  // isInternetReachable actually change, so that churn doesn't become a
+  // server-ping storm (#200). The heartbeat (schedulePing) still catches
+  // server-side outages between these events.
+  const netKey = `${state.isConnected}:${state.type}:${state.isInternetReachable ?? 'null'}`;
+  if (netKey === lastNetKey) return;
+  lastNetKey = netKey;
+
   // NetInfo change is a hint — trigger an immediate ping for fast response.
   // The ping result is the ground truth for server reachability.
   if (!pingInFlight) {
@@ -260,6 +272,7 @@ export function startMonitoring(): void {
   pingInFlight = false;
   firstPingCompleted = false;
   consecutiveFailures = 0;
+  lastNetKey = null;
 
   unsubscribeNetInfo = NetInfo.addEventListener(handleNetInfoChange);
 
@@ -288,6 +301,7 @@ export function stopMonitoring(): void {
   initialCheck = true;
   pingInFlight = false;
   consecutiveFailures = 0;
+  lastNetKey = null;
   // Drain any pending awaitFirstPing waiters so they can re-check state
   // and bail rather than hanging until the next monitoring session.
   drainFirstPingWaiters();
