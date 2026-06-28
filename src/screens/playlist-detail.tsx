@@ -31,6 +31,7 @@ import { closeOpenRow, SwipeableRow, type SwipeAction } from '../components/Swip
 import { TrackRow } from '../components/TrackRow';
 import { DetailScreenBackground } from '../components/DetailScreenBackground';
 import { useDownloadStatus } from '../hooks/useDownloadStatus';
+import { useDetailFetch } from '../hooks/useDetailFetch';
 import { useLayoutMode } from '../hooks/useLayoutMode';
 import { useRefreshControlKey } from '../hooks/useRefreshControlKey';
 import { useSongCoverArt } from '../hooks/useSongCoverArt';
@@ -41,7 +42,6 @@ import { enqueuePlaylistDownload, syncCachedPlaylistTracks } from '../services/m
 import { playTrack } from '../services/playerService';
 import { updatePlaylistOrder } from '../services/subsonicService';
 import { shuffleArray } from '../utils/arrayHelpers';
-import { minDelay } from '../utils/stringHelpers';
 import { moreOptionsStore } from '../store/moreOptionsStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { offlineModeStore } from '../store/offlineModeStore';
@@ -132,9 +132,6 @@ export function PlaylistDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const cachedEntry = playlistDetailStore((s) => (id ? s.playlists[id] : undefined));
   const [playlist, setPlaylist] = useState<PlaylistWithSongs | null>(cachedEntry?.playlist ?? null);
-  const [loading, setLoading] = useState(!cachedEntry);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const transitionComplete = useTransitionComplete();
   const downloadStatus = useDownloadStatus('playlist', Platform.OS === 'ios' ? (id ?? '') : '');
   const isWide = useLayoutMode() === 'wide';
@@ -148,35 +145,22 @@ export function PlaylistDetailScreen() {
   /* ---- Data fetching ---- */
   const { fetchPlaylist } = playlistDetailStore.getState();
 
-  const fetchData = useCallback(async (isRefresh = false) => {
-    if (!id) {
-      setError(t('missingPlaylistId'));
-      if (!isRefresh) setLoading(false);
-      return;
+  const load = useCallback(async (playlistId: string, isRefresh: boolean) => {
+    const data = await fetchPlaylist(playlistId);
+    setPlaylist(data);
+    if (isRefresh && data?.id) {
+      refreshCoverArt(data.id, 'playlist-detail-pull').catch(() => { /* non-critical */ });
     }
-    if (isRefresh) setRefreshing(true);
-    else setLoading(true);
-    setError(null);
-    try {
-      const delay = isRefresh ? minDelay() : null;
-      const data = await fetchPlaylist(id);
-      setPlaylist(data);
-      if (!data) setError(t('playlistNotFound'));
-      if (isRefresh && data?.id) {
-        refreshCoverArt(data.id, 'playlist-detail-pull').catch(() => { /* non-critical */ });
-      }
-      await delay;
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t('failedToLoadPlaylist'));
-    } finally {
-      if (isRefresh) setRefreshing(false);
-      else setLoading(false);
-    }
-  }, [id, fetchPlaylist]);
+    return data ? null : t('playlistNotFound');
+  }, [fetchPlaylist, t]);
 
-  useEffect(() => { if (!cachedEntry) fetchData(); }, [fetchData, cachedEntry]);
-
-  const onRefresh = useCallback(() => fetchData(true), [fetchData]);
+  const { loading, refreshing, error, onRefresh } = useDetailFetch({
+    id,
+    hasCache: !!cachedEntry,
+    missingIdMessage: t('missingPlaylistId'),
+    failedMessage: t('failedToLoadPlaylist'),
+    load,
+  });
 
   const tracks = useMemo(() => playlist?.entry ?? [], [playlist?.entry]);
 

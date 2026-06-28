@@ -26,6 +26,7 @@ import { SectionTitle } from '../components/SectionTitle';
 import { SongCard } from '../components/SongCard';
 import { closeOpenRow } from '../components/SwipeableRow';
 import { DetailScreenBackground } from '../components/DetailScreenBackground';
+import { useDetailFetch } from '../hooks/useDetailFetch';
 import { useIsStarred } from '../hooks/useIsStarred';
 import { useLayoutMode } from '../hooks/useLayoutMode';
 import { useRefreshControlKey } from '../hooks/useRefreshControlKey';
@@ -35,7 +36,6 @@ import { refreshCoverArt } from '../services/imageCacheService';
 import { PillToggle } from '../components/PillToggle';
 import { playAllByArtist, playMoreByArtist, toggleStar } from '../services/moreOptionsService';
 import { shuffleArray } from '../utils/arrayHelpers';
-import { minDelay } from '../utils/stringHelpers';
 import { playTrack } from '../services/playerService';
 import { artistDetailStore } from '../store/artistDetailStore';
 import { layoutPreferencesStore, LIST_LENGTH_DISPLAY_CAP } from '../store/layoutPreferencesStore';
@@ -82,9 +82,6 @@ export function ArtistDetailScreen() {
   const [artistInfo, setArtistInfo] = useState<ArtistInfo2 | null>(cachedEntry?.artistInfo ?? null);
   const [topSongs, setTopSongs] = useState<Child[]>(cachedEntry?.topSongs ?? []);
   const [biography, setBiography] = useState<string | null>(cachedEntry?.biography ?? null);
-  const [loading, setLoading] = useState(!cachedEntry);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [bioExpanded, setBioExpanded] = useState(false);
   const [albumSortDesc, setAlbumSortDesc] = useState(
     () => layoutPreferencesStore.getState().artistAlbumSortOrder === 'newest',
@@ -137,46 +134,32 @@ export function ArtistDetailScreen() {
   /* ---- Data fetching ---- */
   const { fetchArtist } = artistDetailStore.getState();
 
-  const fetchData = useCallback(async (isRefresh = false) => {
-    if (!id) {
-      setError(t('missingArtistId'));
-      if (!isRefresh) setLoading(false);
-      return;
+  const load = useCallback(async (artistId: string, isRefresh: boolean) => {
+    const entry = await fetchArtist(artistId);
+    if (!entry) {
+      setArtist(null);
+      setArtistInfo(null);
+      setTopSongs([]);
+      setBiography(null);
+      return t('artistNotFound');
     }
-    if (isRefresh) setRefreshing(true);
-    else setLoading(true);
-    setError(null);
-    try {
-      const delay = isRefresh ? minDelay() : null;
-      const entry = await fetchArtist(id);
-      if (!entry) {
-        setError(t('artistNotFound'));
-        setArtist(null);
-        setArtistInfo(null);
-        setTopSongs([]);
-        setBiography(null);
-      } else {
-        setArtist(entry.artist);
-        setArtistInfo(entry.artistInfo);
-        setTopSongs(entry.topSongs);
-        setBiography(entry.biography);
-        if (isRefresh && entry.artist.id) {
-          refreshCoverArt(entry.artist.id, 'artist-detail-pull').catch(() => { /* non-critical */ });
-        }
-      }
-      await delay;
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t('failedToLoadArtist'));
-    } finally {
-      if (isRefresh) setRefreshing(false);
-      else setLoading(false);
+    setArtist(entry.artist);
+    setArtistInfo(entry.artistInfo);
+    setTopSongs(entry.topSongs);
+    setBiography(entry.biography);
+    if (isRefresh && entry.artist.id) {
+      refreshCoverArt(entry.artist.id, 'artist-detail-pull').catch(() => { /* non-critical */ });
     }
-  }, [id, fetchArtist]);
+    return null;
+  }, [fetchArtist, t]);
 
-  // Only fetch on mount if no cached data
-  useEffect(() => { if (!cachedEntry) fetchData(); }, [fetchData, cachedEntry]);
-
-  const onRefresh = useCallback(() => fetchData(true), [fetchData]);
+  const { loading, refreshing, error, onRefresh } = useDetailFetch({
+    id,
+    hasCache: !!cachedEntry,
+    missingIdMessage: t('missingArtistId'),
+    failedMessage: t('failedToLoadArtist'),
+    load,
+  });
 
   /* ---- Derived values ---- */
   const albums = artist?.album ?? [];

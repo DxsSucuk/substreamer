@@ -25,6 +25,7 @@ import { closeOpenRow } from '../components/SwipeableRow';
 import { TrackRow } from '../components/TrackRow';
 import { DetailScreenBackground } from '../components/DetailScreenBackground';
 import { useDownloadStatus } from '../hooks/useDownloadStatus';
+import { useDetailFetch } from '../hooks/useDetailFetch';
 import { useIsStarred } from '../hooks/useIsStarred';
 import { useLayoutMode } from '../hooks/useLayoutMode';
 import { useRefreshControlKey } from '../hooks/useRefreshControlKey';
@@ -34,7 +35,6 @@ import { refreshCoverArt } from '../services/imageCacheService';
 import { toggleStar } from '../services/moreOptionsService';
 import { enqueueAlbumDownload } from '../services/musicCacheService';
 import { shuffleArray } from '../utils/arrayHelpers';
-import { minDelay } from '../utils/stringHelpers';
 import { playTrack } from '../services/playerService';
 import { albumDetailStore } from '../store/albumDetailStore';
 import { moreOptionsStore } from '../store/moreOptionsStore';
@@ -76,9 +76,6 @@ export function AlbumDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const cachedEntry = albumDetailStore((s) => (id ? s.albums[id] : undefined));
   const [album, setAlbum] = useState<AlbumWithSongsID3 | null>(cachedEntry?.album ?? null);
-  const [loading, setLoading] = useState(!cachedEntry);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const starred = useIsStarred('album', id ?? '');
   const transitionComplete = useTransitionComplete();
   const downloadStatus = useDownloadStatus('album', Platform.OS === 'ios' ? (id ?? '') : '');
@@ -120,39 +117,25 @@ export function AlbumDetailScreen() {
   /* ---- Data fetching ---- */
   const { fetchAlbum } = albumDetailStore.getState();
 
-  const fetchData = useCallback(async (isRefresh = false) => {
-    if (!id) {
-      setError(t('missingAlbumId'));
-      if (!isRefresh) setLoading(false);
-      return;
+  const load = useCallback(async (albumId: string, isRefresh: boolean) => {
+    // Reflect the viewed album in the library (#202): an explicit refresh
+    // replaces the entry (propagating server-side edits), a plain open adds
+    // it only if it wasn't synced yet.
+    const data = await fetchAlbum(albumId, { syncToLibrary: isRefresh ? 'replace' : 'ifAbsent' });
+    setAlbum(data);
+    if (isRefresh && data?.id) {
+      refreshCoverArt(data.id, 'album-detail-pull').catch(() => { /* non-critical */ });
     }
-    if (isRefresh) setRefreshing(true);
-    else setLoading(true);
-    setError(null);
-    try {
-      const delay = isRefresh ? minDelay() : null;
-      // Reflect the viewed album in the library (#202): an explicit refresh
-      // replaces the entry (propagating server-side edits), a plain open adds
-      // it only if it wasn't synced yet.
-      const data = await fetchAlbum(id, { syncToLibrary: isRefresh ? 'replace' : 'ifAbsent' });
-      setAlbum(data);
-      if (!data) setError(t('albumNotFound'));
-      if (isRefresh && data?.id) {
-        refreshCoverArt(data.id, 'album-detail-pull').catch(() => { /* non-critical */ });
-      }
-      await delay;
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t('failedToLoadAlbum'));
-    } finally {
-      if (isRefresh) setRefreshing(false);
-      else setLoading(false);
-    }
-  }, [id, fetchAlbum]);
+    return data ? null : t('albumNotFound');
+  }, [fetchAlbum, t]);
 
-  // Only fetch on mount if no cached data
-  useEffect(() => { if (!cachedEntry) fetchData(); }, [fetchData, cachedEntry]);
-
-  const onRefresh = useCallback(() => fetchData(true), [fetchData]);
+  const { loading, refreshing, error, onRefresh } = useDetailFetch({
+    id,
+    hasCache: !!cachedEntry,
+    missingIdMessage: t('missingAlbumId'),
+    failedMessage: t('failedToLoadAlbum'),
+    load,
+  });
 
   const allSongs = useMemo(() => album?.song ?? [], [album?.song]);
 
