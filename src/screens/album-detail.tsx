@@ -24,6 +24,7 @@ import { MoreOptionsButton } from '../components/MoreOptionsButton';
 import { closeOpenRow } from '../components/SwipeableRow';
 import { TrackRow } from '../components/TrackRow';
 import { DetailScreenBackground } from '../components/DetailScreenBackground';
+import { PlayAllButton, ShufflePlayButton } from '../components/DetailHeroButtons';
 import { useDownloadStatus } from '../hooks/useDownloadStatus';
 import { useDetailFetch } from '../hooks/useDetailFetch';
 import { useIsStarred } from '../hooks/useIsStarred';
@@ -256,32 +257,19 @@ export function AlbumDetailScreen() {
               ) : null}
             </View>
             {allSongs.length > 1 && (
-              <Pressable
+              <ShufflePlayButton
+                style={styles.heroButtonSpacing}
                 onPress={() => {
                   const shuffled = shuffleArray(allSongs);
                   playTrack(shuffled[0], shuffled);
                 }}
-                style={({ pressed }) => [
-                  styles.shufflePlayButton,
-                  pressed && styles.shufflePlayButtonPressed,
-                ]}
-                accessibilityRole="button"
-                accessibilityLabel={t('shufflePlay')}
-              >
-                <Ionicons name="shuffle" size={18} color="#000" />
-              </Pressable>
+              />
             )}
             {allSongs.length > 0 && (
-              <Pressable
+              <PlayAllButton
+                style={styles.heroButtonSpacing}
                 onPress={() => playTrack(allSongs[0], allSongs)}
-                style={({ pressed }) => [
-                  styles.playAllButton,
-                  { backgroundColor: colors.primary },
-                  pressed && styles.playAllButtonPressed,
-                ]}
-              >
-                <Ionicons name="play" size={28} color="#fff" style={styles.playAllIcon} />
-              </Pressable>
+              />
             )}
           </View>
         </View>
@@ -434,31 +422,8 @@ const styles = StyleSheet.create({
   subtitleText: {
     flex: 1,
   },
-  shufflePlayButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#fff',
+  heroButtonSpacing: {
     marginLeft: 10,
-  },
-  shufflePlayButtonPressed: {
-    opacity: 0.7,
-  },
-  playAllButton: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginLeft: 10,
-  },
-  playAllButtonPressed: {
-    opacity: 0.7,
-  },
-  playAllIcon: {
-    marginLeft: 3,
   },
   albumName: {
     fontSize: 24,

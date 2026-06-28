@@ -26,6 +26,7 @@ import { SectionTitle } from '../components/SectionTitle';
 import { SongCard } from '../components/SongCard';
 import { closeOpenRow } from '../components/SwipeableRow';
 import { DetailScreenBackground } from '../components/DetailScreenBackground';
+import { PlayAllButton, ShufflePlayButton } from '../components/DetailHeroButtons';
 import { useDetailFetch } from '../hooks/useDetailFetch';
 import { useIsStarred } from '../hooks/useIsStarred';
 import { useLayoutMode } from '../hooks/useLayoutMode';
@@ -256,7 +257,7 @@ export function ArtistDetailScreen() {
             colors={colors}
           />
           <View style={styles.heroPlayButtons}>
-            <Pressable
+            <ShufflePlayButton
               onPress={() => {
                 if (artistPlayMode === 'allSongs') {
                   playAllByArtist(artist.id, artist.name, true);
@@ -267,16 +268,8 @@ export function ArtistDetailScreen() {
                   playMoreByArtist(artist.id, artist.name);
                 }
               }}
-              style={({ pressed }) => [
-                styles.shufflePlayButton,
-                pressed && styles.shufflePlayButtonPressed,
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel={t('shufflePlay')}
-            >
-              <Ionicons name="shuffle" size={18} color="#000" />
-            </Pressable>
-            <Pressable
+            />
+            <PlayAllButton
               onPress={() => {
                 if (artistPlayMode === 'allSongs') {
                   playAllByArtist(artist.id, artist.name, false);
@@ -286,14 +279,7 @@ export function ArtistDetailScreen() {
                   playMoreByArtist(artist.id, artist.name);
                 }
               }}
-              style={({ pressed }) => [
-                styles.playAllButton,
-                { backgroundColor: colors.primary },
-                pressed && styles.playAllButtonPressed,
-              ]}
-            >
-              <Ionicons name="play" size={28} color="#fff" style={styles.playAllIcon} />
-            </Pressable>
+            />
           </View>
         </View>
 
@@ -560,30 +546,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-  },
-  shufflePlayButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#fff',
-  },
-  shufflePlayButtonPressed: {
-    opacity: 0.7,
-  },
-  playAllButton: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  playAllButtonPressed: {
-    opacity: 0.7,
-  },
-  playAllIcon: {
-    marginLeft: 3,
   },
 
   /* Sections */
