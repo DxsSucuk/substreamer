@@ -74,6 +74,7 @@ import it from './locales/it.json';
 import ru from './locales/ru.json';
 import zhHans from './locales/zh-Hans.json';
 import zhHant from './locales/zh-Hant.json';
+import ja from './locales/ja.json';
 
 import { SUPPORTED_LOCALE_CODES } from './languages';
 import { localeStore } from '../store/localeStore';
@@ -88,6 +89,7 @@ const localeResources: Record<string, { translation: Record<string, string> }> =
   ru: { translation: ru },
   'zh-Hans': { translation: zhHans },
   'zh-Hant': { translation: zhHant },
+  ja: { translation: ja },
   // Add new entries here when enabling a language
 };
 
