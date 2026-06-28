@@ -194,7 +194,7 @@ export function AlbumDetailScreen() {
             track={item.track}
             trackNumber={item.track.track != null ? `${item.track.track}. ` : undefined}
             colors={colors}
-            onPress={() => playTrack(item.track, allSongs)}
+            songs={allSongs}
           />
         </View>
       );

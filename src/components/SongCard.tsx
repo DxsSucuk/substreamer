@@ -13,6 +13,7 @@ import { useRating } from '../hooks/useRating';
 import { useSongCoverArt } from '../hooks/useSongCoverArt';
 import { useTheme } from '../hooks/useTheme';
 import { type Child } from '../services/subsonicService';
+import { playTrack } from '../services/playerService';
 import { moreOptionsStore } from '../store/moreOptionsStore';
 
 const COVER_SIZE = 300;
@@ -21,10 +22,14 @@ export const SongCard = memo(function SongCard({
   song,
   width,
   onPress,
+  songs,
 }: {
   song: Child;
   width?: number;
+  /** Overrides the default `playTrack(song, songs ?? [song])` tap behaviour. */
   onPress?: () => void;
+  /** Queue context for the default tap behaviour. Defaults to `[song]`. */
+  songs?: Child[];
 }) {
   const { colors } = useTheme();
   const { t } = useTranslation();
@@ -37,8 +42,15 @@ export const SongCard = memo(function SongCard({
     moreOptionsStore.getState().show({ type: 'song', item: song });
   }, [song]);
 
+  // Derive the tap action from props so this memoized card doesn't re-render
+  // when the parent passes a fresh inline closure on every render.
+  const playFromContext = useCallback(() => {
+    playTrack(song, songs ?? [song]);
+  }, [song, songs]);
+  const handlePress = onPress ?? playFromContext;
+
   return (
-    <LongPressable onPress={onPress} onLongPress={onLongPress}>
+    <LongPressable onPress={handlePress} onLongPress={onLongPress}>
       <View style={[styles.card, { backgroundColor: colors.card }, width != null && { width }]}>
         <View style={styles.imageContainer}>
           <CachedImage

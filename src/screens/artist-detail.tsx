@@ -191,7 +191,7 @@ export function ArtistDetailScreen() {
       <SongCard
         song={item}
         width={CARD_WIDTH}
-        onPress={() => playTrack(item, topSongs)}
+        songs={topSongs}
       />
     ),
     [topSongs],

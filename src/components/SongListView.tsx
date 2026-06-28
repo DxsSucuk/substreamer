@@ -17,7 +17,6 @@ import { useTheme } from '../hooks/useTheme';
 import { AlphabetScroller } from './AlphabetScroller';
 import { EmptyState } from './EmptyState';
 import { InsetRefreshSpacer } from './InsetRefreshSpacer';
-import { playTrack } from '../services/playerService';
 import type { Child } from '../services/subsonicService';
 import { SongCard } from './SongCard';
 import { closeOpenRow } from './SwipeableRow';
@@ -100,25 +99,18 @@ export function SongListView({
 
   const listKey = scrollToTopTrigger ? `${layout}:${scrollToTopTrigger}` : layout;
 
-  const handleSongPress = useCallback(
-    (song: Child) => {
-      if (onSongPress) onSongPress(song);
-      else playTrack(song, songs);
-    },
-    [onSongPress, songs],
-  );
-
   const renderListItem = useCallback(
     ({ item }: { item: Child }) => (
       <TrackRow
         track={item}
         colors={colors}
-        onPress={() => handleSongPress(item)}
+        songs={songs}
+        onPress={onSongPress ? () => onSongPress(item) : undefined}
         showCoverArt
         showAlbumName
       />
     ),
-    [colors, handleSongPress]
+    [colors, songs, onSongPress]
   );
 
   const renderGridItem = useCallback(
@@ -133,11 +125,15 @@ export function SongListView({
             marginBottom: GRID_GAP,
           }}
         >
-          <SongCard song={item} onPress={() => handleSongPress(item)} />
+          <SongCard
+            song={item}
+            songs={songs}
+            onPress={onSongPress ? () => onSongPress(item) : undefined}
+          />
         </View>
       );
     },
-    [handleSongPress, gridColumns]
+    [songs, onSongPress, gridColumns]
   );
 
   /* ---- Alphabet scroller support ---- */

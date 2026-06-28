@@ -14,7 +14,6 @@ import { ArtistRow } from '../components/ArtistRow';
 import { SongRow } from '../components/SongRow';
 import { useTheme } from '../hooks/useTheme';
 import { getLocalTrackUri } from '../services/musicCacheService';
-import { playTrack } from '../services/playerService';
 import { minDelay } from '../utils/stringHelpers';
 import {
   type AlbumID3,
@@ -157,10 +156,7 @@ export function SearchScreen() {
           return <AlbumRow album={item.data} />;
         case 'song':
           return (
-            <SongRow
-              song={item.data}
-              onPress={() => playTrack(item.data, [item.data])}
-            />
+            <SongRow song={item.data} />
           );
       }
     },

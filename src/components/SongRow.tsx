@@ -13,6 +13,7 @@ import { useRating } from '../hooks/useRating';
 import { useSongCoverArt } from '../hooks/useSongCoverArt';
 import { useTheme } from '../hooks/useTheme';
 import { addSongToQueue, toggleStar } from '../services/moreOptionsService';
+import { playTrack } from '../services/playerService';
 import { type Child } from '../services/subsonicService';
 import { addToPlaylistStore } from '../store/addToPlaylistStore';
 import { moreOptionsStore } from '../store/moreOptionsStore';
@@ -23,7 +24,7 @@ import { formatTrackDuration } from '../utils/formatters';
 import { absoluteFill } from '../utils/styles';
 const COVER_SIZE = 300;
 
-export const SongRow = memo(function SongRow({ song, onPress }: { song: Child; onPress?: () => void }) {
+export const SongRow = memo(function SongRow({ song, onPress, songs }: { song: Child; onPress?: () => void; songs?: Child[] }) {
   const { colors } = useTheme();
   const { t } = useTranslation();
   const starred = useIsStarred('song', song.id);
@@ -50,6 +51,13 @@ export const SongRow = memo(function SongRow({ song, onPress }: { song: Child; o
   const handleLongPress = useCallback(() => {
     moreOptionsStore.getState().show({ type: 'song', item: song });
   }, [song]);
+
+  // Derive the tap action from props so this memoized row doesn't re-render
+  // when the parent passes a fresh inline closure on every render.
+  const playFromContext = useCallback(() => {
+    playTrack(song, songs ?? [song]);
+  }, [song, songs]);
+  const handlePress = onPress ?? playFromContext;
 
   const rightActions: SwipeAction[] = useMemo(
     () => [{ icon: 'playlist-play', iconFamily: 'mdi' as const, color: colors.primary, label: t('queue'), onPress: handleAddToQueue }],
@@ -86,7 +94,7 @@ export const SongRow = memo(function SongRow({ song, onPress }: { song: Child; o
       enableFullSwipeLeft={!offlineMode}
       rowGap={8}
       onLongPress={handleLongPress}
-      onPress={onPress}
+      onPress={handlePress}
     >
       <View style={styles.row}>
         <View style={styles.coverWrap}>

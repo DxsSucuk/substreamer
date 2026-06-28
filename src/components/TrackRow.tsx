@@ -12,6 +12,7 @@ import { useIsStarred } from '../hooks/useIsStarred';
 import { useRating } from '../hooks/useRating';
 import { useSongCoverArt } from '../hooks/useSongCoverArt';
 import { addSongToQueue, toggleStar } from '../services/moreOptionsService';
+import { playTrack } from '../services/playerService';
 import { addToPlaylistStore } from '../store/addToPlaylistStore';
 import { moreOptionsStore } from '../store/moreOptionsStore';
 import { offlineModeStore } from '../store/offlineModeStore';
@@ -29,15 +30,19 @@ export interface TrackRowProps {
   /** Formatted track number label, e.g. "3. " or "1. ". Omit to hide the number. */
   trackNumber?: string;
   colors: ThemeColors;
-  /** Called when the row is tapped to start playback. */
+  /** Overrides the default `playTrack(track, songs ?? [track], playlistId)` tap behaviour. */
   onPress?: () => void;
+  /** Queue context for the default tap behaviour. Defaults to `[track]` (play just this song). */
+  songs?: Child[];
+  /** Playlist id threaded to `playTrack` for the default tap behaviour. */
+  playlistId?: string;
   /** Show the album cover art thumbnail at the left of the row. */
   showCoverArt?: boolean;
   /** Show the album name with a disc icon below the artist name. */
   showAlbumName?: boolean;
 }
 
-export const TrackRow = memo(function TrackRow({ track, trackNumber, colors, onPress, showCoverArt, showAlbumName }: TrackRowProps) {
+export const TrackRow = memo(function TrackRow({ track, trackNumber, colors, onPress, songs, playlistId, showCoverArt, showAlbumName }: TrackRowProps) {
   const { t } = useTranslation();
   const duration = track.duration != null ? formatTrackDuration(track.duration) : '—';
   const starred = useIsStarred('song', track.id);
@@ -72,6 +77,14 @@ export const TrackRow = memo(function TrackRow({ track, trackNumber, colors, onP
   const handleLongPress = useCallback(() => {
     moreOptionsStore.getState().show({ type: 'song', item: track });
   }, [track]);
+
+  // Deriving the tap action from props (rather than an inline closure passed
+  // by the parent) keeps this memoized row from re-rendering on every parent
+  // render — `songs`/`playlistId` are stable across unrelated re-renders.
+  const playFromContext = useCallback(() => {
+    playTrack(track, songs ?? [track], playlistId);
+  }, [track, songs, playlistId]);
+  const handlePress = onPress ?? playFromContext;
 
   const rightActions: SwipeAction[] = useMemo(
     () => [{ icon: 'playlist-play', iconFamily: 'mdi' as const, color: colors.primary, label: t('queue'), onPress: handleAddToQueue }],
@@ -108,7 +121,7 @@ export const TrackRow = memo(function TrackRow({ track, trackNumber, colors, onP
       enableFullSwipeLeft={!offlineMode}
       restingBackgroundColor="transparent"
       onLongPress={handleLongPress}
-      onPress={onPress}
+      onPress={handlePress}
       disabled={isOfflineUnplayable}
     >
       <View

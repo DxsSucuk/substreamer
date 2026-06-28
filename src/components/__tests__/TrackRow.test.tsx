@@ -33,6 +33,10 @@ jest.mock('../../services/moreOptionsService', () => ({
   toggleStar: jest.fn(),
 }));
 
+jest.mock('../../services/playerService', () => ({
+  playTrack: jest.fn(),
+}));
+
 jest.mock('../CachedImage', () => {
   const { View } = require('react-native');
   return { CachedImage: () => <View /> };

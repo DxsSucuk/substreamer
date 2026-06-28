@@ -312,7 +312,8 @@ export function PlaylistDetailScreen() {
         <TrackRow
           track={item}
           colors={colors}
-          onPress={() => playTrack(item, tracks, id)}
+          songs={tracks}
+          playlistId={id}
           showCoverArt
           showAlbumName
         />
