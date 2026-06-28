@@ -1,7 +1,7 @@
 import Ionicons from "@react-native-vector-icons/ionicons/static";
 import MaterialCommunityIcons from "@react-native-vector-icons/material-design-icons/static";
 import { usePathname, useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useState, type ReactNode } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -184,6 +184,52 @@ function getEntityUserRating(entity: MoreOptionsEntity | null): number | undefin
   if (!entity) return undefined;
   if (entity.type === 'playlist') return undefined;
   return (entity.item as { userRating?: number }).userRating;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Option row                                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One tappable option row: an icon, a label, and optional trailing content.
+ * `destructive` reddens the label; `divider` adds the hairline top border
+ * that separates the download/delete actions from the rest.
+ */
+function MoreOptionsRow({
+  icon,
+  label,
+  onPress,
+  destructive = false,
+  divider = false,
+  disabled = false,
+  right,
+}: {
+  icon: ReactNode;
+  label: string;
+  onPress: () => void;
+  destructive?: boolean;
+  divider?: boolean;
+  disabled?: boolean;
+  right?: ReactNode;
+}) {
+  const { colors } = useTheme();
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      style={({ pressed }) => [
+        styles.option,
+        divider && styles.deleteOption,
+        pressed && styles.optionPressed,
+      ]}
+    >
+      {icon}
+      <Text style={[styles.optionLabel, { color: destructive ? colors.red : colors.textPrimary }]}>
+        {label}
+      </Text>
+      {right}
+    </Pressable>
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -691,475 +737,240 @@ export function MoreOptionsSheet() {
 
               {/* Favorite / Unfavorite */}
               {starrable && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={
+                    busy ? (
+                      <ActivityIndicator size="small" color={colors.primary} style={styles.optionIcon} />
+                    ) : (
+                      <Ionicons
+                        name={starred ? 'heart' : 'heart-outline'}
+                        size={22}
+                        color={starred ? colors.red : colors.textPrimary}
+                        style={styles.optionIcon}
+                      />
+                    )
+                  }
+                  label={starred ? t('removeFromFavorites') : t('addToFavorites')}
                   onPress={handleToggleStar}
                   disabled={busy}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  {busy ? (
-                    <ActivityIndicator
-                      size="small"
-                      color={colors.primary}
-                      style={styles.optionIcon}
-                    />
-                  ) : (
-                    <Ionicons
-                      name={starred ? 'heart' : 'heart-outline'}
-                      size={22}
-                      color={starred ? colors.red : colors.textPrimary}
-                      style={styles.optionIcon}
-                    />
-                  )}
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {starred ? t('removeFromFavorites') : t('addToFavorites')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Set Rating (player section) */}
               {showRating && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name="star-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('setRating')}
                   onPress={handleSetRating}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="star-outline"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('setRating')}
-                  </Text>
-                  {entityRating > 0 && (
-                    <View style={styles.ratingBadge}>
-                      <StarRatingDisplay
-                        rating={entityRating}
-                        size={14}
-                        color={colors.primary}
-                        emptyColor={colors.primary}
-                      />
-                    </View>
-                  )}
-                </Pressable>
+                  right={
+                    entityRating > 0 && (
+                      <View style={styles.ratingBadge}>
+                        <StarRatingDisplay
+                          rating={entityRating}
+                          size={14}
+                          color={colors.primary}
+                          emptyColor={colors.primary}
+                        />
+                      </View>
+                    )
+                  }
+                />
               )}
 
               {/* Save Top Songs Playlist (artist only) */}
               {showSaveTopSongsPlaylist && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<MaterialCommunityIcons name="playlist-star" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('saveTopSongsPlaylist')}
                   onPress={handleSaveTopSongsPlaylist}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <MaterialCommunityIcons
-                    name="playlist-star"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('saveTopSongsPlaylist')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Play Similar Artists (artist only) */}
               {showPlaySimilarArtistsMix && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<MaterialCommunityIcons name="account-group-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('playSimilarArtists')}
                   onPress={handlePlaySimilarArtistsMix}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <MaterialCommunityIcons
-                    name="account-group-outline"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('playSimilarArtists')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Add to Playlist */}
               {showAddToPlaylist && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<MaterialCommunityIcons name="playlist-plus" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('addToPlaylist')}
                   onPress={handleAddToPlaylist}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <MaterialCommunityIcons
-                    name="playlist-plus"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('addToPlaylist')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Play More Like This */}
               {showPlayMoreLikeThis && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name="radio-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('playMoreLikeThis')}
                   onPress={handlePlayMoreLikeThis}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="radio-outline"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('playMoreLikeThis')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Play More by This Artist */}
               {showPlayMoreByArtist && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<MaterialCommunityIcons name="account-music-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('playMoreByThisArtist')}
                   onPress={handlePlayMoreByArtist}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <MaterialCommunityIcons
-                    name="account-music-outline"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('playMoreByThisArtist')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Play Next (songs only) — insert immediately after current */}
               {showPlayNext && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<MaterialCommunityIcons name="playlist-music-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('playNext')}
                   onPress={handlePlayNext}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <MaterialCommunityIcons
-                    name="playlist-music-outline"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('playNext')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Add to Queue */}
               {showAddToQueue && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<MaterialCommunityIcons name="playlist-play" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('addToQueue')}
                   onPress={handleAddToQueue}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <MaterialCommunityIcons
-                    name="playlist-play"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('addToQueue')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Go to Album (songs only) */}
               {showAlbumLink && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name="disc-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('goToAlbum')}
                   onPress={handleGoToAlbum}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="disc-outline"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('goToAlbum')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Go to Artist */}
               {showArtistLink && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name="person-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('goToArtist')}
                   onPress={handleGoToArtist}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="person-outline"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('goToArtist')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Share */}
               {showShare && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name="share-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('share')}
                   onPress={handleShare}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="share-outline"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('share')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Album Details */}
               {showDetails && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name="information-circle-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('albumDetails')}
                   onPress={handleShowDetails}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="information-circle-outline"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('albumDetails')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Track Details */}
               {showTrackDetails && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name="information-circle-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('trackDetails')}
                   onPress={handleShowTrackDetails}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="information-circle-outline"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('trackDetails')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Set MusicBrainz ID (artist/album) */}
               {showSetMbid && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name="finger-print-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('setMusicBrainzId')}
                   onPress={handleSetMbid}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="finger-print-outline"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('setMusicBrainzId')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Exclude / Include in Scrobbling */}
               {showScrobbleExclusion && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name={isScrobbleExcluded ? 'eye-outline' : 'eye-off-outline'} size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={isScrobbleExcluded ? t('includeInScrobbling') : t('excludeFromScrobbling')}
                   onPress={handleToggleScrobbleExclusion}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name={isScrobbleExcluded ? 'eye-outline' : 'eye-off-outline'}
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {isScrobbleExcluded ? t('includeInScrobbling') : t('excludeFromScrobbling')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Download Song (single-song download) */}
               {showDownloadSong && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name="arrow-down-circle-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('downloadSong')}
                   onPress={handleSongDownload}
-                  style={({ pressed }) => [
-                    styles.option,
-                    styles.deleteOption,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="arrow-down-circle-outline"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('downloadSong')}
-                  </Text>
-                </Pressable>
+                  divider
+                />
               )}
 
               {/* Remove Song Download (single-song) */}
               {showRemoveSongDownload && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name="trash-outline" size={22} color={colors.red} style={styles.optionIcon} />}
+                  label={t('removeDownload')}
                   onPress={handleSongRemoveDownload}
-                  style={({ pressed }) => [
-                    styles.option,
-                    styles.deleteOption,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="trash-outline"
-                    size={22}
-                    color={colors.red}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.red }]}>
-                    {t('removeDownload')}
-                  </Text>
-                </Pressable>
+                  destructive
+                  divider
+                />
               )}
 
               {/* Download / Cancel Download */}
               {showDownload && downloadStatus !== 'complete' && (
-                <Pressable
-                  onPress={handleDownload}
-                  style={({ pressed }) => [
-                    styles.option,
-                    styles.deleteOption,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name={
-                      downloadStatus === 'queued' || downloadStatus === 'downloading'
-                        ? 'close-circle-outline'
-                        : 'arrow-down-circle-outline'
-                    }
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {downloadStatus === 'queued' || downloadStatus === 'downloading'
+                <MoreOptionsRow
+                  icon={
+                    <Ionicons
+                      name={
+                        downloadStatus === 'queued' || downloadStatus === 'downloading'
+                          ? 'close-circle-outline'
+                          : 'arrow-down-circle-outline'
+                      }
+                      size={22}
+                      color={colors.textPrimary}
+                      style={styles.optionIcon}
+                    />
+                  }
+                  label={
+                    downloadStatus === 'queued' || downloadStatus === 'downloading'
                       ? t('cancelDownload')
                       : downloadStatus === 'partial'
                         ? t('downloadRemaining')
-                        : t('download')}
-                  </Text>
-                </Pressable>
+                        : t('download')
+                  }
+                  onPress={handleDownload}
+                  divider
+                />
               )}
 
               {/* Remove Download */}
               {showDownload && downloadStatus === 'complete' && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name="trash-outline" size={22} color={colors.red} style={styles.optionIcon} />}
+                  label={t('removeDownload')}
                   onPress={handleDownload}
-                  style={({ pressed }) => [
-                    styles.option,
-                    styles.deleteOption,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="trash-outline"
-                    size={22}
-                    color={colors.red}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.red }]}>
-                    {t('removeDownload')}
-                  </Text>
-                </Pressable>
+                  destructive
+                  divider
+                />
               )}
 
               {/* Delete Playlist */}
               {showDelete && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name="trash-outline" size={22} color={colors.red} style={styles.optionIcon} />}
+                  label={t('deletePlaylist')}
                   onPress={handleDeletePlaylist}
-                  style={({ pressed }) => [
-                    styles.option,
-                    styles.deleteOption,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="trash-outline"
-                    size={22}
-                    color={colors.red}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.red }]}>
-                    {t('deletePlaylist')}
-                  </Text>
-                </Pressable>
+                  destructive
+                  divider
+                />
               )}
             </>
           ) : (
@@ -1197,475 +1008,240 @@ export function MoreOptionsSheet() {
 
               {/* Favorite / Unfavorite */}
               {starrable && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={
+                    busy ? (
+                      <ActivityIndicator size="small" color={colors.primary} style={styles.optionIcon} />
+                    ) : (
+                      <Ionicons
+                        name={starred ? 'heart' : 'heart-outline'}
+                        size={22}
+                        color={starred ? colors.red : colors.textPrimary}
+                        style={styles.optionIcon}
+                      />
+                    )
+                  }
+                  label={starred ? t('removeFromFavorites') : t('addToFavorites')}
                   onPress={handleToggleStar}
                   disabled={busy}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  {busy ? (
-                    <ActivityIndicator
-                      size="small"
-                      color={colors.primary}
-                      style={styles.optionIcon}
-                    />
-                  ) : (
-                    <Ionicons
-                      name={starred ? 'heart' : 'heart-outline'}
-                      size={22}
-                      color={starred ? colors.red : colors.textPrimary}
-                      style={styles.optionIcon}
-                    />
-                  )}
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {starred ? t('removeFromFavorites') : t('addToFavorites')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Set Rating */}
               {showRating && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name="star-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('setRating')}
                   onPress={handleSetRating}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="star-outline"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('setRating')}
-                  </Text>
-                  {entityRating > 0 && (
-                    <View style={styles.ratingBadge}>
-                      <StarRatingDisplay
-                        rating={entityRating}
-                        size={14}
-                        color={colors.primary}
-                        emptyColor={colors.primary}
-                      />
-                    </View>
-                  )}
-                </Pressable>
+                  right={
+                    entityRating > 0 && (
+                      <View style={styles.ratingBadge}>
+                        <StarRatingDisplay
+                          rating={entityRating}
+                          size={14}
+                          color={colors.primary}
+                          emptyColor={colors.primary}
+                        />
+                      </View>
+                    )
+                  }
+                />
               )}
 
               {/* Save Top Songs Playlist (artist only) */}
               {showSaveTopSongsPlaylist && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<MaterialCommunityIcons name="playlist-star" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('saveTopSongsPlaylist')}
                   onPress={handleSaveTopSongsPlaylist}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <MaterialCommunityIcons
-                    name="playlist-star"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('saveTopSongsPlaylist')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Play Similar Artists (artist only) */}
               {showPlaySimilarArtistsMix && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<MaterialCommunityIcons name="account-group-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('playSimilarArtists')}
                   onPress={handlePlaySimilarArtistsMix}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <MaterialCommunityIcons
-                    name="account-group-outline"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('playSimilarArtists')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Add to Playlist */}
               {showAddToPlaylist && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<MaterialCommunityIcons name="playlist-plus" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('addToPlaylist')}
                   onPress={handleAddToPlaylist}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <MaterialCommunityIcons
-                    name="playlist-plus"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('addToPlaylist')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Play More Like This */}
               {showPlayMoreLikeThis && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name="radio-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('playMoreLikeThis')}
                   onPress={handlePlayMoreLikeThis}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="radio-outline"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('playMoreLikeThis')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Play More by This Artist */}
               {showPlayMoreByArtist && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<MaterialCommunityIcons name="account-music-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('playMoreByThisArtist')}
                   onPress={handlePlayMoreByArtist}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <MaterialCommunityIcons
-                    name="account-music-outline"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('playMoreByThisArtist')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Play Next (songs only) — insert immediately after current */}
               {showPlayNext && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<MaterialCommunityIcons name="playlist-music-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('playNext')}
                   onPress={handlePlayNext}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <MaterialCommunityIcons
-                    name="playlist-music-outline"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('playNext')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Add to Queue */}
               {showAddToQueue && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<MaterialCommunityIcons name="playlist-play" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('addToQueue')}
                   onPress={handleAddToQueue}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <MaterialCommunityIcons
-                    name="playlist-play"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('addToQueue')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Go to Album (songs only) */}
               {showAlbumLink && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name="disc-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('goToAlbum')}
                   onPress={handleGoToAlbum}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="disc-outline"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('goToAlbum')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Go to Artist */}
               {showArtistLink && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name="person-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('goToArtist')}
                   onPress={handleGoToArtist}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="person-outline"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('goToArtist')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Share */}
               {showShare && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name="share-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('share')}
                   onPress={handleShare}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="share-outline"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('share')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Album Details */}
               {showDetails && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name="information-circle-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('albumDetails')}
                   onPress={handleShowDetails}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="information-circle-outline"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('albumDetails')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Track Details */}
               {showTrackDetails && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name="information-circle-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('trackDetails')}
                   onPress={handleShowTrackDetails}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="information-circle-outline"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('trackDetails')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Set MusicBrainz ID (artist/album) */}
               {showSetMbid && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name="finger-print-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('setMusicBrainzId')}
                   onPress={handleSetMbid}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="finger-print-outline"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('setMusicBrainzId')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Exclude / Include in Scrobbling */}
               {showScrobbleExclusion && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name={isScrobbleExcluded ? 'eye-outline' : 'eye-off-outline'} size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={isScrobbleExcluded ? t('includeInScrobbling') : t('excludeFromScrobbling')}
                   onPress={handleToggleScrobbleExclusion}
-                  style={({ pressed }) => [
-                    styles.option,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name={isScrobbleExcluded ? 'eye-outline' : 'eye-off-outline'}
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {isScrobbleExcluded ? t('includeInScrobbling') : t('excludeFromScrobbling')}
-                  </Text>
-                </Pressable>
+                />
               )}
 
               {/* Download Song (single-song download) */}
               {showDownloadSong && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name="arrow-down-circle-outline" size={22} color={colors.textPrimary} style={styles.optionIcon} />}
+                  label={t('downloadSong')}
                   onPress={handleSongDownload}
-                  style={({ pressed }) => [
-                    styles.option,
-                    styles.deleteOption,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="arrow-down-circle-outline"
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {t('downloadSong')}
-                  </Text>
-                </Pressable>
+                  divider
+                />
               )}
 
               {/* Remove Song Download (single-song) */}
               {showRemoveSongDownload && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name="trash-outline" size={22} color={colors.red} style={styles.optionIcon} />}
+                  label={t('removeDownload')}
                   onPress={handleSongRemoveDownload}
-                  style={({ pressed }) => [
-                    styles.option,
-                    styles.deleteOption,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="trash-outline"
-                    size={22}
-                    color={colors.red}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.red }]}>
-                    {t('removeDownload')}
-                  </Text>
-                </Pressable>
+                  destructive
+                  divider
+                />
               )}
 
               {/* Download / Cancel Download */}
               {showDownload && downloadStatus !== 'complete' && (
-                <Pressable
-                  onPress={handleDownload}
-                  style={({ pressed }) => [
-                    styles.option,
-                    styles.deleteOption,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name={
-                      downloadStatus === 'queued' || downloadStatus === 'downloading'
-                        ? 'close-circle-outline'
-                        : 'arrow-down-circle-outline'
-                    }
-                    size={22}
-                    color={colors.textPrimary}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.textPrimary }]}>
-                    {downloadStatus === 'queued' || downloadStatus === 'downloading'
+                <MoreOptionsRow
+                  icon={
+                    <Ionicons
+                      name={
+                        downloadStatus === 'queued' || downloadStatus === 'downloading'
+                          ? 'close-circle-outline'
+                          : 'arrow-down-circle-outline'
+                      }
+                      size={22}
+                      color={colors.textPrimary}
+                      style={styles.optionIcon}
+                    />
+                  }
+                  label={
+                    downloadStatus === 'queued' || downloadStatus === 'downloading'
                       ? t('cancelDownload')
                       : downloadStatus === 'partial'
                         ? t('downloadRemaining')
-                        : t('download')}
-                  </Text>
-                </Pressable>
+                        : t('download')
+                  }
+                  onPress={handleDownload}
+                  divider
+                />
               )}
 
               {/* Remove Download */}
               {showDownload && downloadStatus === 'complete' && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name="trash-outline" size={22} color={colors.red} style={styles.optionIcon} />}
+                  label={t('removeDownload')}
                   onPress={handleDownload}
-                  style={({ pressed }) => [
-                    styles.option,
-                    styles.deleteOption,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="trash-outline"
-                    size={22}
-                    color={colors.red}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.red }]}>
-                    {t('removeDownload')}
-                  </Text>
-                </Pressable>
+                  destructive
+                  divider
+                />
               )}
 
               {/* Delete Playlist */}
               {showDelete && (
-                <Pressable
+                <MoreOptionsRow
+                  icon={<Ionicons name="trash-outline" size={22} color={colors.red} style={styles.optionIcon} />}
+                  label={t('deletePlaylist')}
                   onPress={handleDeletePlaylist}
-                  style={({ pressed }) => [
-                    styles.option,
-                    styles.deleteOption,
-                    pressed && styles.optionPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="trash-outline"
-                    size={22}
-                    color={colors.red}
-                    style={styles.optionIcon}
-                  />
-                  <Text style={[styles.optionLabel, { color: colors.red }]}>
-                    {t('deletePlaylist')}
-                  </Text>
-                </Pressable>
+                  destructive
+                  divider
+                />
               )}
             </>
           )}
