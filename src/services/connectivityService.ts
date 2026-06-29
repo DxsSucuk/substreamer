@@ -64,7 +64,7 @@ let reconnectedTimer: ReturnType<typeof setTimeout> | null = null;
 let initialCheck = true;
 let pingInFlight = false;
 let consecutiveFailures = 0;
-// Last (isConnected, type, isInternetReachable) seen — used to skip the
+// Last (isConnected, type) seen — used to skip the
 // immediate ping on WiFi signal/BSSID noise that doesn't change connectivity.
 let lastNetKey: string | null = null;
 // Paused while the app is backgrounded — stops the ping heartbeat (and the
@@ -257,15 +257,19 @@ export async function handleSslCertPrompt(): Promise<void> {
 }
 
 function handleNetInfoChange(state: NetInfoState): void {
-  const reachable = state.isInternetReachable ?? true;
-  connectivityStore.getState().setHasConnection(reachable);
+  // OS-level connection flag — free, no HTTP. We deliberately ignore NetInfo's
+  // `isInternetReachable`: its reachability probe is disabled (see
+  // netInfoConfig), and our own server ping is the ground truth for whether the
+  // server is reachable. `isConnected` only answers "is there a network at all".
+  const connected = state.isConnected ?? true;
+  connectivityStore.getState().setHasConnection(connected);
 
   // WiFi emits frequent events for signal-strength / BSSID-roaming changes
-  // that don't alter connectivity. Re-ping only when isConnected / type /
-  // isInternetReachable actually change, so that churn doesn't become a
-  // server-ping storm (#200). The heartbeat (schedulePing) still catches
-  // server-side outages between these events.
-  const netKey = `${state.isConnected}:${state.type}:${state.isInternetReachable ?? 'null'}`;
+  // that don't alter connectivity. Re-ping only when isConnected / type
+  // actually change, so that churn doesn't become a server-ping storm (#200).
+  // The heartbeat (schedulePing) still catches server-side outages between
+  // these events.
+  const netKey = `${state.isConnected}:${state.type}`;
   if (netKey === lastNetKey) return;
   lastNetKey = netKey;
 

@@ -139,7 +139,7 @@ describe('ping cycle', () => {
     mockPing.mockResolvedValue({ status: 'ok' });
     startMonitoring();
 
-    mockNetInfoCallback!({ isInternetReachable: true });
+    mockNetInfoCallback!({ isConnected: true });
     await jest.advanceTimersByTimeAsync(100);
 
     expect(mockPing).toHaveBeenCalledTimes(1);
@@ -160,7 +160,7 @@ describe('ping cycle', () => {
     mockPing.mockRejectedValue(new Error('timeout'));
     startMonitoring();
 
-    mockNetInfoCallback!({ isInternetReachable: true });
+    mockNetInfoCallback!({ isConnected: true });
     await jest.advanceTimersByTimeAsync(100);
 
     // First failure: debounced — banner not yet flipped.
@@ -177,7 +177,7 @@ describe('ping cycle', () => {
     mockPing.mockResolvedValue({ status: 'failed' });
     startMonitoring();
 
-    mockNetInfoCallback!({ isInternetReachable: true });
+    mockNetInfoCallback!({ isConnected: true });
     await jest.advanceTimersByTimeAsync(100);
     expect(mockStoreState.setServerReachable).not.toHaveBeenCalledWith(false);
 
@@ -191,7 +191,7 @@ describe('ping cycle', () => {
       .mockResolvedValue({ status: 'ok' });
     startMonitoring();
 
-    mockNetInfoCallback!({ isInternetReachable: true });
+    mockNetInfoCallback!({ isConnected: true });
     await jest.advanceTimersByTimeAsync(100);
     // First failure shouldn't surface anything
     expect(mockStoreState.setServerReachable).not.toHaveBeenCalledWith(false);
@@ -202,17 +202,17 @@ describe('ping cycle', () => {
     expect(mockStoreState.setBannerState).not.toHaveBeenCalledWith('unreachable');
   });
 
-  it('sets internet reachable from NetInfo state', async () => {
+  it('sets connection state from NetInfo isConnected', async () => {
     mockPing.mockResolvedValue({ status: 'ok' });
     startMonitoring();
-    mockNetInfoCallback!({ isInternetReachable: false });
+    mockNetInfoCallback!({ isConnected: false });
     expect(mockStoreState.setHasConnection).toHaveBeenCalledWith(false);
   });
 
-  it('defaults internet reachable to true when NetInfo is null', async () => {
+  it('defaults connection to true when isConnected is null', async () => {
     mockPing.mockResolvedValue({ status: 'ok' });
     startMonitoring();
-    mockNetInfoCallback!({ isInternetReachable: null });
+    mockNetInfoCallback!({ isConnected: null });
     expect(mockStoreState.setHasConnection).toHaveBeenCalledWith(true);
   });
 });
@@ -222,7 +222,7 @@ describe('banner state transitions', () => {
     mockPing.mockRejectedValue(new Error('timeout'));
     startMonitoring();
 
-    mockNetInfoCallback!({ isInternetReachable: true });
+    mockNetInfoCallback!({ isConnected: true });
     await jest.advanceTimersByTimeAsync(100);
     // First failure: silent (debounce).
     expect(mockStoreState.setBannerState).not.toHaveBeenCalledWith('unreachable');
@@ -235,7 +235,7 @@ describe('banner state transitions', () => {
   it('shows reconnected banner when server comes back after being down', async () => {
     mockPing.mockRejectedValue(new Error('timeout'));
     startMonitoring();
-    mockNetInfoCallback!({ isInternetReachable: true });
+    mockNetInfoCallback!({ isConnected: true });
     await jest.advanceTimersByTimeAsync(100);
     // Trip the debounce: need 2 failures
     await jest.advanceTimersByTimeAsync(6000);
@@ -252,7 +252,7 @@ describe('banner state transitions', () => {
   it('hides reconnected banner after 2.5s', async () => {
     mockPing.mockRejectedValue(new Error('down'));
     startMonitoring();
-    mockNetInfoCallback!({ isInternetReachable: true });
+    mockNetInfoCallback!({ isConnected: true });
     await jest.advanceTimersByTimeAsync(100);
     // Trip the debounce
     await jest.advanceTimersByTimeAsync(6000);
@@ -275,7 +275,7 @@ describe('ping guard', () => {
     mockGetApi.mockReturnValue(null);
     startMonitoring();
 
-    mockNetInfoCallback!({ isInternetReachable: true });
+    mockNetInfoCallback!({ isConnected: true });
     await jest.advanceTimersByTimeAsync(100);
 
     expect(mockPing).not.toHaveBeenCalled();
@@ -288,7 +288,7 @@ describe('SSL error detection', () => {
     mockIsSSLError.mockReturnValue(true);
     startMonitoring();
 
-    mockNetInfoCallback!({ isInternetReachable: true });
+    mockNetInfoCallback!({ isConnected: true });
     await jest.advanceTimersByTimeAsync(100);
 
     expect(mockStoreState.setBannerState).toHaveBeenCalledWith('ssl-error');
@@ -300,7 +300,7 @@ describe('SSL error detection', () => {
     mockIsSSLError.mockReturnValue(false);
     startMonitoring();
 
-    mockNetInfoCallback!({ isInternetReachable: true });
+    mockNetInfoCallback!({ isConnected: true });
     await jest.advanceTimersByTimeAsync(100);
     // First failure: silent
     expect(mockStoreState.setBannerState).not.toHaveBeenCalledWith('unreachable');
@@ -330,7 +330,7 @@ describe('awaitFirstPing', () => {
     expect(resolved).toBe(false);
 
     // Trigger the ping cycle via NetInfo and let it complete.
-    mockNetInfoCallback!({ isInternetReachable: true });
+    mockNetInfoCallback!({ isConnected: true });
     await jest.advanceTimersByTimeAsync(100);
 
     await promise;
@@ -340,7 +340,7 @@ describe('awaitFirstPing', () => {
   it('resolves immediately for callers that arrive after the first ping completed', async () => {
     mockPing.mockResolvedValue({ status: 'ok' });
     startMonitoring();
-    mockNetInfoCallback!({ isInternetReachable: true });
+    mockNetInfoCallback!({ isConnected: true });
     await jest.advanceTimersByTimeAsync(100);
 
     // First ping has completed — subsequent awaitFirstPing() resolves
@@ -372,7 +372,7 @@ describe('awaitFirstPing', () => {
     const promise = awaitFirstPing().then(() => { resolved = true; });
     expect(resolved).toBe(false);
 
-    mockNetInfoCallback!({ isInternetReachable: true });
+    mockNetInfoCallback!({ isConnected: true });
     await jest.advanceTimersByTimeAsync(100);
 
     await promise;
@@ -394,7 +394,7 @@ describe('failover wiring (registered hooks)', () => {
     mockPing.mockRejectedValue(new Error('timeout'));
     startMonitoring();
 
-    mockNetInfoCallback!({ isInternetReachable: true });
+    mockNetInfoCallback!({ isConnected: true });
     await jest.advanceTimersByTimeAsync(100);
     // First failure: still debounced.
     expect(mockServerDownHook).not.toHaveBeenCalled();
@@ -409,7 +409,7 @@ describe('failover wiring (registered hooks)', () => {
       .mockResolvedValue({ status: 'ok' });
     startMonitoring();
 
-    mockNetInfoCallback!({ isInternetReachable: true });
+    mockNetInfoCallback!({ isConnected: true });
     await jest.advanceTimersByTimeAsync(100);
     await jest.advanceTimersByTimeAsync(6000);
 
@@ -421,7 +421,7 @@ describe('failover wiring (registered hooks)', () => {
     mockPing.mockRejectedValue(new Error('timeout'));
     startMonitoring();
 
-    mockNetInfoCallback!({ isInternetReachable: true });
+    mockNetInfoCallback!({ isConnected: true });
     await jest.advanceTimersByTimeAsync(100);
     await jest.advanceTimersByTimeAsync(6000);
 
