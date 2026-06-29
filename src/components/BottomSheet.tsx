@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Keyboard,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -78,16 +80,21 @@ export function BottomSheet({
   const { height: windowHeight } = useWindowDimensions();
 
   // Never let the sheet exceed the screen (minus the status bar + a small gap),
-  // so tall content can't run off the top. When the caller gives an explicit
-  // maxHeight we honour it but still clamp a numeric value to the screen cap;
-  // percentage values are already relative to the screen height.
+  // so tall content can't run off the top. We resolve the caller's maxHeight to
+  // a concrete pixel value (percentages relative to the screen height) so the
+  // keyboard-avoidance worklet below can shrink it: when the keyboard is up the
+  // sheet must fit between the keyboard top and the screen cap, with its inner
+  // scroll/list handling the overflow.
   const screenCap = windowHeight - insets.top - TOP_GAP;
-  const sheetMaxHeight: DimensionValue =
-    maxHeight == null
-      ? screenCap
-      : typeof maxHeight === 'number'
-        ? Math.min(maxHeight, screenCap)
-        : maxHeight;
+  let resolvedMaxHeight = screenCap;
+  if (typeof maxHeight === 'number') {
+    resolvedMaxHeight = Math.min(maxHeight, screenCap);
+  } else if (typeof maxHeight === 'string') {
+    const pct = parseFloat(maxHeight);
+    if (Number.isFinite(pct)) {
+      resolvedMaxHeight = Math.min((pct / 100) * windowHeight, screenCap);
+    }
+  }
 
   const [internalVisible, setInternalVisible] = useState(false);
   const isClosing = useRef(false);
@@ -97,6 +104,8 @@ export function BottomSheet({
   // Shared values so worklet gesture callbacks can read them
   const sheetHeightSV = useSharedValue(DEFAULT_HEIGHT);
   const closeableSV = useSharedValue(closeable);
+  // On-screen keyboard height, tracked so the sheet can lift above it.
+  const keyboardHeight = useSharedValue(0);
 
   // Keep closeableSV in sync with prop
   useEffect(() => {
@@ -198,6 +207,33 @@ export function BottomSheet({
     }
   }, [visible, internalVisible, translateY, backdropOpacity, scheduleCloseComplete]);
 
+  // Lift the sheet above the on-screen keyboard. The sheet is pinned to the
+  // bottom of a transparent Modal, and nothing moves it out from under the
+  // keyboard for us: iOS never resizes for the keyboard, and on Android the
+  // Modal is a separate Dialog window that doesn't inherit the activity's
+  // adjustResize. So track the keyboard height ourselves and feed it into the
+  // sheet's transform + maxHeight (see sheetAnimatedStyle). Only while shown.
+  useEffect(() => {
+    if (!internalVisible) return undefined;
+    // iOS exposes Will* events that animate in lockstep with the keyboard;
+    // Android only fires Did*.
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvt, (e) => {
+      keyboardHeight.value = withTiming(e.endCoordinates?.height ?? 0, {
+        duration: e.duration || 250,
+      });
+    });
+    const hideSub = Keyboard.addListener(hideEvt, (e) => {
+      keyboardHeight.value = withTiming(0, { duration: e?.duration || 200 });
+    });
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+      keyboardHeight.value = 0;
+    };
+  }, [internalVisible, keyboardHeight]);
+
   const handleModalShow = useCallback(() => {
     playEntryAnimation();
   }, [playEntryAnimation]);
@@ -252,7 +288,12 @@ export function BottomSheet({
     });
 
   const sheetAnimatedStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: translateY.value }],
+    // Lift by the keyboard height so the sheet's bottom sits on the keyboard
+    // top, and cap the height to the space that leaves above it — the inner
+    // ScrollView / FlashList then reflows into the visible area (header stays
+    // put, content scrolls) instead of hiding behind the keyboard.
+    transform: [{ translateY: translateY.value - keyboardHeight.value }],
+    maxHeight: Math.min(resolvedMaxHeight, screenCap - keyboardHeight.value),
   }));
 
   const backdropAnimatedStyle = useAnimatedStyle(() => ({
@@ -282,7 +323,6 @@ export function BottomSheet({
         <Animated.View
           style={[
             styles.sheet,
-            { maxHeight: sheetMaxHeight },
             {
               backgroundColor: colors.card,
               paddingBottom: Math.max(insets.bottom, 16),

@@ -122,13 +122,18 @@ describe('BottomSheet', () => {
     expect(findStyleProp(toJSON(), (s) => s.width === 36 && s.height === 4)).toBe(true);
   });
 
-  it('applies maxHeight to sheet container', () => {
+  it('applies maxHeight to sheet container (resolved to px)', () => {
+    // maxHeight is resolved to a concrete pixel value (a percentage of the
+    // window height, capped to the screen) so the keyboard-avoidance worklet
+    // can shrink it when the keyboard is up. 70% of the window is well under
+    // the cap, so it resolves to exactly 0.7 × window height.
+    const { height } = require('react-native').Dimensions.get('window');
     const { toJSON } = render(
       <BottomSheet visible={true} onClose={jest.fn()} maxHeight="70%">
         <Text>Content</Text>
       </BottomSheet>,
     );
-    expect(findStyleProp(toJSON(), (s) => s.maxHeight === '70%')).toBe(true);
+    expect(findStyleProp(toJSON(), (s) => s.maxHeight === 0.7 * height)).toBe(true);
   });
 
   it('caps to a numeric screen height when maxHeight is not provided', () => {
