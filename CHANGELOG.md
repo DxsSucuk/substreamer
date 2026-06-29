@@ -1,5 +1,23 @@
 # Changelog
 
+## [8.0.77] - 2026-06-29
+
+- fix(#209): lift BottomSheet above the on-screen keyboard
+- ci: update coverage badge [skip ci]
+- perf(#200): drop NetInfo HTTP reachability probe; connection state from isConnected
+- refactor(connectivity): rename isInternetReachable -> hasConnection
+- perf(#200): slow healthy server-ping heartbeat 10s -> 60s
+- ci: update coverage badge [skip ci]
+- perf(#200): pause server-ping heartbeat while backgrounded
+- perf(#200): gate NetInfo reachability probe to the foreground
+- perf(#200): dedupe NetInfo-triggered server pings
+- perf(#200): gate shouldFetchWiFiSSID to home-wifi auto-offline
+- i18n(ru): apply 3 validated fixes from PR #184
+- i18n: enable Japanese as a selectable language
+- ci: update coverage badge [skip ci]
+- Merge pull request #194 from ghenry22/crowdin-translations
+- i18n: update translations from Crowdin
+- ci: update coverage badge [skip ci]
 ## [8.0.76] - 2026-06-28
 
 - fix(download): make song download-status reactive on removal
