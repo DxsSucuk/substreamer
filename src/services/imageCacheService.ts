@@ -366,7 +366,7 @@ function coverArtPathKey(coverArtId: string): string {
 function isPurgeAllowedNow(): boolean {
   const conn = connectivityStore.getState();
   const offline = offlineModeStore.getState().offlineMode;
-  return !offline && conn.isInternetReachable && conn.isServerReachable;
+  return !offline && conn.hasConnection && conn.isServerReachable;
 }
 
 /**
@@ -1983,7 +1983,7 @@ function flushAggregateRecalc(): void {
 function connectivityAllowsImageWork(): boolean {
   if (offlineModeStore.getState().offlineMode) return false;
   const conn = connectivityStore.getState();
-  if (!conn.isServerReachable || !conn.isInternetReachable) return false;
+  if (!conn.isServerReachable || !conn.hasConnection) return false;
   return true;
 }
 

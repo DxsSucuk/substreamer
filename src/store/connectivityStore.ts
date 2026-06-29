@@ -17,12 +17,12 @@ export type BannerState = 'hidden' | 'unreachable' | 'reconnected' | 'ssl-error'
 export type FailoverPrompt = ServerSlot | 'both-down';
 
 export interface ConnectivityState {
-  isInternetReachable: boolean;
+  hasConnection: boolean;
   isServerReachable: boolean;
   bannerState: BannerState;
   failoverPrompt: FailoverPrompt | null;
 
-  setInternetReachable: (reachable: boolean) => void;
+  setHasConnection: (reachable: boolean) => void;
   setServerReachable: (reachable: boolean) => void;
   setBannerState: (state: BannerState) => void;
   setFailoverPrompt: (prompt: FailoverPrompt) => void;
@@ -30,12 +30,12 @@ export interface ConnectivityState {
 }
 
 export const connectivityStore = create<ConnectivityState>()((set) => ({
-  isInternetReachable: true,
+  hasConnection: true,
   isServerReachable: true,
   bannerState: 'hidden',
   failoverPrompt: null,
 
-  setInternetReachable: (reachable) => set({ isInternetReachable: reachable }),
+  setHasConnection: (reachable) => set({ hasConnection: reachable }),
   setServerReachable: (reachable) => set({ isServerReachable: reachable }),
   setBannerState: (bannerState) => set({ bannerState }),
   setFailoverPrompt: (failoverPrompt) => set({ failoverPrompt }),

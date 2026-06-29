@@ -2,16 +2,16 @@ import { connectivityStore } from '../connectivityStore';
 
 beforeEach(() => {
   connectivityStore.setState({
-    isInternetReachable: true,
+    hasConnection: true,
     isServerReachable: true,
     bannerState: 'hidden',
   });
 });
 
 describe('connectivityStore', () => {
-  it('setInternetReachable updates state', () => {
-    connectivityStore.getState().setInternetReachable(false);
-    expect(connectivityStore.getState().isInternetReachable).toBe(false);
+  it('setHasConnection updates state', () => {
+    connectivityStore.getState().setHasConnection(false);
+    expect(connectivityStore.getState().hasConnection).toBe(false);
   });
 
   it('setServerReachable updates state', () => {

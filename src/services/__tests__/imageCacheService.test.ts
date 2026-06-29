@@ -163,7 +163,7 @@ jest.mock('../../store/offlineModeStore', () => ({
 }));
 
 const mockConnectivity = {
-  isInternetReachable: true,
+  hasConnection: true,
   isServerReachable: true,
 };
 jest.mock('../../store/connectivityStore', () => ({
@@ -194,17 +194,17 @@ jest.mock('../../store/persistence/musicCacheTables', () => ({
 /**
  * Helper: configure connectivity + offline state for a test case.
  * `purgeAllowed` semantics:
- *   { offlineMode: false, isInternetReachable: true, isServerReachable: true }
+ *   { offlineMode: false, hasConnection: true, isServerReachable: true }
  *      → isPurgeAllowedNow() === true (definitive failures purge)
  *   anything else → preserves rows (failures treated as transient)
  */
 function setConnectivity(opts: {
   offlineMode?: boolean;
-  isInternetReachable?: boolean;
+  hasConnection?: boolean;
   isServerReachable?: boolean;
 }) {
   if (opts.offlineMode != null) mockOfflineMode.offlineMode = opts.offlineMode;
-  if (opts.isInternetReachable != null) mockConnectivity.isInternetReachable = opts.isInternetReachable;
+  if (opts.hasConnection != null) mockConnectivity.hasConnection = opts.hasConnection;
   if (opts.isServerReachable != null) mockConnectivity.isServerReachable = opts.isServerReachable;
 }
 
@@ -410,7 +410,7 @@ beforeEach(() => {
   // Default connectivity: server reachable, internet reachable, not offline
   // → isPurgeAllowedNow() returns true so failures purge as the user spec
   // requires. Tests that need the preserve-row path call setConnectivity().
-  setConnectivity({ offlineMode: false, isInternetReachable: true, isServerReachable: true });
+  setConnectivity({ offlineMode: false, hasConnection: true, isServerReachable: true });
   mockAwaitFirstPing.mockClear();
   mockAwaitFirstPing.mockResolvedValue(undefined);
   __resetRetryStateForTest();

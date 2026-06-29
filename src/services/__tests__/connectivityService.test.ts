@@ -21,10 +21,10 @@ jest.mock('react-native', () => ({
 }));
 
 const mockStoreState = {
-  isInternetReachable: true,
+  hasConnection: true,
   isServerReachable: true,
   bannerState: 'hidden' as string,
-  setInternetReachable: jest.fn((v: boolean) => { mockStoreState.isInternetReachable = v; }),
+  setHasConnection: jest.fn((v: boolean) => { mockStoreState.hasConnection = v; }),
   setServerReachable: jest.fn((v: boolean) => { mockStoreState.isServerReachable = v; }),
   setBannerState: jest.fn((v: string) => { mockStoreState.bannerState = v; }),
   clearFailoverPrompt: jest.fn(),
@@ -78,10 +78,10 @@ beforeEach(() => {
   jest.useFakeTimers();
   stopMonitoring();
 
-  mockStoreState.isInternetReachable = true;
+  mockStoreState.hasConnection = true;
   mockStoreState.isServerReachable = true;
   mockStoreState.bannerState = 'hidden';
-  mockStoreState.setInternetReachable.mockClear();
+  mockStoreState.setHasConnection.mockClear();
   mockStoreState.setServerReachable.mockClear();
   mockStoreState.setBannerState.mockClear();
   const NetInfo = require('@react-native-community/netinfo').default;
@@ -116,7 +116,7 @@ describe('startMonitoring', () => {
 describe('stopMonitoring', () => {
   it('unsubscribes and resets store to healthy defaults', () => {
     startMonitoring();
-    mockStoreState.setInternetReachable.mockClear();
+    mockStoreState.setHasConnection.mockClear();
     mockStoreState.setServerReachable.mockClear();
     mockStoreState.setBannerState.mockClear();
 
@@ -124,7 +124,7 @@ describe('stopMonitoring', () => {
 
     expect(mockNetInfoCallback).toBeNull();
     expect(mockAppStateCallback).toBeNull();
-    expect(mockStoreState.setInternetReachable).toHaveBeenCalledWith(true);
+    expect(mockStoreState.setHasConnection).toHaveBeenCalledWith(true);
     expect(mockStoreState.setServerReachable).toHaveBeenCalledWith(true);
     expect(mockStoreState.setBannerState).toHaveBeenCalledWith('hidden');
   });
@@ -206,14 +206,14 @@ describe('ping cycle', () => {
     mockPing.mockResolvedValue({ status: 'ok' });
     startMonitoring();
     mockNetInfoCallback!({ isInternetReachable: false });
-    expect(mockStoreState.setInternetReachable).toHaveBeenCalledWith(false);
+    expect(mockStoreState.setHasConnection).toHaveBeenCalledWith(false);
   });
 
   it('defaults internet reachable to true when NetInfo is null', async () => {
     mockPing.mockResolvedValue({ status: 'ok' });
     startMonitoring();
     mockNetInfoCallback!({ isInternetReachable: null });
-    expect(mockStoreState.setInternetReachable).toHaveBeenCalledWith(true);
+    expect(mockStoreState.setHasConnection).toHaveBeenCalledWith(true);
   });
 });
 

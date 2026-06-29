@@ -187,7 +187,7 @@ function handleServerResult(reachable: boolean): void {
   if (reachable) {
     consecutiveFailures = 0;
     store.setServerReachable(true);
-    store.setInternetReachable(true);
+    store.setHasConnection(true);
     // The active server is back — drop any failover prompt (offer / both-down)
     // so it doesn't linger after recovery.
     store.clearFailoverPrompt();
@@ -258,7 +258,7 @@ export async function handleSslCertPrompt(): Promise<void> {
 
 function handleNetInfoChange(state: NetInfoState): void {
   const reachable = state.isInternetReachable ?? true;
-  connectivityStore.getState().setInternetReachable(reachable);
+  connectivityStore.getState().setHasConnection(reachable);
 
   // WiFi emits frequent events for signal-strength / BSSID-roaming changes
   // that don't alter connectivity. Re-ping only when isConnected / type /
@@ -318,7 +318,7 @@ export function stopMonitoring(): void {
   clearReconnectedTimer();
 
   const store = connectivityStore.getState();
-  store.setInternetReachable(true);
+  store.setHasConnection(true);
   store.setServerReachable(true);
   store.setBannerState('hidden');
   initialCheck = true;

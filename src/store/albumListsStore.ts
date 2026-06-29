@@ -160,7 +160,7 @@ export const albumListsStore = create<AlbumListsState>()(
         // already knows we can't talk to the server (avoids logging a
         // failure for nothing).
         const conn = connectivityStore.getState();
-        if (!conn.isInternetReachable || !conn.isServerReachable) return false;
+        if (!conn.hasConnection || !conn.isServerReachable) return false;
         // Gate 3: minimum-interval-since-last-refresh — back-to-back
         // foreground/background flips shouldn't each kick a refresh.
         const last = get().lastRefreshedAt;

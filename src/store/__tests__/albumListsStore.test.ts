@@ -14,7 +14,7 @@ jest.mock('../offlineModeStore', () => ({
   offlineModeStore: { getState: () => mockOffline },
 }));
 
-const mockConnectivity = { isInternetReachable: true, isServerReachable: true };
+const mockConnectivity = { hasConnection: true, isServerReachable: true };
 jest.mock('../connectivityStore', () => ({
   connectivityStore: { getState: () => mockConnectivity },
 }));
@@ -45,7 +45,7 @@ beforeEach(() => {
     lastRefreshedAt: 0,
   });
   mockOffline.offlineMode = false;
-  mockConnectivity.isInternetReachable = true;
+  mockConnectivity.hasConnection = true;
   mockConnectivity.isServerReachable = true;
 });
 
@@ -200,7 +200,7 @@ describe('albumListsStore', () => {
     });
 
     it('skips when internet is unreachable', async () => {
-      mockConnectivity.isInternetReachable = false;
+      mockConnectivity.hasConnection = false;
       const ran = await albumListsStore.getState().refreshAllIfDue(60_000);
       expect(ran).toBe(false);
       expect(mockGetRecentlyAdded).not.toHaveBeenCalled();

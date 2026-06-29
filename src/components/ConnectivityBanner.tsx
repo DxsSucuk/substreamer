@@ -43,7 +43,7 @@ interface ContentConfig {
 
 function getConfig(
   bannerState: BannerState,
-  isInternetReachable: boolean,
+  hasConnection: boolean,
   failoverPrompt: FailoverPrompt | null,
 ): ContentConfig {
   if (bannerState === 'reconnected') {
@@ -52,7 +52,7 @@ function getConfig(
   if (bannerState === 'ssl-error') {
     return { iconColor: ERROR_RED, icon: 'shield-outline', messageKey: 'certificateChanged', tappable: true };
   }
-  if (!isInternetReachable) {
+  if (!hasConnection) {
     // No network at all — a server switch is pointless, so don't offer one.
     return { iconColor: ERROR_RED, icon: 'cloud-offline', messageKey: 'noInternetConnection', tappable: false };
   }
@@ -74,7 +74,7 @@ export const ConnectivityBanner = memo(function ConnectivityBanner() {
   const { t } = useTranslation();
   const offlineMode = offlineModeStore((s) => s.offlineMode);
   const rawBannerState = connectivityStore((s) => s.bannerState);
-  const isInternetReachable = connectivityStore((s) => s.isInternetReachable);
+  const hasConnection = connectivityStore((s) => s.hasConnection);
   const failoverPrompt = connectivityStore((s) => s.failoverPrompt);
   const bannerState: BannerState = offlineMode ? 'hidden' : rawBannerState;
   const prev = useRef<BannerState>(bannerState);
@@ -87,7 +87,7 @@ export const ConnectivityBanner = memo(function ConnectivityBanner() {
   const contentOpacity = useSharedValue(visible ? 1 : 0);
   const contentTranslateY = useSharedValue(0);
 
-  const liveConfig = getConfig(bannerState, isInternetReachable, failoverPrompt);
+  const liveConfig = getConfig(bannerState, hasConnection, failoverPrompt);
   const frozenConfig = useRef(liveConfig);
   if (visible) frozenConfig.current = liveConfig;
   const config = visible ? liveConfig : frozenConfig.current;

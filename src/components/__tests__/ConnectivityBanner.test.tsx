@@ -56,7 +56,7 @@ const { ConnectivityBanner } = require('../ConnectivityBanner');
 beforeEach(() => {
   connectivityStore.setState({
     bannerState: 'hidden',
-    isInternetReachable: true,
+    hasConnection: true,
     isServerReachable: true,
     failoverPrompt: null,
   });
@@ -83,7 +83,7 @@ describe('ConnectivityBanner', () => {
   it('shows "Server unreachable" when unreachable with internet', () => {
     connectivityStore.setState({
       bannerState: 'unreachable',
-      isInternetReachable: true,
+      hasConnection: true,
     });
     const { getByText } = render(<ConnectivityBanner />);
     expect(getByText('Server unreachable')).toBeTruthy();
@@ -98,7 +98,7 @@ describe('ConnectivityBanner', () => {
   it('shows "No internet connection" when internet is unreachable', () => {
     connectivityStore.setState({
       bannerState: 'unreachable',
-      isInternetReachable: false,
+      hasConnection: false,
     });
     const { getByText } = render(<ConnectivityBanner />);
     expect(getByText('No internet connection')).toBeTruthy();
@@ -113,7 +113,7 @@ describe('ConnectivityBanner', () => {
   it('offers to switch to secondary when the active server is down (failoverPrompt=secondary)', () => {
     connectivityStore.setState({
       bannerState: 'unreachable',
-      isInternetReachable: true,
+      hasConnection: true,
       failoverPrompt: 'secondary',
     });
     const { getByText } = render(<ConnectivityBanner />);
@@ -123,7 +123,7 @@ describe('ConnectivityBanner', () => {
   it('tapping the failover offer switches to the offered server and clears the prompt', () => {
     connectivityStore.setState({
       bannerState: 'unreachable',
-      isInternetReachable: true,
+      hasConnection: true,
       failoverPrompt: 'secondary',
     });
     const { getByText } = render(<ConnectivityBanner />);
@@ -135,7 +135,7 @@ describe('ConnectivityBanner', () => {
   it('shows "Both servers unavailable" and is NOT tappable when failoverPrompt=both-down', () => {
     connectivityStore.setState({
       bannerState: 'unreachable',
-      isInternetReachable: true,
+      hasConnection: true,
       failoverPrompt: 'both-down',
     });
     const { getByText } = render(<ConnectivityBanner />);
@@ -147,7 +147,7 @@ describe('ConnectivityBanner', () => {
     offlineModeStore.setState({ offlineMode: true });
     connectivityStore.setState({
       bannerState: 'unreachable',
-      isInternetReachable: false,
+      hasConnection: false,
     });
     const { toJSON } = render(<ConnectivityBanner />);
     const root = toJSON() as import('react-test-renderer').ReactTestRendererJSON;

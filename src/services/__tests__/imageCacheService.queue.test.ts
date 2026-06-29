@@ -54,7 +54,7 @@ jest.mock('../../store/offlineModeStore', () => ({
   },
 }));
 
-const mockConnectivity = { isInternetReachable: true, isServerReachable: true };
+const mockConnectivity = { hasConnection: true, isServerReachable: true };
 jest.mock('../../store/connectivityStore', () => ({
   connectivityStore: {
     getState: () => mockConnectivity,
@@ -241,7 +241,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockImageCacheState.maxConcurrentImageDownloads = 1;
   mockOfflineMode.offlineMode = false;
-  mockConnectivity.isInternetReachable = true;
+  mockConnectivity.hasConnection = true;
   mockConnectivity.isServerReachable = true;
   mockHydrateCachedItems.mockReturnValue({});
   mockHydrateCachedSongs.mockReturnValue({});

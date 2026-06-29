@@ -410,9 +410,9 @@ export default function RootLayout() {
     if (!isLoggedIn) return;
     let prevReachable =
       connectivityStore.getState().isServerReachable
-      && connectivityStore.getState().isInternetReachable;
+      && connectivityStore.getState().hasConnection;
     const unsub = connectivityStore.subscribe((state) => {
-      const reachableNow = state.isServerReachable && state.isInternetReachable;
+      const reachableNow = state.isServerReachable && state.hasConnection;
       if (reachableNow && !prevReachable) {
         // Drain anything left in the persistent image queue (queued or
         // recovered-from-stalled). No-op when the queue is empty or paused.
