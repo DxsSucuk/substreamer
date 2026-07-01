@@ -1,5 +1,9 @@
 # Changelog
 
+## [8.0.78] - 2026-07-01
+
+- release notes
+- ci: update coverage badge [skip ci]
 ## [8.0.77] - 2026-06-29
 
 - fix(#209): lift BottomSheet above the on-screen keyboard
