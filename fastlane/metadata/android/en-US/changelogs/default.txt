@@ -1,10 +1,9 @@
-• Playback speed control
-• Support multiple server URLs
-• Download your entire library in settings
-• Bookmarks
-• Share songs
-• Play Next & More Like This
-• Library Songs view & faster search
-• Tablet landscape and portrait layouts
-• Small screen layouts
-• Many more bug fixes and enhancements.
+• Keyboard no longer hides text fields when searching
+• Faster app startup
+• Bluetooth, lock-screen, and now-playing control fixes
+• Added Japanese, plus translation updates
+• Sync libraries with over 10,000 albums
+• One-tap switch when your server is unreachable
+• Trust certificates and legacy auth when adding a server
+• Playback stability and cover-art fixes
+• Many more bug fixes and improvements

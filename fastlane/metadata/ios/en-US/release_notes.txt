@@ -1,11 +1,9 @@
-• Playback speed control
-• Support multiple server URLs
-• Self-signed certificate fixes
-• Download your entire library
-• Bookmarks
-• Share songs
-• Play Next
-• Library songs view & faster search
-• Improved tablet layouts
-• Small screen fixes
+• Keyboard no longer hides text fields when searching
+• Faster app startup
+• Self-signed certificate, HTTPS streaming, and legacy-auth fixes
+• Added Japanese, plus translation updates
+• Sync libraries with more than 10,000 albums
+• One-tap switch when your server is unreachable
+• Playback stability and cover-art fixes
+• Fixed a rare WiFi battery-drain issue and a rare crash
 • Many more bug fixes and enhancements.
