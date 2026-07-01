@@ -699,7 +699,22 @@ export async function forceRecoverDownloadsAsync(): Promise<void> {
  */
 export function getLocalTrackUri(trackId: string): string | null {
   if (!trackId) return null;
-  return trackUriMap.get(trackId) ?? null;
+  const mapped = trackUriMap.get(trackId);
+  if (mapped) return mapped;
+
+  // The in-memory map can be transiently empty or stale — `populateTrackMapsAsync`
+  // clears then rebuilds it (e.g. during a startup/resume reconcile), and a play
+  // that lands in that window would otherwise miss a genuinely-downloaded song and
+  // let the player fall back to a server stream URL, which stalls AVPlayer forever
+  // on an unreachable server. `cachedSongs` is the authoritative, persisted record
+  // of what's downloaded (and the very source the map is built from), so derive the
+  // local file URI from it directly and backfill the map. Guarantees a downloaded
+  // track always plays from disk, whether or not offline mode is on.
+  const song = musicCacheStore.getState().cachedSongs[trackId];
+  if (!song) return null;
+  const uri = resolveSongFile(song).uri;
+  trackUriMap.set(trackId, uri);
+  return uri;
 }
 
 /** Check whether an album / playlist / favorites / song item is cached. */

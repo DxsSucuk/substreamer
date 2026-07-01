@@ -502,6 +502,17 @@ describe('getLocalTrackUri', () => {
   it('returns null for unknown trackId', () => {
     expect(getLocalTrackUri('unknown')).toBeNull();
   });
+
+  it('falls back to cachedSongs when the in-memory map missed a downloaded song', () => {
+    // Simulate the map being empty/stale while the store still knows the song is
+    // downloaded (the reconcile-rebuild window). getLocalTrackUri must still
+    // resolve the local file rather than returning null — a null would let the
+    // player stream a downloaded track and stall forever on an unreachable server.
+    seedSong({ id: 'fallback-s1', albumId: 'fallback-a1', suffix: 'mp3' });
+    const uri = getLocalTrackUri('fallback-s1');
+    expect(uri).not.toBeNull();
+    expect(uri).toContain('fallback-a1/fallback-s1.mp3');
+  });
 });
 
 /* ------------------------------------------------------------------ */
