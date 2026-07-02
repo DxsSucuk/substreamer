@@ -41,27 +41,29 @@ export function useImagePalette(coverArtId: string | undefined): ImagePaletteRes
   const gradientOpacity = useSharedValue(0);
 
   useEffect(() => {
-    if (skip || !coverArtId) {
+    // Clear only when there is genuinely nothing to extract from: no cover,
+    // an explicit skip, or Expo Go (no native module). These are the only
+    // cases where blanking the gradient is correct.
+    if (skip || !coverArtId || Constants.appOwnership === 'expo') {
       setPalette(null);
       return;
     }
-    if (Constants.appOwnership === 'expo') {
-      // Expo Go has no access to the native module; leave palette null and
-      // consumers fall back to theme colours.
-      setPalette(null);
-      return;
-    }
-    if (!cachedUri) {
-      setPalette(null);
-      return;
-    }
+    // No resolved URI yet — the cache lookup is still in flight, or it's
+    // transiently re-resolving because a cover-art cache update landed (e.g.
+    // another player tab rendered the same album art). Keep the last-good
+    // palette; the effect re-runs once a URI is available.
+    if (!cachedUri) return;
+
     let cancelled = false;
     (async () => {
       try {
         const result = await getImagePaletteAsync(cachedUri);
         if (!cancelled) setPalette(result);
       } catch {
-        if (!cancelled) setPalette(null);
+        // Transient extraction failure (file mid-rewrite during a resize, a
+        // remote blip, etc). Keep the last-good palette rather than blanking an
+        // already-visible gradient — clearing it here is what made the player
+        // hero gradient vanish on tab switches and stay gone until reopen.
       }
     })();
     return () => {
