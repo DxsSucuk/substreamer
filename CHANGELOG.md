@@ -1,5 +1,10 @@
 # Changelog
 
+## [8.0.79] - 2026-07-02
+
+- fix(player): keep hero gradient colour across player tab switches
+- fix(player): always play downloaded tracks from disk, never stream
+- ci: update coverage badge [skip ci]
 ## [8.0.78] - 2026-07-01
 
 - release notes
