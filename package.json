@@ -82,6 +82,8 @@
     "react-native-gesture-handler": "^2.31.2",
     "react-native-reanimated": "^4.3.1",
     "react-native-reorderable-list": "^0.18.0",
+    "react-native-nitro-modules": "^0.35.6",
+    "react-native-queue-player": "file:../react-native-queue-player/react-native-queue-player",
     "react-native-safe-area-context": "^5.8.0",
     "react-native-screens": "^4.24.0",
     "react-native-svg": "^15.15.5",
@@ -122,6 +124,8 @@
       "reactNativeDirectoryCheck": {
         "exclude": [
           "react-native-track-player",
+          "react-native-queue-player",
+          "react-native-nitro-modules",
           "expo-async-fs",
           "expo-ssl-trust",
           "expo-backup-exclusions",
