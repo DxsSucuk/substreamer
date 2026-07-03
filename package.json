@@ -87,7 +87,6 @@
     "react-native-safe-area-context": "^5.8.0",
     "react-native-screens": "^4.24.0",
     "react-native-svg": "^15.15.5",
-    "react-native-track-player": "file:./modules/react-native-track-player",
     "react-native-worklets": "^0.8.3",
     "subsonic-api": "file:./modules/subsonic-api",
     "zustand": "^5.0.14"
@@ -123,7 +122,6 @@
       },
       "reactNativeDirectoryCheck": {
         "exclude": [
-          "react-native-track-player",
           "react-native-queue-player",
           "react-native-nitro-modules",
           "expo-async-fs",

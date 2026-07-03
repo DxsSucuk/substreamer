@@ -67,7 +67,15 @@
       "expo-sqlite",
       "./modules/expo-ssl-trust/plugin",
       "./modules/expo-backup-exclusions/plugin",
-      "./modules/react-native-track-player/plugin",
+      [
+        "react-native-queue-player",
+        {
+          "carplay": true,
+          "siri": true,
+          "chromecast": true,
+          "chromecastReceiverAppId": "CC1AD845"
+        }
+      ],
       [
         "expo-build-properties",
         {
