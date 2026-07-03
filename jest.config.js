@@ -48,8 +48,6 @@ module.exports = {
     'modules/expo-gzip/src/index.ts',
     'modules/expo-move-to-back/src/index.ts',
     'modules/expo-ssl-trust/src/ExpoSslTrust.ts',
-    'modules/react-native-track-player/src/trackPlayer.ts',
-    'modules/react-native-track-player/src/hooks/use*.ts',
     'modules/subsonic-api/src/index.ts',
     'modules/subsonic-api/src/utils.ts',
     'modules/subsonic-api/src/md5.ts',

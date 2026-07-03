@@ -27,6 +27,7 @@ import { AlbumInfoContent } from '@/components/AlbumInfoContent';
 import { LyricsContent } from '@/components/LyricsContent';
 import { BookmarkButton } from '@/components/BookmarkButton';
 import { CachedImage } from '@/components/CachedImage';
+import { CastButton } from '@/components/RoutePicker';
 import { FavoriteButton } from '@/components/FavoriteButton';
 import { EmptyState } from '@/components/EmptyState';
 import { MarqueeText } from '@/components/MarqueeText';
@@ -535,6 +536,7 @@ const PlayerContent = memo(function PlayerContent({
             >
               {currentTrack.artist ?? t('unknownArtist')}
             </Text>
+            <CastButton />
           </View>
           <FavoriteButton trackId={currentTrack.id} style={styles.favoriteButton} />
         </View>

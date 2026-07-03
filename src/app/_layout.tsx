@@ -45,6 +45,7 @@ import { PlayerTabletSplitview } from '../components/player/PlayerTabletSplitvie
 import { SplitLayout } from '../components/SplitLayout';
 import { MbidSearchSheet } from '../components/MbidSearchSheet';
 import { MoreOptionsSheet } from '../components/MoreOptionsSheet';
+import { RoutePickerSheet } from '../components/RoutePicker';
 import { OnboardingGuide } from '../components/OnboardingGuide';
 import { BackgroundPlaybackPromptModal } from '../components/BackgroundPlaybackPromptModal';
 import { SetRatingSheet } from '../components/SetRatingSheet';
@@ -832,6 +833,9 @@ export default function RootLayout() {
 
       {/* Global sleep timer sheet driven by sleepTimerStore */}
       <SleepTimerSheet />
+
+      {/* Global audio route / cast picker driven by useRoutePickerStore */}
+      <RoutePickerSheet />
 
       {/* Global bookmark name/rename sheet driven by bookmarkSheetStore */}
       <BookmarkNameSheet />

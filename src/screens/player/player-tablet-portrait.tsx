@@ -32,6 +32,7 @@ import { SkipIntervalButton } from '@/components/SkipIntervalButton';
 import { SleepTimerButton } from '@/components/SleepTimerButton';
 import { SleepTimerCapsule } from '@/components/SleepTimerCapsule';
 import { PlayerModeContent, type PlayerMode } from '@/components/player/PlayerModeContent';
+import { CastButton } from '@/components/RoutePicker';
 import { type ThemeColors } from '@/constants/theme';
 import { useCanSkip } from '@/hooks/useCanSkip';
 import { useCoverGradient } from '@/hooks/useCoverGradient';
@@ -231,6 +232,7 @@ export function PlayerTabletPortrait() {
                     <Text style={[styles.trackArtist, { color: colors.textSecondary }]} numberOfLines={1}>
                       {currentTrack.artist ?? t('unknownArtist')}
                     </Text>
+                    <CastButton />
                   </View>
                   <FavoriteButton trackId={currentTrack.id} style={styles.favoriteButton} />
                 </View>
