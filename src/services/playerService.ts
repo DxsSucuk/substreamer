@@ -1,18 +1,17 @@
 /**
- * Player service – initialises RNTP, manages the queue, and keeps
- * the Zustand playerStore in sync with the native player state.
+ * Player service — drives the RNQP (react-native-queue-player) engine, manages
+ * the queue, and keeps the Zustand playerStore in sync with native events.
+ *
+ * The engine itself is configured once at module load in `playerBootstrap.ts`
+ * (per the RNQP setup guide — configure() must run before the UI mounts, so
+ * cold-start system wakes find the player ready). This module attaches the
+ * event listeners, applies persisted settings + remote controls, and exposes
+ * the public queue/transport API used across the app.
  */
 
-import { AppState, Platform, type AppStateStatus } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import i18n from '../i18n/i18n';
-import TrackPlayer, {
-  AppKilledPlaybackBehavior,
-  Capability,
-  Event,
-  IOSCategory,
-  State,
-  type Track,
-} from 'react-native-track-player';
+import { getTrackPlayer } from 'react-native-queue-player';
 
 import { type EffectiveFormat } from '../types/audio';
 import {
@@ -37,28 +36,26 @@ import {
   getPersistedQueue,
   getPersistedPosition,
 } from './queuePersistenceService';
-import { withTimeout } from '../utils/withTimeout';
 import {
   ensureCoverArtAuth,
   type Child,
 } from './subsonicService';
 import {
   buildPlayableQueue,
-  childToTrack,
   mapRepeatMode,
   mapState,
-  resolveTrackArtwork,
   stampQueueFormat,
 } from './playerHelpers';
-import { logImageCache } from './imageCacheLogger';
 import { isFireOS } from '../utils/isFireOS';
+
+/** The RNQP player singleton. Safe to hold — `getTrackPlayer()` always returns
+ *  the same instance; the engine is configured in `playerBootstrap.ts`. */
+const tp = getTrackPlayer();
 
 /**
  * One-time Fire-OS background-playback guidance. Fired the first time the user
- * starts playback on a Fire tablet. Non-blocking — it only flips store state (a
- * root modal renders over the now-playing playback); playback proceeds normally.
- * No-op off Fire OS and after it has been shown once. Marking `seen` happens
- * inside the store up-front, so it appears at most once even across restarts.
+ * starts playback on a Fire tablet. Non-blocking — it only flips store state.
+ * No-op off Fire OS and after it has been shown once.
  */
 function maybePromptFireBackgroundPlayback(): void {
   if (!isFireOS()) return;
@@ -71,374 +68,92 @@ function maybePromptFireBackgroundPlayback(): void {
 /* ------------------------------------------------------------------ */
 
 let isPlayerReady = false;
-/** The Child[] backing the current RNTP queue, indexed by position. */
+/** The Child[] backing the current native queue, indexed by position. */
 let currentChildQueue: Child[] = [];
 /** Maps trackId → playlistId for tracks that originated from a playlist. */
 const trackPlaylistMap = new Map<string, string>();
 /**
- * Highest buffered position (in seconds) observed for the current track.
- * The native player sometimes reports a stale or lower `buffered` value
- * even though more data was previously available.  Tracking the high-water
- * mark ensures the UI and seek logic never regress.
- */
-let maxBufferedSeen = 0;
-/**
- * Set to true when the PlaybackBufferFull event fires, indicating the
- * native player has finished downloading the entire stream.  When true,
- * the effective buffered value is set to the metadata duration so the UI
- * shows 100% and seeking is unrestricted.
- */
-let isFullyBuffered = false;
-/** The previously active Child, used for scrobble-on-completion. */
-let previousActiveChild: Child | null = null;
-/**
- * Saved by PlaybackActiveTrackChanged when it fires BEFORE
- * PlaybackEndedWithReason.  Ensures the ended handler scrobbles the
- * correct (outgoing) track even when RNTP delivers events in reverse.
- */
-let savedTrackForScrobble: Child | null = null;
-/**
- * True when PlaybackEndedWithReason fired before PlaybackActiveTrackChanged
- * for the current transition.  Prevents the subsequent ActiveTrackChanged
- * from saving a stale outgoing track reference.
- */
-let scrobbleHandledByEnded = false;
-/** True while we are reloading the current track for stream recovery. */
-let isRecoveringStream = false;
-/**
- * True during multi-step queue operations (playTrack, shuffleQueue) where
- * multiple PlaybackActiveTrackChanged events fire for a single user action.
- * Prevents intermediate tracks from being falsely scrobbled.
- */
-let isSettingQueue = false;
-/**
- * Set when the app leaves the foreground; cleared once we've re-asserted the
- * now-playing artwork after the next resume. iOS drops the external-surface
- * (car head-unit) now-playing artwork after a long suspension and doesn't
- * re-render it on resume without a metadata update event — even though the art
- * is still in the now-playing center (the lock screen keeps showing it) and the
- * file is still on disk. We re-push the active track's metadata on the first
- * playback resume after a background period so the car self-heals without the
- * user opening the app. Gated to once-per-background so it doesn't fire on every
- * ordinary play/pause toggle.
- */
-let needsArtworkRepushOnResume = false;
-/**
- * In-flight promise for an async queue-rehydration after a cold-start
- * restore. Consumers that touch the native queue (play/skip/seek, or
- * queue-replacing actions) await this before issuing their own commands
- * so they can't race an eager hydration still wiring up RNTP.
- * Null when no hydration is pending (e.g. fresh install, post-completion,
- * or after the queue has been replaced by playTrack/clearQueue).
+ * In-flight promise for an async queue-rehydration after a cold-start restore.
+ * Public entry points await this before touching the native queue so a user
+ * tap can't race the (async prerequisite + setQueue) restore. Null when no
+ * hydration is pending.
  */
 let hydrationPromise: Promise<void> | null = null;
-/**
- * Pending resume position from a persisted queue restore. Consumed by
- * hydrateRestoredQueue() to seek before the explicit post-load pause.
- */
+/** Pending resume position from a persisted-queue restore, consumed by hydrate. */
 let pendingResumePosition: { trackId: string; position: number } | null = null;
-/** Consecutive raw stream recovery attempts for the current track. */
-let rawRecoveryAttempts = 0;
-const MAX_RAW_RECOVERY_ATTEMPTS = 3;
-
-/**
- * Whether the CURRENTLY-LOADED stream is a server transcode, read from the
- * actual stream URL rather than current settings (which can drift from what the
- * stream was built with). `applyFormatAndBitrate` omits BOTH `format` and
- * `maxBitRate` for raw and sets at least one for any transcode — so the presence
- * of either param is the ground-truth signal that transcoding was requested.
- * Gates the transcoded-only recovery + seek-clamp paths, so a raw stream — even
- * one the native player reports with `duration === 0` (e.g. a Gonic HTTP file
- * with no Content-Length) — is never mistaken for a transcode and seek-clamped.
- */
-function streamUrlIsTranscode(url: string | undefined | null): boolean {
-  if (!url) return false;
-  try {
-    const params = new URL(url).searchParams;
-    // A `maxBitRate` always implies a transcode. `format` implies a transcode
-    // UNLESS it's the explicit `format=raw` (no transcoding). Older URLs with no
-    // `format` at all are likewise treated as raw.
-    if (params.has('maxBitRate')) return true;
-    const format = (params.get('format') ?? '').toLowerCase();
-    return format !== '' && format !== 'raw';
-  } catch {
-    return false;
-  }
-}
-
-
-/* ------------------------------------------------------------------ */
-/*  Stream recovery                                                    */
-/* ------------------------------------------------------------------ */
-
-/**
- * Retry the current raw (non-transcoded) stream after a playback error
- * and verify the playback position is preserved.
- *
- * Raw streams use the native retry mechanism directly — the server serves
- * the full file and the native player can seek freely.  The explicit
- * seekTo() after retry() is a safety net: if the native layer lost position
- * (stale lastPosition on iOS, failed byte-range on Android), we restore it.
- * Transcoded streams are NOT recovered here (they can't seek mid-stream);
- * they fall through to the normal auto-retry/error path.
- */
-async function recoverRawStream(position: number): Promise<void> {
-  try {
-    console.warn(
-      '[Player] Attempting raw stream recovery at position',
-      position,
-    );
-
-    maxBufferedSeen = 0;
-    isFullyBuffered = false;
-
-    await TrackPlayer.retry();
-    await TrackPlayer.seekTo(position);
-    await TrackPlayer.play();
-
-    console.warn('[Player] Raw stream recovery completed');
-  } catch (e) {
-    console.warn('[Player] Raw stream recovery failed:', e);
-  } finally {
-    isRecoveringStream = false;
-  }
-}
 
 /* ------------------------------------------------------------------ */
 /*  Init                                                               */
 /* ------------------------------------------------------------------ */
 
 /**
- * Set up the RNTP player, register event listeners, and start
- * AppState monitoring.  Safe to call multiple times (no-ops after first).
+ * Apply persisted settings + remote controls and attach the RNQP event
+ * listeners that push native state into the Zustand store. The engine is
+ * already configured by `playerBootstrap.ts`. Safe to call multiple times.
  */
 export async function initPlayer(): Promise<void> {
   if (isPlayerReady) return;
+  isPlayerReady = true;
 
-  try {
-    await TrackPlayer.setupPlayer({
-      // On iOS minBuffer maps to AVPlayerItem.preferredForwardBufferDuration.
-      // A very large value tells AVPlayer to keep buffering aggressively
-      // until the entire track is downloaded rather than capping at a
-      // short window.  automaticallyWaitsToMinimizeStalling is left at
-      // its default (true) so the player properly waits for sufficient
-      // buffer before starting playback.
-      minBuffer: 86400,
-      // maxBuffer is Android-only (ExoPlayer); must be >= minBuffer.
-      maxBuffer: 86400,
-      iosCategory: IOSCategory.Playback,
-      autoHandleInterruptions: true,
-    });
-  } catch (err) {
-    // Two shapes of failure land here:
-    //   (a) "player_already_initialized" — RNTP survived the previous app
-    //       lifecycle (Android foreground service persistence, iOS AVPlayer
-    //       retained across cold-restart, or a Fast Refresh). The JS bridge
-    //       is disconnected from a native queue that may still hold stale
-    //       tracks. Expected; the unconditional reset() below cleans it up.
-    //   (b) Any other error — a real init failure. Bail so consumers don't
-    //       attempt playback against a dead native player.
-    const message = (err as { message?: string })?.message ?? '';
-    const code = (err as { code?: string })?.code ?? '';
-    const alreadyInit =
-      code.toLowerCase().includes('already_initialized') ||
-      message.toLowerCase().includes('already');
-    if (!alreadyInit) {
-      console.error('[Player] setupPlayer failed:', err);
-      return;
-    }
-  }
-
-  // Unconditional post-setup reset: guarantees a clean native queue
-  // regardless of whether setupPlayer() fresh-initialized or re-attached to
-  // a zombie service from the previous app lifecycle. RNTP's reset()
-  // occasionally resolves before the native queue is fully cleared (see
-  // upstream issue #1445), so wrap in withTimeout and settle briefly.
-  try {
-    await withTimeout(() => TrackPlayer.reset(), 2000);
-  } catch {
-    // reset() failed or timed out — continue. hydrateRestoredQueue()
-    // calls reset() again before add() as a second line of defence.
-  }
-  await new Promise((r) => setTimeout(r, 150));
-
-  // Apply remote capabilities based on user preference (skip-track vs skip-interval).
+  // Lock-screen / notification skip buttons (track vs interval) from settings.
   await updateRemoteCapabilities();
 
-  // Apply persisted playback settings to the native player.
+  // Apply persisted playback settings.
   const settings = playbackSettingsStore.getState();
-  await TrackPlayer.setRepeatMode(mapRepeatMode(settings.repeatMode));
-  await TrackPlayer.setRate(settings.playbackRate);
+  await tp.setRepeatMode(mapRepeatMode(settings.repeatMode));
+  await tp.setPlaybackSpeed(settings.playbackRate);
 
-  // --- Event listeners that push state into the Zustand store ---
-
-  TrackPlayer.addEventListener(Event.PlaybackState, ({ state }) => {
+  // --- Playback state → store ---
+  tp.onStateChange((state) => {
     const store = playerStore.getState();
     store.setPlaybackState(mapState(state));
-
-    if (state === State.Playing) {
+    if (state === 'playing') {
       if (store.error) store.setError(null);
       if (store.retrying) store.setRetrying(false);
-      rawRecoveryAttempts = 0;
-
-      // First resume after a background period (e.g. reconnecting to the car):
-      // re-assert now-playing metadata so the head unit re-renders the artwork
-      // it dropped during suspension. Fires in the background — no app
-      // foreground needed. Skipped mid-queue-build (add() already pushes art).
-      if (needsArtworkRepushOnResume && !isSettingQueue) {
-        needsArtworkRepushOnResume = false;
-        void repushNowPlayingArtwork();
-      }
     }
   });
 
-  TrackPlayer.addEventListener(Event.PlaybackError, async (e) => {
-    const message =
-      (e as { message?: string }).message ?? i18n.t('playbackErrorOccurred');
-    const errorPosition = (e as { position?: number }).position ?? 0;
-    const store = playerStore.getState();
-
-    // --- Raw stream recovery -----------------------------------------
-    // A raw (non-transcoded, seekable) stream that errors mid-track is retried
-    // and seeked back to the failure position. Transcoded streams can't seek
-    // mid-stream, so they fall through to the normal auto-retry path below
-    // (which restarts the track from the start).
-    if (!isRecoveringStream && errorPosition > 5) {
-      const metadataDuration = store.currentTrack?.duration ?? 0;
-      if (metadataDuration > 0 && errorPosition < metadataDuration - 5) {
-        // Read transcoding from the loaded stream URL (ground truth), not from
-        // current settings which may have changed since the track was built.
-        const active = await TrackPlayer.getActiveTrack();
-        const isTranscoding = streamUrlIsTranscode(active?.url);
-        if (!isTranscoding && rawRecoveryAttempts < MAX_RAW_RECOVERY_ATTEMPTS) {
-          rawRecoveryAttempts++;
-          isRecoveringStream = true;
-          recoverRawStream(errorPosition);
-          return;
-        }
-      }
-    }
-
-    // --- Normal error handling with auto-retry -----------------------
-    if (!store.retrying) {
-      store.setError(message);
-      store.setRetrying(true);
-      // Capture the track this error belongs to. If the user skips / clears /
-      // replaces the queue during the delay, the deferred retry would fire
-      // against a different track — bail instead.
-      const retryTrackId = store.currentTrack?.id;
-      // Brief delay before retrying to let transient issues settle.
-      await new Promise((r) => setTimeout(r, 1500));
-      if (playerStore.getState().currentTrack?.id !== retryTrackId) {
-        playerStore.getState().setRetrying(false);
-        return;
-      }
-      try {
-        await TrackPlayer.retry();
-        // If retry succeeds, the PlaybackState -> Playing handler clears
-        // the error.  If it fails, this listener fires again and we'll
-        // hit the else branch below.
-      } catch {
-        // retry() itself threw — surface the error immediately.
-        playerStore.getState().setRetrying(false);
-      }
-    } else {
-      // Auto-retry already attempted and failed — show error for manual retry.
-      store.setRetrying(false);
-      store.setError(message);
-    }
-  });
-
-  // --- Playback diagnostic events ---
-
-  TrackPlayer.addEventListener(Event.PlaybackStalled, (e) => {
-    console.warn(
-      '[Player] Playback stalled at position',
-      e.position,
-      'track',
-      e.track
-    );
-  });
-
-  TrackPlayer.addEventListener(Event.PlaybackErrorLog, (e) => {
-    for (const entry of e.entries) {
-      console.warn(
-        '[Player] Error log entry:',
-        entry.errorStatusCode,
-        entry.errorDomain,
-        entry.errorComment ?? '',
-        entry.uri ?? ''
-      );
-    }
-  });
-
-  TrackPlayer.addEventListener(Event.PlaybackBufferFull, (e) => {
-    if (e.isFull) {
-      isFullyBuffered = true;
-    }
-  });
-
-  TrackPlayer.addEventListener(Event.PlaybackProgressUpdated, (e) => {
-    const { position, duration, buffered } = e;
-
-    // Compute effective buffered value using high-water mark.
-    if (isFullyBuffered) {
-      const metaDuration =
-        playerStore.getState().currentTrack?.duration ?? 0;
-      maxBufferedSeen = Math.max(
-        maxBufferedSeen, metaDuration, duration, buffered, position
-      );
-    } else {
-      maxBufferedSeen = Math.max(maxBufferedSeen, buffered, position);
-    }
-
-    playerStore.getState().setProgress(position, duration, maxBufferedSeen);
-
+  // --- Progress → store (native ~2Hz, fires while backgrounded) ---
+  tp.onProgress(({ position, duration, buffered }) => {
+    playerStore.getState().setProgress(position, duration, buffered);
     const currentTrack = playerStore.getState().currentTrack;
     if (currentTrack?.id && position > 0) {
       persistPositionIfDue(position, currentTrack.id, currentTrack.duration);
     }
   });
 
-  TrackPlayer.addEventListener(Event.PlaybackEndedWithReason, (e) => {
-    // During queue-setup operations, skip scrobble coordination entirely.
-    if (isSettingQueue) return;
-
-    // Resolve the track that actually finished: prefer the snapshot saved
-    // by ActiveTrackChanged (if it fired first), otherwise use the current
-    // previousActiveChild (if we fired first — it hasn't been overwritten yet).
-    const trackThatEnded = savedTrackForScrobble ?? previousActiveChild;
-
-    if (
-      (e.reason === 'playedUntilEnd' || e.reason === 'PLAYED_UNTIL_END') &&
-      trackThatEnded
-    ) {
-      // Force the store to reflect the true end-of-track position. RNTP's
-      // last `PlaybackProgressUpdated` typically fires before the track
-      // finishes (polling cadence), so without this write the store can be
-      // left at e.g. 150/200 when the track ends — a visible ~75% progress
-      // bar instead of a full one. Using the Subsonic metadata duration
-      // (authoritative) keeps mini player and PlayerProgressBar in lockstep.
-      const endDuration = trackThatEnded.duration ?? 0;
-      if (endDuration > 0) {
-        playerStore.getState().setProgress(endDuration, endDuration, endDuration);
-      }
-      addCompletedScrobble(trackThatEnded, trackPlaylistMap.get(trackThatEnded.id));
+  // --- Active-track change → store + now-playing scrobble + persist ---
+  tp.onTrackChange((track, index) => {
+    if (track?.id) {
+      const child = currentChildQueue.find((c) => c.id === track.id) ?? null;
+      playerStore.getState().setCurrentTrack(child, index ?? null);
+      if (child) sendNowPlaying(child, trackPlaylistMap.get(child.id));
+      if (index != null && index >= 0) persistQueue(currentChildQueue, index);
+    } else {
+      playerStore.getState().setCurrentTrack(null, null);
     }
-
-    // If savedTrackForScrobble was null, we fired before ActiveTrackChanged —
-    // tell the upcoming ActiveTrackChanged not to save a stale reference.
-    if (savedTrackForScrobble == null) {
-      scrobbleHandledByEnded = true;
-    }
-    savedTrackForScrobble = null;
   });
 
-  // Belt-and-braces: iOS RNTP also emits PlaybackQueueEnded after the last
-  // track in the queue finishes. Pin progress to the end in case the
-  // PlaybackEndedWithReason path was skipped (queue-setup guards, platform
-  // quirks). Same "store is the only source of truth" contract.
-  TrackPlayer.addEventListener(Event.PlaybackQueueEnded, () => {
+  // --- Completion scrobble: deterministic, keyed to the played track index.
+  // RNQP fires the 90% milestone once per playthrough (and again each loop
+  // under repeat-one), replacing the RNTP played-until-end event-ordering
+  // choreography. ---
+  tp.onPlaybackMilestone((milestone, trackIndex) => {
+    if (milestone < 90) return;
+    const child = currentChildQueue[trackIndex];
+    if (child) addCompletedScrobble(child, trackPlaylistMap.get(child.id));
+  });
+
+  // --- Errors. Transient errors are auto-retried natively; surface the error
+  // so the UI can offer a manual "Retry" (→ tp.retry()). ---
+  tp.onError((error) => {
+    const store = playerStore.getState();
+    store.setError(error.message ?? i18n.t('playbackErrorOccurred'));
+    store.setRetrying(false);
+  });
+
+  // --- Queue end: pin progress to 100% so the bar completes. ---
+  tp.onQueueEnd(() => {
     const currentTrack = playerStore.getState().currentTrack;
     const endDuration = currentTrack?.duration ?? 0;
     if (endDuration > 0) {
@@ -446,128 +161,44 @@ export async function initPlayer(): Promise<void> {
     }
   });
 
-  TrackPlayer.addEventListener(Event.PlaybackActiveTrackChanged, ({ track, index: activeIndex }) => {
-    const sameTrack =
-      previousActiveChild?.id != null && previousActiveChild?.id === track?.id;
-
-    // During raw stream recovery (retry()) the active track may re-fire with
-    // the same ID — don't scrobble, just reset buffer tracking.
-    if (isRecoveringStream && sameTrack) {
-      maxBufferedSeen = 0;
-      isFullyBuffered = false;
-      return;
-    }
-
-    // During a queue replacement (playTrack, shuffleQueue) RNTP may fire a
-    // transient null-track event from reset() — ignore it so the tablet
-    // panel stays open and the UI doesn't flicker.
-    if (isSettingQueue && (track == null || !track.id)) {
-      return;
-    }
-
-    // --- Scrobble coordination: save the outgoing track for EndedWithReason ---
-    if (!isSettingQueue && !isRecoveringStream) {
-      if (scrobbleHandledByEnded) {
-        // EndedWithReason already fired first for this transition and
-        // consumed previousActiveChild — don't save a stale reference.
-        scrobbleHandledByEnded = false;
-      } else {
-        // We fired first — snapshot the outgoing track so EndedWithReason
-        // can read it even though previousActiveChild is about to change.
-        savedTrackForScrobble = previousActiveChild;
-      }
-    }
-
-    maxBufferedSeen = 0;
-    isFullyBuffered = false;
-
-    // Reset recovery state for genuine track changes.
-    rawRecoveryAttempts = 0;
-
-    let resolvedChild: Child | null = null;
-    if (track != null && track.id) {
-      resolvedChild = currentChildQueue.find((c) => c.id === track.id) ?? null;
-      playerStore.getState().setCurrentTrack(resolvedChild, activeIndex ?? null);
-
-      // Scrobble: send "now playing" for the new track.
-      if (resolvedChild) {
-        sendNowPlaying(resolvedChild, trackPlaylistMap.get(resolvedChild.id));
-      }
-    } else {
-      playerStore.getState().setCurrentTrack(null, null);
-    }
-
-    previousActiveChild = resolvedChild;
-
-    if (!isSettingQueue && activeIndex != null) {
-      persistQueue(currentChildQueue, activeIndex);
-    }
-  });
-
-  // --- Sleep timer event listeners ---
-
+  // --- Sleep timer → store. RNQP emits only on arm/clear/convert/fire, so a
+  // 1s interval recomputes the display countdown from the wall-clock deadline
+  // (the UI reads sleepTimerStore.remaining). ---
   let sleepTimerInterval: ReturnType<typeof setInterval> | null = null;
-
-  TrackPlayer.addEventListener(Event.SleepTimerChanged, (e) => {
+  tp.onSleepTimerChange((state) => {
     if (sleepTimerInterval) {
       clearInterval(sleepTimerInterval);
       sleepTimerInterval = null;
     }
     const store = sleepTimerStore.getState();
-    if (e.active) {
-      store.setTimer(e.endTime ?? null, e.endOfTrack);
-      if (!e.endOfTrack && e.endTime != null) {
-        // Start JS-side countdown for UI display
-        const tick = () => {
-          const now = Date.now() / 1000;
-          const remaining = Math.max(0, Math.round((e.endTime as number) - now));
-          sleepTimerStore.getState().setRemaining(remaining);
-        };
-        tick();
-        sleepTimerInterval = setInterval(tick, 1000);
-      } else {
-        store.setRemaining(null);
-      }
-    } else {
+    if (!state.active) {
       store.clear();
+      return;
     }
-  });
-
-  TrackPlayer.addEventListener(Event.SleepTimerComplete, () => {
-    if (sleepTimerInterval) {
-      clearInterval(sleepTimerInterval);
-      sleepTimerInterval = null;
-    }
-    sleepTimerStore.getState().clear();
-  });
-
-  // --- AppState listener for background → foreground sync ---
-
-  const handleAppState = async (next: AppStateStatus) => {
-    if (next === 'active') {
-      await syncStoreFromNative();
-      // If we resumed straight to the foreground before any playback-resume
-      // event re-asserted the artwork, do it here. After a long suspension iOS
-      // doesn't re-render the car head unit's now-playing artwork without a
-      // metadata update event, even though the art is still on disk / on the
-      // lock screen. No queue reload — just refreshes the displayed metadata.
-      if (needsArtworkRepushOnResume) {
-        needsArtworkRepushOnResume = false;
-        await repushNowPlayingArtwork();
-      }
+    const endTimeSec = state.endsAtEpochMs != null ? state.endsAtEpochMs / 1000 : null;
+    store.setTimer(endTimeSec, state.endOfTrack);
+    if (!state.endOfTrack && endTimeSec != null) {
+      const tick = () => {
+        const remaining = Math.max(0, Math.round(endTimeSec - Date.now() / 1000));
+        sleepTimerStore.getState().setRemaining(remaining);
+      };
+      tick();
+      sleepTimerInterval = setInterval(tick, 1000);
     } else {
-      // Mark that we've left the foreground so the next playback resume (or
-      // foreground) re-asserts the now-playing artwork to the car.
-      needsArtworkRepushOnResume = true;
+      store.setRemaining(null);
+    }
+  });
+
+  // --- Flush the resume position to SQLite when backgrounding. Native events
+  // keep the store synced across suspension, so no resume-time reconcile. ---
+  AppState.addEventListener('change', (next) => {
+    if (next !== 'active') {
       const { position, currentTrack } = playerStore.getState();
       if (currentTrack?.id && position > 0) {
         flushPosition(position, currentTrack.id, currentTrack.duration);
       }
     }
-  };
-  AppState.addEventListener('change', handleAppState);
-
-  isPlayerReady = true;
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -575,18 +206,10 @@ export async function initPlayer(): Promise<void> {
 /* ------------------------------------------------------------------ */
 
 /**
- * Restore the previous session's queue. Split out of initPlayer and driven from
- * the root layout AFTER the animated splash has finished: the restore + RNTP
- * hydration (reset/add/skip + track-map wait) is heavy, mostly-synchronous
- * native work that froze the splash mid-sweep when it ran during boot. The
- * native player is set up eagerly by initPlayer, so this only loads the queue.
- *
- * restorePersistedQueue() populates the Zustand store synchronously so the mini
- * player renders immediately; if a previous queue exists it kicks off the async
- * hydration that loads tracks into RNTP muted/paused/seek-positioned so the
- * first user tap plays cleanly. Running after migrations also means the
- * one-time queue-clear migration actually takes effect instead of being
- * restored over.
+ * Restore the previous session's queue, driven from the root layout after the
+ * animated splash. `restorePersistedQueue()` seeds the Zustand store
+ * synchronously so the mini player renders immediately; if a queue exists it
+ * kicks off the async hydration that loads it into the native engine.
  */
 export function restorePersistedQueueAfterBoot(): void {
   const needsHydration = restorePersistedQueue();
@@ -597,101 +220,11 @@ export function restorePersistedQueueAfterBoot(): void {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/*  Sync helper                                                        */
-/* ------------------------------------------------------------------ */
-
-/** Query RNTP for current state/track/progress and push into the store. */
-async function syncStoreFromNative(): Promise<void> {
-  try {
-    const state = await TrackPlayer.getPlaybackState();
-    playerStore.getState().setPlaybackState(mapState(state.state));
-
-    const activeTrack = await TrackPlayer.getActiveTrack();
-    const activeTrackIndex = await TrackPlayer.getActiveTrackIndex();
-
-    // Detect missed track transitions (e.g. native auto-advanced in
-    // background but the JS event was deferred).  This is a safety net —
-    // if the native fixes work correctly, this should never trigger.
-    const storeTrackIndex = playerStore.getState().currentTrackIndex;
-    if (
-      activeTrackIndex !== undefined &&
-      activeTrackIndex !== null &&
-      activeTrackIndex !== storeTrackIndex
-    ) {
-      console.warn(
-        `[Player] Detected background track transition: store=${storeTrackIndex}, native=${activeTrackIndex}`,
-      );
-    }
-
-    if (activeTrack?.id) {
-      const child = currentChildQueue.find((c) => c.id === activeTrack.id) ?? null;
-      playerStore.getState().setCurrentTrack(child, activeTrackIndex ?? null);
-    }
-
-    const { position, duration, buffered } = await TrackPlayer.getProgress();
-
-    if (isFullyBuffered) {
-      const metaDuration =
-        playerStore.getState().currentTrack?.duration ?? 0;
-      maxBufferedSeen = Math.max(
-        maxBufferedSeen, metaDuration, duration, buffered, position
-      );
-    } else {
-      maxBufferedSeen = Math.max(maxBufferedSeen, buffered, position);
-    }
-    playerStore.getState().setProgress(position, duration, maxBufferedSeen);
-  } catch {
-    // Player may not be ready yet; ignore.
-  }
-}
-
 /**
- * Re-push the active track's now-playing metadata (incl. artwork) to RNTP
- * without reloading the stream. Repairs the lock-screen / car-head-unit cover
- * art that iOS drops after a long suspension (the bitmap is evicted and not
- * re-rendered until a metadata update event, even though the file is still on
- * disk). `updateMetadataForTrack` keeps the URL/position intact — no audio
- * reload, unlike a queue rebuild.
- */
-async function repushNowPlayingArtwork(): Promise<void> {
-  try {
-    const index = await TrackPlayer.getActiveTrackIndex();
-    if (index === undefined || index === null) return;
-    const activeTrack = await TrackPlayer.getActiveTrack();
-    if (!activeTrack?.id) return;
-    const child = currentChildQueue.find((c) => c.id === activeTrack.id);
-    if (!child) return;
-    const cachedArt = await resolveTrackArtwork(child);
-    const track = childToTrack(child, cachedArt);
-    if (!track) return;
-
-    logImageCache(
-      `player.repushArtwork id=${activeTrack.id} index=${index} artwork=${track.artwork ?? 'none'}`,
-    );
-
-    await TrackPlayer.updateMetadataForTrack(index, {
-      title: track.title,
-      artist: track.artist,
-      album: track.album,
-      artwork: track.artwork,
-      duration: track.duration,
-    });
-  } catch {
-    // Best-effort cosmetic refresh; never let it break the resume path.
-  }
-}
-
-/**
- * Restore the persisted queue from a previous session.
- *
- * Called once during initPlayer(). Populates the Zustand store and
- * module-level currentChildQueue so the mini player renders immediately.
- * Does NOT touch RNTP — that's the job of the async hydrateRestoredQueue()
- * that initPlayer() kicks off next.
- *
- * @returns true when a non-empty persisted queue was restored (caller
- *   should start async hydration); false otherwise.
+ * Seed the Zustand store + module `currentChildQueue` from the persisted queue
+ * so the mini player renders immediately. Does NOT touch the native engine —
+ * that's `hydrateRestoredQueue()`. Returns true when a non-empty queue was
+ * restored (caller should hydrate).
  */
 function restorePersistedQueue(): boolean {
   try {
@@ -730,7 +263,6 @@ function restorePersistedQueue(): boolean {
       };
     }
 
-    previousActiveChild = currentChild;
     return true;
   } catch (e) {
     console.warn('[Player] Failed to restore persisted queue:', e);
@@ -739,56 +271,31 @@ function restorePersistedQueue(): boolean {
 }
 
 /**
- * Load the restored queue into RNTP with a bulletproof mute → load → seek
- * → pause → unmute sequence.
- *
- * Called from initPlayer() right after restorePersistedQueue() seeds the
- * JS store. Runs while the splash screen / boot is still visible so the
- * user never sees a tap-to-play latency.
- *
- * Sequence rationale:
- *   1. Wait for prerequisites (track maps + cover-art auth) so childToTrack
- *      sees local URIs for downloaded songs — without this, a race against
- *      populateTrackMapsAsync() produces server URLs that stall offline.
- *   2. reset() again to guarantee a clean native queue even if initPlayer's
- *      post-setup reset somehow left residue. withTimeout prevents a wedged
- *      native player from blocking hydration forever.
- *   3. Mute — muscle-memory defence against any native state where add()
- *      or seekTo() could produce a momentary audible artefact.
- *   4. add() the tracks and verify via getQueue() that they landed. One
- *      retry on length mismatch; if it still fails, surface a toast and
- *      bail cleanly so the UI doesn't lie about the queue state.
- *   5. Position the queue with skip(startIndex) and seekTo(resumePosition).
- *   6. pause() explicitly — never rely on default state. The user's first
- *      play() call then has a single known starting point.
- *   7. Unmute — the next play() will be at normal volume.
+ * Load the restored queue into the native engine. A single atomic
+ * `setQueue(tracks, startIndex)` (which does NOT auto-play) replaces the
+ * former RNTP mute→reset→verify→skip→seek→pause ceremony. The prerequisite
+ * waits stay — they resolve local URIs / cover-art auth / the iOS SSL proxy so
+ * downloaded songs use local files rather than server URLs that stall offline.
  */
 async function hydrateRestoredQueue(): Promise<void> {
-  const resume = pendingResumePosition;
-  pendingResumePosition = null;
-
   try {
-    // 1. Prerequisites.
     await waitForTrackMapsReady();
     await ensureCoverArtAuth();
-    // (iOS) Register the self-signed streaming proxy and cache its port/token
-    // BEFORE building the restored tracks — otherwise getStreamUrl resolves to
-    // the raw https URL and AVPlayer fails on the self-signed cert. No-op when
-    // no self-signed host is configured (the upstream filter is empty).
+    // (iOS) register the self-signed streaming proxy BEFORE building tracks, so
+    // getStreamUrl resolves to the loopback proxy rather than a raw self-signed
+    // https URL. No-op when no self-signed host is configured.
     if (Platform.OS === 'ios') {
       await syncProxyUpstreams();
     }
 
     const originalIndex = playerStore.getState().currentTrackIndex ?? 0;
     const originalChild = currentChildQueue[originalIndex] ?? null;
+    const resume = pendingResumePosition;
+    pendingResumePosition = null;
 
     const { rnTracks, filteredQueue } = await buildPlayableQueue(currentChildQueue);
-
     if (rnTracks.length === 0) {
-      // Nothing in the restored queue is playable right now (offline + no
-      // cached files). Surface a toast and clear the stale queue so the
-      // mini player doesn't linger on an unplayable track. Call the
-      // internal helper — clearQueue() would deadlock awaiting us.
+      // Nothing playable (offline + no cached files) — clear the stale queue.
       playbackToastStore.getState().fail();
       await clearPlayerStateInternal();
       return;
@@ -800,128 +307,38 @@ async function hydrateRestoredQueue(): Promise<void> {
       playerStore.getState().setQueue(filteredQueue);
     }
 
-    // Translate the restored current-track onto the filtered queue. If the
-    // desired track was dropped (non-cached offline), fall back to 0.
+    // Translate the restored current track onto the filtered queue.
     let startIndex = 0;
     if (originalChild) {
       const idx = filteredQueue.findIndex((c) => c.id === originalChild.id);
       if (idx !== -1) startIndex = idx;
     }
 
-    // 2. Pre-load clean slate.
-    try {
-      await withTimeout(() => TrackPlayer.reset(), 2000);
-    } catch {
-      // Reset failed — continue; add() below will surface a real problem
-      // via the length-verification retry.
-    }
-    await new Promise((r) => setTimeout(r, 100));
-
-    // 3. Mute (belt-and-braces).
-    await TrackPlayer.setVolume(0);
-
-    // 4. Load + verify. RNTP add() sometimes resolves before the native
-    //    queue is fully populated, or silently drops tracks when the native
-    //    layer is in a degraded post-zombie state. Check getQueue() length
-    //    and retry once with a fresh reset if it doesn't match.
-    let loaded = await loadTracksWithVerification(rnTracks);
-    if (!loaded) {
-      try {
-        await withTimeout(() => TrackPlayer.reset(), 2000);
-      } catch {
-        /* best-effort teardown before retry */
-      }
-      await new Promise((r) => setTimeout(r, 100));
-      loaded = await loadTracksWithVerification(rnTracks);
-    }
-    if (!loaded) {
-      // The native player is refusing to accept the queue. Surface a
-      // failure so the user isn't stuck with a visibly-restored but
-      // unplayable queue, and unmute so the next action isn't silent.
-      // Internal helper — clearQueue() would deadlock awaiting us.
-      await TrackPlayer.setVolume(1).catch(() => {});
-      playbackToastStore.getState().fail();
-      await clearPlayerStateInternal();
-      return;
-    }
-
-    // 5. Position.
-    if (startIndex > 0) {
-      await TrackPlayer.skip(startIndex);
-    }
+    await tp.setQueue(rnTracks, startIndex);
     if (
       resume &&
       filteredQueue[startIndex]?.id === resume.trackId &&
       resume.position > 0
     ) {
-      await TrackPlayer.seekTo(resume.position);
+      await tp.seekTo(resume.position);
     }
 
-    // 6. Quiesce to a single known state: paused at the target position.
-    //    add() + skip() + seekTo() don't auto-play, but RNTP has historical
-    //    bugs where zombie native state reports Playing — pause() here
-    //    means the user's first play() has no variability to negotiate.
-    await TrackPlayer.pause();
-
-    // 7. Unmute.
-    await TrackPlayer.setVolume(1);
-
-    if (pruned) {
-      persistQueue(filteredQueue, startIndex);
-    }
+    if (pruned) persistQueue(filteredQueue, startIndex);
   } catch (e) {
     console.warn('[Player] Queue hydration failed:', e);
-    // Restore the volume so a future play() is audible even if hydration
-    // bailed mid-sequence.
-    await TrackPlayer.setVolume(1).catch(() => {});
     throw e;
   }
 }
 
-/**
- * Call TrackPlayer.add(rnTracks) and confirm via getQueue() that every
- * track landed. Returns true when the native queue length matches, false
- * when the add was partial or the verification call itself failed.
- */
-async function loadTracksWithVerification(rnTracks: Track[]): Promise<boolean> {
-  try {
-    await TrackPlayer.add(rnTracks);
-  } catch (e) {
-    console.warn('[Player] TrackPlayer.add() rejected:', e);
-    return false;
-  }
-  try {
-    const queue = await TrackPlayer.getQueue();
-    return queue.length >= rnTracks.length;
-  } catch (e) {
-    console.warn('[Player] TrackPlayer.getQueue() failed post-add:', e);
-    return false;
-  }
-}
-
-/**
- * Await the in-flight hydration promise (if any) before proceeding.
- *
- * Called by every public API entry point that touches RNTP. When no
- * hydration is pending this is a near-free no-op. Swallows rejections —
- * if hydration failed, clearQueue() has already been called so there's
- * no stale queue to worry about, and the caller can surface its own
- * follow-up error.
- */
+/** Await any in-flight cold-start hydration before touching the native queue. */
 async function awaitHydration(): Promise<void> {
   if (hydrationPromise) {
     try {
       await hydrationPromise;
     } catch {
-      /* hydration failed; clearQueue() already cleaned up */
+      /* hydration failed; clearPlayerStateInternal already cleaned up */
     }
   }
-}
-
-/** Reset scrobble coordination state (call before queue-level operations). */
-function resetScrobbleCoordination() {
-  savedTrackForScrobble = null;
-  scrobbleHandledByEnded = false;
 }
 
 /* ------------------------------------------------------------------ */
@@ -929,42 +346,29 @@ function resetScrobbleCoordination() {
 /* ------------------------------------------------------------------ */
 
 /**
- * Start playing a track from a given queue.
+ * Start playing a track from a given queue. Atomic: builds the playable queue,
+ * loads it positioned at the tapped index, then plays.
  *
- * Resets the RNTP queue, loads all tracks, skips to the tapped index,
- * and begins playback.
- *
- * @param sourcePlaylistId  When playback originates from a playlist,
- *   pass its ID so per-track scrobble exclusions work correctly.
+ * @param sourcePlaylistId  When playback originates from a playlist, pass its
+ *   ID so per-track scrobble exclusions work correctly.
  */
 export async function playTrack(
   track: Child,
   queue: Child[],
   sourcePlaylistId?: string | null,
 ): Promise<void> {
-  // Wait out any in-flight cold-start rehydration. playTrack replaces the
-  // queue outright, so racing an eager hydration would leave either half
-  // overwritten.
   await awaitHydration();
-
-  // First user-initiated play on a Fire tablet → surface the one-time
-  // background-playback guidance over the audio (non-blocking).
   maybePromptFireBackgroundPlayback();
-
-  resetScrobbleCoordination();
-  isSettingQueue = true;
   pendingResumePosition = null;
   playerStore.getState().setQueueLoading(true);
 
   try {
-    // Populate trackUriMap before deciding which tracks are playable so
-    // a tap right after cold launch doesn't downgrade a downloaded song
-    // to a server URL.
+    // Populate the track-URI map first so a tap right after cold launch doesn't
+    // downgrade a downloaded song to a server URL.
     await waitForTrackMapsReady();
     await ensureCoverArtAuth();
 
     const { rnTracks, filteredQueue } = await buildPlayableQueue(queue);
-
     if (rnTracks.length === 0) {
       playbackToastStore.getState().fail();
       await clearQueue();
@@ -978,30 +382,20 @@ export async function playTrack(
     }
     playerStore.getState().setQueue(filteredQueue);
 
-    // Stamp effective format for each track in the queue.
     const formats: Record<string, EffectiveFormat> = {};
     for (const child of filteredQueue) formats[child.id] = stampQueueFormat(child);
     playerStore.getState().setQueueFormats(formats);
 
-    // Translate the tapped track onto the filtered queue. If the tapped
-    // track isn't playable (non-cached + offline), start at 0 rather
-    // than blocking — users expect something to happen.
+    // Translate the tapped track onto the filtered queue; fall back to 0.
     let startIndex = filteredQueue.findIndex((c) => c.id === track.id);
     if (startIndex === -1) startIndex = 0;
 
-    await TrackPlayer.reset();
-    await TrackPlayer.add(rnTracks);
-
-    if (startIndex > 0) {
-      await TrackPlayer.skip(startIndex);
-    }
-
-    await TrackPlayer.play();
+    await tp.setQueue(rnTracks, startIndex);
+    await tp.play();
     persistQueue(filteredQueue, startIndex);
   } catch {
     playbackToastStore.getState().fail();
   } finally {
-    isSettingQueue = false;
     playerStore.getState().setQueueLoading(false);
   }
 }
@@ -1009,28 +403,25 @@ export async function playTrack(
 /** Toggle between play and pause. */
 export async function togglePlayPause(): Promise<void> {
   await awaitHydration();
-
-  const state = await TrackPlayer.getPlaybackState();
-  if (state.state === State.Playing) {
-    await TrackPlayer.pause();
+  if (tp.getState() === 'playing') {
+    await tp.pause();
   } else {
-    // Covers a returning user resuming a restored queue via the mini-player —
-    // they may never go through playTrack. One-time, Fire-only, non-blocking.
+    // Covers a returning user resuming a restored queue via the mini-player.
     maybePromptFireBackgroundPlayback();
-    await TrackPlayer.play();
+    await tp.play();
   }
 }
 
 /** Skip to the next track in the queue. */
 export async function skipToNext(): Promise<void> {
   await awaitHydration();
-  await TrackPlayer.skipToNext();
+  await tp.skipToNext();
 }
 
 /** Skip to the previous track in the queue. */
 export async function skipToPrevious(): Promise<void> {
   await awaitHydration();
-  await TrackPlayer.skipToPrevious();
+  await tp.skipToPrevious();
 }
 
 /** Whether skip-to-next is possible given current queue position and repeat mode. */
@@ -1042,77 +433,36 @@ export function canSkipToNext(): boolean {
   return currentTrackIndex < queue.length - 1;
 }
 
-/** Whether skip-to-previous is possible. Always true when a track is loaded,
- *  since the native layer will restart the current track if there is no previous. */
+/** Whether skip-to-previous is possible (native restarts the current track if
+ *  there is no previous). */
 export function canSkipToPrevious(): boolean {
   const { currentTrackIndex, queue } = playerStore.getState();
   return currentTrackIndex != null && queue.length > 0;
 }
 
 /**
- * Seek to a position in seconds.
- *
- * On transcoded streams (non-raw format or bitrate-limited) whose native
- * duration is reported as 0, the native player cannot seek beyond the
- * buffered range via HTTP Range requests.  In that case we clamp the
- * seek to just inside the end of the buffered range so the user gets as
- * close as possible without the seek silently failing.
+ * Seek to a position in seconds. RNQP handles seek-within-buffer protection
+ * natively (constant-bitrate seeking, and a no-op on genuinely-unseekable
+ * streams), so this is a straight passthrough with an optimistic store update.
  */
 export async function seekTo(position: number): Promise<void> {
   await awaitHydration();
-
-  const nativeTarget = Math.max(0, position);
-
-  // If the entire stream has been downloaded, seek freely — all data is
-  // available even if the native player doesn't report it.
-  if (isFullyBuffered) {
-    await TrackPlayer.seekTo(nativeTarget);
-    const store = playerStore.getState();
-    store.setProgress(position, store.duration, maxBufferedSeen);
-    return;
-  }
-
-  const { duration, buffered, position: currentPos } = await TrackPlayer.getProgress();
-  // Use the high-water mark so we never clamp tighter than what was
-  // previously known to be available.
-  const effectiveBuffered = Math.max(maxBufferedSeen, buffered, currentPos);
-
-  // Only apply the clamp when ALL of these are true:
-  //  1. The native player reports duration as 0 (transcoded stream without
-  //     reliable duration metadata).
-  //  2. The stream is transcoded (non-raw format or bitrate-limited).
-  //  3. The seek target is beyond the effective buffered range.
-  if (duration === 0 && nativeTarget > effectiveBuffered && effectiveBuffered > 0) {
-    // Transcoding from the loaded stream URL (ground truth) — a raw stream that
-    // merely reports duration 0 must NOT be clamped (it's freely seekable).
-    const active = await TrackPlayer.getActiveTrack();
-    const isTranscoding = streamUrlIsTranscode(active?.url);
-
-    if (isTranscoding) {
-      await TrackPlayer.seekTo(effectiveBuffered - 1);
-      const store = playerStore.getState();
-      store.setProgress(effectiveBuffered - 1, store.duration, maxBufferedSeen);
-      return;
-    }
-  }
-
-  await TrackPlayer.seekTo(nativeTarget);
+  const target = Math.max(0, position);
+  await tp.seekTo(target);
   const store = playerStore.getState();
-  store.setProgress(position, store.duration, maxBufferedSeen);
+  store.setProgress(target, store.duration, store.bufferedPosition);
 }
 
 /** Skip to a specific track in the queue by index. */
 export async function skipToTrack(index: number): Promise<void> {
   await awaitHydration();
-  await TrackPlayer.skip(index);
-  await TrackPlayer.play();
+  await tp.skipToIndex(index);
+  await tp.play();
 }
 
 /**
  * Skip forward or backward by a relative number of seconds.
- *
  * Positive values skip forward, negative values skip backward.
- * Delegates to `seekTo()` so transcoded stream clamping is applied.
  */
 export async function skipByInterval(seconds: number): Promise<void> {
   const { position, duration } = playerStore.getState();
@@ -1121,74 +471,50 @@ export async function skipByInterval(seconds: number): Promise<void> {
 }
 
 /**
- * Update RNTP remote capabilities based on the user's preference.
- *
- * In 'skip-track' mode the lock screen / notification shows next/previous
- * track buttons. In 'skip-interval' mode it shows jump forward/backward
- * buttons with the configured intervals.
+ * Apply the user's lock-screen / notification skip-control preference to the
+ * native engine: skip between tracks, or jump forward/back by a fixed interval.
  */
 export async function updateRemoteCapabilities(): Promise<void> {
   const { remoteControlMode, skipForwardInterval, skipBackwardInterval } =
     playbackSettingsStore.getState();
-
-  const baseCapabilities = [
-    Capability.Play,
-    Capability.Pause,
-    Capability.Stop,
-    Capability.SeekTo,
-  ];
-
-  const capabilities =
-    remoteControlMode === 'skip-interval'
-      ? [...baseCapabilities, Capability.JumpForward, Capability.JumpBackward]
-      : [...baseCapabilities, Capability.SkipToNext, Capability.SkipToPrevious];
-
-  await TrackPlayer.updateOptions({
-    capabilities,
-    notificationCapabilities: capabilities,
+  await tp.setRemoteControls({
+    skipMode: remoteControlMode === 'skip-interval' ? 'interval' : 'track',
     forwardJumpInterval: skipForwardInterval,
     backwardJumpInterval: skipBackwardInterval,
-    progressUpdateEventInterval: 0.25,
-    android: {
-      appKilledPlaybackBehavior:
-        AppKilledPlaybackBehavior.StopPlaybackAndRemoveNotification,
-    },
   });
 }
 
-/** Clear the current error and attempt to resume playback. */
+/** Clear the current error and re-attempt the errored track. */
 export async function retryPlayback(): Promise<void> {
   await awaitHydration();
-  playerStore.getState().setError(null);
-  await TrackPlayer.play();
+  const store = playerStore.getState();
+  store.setError(null);
+  store.setRetrying(false);
+  await tp.retry();
 }
 
-/**
- * Internal clear-state helper. Does the actual work without awaiting
- * hydrationPromise so hydrateRestoredQueue() can bail out cleanly when
- * its queue is entirely unplayable (calling clearQueue() from inside the
- * hydration body would otherwise deadlock on its own promise).
- */
+/** Arm a sleep timer that pauses playback after `seconds`. */
+export function setSleepTimer(seconds: number): void {
+  void tp.setSleepTimer(seconds);
+}
+
+/** Arm a sleep timer that pauses playback when the current track ends. */
+export function setSleepTimerToTrackEnd(): void {
+  void tp.setSleepTimerToTrackEnd();
+}
+
+/** Cancel any armed sleep timer. */
+export function clearSleepTimer(): void {
+  void tp.clearSleepTimer();
+}
+
+/** Internal clear-state helper (does not await hydration — hydrate calls it). */
 async function clearPlayerStateInternal(): Promise<void> {
-  resetScrobbleCoordination();
-  rawRecoveryAttempts = 0;
   pendingResumePosition = null;
-  maxBufferedSeen = 0;
-  isFullyBuffered = false;
-  isRecoveringStream = false;
-  previousActiveChild = null;
   currentChildQueue = [];
   trackPlaylistMap.clear();
 
-  // Native RNTP.reset() is normally synchronous, but if the active track
-  // is stalled on an unreachable stream URL the native teardown can block.
-  // Cap the await so the store cleanup below always runs — the user's tap
-  // must be visibly respected even when the native player is wedged.
-  try {
-    await withTimeout(() => TrackPlayer.reset(), 2000);
-  } catch {
-    /* RNTP reset failed — fall through to store cleanup anyway. */
-  }
+  await tp.clearQueue();
   clearPersistedQueue();
 
   const store = playerStore.getState();
@@ -1201,37 +527,18 @@ async function clearPlayerStateInternal(): Promise<void> {
   store.clearQueueFormats();
 }
 
-/**
- * Stop playback, clear the queue, and reset all player state to defaults.
- *
- * Resets both the native RNTP player and the Zustand store so the UI
- * returns to its idle state (mini player hidden, no current track).
- */
+/** Stop playback, clear the queue, and reset all player state to defaults. */
 export async function clearQueue(): Promise<void> {
-  // Wait for any in-flight cold-start hydration so its mid-sequence
-  // reset/add/seek/pause can't race our teardown and leave RNTP with a
-  // queue the store has already cleared.
   await awaitHydration();
   await clearPlayerStateInternal();
 }
 
 /**
- * Rebuild the RNTP queue in-place using the current Child[] queue. The
- * stream and artwork URLs are regenerated from whatever `authStore.serverUrl`
- * now points at, so this is the right hammer immediately after a
- * primary/secondary server switch — every queued track gets URLs that
- * resolve against the new base.
- *
- * Strategy: full queue replacement (pause → reset → add → skip → seek →
- * play). The brief audio interruption is acceptable per design — the
- * alternative ("keep current track playing on the old URL, replace only
- * the rest") needs per-track RNTP surgery that doesn't compose with our
- * scrobble / position bookkeeping, and the user explicitly preferred
- * simple-and-predictable over seamless.
- *
- * No-op when the queue is empty. Downloaded tracks keep playing from
- * local files because `childToTrack` already prefers `localUri` over
- * `getStreamUrl`.
+ * Rebuild the native queue in-place from the current Child[] queue so every
+ * track's stream/artwork URL is regenerated against the now-active server —
+ * the right hammer immediately after a primary/secondary server switch.
+ * Downloaded tracks keep playing from local files (childToTrack prefers the
+ * local URI). No-op when the queue is empty.
  */
 export async function rebuildQueueForServerSwitch(): Promise<void> {
   await awaitHydration();
@@ -1239,80 +546,44 @@ export async function rebuildQueueForServerSwitch(): Promise<void> {
   if (queue.length === 0) return;
 
   const idx = playerStore.getState().currentTrackIndex ?? 0;
-  let position = 0;
-  try {
-    const progress = await TrackPlayer.getProgress();
-    position = progress.position;
-  } catch {
-    // Pre-init or no active track — start the rebuilt queue at zero.
-  }
+  const position = playerStore.getState().position;
   const wasPlaying = playerStore.getState().playbackState === 'playing';
 
-  isSettingQueue = true;
   try {
-    try {
-      await TrackPlayer.pause();
-    } catch {
-      // RNTP may not be ready yet; the reset below handles it.
-    }
-
-    // Re-establish the cover-art auth token and re-sync the streaming proxy
-    // upstreams against the NEW active server BEFORE regenerating URLs. The
-    // switch's clearApiCache() nulled the token, so without this getStreamUrl
-    // returns null (no token) — or, on iOS, resolves to a raw self-signed
-    // https URL — and every streaming track is filtered out, bailing the
-    // rebuild and leaving the stale pre-switch URLs loaded. Mirrors the
-    // hydrateRestoredQueue() prerequisites used on app-start restore.
+    // Re-establish cover-art auth + the iOS streaming proxy against the NEW
+    // server BEFORE regenerating URLs — the switch nulled the token.
     await ensureCoverArtAuth();
     if (Platform.OS === 'ios') {
       await syncProxyUpstreams();
     }
 
     const { rnTracks, filteredQueue } = await buildPlayableQueue(queue);
-    if (rnTracks.length === 0) {
-      // Every track in the queue was filtered out (e.g. all offline-only
-      // and we just switched to a server URL that doesn't have them).
-      // Leave the queue alone — caller's switch is best-effort and the
-      // user can manually reload content.
-      return;
-    }
+    if (rnTracks.length === 0) return;
 
     const safeIdx = Math.min(Math.max(0, idx), rnTracks.length - 1);
-
-    await TrackPlayer.reset();
-    await TrackPlayer.add(rnTracks);
-    await TrackPlayer.skip(safeIdx);
-    if (position > 0) {
-      await TrackPlayer.seekTo(position);
-    }
-    if (wasPlaying) {
-      await TrackPlayer.play();
-    }
+    await tp.setQueue(rnTracks, safeIdx);
+    if (position > 0) await tp.seekTo(position);
+    if (wasPlaying) await tp.play();
 
     currentChildQueue = filteredQueue;
     playerStore.getState().setQueue(filteredQueue);
     persistQueue(filteredQueue, safeIdx);
-  } finally {
-    isSettingQueue = false;
+  } catch {
+    // Best-effort — a failed switch leaves the prior queue loaded.
   }
 }
 
 /**
- * Append one or more tracks to the end of the current play queue.
- *
- * If the queue is empty (nothing loaded), this starts playback from the
- * first track in the supplied array.  Otherwise the tracks are silently
- * appended and playback continues uninterrupted.
+ * Append one or more tracks to the end of the current queue. If the queue is
+ * empty, starts playback from the first supplied track.
  */
 export async function addToQueue(
   tracks: Child[],
   sourcePlaylistId?: string | null,
 ): Promise<void> {
   if (tracks.length === 0) return;
-
   await awaitHydration();
 
-  // Nothing loaded yet – start fresh playback with these tracks.
   if (currentChildQueue.length === 0) {
     await playTrack(tracks[0], tracks, sourcePlaylistId);
     return;
@@ -1322,19 +593,16 @@ export async function addToQueue(
   await ensureCoverArtAuth();
 
   const { rnTracks, filteredQueue: playable } = await buildPlayableQueue(tracks);
-
   if (rnTracks.length === 0) {
     playbackToastStore.getState().fail();
     return;
   }
 
-  await TrackPlayer.add(rnTracks);
+  await tp.addToQueue(rnTracks);
 
   if (sourcePlaylistId) {
     for (const child of playable) trackPlaylistMap.set(child.id, sourcePlaylistId);
   }
-
-  // Stamp format for each appended track using current settings.
   for (const child of playable) {
     playerStore.getState().addQueueFormat(child.id, stampQueueFormat(child));
   }
@@ -1345,19 +613,12 @@ export async function addToQueue(
 }
 
 /**
- * Insert a single song into the queue immediately after the current
- * track, so it plays next once the current track ends (or skip-next is
- * pressed). When the queue is empty, behaves like `playTrack` — starts
- * fresh playback with this song.
- *
- * Offline mode: if the song isn't playable on the current network
- * state, the existing "no offline tracks" toast surfaces and the queue
- * is left untouched.
+ * Insert a single song immediately after the current track so it plays next.
+ * When the queue is empty, behaves like `playTrack`.
  */
 export async function playSongNext(song: Child): Promise<void> {
   await awaitHydration();
 
-  // Empty queue → start fresh playback, same as addToQueue's first-track path.
   if (currentChildQueue.length === 0) {
     await playTrack(song, [song]);
     return;
@@ -1375,9 +636,8 @@ export async function playSongNext(song: Child): Promise<void> {
   const currentIndex = playerStore.getState().currentTrackIndex ?? 0;
   const insertBefore = Math.min(currentIndex + 1, currentChildQueue.length);
 
-  // RNTP `add(tracks, insertBeforeIndex)` inserts BEFORE the given index;
-  // currentIndex + 1 means "place right after the currently playing track".
-  await TrackPlayer.add(rnTracks, insertBefore);
+  // addToQueue(tracks, insertBefore) inserts BEFORE the given index.
+  await tp.addToQueue(rnTracks, insertBefore);
 
   for (const child of playable) {
     playerStore.getState().addQueueFormat(child.id, stampQueueFormat(child));
@@ -1387,57 +647,44 @@ export async function playSongNext(song: Child): Promise<void> {
   newQueue.splice(insertBefore, 0, ...playable);
   currentChildQueue = newQueue;
   playerStore.getState().setQueue(currentChildQueue);
-  // Re-read the index AFTER the awaited TrackPlayer.add: an auto-advance during
-  // the await would have moved the active track, so persisting the snapshot
-  // taken before the await could resume at the wrong position.
+  // Re-read the index AFTER the awaited add in case an auto-advance moved it.
   persistQueue(currentChildQueue, playerStore.getState().currentTrackIndex ?? 0);
 }
 
 /**
- * Remove a track from the play queue by its index.
- *
- * Handles the edge case where the removed track is the currently playing
- * track – RNTP will automatically advance to the next track.  If the
- * removed track is the last one in the queue the player is cleared.
+ * Remove a track from the play queue by index. When the removed track is
+ * before the active one the native engine re-indexes; we read the new index
+ * back rather than adjusting by hand. Clears the queue when it was the last.
  */
 export async function removeFromQueue(index: number): Promise<void> {
   await awaitHydration();
 
   if (index < 0 || index >= currentChildQueue.length) return;
-
-  // If this is the only track, just clear everything.
   if (currentChildQueue.length === 1) {
     await clearQueue();
     return;
   }
 
   const removedChild = currentChildQueue[index];
-  await TrackPlayer.remove(index);
+  await tp.removeFromQueue([index]);
 
   trackPlaylistMap.delete(removedChild.id);
   currentChildQueue = currentChildQueue.filter((_, i) => i !== index);
   playerStore.getState().setQueue(currentChildQueue);
 
-  // When a track before the currently playing track is removed, RNTP
-  // shifts its internal index but won't fire PlaybackActiveTrackChanged
-  // (the active track itself didn't change). Adjust our stored index so
-  // it continues to point at the correct track.
-  const { currentTrackIndex } = playerStore.getState();
-  if (currentTrackIndex != null && index < currentTrackIndex) {
-    playerStore.getState().setCurrentTrack(
-      playerStore.getState().currentTrack,
-      currentTrackIndex - 1,
-    );
-  }
+  // Re-sync the active index from native (recomputed on removal).
+  const nativeIndex = tp.getCurrentTrackIndex();
+  playerStore.getState().setCurrentTrack(
+    playerStore.getState().currentTrack,
+    nativeIndex >= 0 ? nativeIndex : null,
+  );
   persistQueue(currentChildQueue, playerStore.getState().currentTrackIndex ?? 0);
 }
 
 /**
- * Remove all non-downloaded tracks from the play queue.
- *
- * Called when entering offline mode (manual or auto) so that only
- * locally available tracks remain. Iterates in reverse to avoid
- * index shifting issues. If all tracks are removed, clears the queue.
+ * Remove all non-downloaded tracks from the queue (called when entering
+ * offline mode). Iterates in reverse to avoid index shifting; clears the
+ * queue if nothing remains.
  */
 export async function removeNonDownloadedTracks(): Promise<void> {
   await awaitHydration();
@@ -1452,7 +699,6 @@ export async function removeNonDownloadedTracks(): Promise<void> {
   }
 
   if (indicesToRemove.length === 0) return;
-
   if (indicesToRemove.length === currentChildQueue.length) {
     await clearQueue();
     return;
@@ -1463,44 +709,28 @@ export async function removeNonDownloadedTracks(): Promise<void> {
   }
 }
 
-/**
- * Cycle the repeat mode: off → all → one → off.
- *
- * Updates both the persisted store and the native RNTP player.
- */
+/** Cycle the repeat mode: off → all → one → off (persisted + native). */
 export async function cycleRepeatMode(): Promise<void> {
   const current = playbackSettingsStore.getState().repeatMode;
   const next: RepeatModeSetting =
     current === 'off' ? 'all' : current === 'all' ? 'one' : 'off';
   playbackSettingsStore.getState().setRepeatMode(next);
-  await TrackPlayer.setRepeatMode(mapRepeatMode(next));
+  await tp.setRepeatMode(mapRepeatMode(next));
 }
 
-/**
- * Set the playback rate (persisted store + native RNTP player). Used by the
- * speed picker; the store update is synchronous so the UI reflects the new
- * rate immediately while the native call settles.
- */
+/** Set the playback rate (persisted store + native engine). */
 export async function applyPlaybackRate(rate: PlaybackRate): Promise<void> {
   playbackSettingsStore.getState().setPlaybackRate(rate);
-  await TrackPlayer.setRate(rate);
+  await tp.setPlaybackSpeed(rate);
 }
 
 /**
  * Eagerly bump local play stats for a just-scrobbled song on the ephemeral
- * player copies. Updates every matching entry in the module-scope
- * `currentChildQueue` (repeat-one and queues that include the song
- * multiple times get all entries bumped) and the `playerStore.currentTrack`
- * copy if it's the scrobbled song.
- *
- * Called from `playStatsService.applyLocalPlay` as part of the scrobble-time
- * fan-out so the player-view info panel reflects the new count immediately,
- * before any server round-trip.
+ * player copies (module `currentChildQueue` + `playerStore.currentTrack`), so
+ * the player-view info panel reflects the new count before any server call.
+ * Called from `playStatsService.applyLocalPlay`.
  */
 export function applyLocalPlayToPlayer(songId: string, now: string): void {
-  // Walk currentChildQueue and replace any matching entries. Repeat-one
-  // means the same song may appear once but a user could have added the
-  // same song multiple times manually; cover both.
   for (let i = 0; i < currentChildQueue.length; i++) {
     const t = currentChildQueue[i];
     if (t.id === songId) {
@@ -1512,13 +742,6 @@ export function applyLocalPlayToPlayer(songId: string, now: string): void {
     }
   }
 
-  // Update the store's currentTrack if it's the scrobbled song — this is
-  // what AlbumInfoContent in the player view reads from, so the info
-  // panel must see the bump immediately on repeat-one and on the brief
-  // window between PlaybackEndedWithReason and PlaybackActiveTrackChanged.
-  // Use setState directly (not setCurrentTrack) to avoid clobbering the
-  // existing currentTrackIndex — setCurrentTrack resets it to null when
-  // the caller omits the second argument.
   const cur = playerStore.getState().currentTrack;
   if (cur && cur.id === songId) {
     playerStore.setState({
@@ -1531,40 +754,22 @@ export function applyLocalPlayToPlayer(songId: string, now: string): void {
   }
 }
 
-// Wire the ephemeral player-state updater into playStatsService. Inverts
-// the dependency so `playStatsService` no longer imports `playerService`,
-// breaking the playerService ↔ scrobbleService ↔ playStatsService cycle.
+// Wire the ephemeral player-state updater into playStatsService (inverts the
+// dependency so playStatsService doesn't import playerService).
 registerPlayerPlayStatListener(applyLocalPlayToPlayer);
 
 /**
- * Shuffle the current play queue in place and restart from index 0.
- *
- * Uses the same pause → reset → add → play sequence as `playTrack` so the
- * native player gets a clean teardown before the new tracks are added.
- * The earlier `TrackPlayer.setQueue()` shortcut skipped `reset()` and was
- * a reported crash source on Android (ExoPlayer transitioning out of pause
- * with no full reset between `clear()` and `add()`).
- *
- * `trackPlaylistMap` is left untouched — children keep their IDs across a
- * reorder, so any per-track playlist tagging from the original `playTrack`
- * remains valid.
+ * Shuffle the current queue in place and restart from index 0. We shuffle the
+ * Child[] ourselves (so the shuffled order is what we persist for restore) and
+ * load it atomically. `trackPlaylistMap` is left intact — IDs are unchanged.
  */
 export async function shuffleQueue(): Promise<void> {
   await awaitHydration();
-
   if (currentChildQueue.length < 2) return;
 
-  resetScrobbleCoordination();
-  isSettingQueue = true;
-  maxBufferedSeen = 0;
-  isFullyBuffered = false;
-
   try {
-    await TrackPlayer.pause();
-
     const shuffled = shuffleArray(currentChildQueue);
     const { rnTracks, filteredQueue } = await buildPlayableQueue(shuffled);
-
     if (rnTracks.length === 0) {
       playbackToastStore.getState().fail();
       await clearPlayerStateInternal();
@@ -1574,13 +779,10 @@ export async function shuffleQueue(): Promise<void> {
     currentChildQueue = filteredQueue;
     playerStore.getState().setQueue(filteredQueue);
 
-    await TrackPlayer.reset();
-    await TrackPlayer.add(rnTracks);
-    await TrackPlayer.play();
+    await tp.setQueue(rnTracks, 0);
+    await tp.play();
     persistQueue(filteredQueue, 0);
   } catch {
     playbackToastStore.getState().fail();
-  } finally {
-    isSettingQueue = false;
   }
 }

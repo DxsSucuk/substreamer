@@ -2,11 +2,11 @@ import Ionicons from "@react-native-vector-icons/ionicons/static";
 import { useCallback, useMemo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
-import TrackPlayer from 'react-native-track-player';
 
 import { BottomSheet } from './BottomSheet';
 import { useTheme } from '../hooks/useTheme';
 import { sleepTimerStore } from '../store/sleepTimerStore';
+import { clearSleepTimer, setSleepTimer, setSleepTimerToTrackEnd } from '../services/playerService';
 
 interface TimerOption {
   labelKey: string;
@@ -37,19 +37,19 @@ export function SleepTimerSheet() {
 
   const handleSetTimer = useCallback(
     (seconds: number) => {
-      TrackPlayer.setSleepTimer(seconds);
+      setSleepTimer(seconds);
       hideSheet();
     },
     [hideSheet],
   );
 
   const handleEndOfTrack = useCallback(() => {
-    TrackPlayer.setSleepTimer(-1);
+    setSleepTimerToTrackEnd();
     hideSheet();
   }, [hideSheet]);
 
   const handleCancel = useCallback(() => {
-    TrackPlayer.clearSleepTimer();
+    clearSleepTimer();
     hideSheet();
   }, [hideSheet]);
 

@@ -1,11 +1,10 @@
 /**
  * Stateless helpers for playerService. None of these touch the module's
- * own state machine (the 15 module-scope `let`s in playerService.ts);
- * they only read from external stores and services. Extracted so the
- * main service can stay focused on its event-handler state machine.
+ * own state machine; they only read from external stores and services.
+ * Extracted so the main service can stay focused on its event handlers.
  */
 
-import { RepeatMode, State, type Track } from 'react-native-track-player';
+import { type PlayerState, type RepeatMode, type TrackItem } from 'react-native-queue-player';
 
 import i18n from '../i18n/i18n';
 import { type EffectiveFormat } from '../types/audio';
@@ -21,50 +20,36 @@ import { logImageCache } from './imageCacheLogger';
 import { getLocalTrackUri } from './musicCacheService';
 import { getCoverArtUrl, getStreamUrl, type Child } from './subsonicService';
 
-/** Map our RepeatModeSetting to RNTP's RepeatMode enum. */
+/** Map our RepeatModeSetting to RNQP's RepeatMode string union. */
 export function mapRepeatMode(mode: RepeatModeSetting): RepeatMode {
   switch (mode) {
     case 'all':
-      return RepeatMode.Queue;
+      return 'queue';
     case 'one':
-      return RepeatMode.Track;
+      return 'track';
     default:
-      return RepeatMode.Off;
+      return 'off';
   }
 }
 
-/** Map RNTP State enum to our simplified PlaybackStatus. */
-export function mapState(state: State): PlaybackStatus {
+/** Map RNQP PlayerState to our simplified PlaybackStatus. */
+export function mapState(state: PlayerState): PlaybackStatus {
   switch (state) {
-    case State.Playing:
+    case 'playing':
       return 'playing';
-    case State.Paused:
+    case 'paused':
       return 'paused';
-    case State.Buffering:
+    case 'buffering':
       return 'buffering';
-    case State.Loading:
+    case 'loading':
       return 'loading';
-    case State.Stopped:
-    case State.Ended:
+    case 'ended':
+    case 'error':
       return 'stopped';
     default:
+      // 'none'
       return 'idle';
   }
-}
-
-const EXT_TO_MIME: Record<string, string> = {
-  mp3: 'audio/mpeg',
-  flac: 'audio/flac',
-  ogg: 'audio/ogg',
-  opus: 'audio/opus',
-  aac: 'audio/aac',
-  m4a: 'audio/mp4',
-  wav: 'audio/wav',
-};
-
-function mimeFromUri(uri: string): string | undefined {
-  const ext = uri.split('.').pop()?.toLowerCase();
-  return ext ? EXT_TO_MIME[ext] : undefined;
 }
 
 /**
@@ -96,15 +81,13 @@ export function stampQueueFormat(child: Child): EffectiveFormat {
 }
 
 /**
- * Convert a Child (Subsonic song) to an RNTP Track object.
+ * Convert a Child (Subsonic song) to an RNQP TrackItem.
  *
  * Returns `null` when the track can't be played right now:
- * - Offline mode + no local cached file → RNTP must not receive a
- *   server stream URL (AVPlayer would latch onto it and stall
- *   indefinitely waiting for data from an unreachable server).
- * - No local URI AND stream-URL construction failed (e.g. auth not
- *   yet initialised). An empty-string URL in RNTP produces the same
- *   stall, so filter it out here rather than push it downstream.
+ * - Offline mode + no local cached file → never hand the player a server
+ *   stream URL (it would stall waiting on an unreachable server).
+ * - No local URI AND stream-URL construction failed (e.g. auth not yet
+ *   initialised) — an empty URL would stall the same way, so filter here.
  *
  * Callers must filter nulls out of the resulting array and treat an
  * all-null queue as "nothing playable" (toast + clearQueue).
@@ -112,7 +95,7 @@ export function stampQueueFormat(child: Child): EffectiveFormat {
 export function childToTrack(
   child: Child,
   cachedArt?: string | null,
-): Track | null {
+): TrackItem | null {
   const localUri = getLocalTrackUri(child.id);
   const offline = offlineModeStore.getState().offlineMode;
   if (!localUri && offline) return null;
@@ -121,9 +104,7 @@ export function childToTrack(
   if (!url) return null;
 
   // Diagnostic: a song the cache store reports as downloaded resolving to a
-  // server stream URL means the in-memory track map missed it — the exact
-  // setup that lets AVPlayer latch onto an unreachable server and stall. Logged
-  // (gated) so the next field repro confirms whether this path is ever taken.
+  // server stream URL means the in-memory track map missed it. Logged (gated).
   if (!localUri
     && imageCacheDiagnosticsStore.getState().enabled
     && musicCacheStore.getState().cachedSongs[child.id]) {
@@ -134,11 +115,10 @@ export function childToTrack(
   // parent album's coverArt so every track in an album shares one cached file;
   // per-track mode: the song's own) — see src/utils/coverArtId.ts. (#202)
   const coverArtId = resolveSongCoverArt(child);
-  const contentType = localUri ? mimeFromUri(localUri) : undefined;
-  // In offline mode drop any server-only artwork so RNTP's lock-screen
-  // artwork fetch can't hit the network either. (`getCoverArtUrl` also
-  // returns null under offline mode now; this is belt-and-braces.)
-  const artwork = cachedArt
+  // In offline mode drop any server-only artwork so the lock-screen artwork
+  // fetch can't hit the network either. (`getCoverArtUrl` also returns null
+  // under offline mode; this is belt-and-braces.)
+  const artworkUrl = cachedArt
     ?? (offline || !coverArtId ? undefined : getCoverArtUrl(coverArtId, 600) ?? undefined);
 
   return {
@@ -147,31 +127,19 @@ export function childToTrack(
     title: child.title,
     artist: child.artist ?? i18n.t('unknownArtist'),
     album: child.album ?? undefined,
-    artwork,
+    artworkUrl,
     duration: child.duration ?? 0,
-    userAgent: 'substreamer8',
-    ...(contentType ? { contentType } : {}),
   };
 }
 
 /**
- * Build (RNTP tracks, filtered child queue) from a Child queue, dropping
- * entries that aren't currently playable. Preserves source order so
- * callers can translate desired indices onto the filtered queue by
- * looking up the original Child.
+ * Build (RNQP tracks, filtered child queue) from a Child queue, dropping
+ * entries that aren't currently playable. Preserves source order so callers
+ * can translate desired indices onto the filtered queue by looking up the
+ * original Child.
  */
-/**
- * Resolve the local cached cover-art URI for a single track (async,
- * DB-authoritative) using the same album-keyed id scheme as `childToTrack`.
- * Returns null when not cached. Used by the lock-screen artwork re-push.
- */
-export function resolveTrackArtwork(child: Child): Promise<string | null> {
-  const coverArtId = resolveSongCoverArt(child);
-  return coverArtId ? resolveCachedImageUri(coverArtId, 600) : Promise.resolve(null);
-}
-
 export async function buildPlayableQueue(queue: readonly Child[]): Promise<{
-  rnTracks: Track[];
+  rnTracks: TrackItem[];
   filteredQueue: Child[];
 }> {
   // Resolve local cover artwork up front (async, DB-authoritative — off the JS
@@ -185,7 +153,7 @@ export async function buildPlayableQueue(queue: readonly Child[]): Promise<{
   );
   const artMap = new Map<string, string | null>(artEntries);
 
-  const rnTracks: Track[] = [];
+  const rnTracks: TrackItem[] = [];
   const filteredQueue: Child[] = [];
   for (const child of queue) {
     const coverArtId = resolveSongCoverArt(child);

@@ -41,19 +41,17 @@ jest.mock('react-native-reanimated', () => {
   };
 });
 
-jest.mock('react-native-track-player', () => ({
-  __esModule: true,
-  default: {
-    setSleepTimer: jest.fn().mockResolvedValue(undefined),
-    clearSleepTimer: jest.fn().mockResolvedValue(undefined),
-  },
+jest.mock('../../services/playerService', () => ({
+  setSleepTimer: jest.fn(),
+  setSleepTimerToTrackEnd: jest.fn(),
+  clearSleepTimer: jest.fn(),
 }));
 
 import React from 'react';
 import { render, fireEvent } from '@testing-library/react-native';
-import TrackPlayer from 'react-native-track-player';
 
 import { sleepTimerStore } from '../../store/sleepTimerStore';
+import { clearSleepTimer, setSleepTimer, setSleepTimerToTrackEnd } from '../../services/playerService';
 
 // Must import after mocks
 const { SleepTimerSheet } = require('../SleepTimerSheet');
@@ -98,32 +96,32 @@ describe('SleepTimerSheet', () => {
   it('calls setSleepTimer with 15 minutes and hides sheet', () => {
     const { getByText } = render(<SleepTimerSheet />);
     fireEvent.press(getByText('15 minutes'));
-    expect(TrackPlayer.setSleepTimer).toHaveBeenCalledWith(15 * 60);
+    expect(setSleepTimer).toHaveBeenCalledWith(15 * 60);
     expect(sleepTimerStore.getState().sheetVisible).toBe(false);
   });
 
   it('calls setSleepTimer with 30 minutes', () => {
     const { getByText } = render(<SleepTimerSheet />);
     fireEvent.press(getByText('30 minutes'));
-    expect(TrackPlayer.setSleepTimer).toHaveBeenCalledWith(30 * 60);
+    expect(setSleepTimer).toHaveBeenCalledWith(30 * 60);
   });
 
   it('calls setSleepTimer with 45 minutes', () => {
     const { getByText } = render(<SleepTimerSheet />);
     fireEvent.press(getByText('45 minutes'));
-    expect(TrackPlayer.setSleepTimer).toHaveBeenCalledWith(45 * 60);
+    expect(setSleepTimer).toHaveBeenCalledWith(45 * 60);
   });
 
   it('calls setSleepTimer with 1 hour', () => {
     const { getByText } = render(<SleepTimerSheet />);
     fireEvent.press(getByText('1 hour'));
-    expect(TrackPlayer.setSleepTimer).toHaveBeenCalledWith(60 * 60);
+    expect(setSleepTimer).toHaveBeenCalledWith(60 * 60);
   });
 
-  it('calls setSleepTimer with -1 for end of track', () => {
+  it('calls setSleepTimerToTrackEnd for end of track', () => {
     const { getByText } = render(<SleepTimerSheet />);
     fireEvent.press(getByText('End of current track'));
-    expect(TrackPlayer.setSleepTimer).toHaveBeenCalledWith(-1);
+    expect(setSleepTimerToTrackEnd).toHaveBeenCalled();
     expect(sleepTimerStore.getState().sheetVisible).toBe(false);
   });
 
@@ -148,7 +146,7 @@ describe('SleepTimerSheet', () => {
     sleepTimerStore.setState({ endTime: Date.now() / 1000 + 600 });
     const { getByText } = render(<SleepTimerSheet />);
     fireEvent.press(getByText('Cancel timer'));
-    expect(TrackPlayer.clearSleepTimer).toHaveBeenCalled();
+    expect(clearSleepTimer).toHaveBeenCalled();
     expect(sleepTimerStore.getState().sheetVisible).toBe(false);
   });
 
