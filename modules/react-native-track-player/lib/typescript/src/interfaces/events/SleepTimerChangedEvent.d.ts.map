@@ -1,1 +1,0 @@
-{"version":3,"file":"SleepTimerChangedEvent.d.ts","sourceRoot":"","sources":["../../../../../src/interfaces/events/SleepTimerChangedEvent.ts"],"names":[],"mappings":"AAAA,MAAM,WAAW,sBAAsB;IACrC,0GAA0G;IAC1G,OAAO,EAAE,MAAM,GAAG,IAAI,CAAC;IACvB,2DAA2D;IAC3D,UAAU,EAAE,OAAO,CAAC;IACpB,iDAAiD;IACjD,MAAM,EAAE,OAAO,CAAC;CACjB"}
