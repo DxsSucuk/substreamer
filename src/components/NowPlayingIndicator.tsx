@@ -28,6 +28,7 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { playerStore } from '../store/playerStore';
+import { useAppActive } from '../hooks/useAppActive';
 
 export interface NowPlayingIndicatorProps {
   /** Total width/height of the indicator container in dp. Bars and gaps
@@ -90,6 +91,11 @@ export const NowPlayingIndicator = memo(function NowPlayingIndicator({
   barCount = 3,
 }: NowPlayingIndicatorProps) {
   const isPlaying = playerStore((s) => s.playbackState === 'playing');
+  // Only run the looping visualiser while foreground-active — an off-screen
+  // `withRepeat(-1)` keeps the UI thread busy and overheats the device during
+  // background playback. Backgrounded, the bars freeze at the paused height.
+  const isActive = useAppActive();
+  const shouldAnimate = isPlaying && isActive;
 
   // Pre-create shared values for up to PHASE_OFFSETS.length bars. Each
   // bar's initial seed comes from `buildBarInitial` so the first frame
@@ -103,7 +109,7 @@ export const NowPlayingIndicator = memo(function NowPlayingIndicator({
   const shared = allShared.slice(0, Math.min(barCount, allShared.length));
 
   useEffect(() => {
-    if (isPlaying) {
+    if (shouldAnimate) {
       shared.forEach((sv, i) => {
         const offset = PHASE_OFFSETS[i] ?? 0;
         const [k1, k2, k3, k4, k5] = rotateKeyframes(offset);
@@ -152,7 +158,7 @@ export const NowPlayingIndicator = memo(function NowPlayingIndicator({
     // the only cancel we actually need is for component unmount —
     // handled by the separate effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPlaying, barCount]);
+  }, [shouldAnimate, barCount]);
 
   // Unmount-only: stop any in-flight animations so they don't leak.
   useEffect(() => {

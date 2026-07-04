@@ -25,6 +25,7 @@ import { CachedImage } from '../components/CachedImage';
 import { EmptyState } from '../components/EmptyState';
 import { GradientBackground } from '../components/GradientBackground';
 import { closeOpenRow, SwipeableRow, type SwipeAction } from '../components/SwipeableRow';
+import { useAppActive } from '../hooks/useAppActive';
 import { useTheme } from '../hooks/useTheme';
 import { useThemedAlert } from '../hooks/useThemedAlert';
 import { getDownloadSpeed, getActiveDownloadCount } from '../services/downloadSpeedTracker';
@@ -55,8 +56,12 @@ const DownloadStatsCard = memo(function DownloadStatsCard({
   const [speed, setSpeed] = useState(0);
   const [activeCount, setActiveCount] = useState(0);
   const maxConcurrent = musicCacheStore((s) => s.maxConcurrentDownloads);
+  // Don't poll download stats while backgrounded — the screen isn't visible and
+  // a 1 Hz off-screen timer keeps the JS thread awake.
+  const isActive = useAppActive();
 
   useEffect(() => {
+    if (!isActive) return;
     const update = () => {
       setSpeed(getDownloadSpeed());
       setActiveCount(getActiveDownloadCount());
@@ -64,7 +69,7 @@ const DownloadStatsCard = memo(function DownloadStatsCard({
     update();
     const id = setInterval(update, SPEED_POLL_MS);
     return () => clearInterval(id);
-  }, []);
+  }, [isActive]);
 
   const iconBg = colors.primary + '18';
 

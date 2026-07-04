@@ -18,6 +18,8 @@ import {
   View,
 } from 'react-native';
 
+import { useAppActive } from '../hooks/useAppActive';
+
 export interface MarqueeTextProps extends TextProps {
   /** Scroll speed in pixels per second. @default 40 */
   speed?: number;
@@ -39,6 +41,9 @@ export const MarqueeText = memo(function MarqueeText({
   const [textWidth, setTextWidth] = useState(0);
   const translateX = useRef(new Animated.Value(0)).current;
   const animationRef = useRef<Animated.CompositeAnimation | null>(null);
+  // Pause the scroll loop while backgrounded — an off-screen Animated.loop keeps
+  // the choreographer / compositing awake and prevents the CPU from idling.
+  const isActive = useAppActive();
 
   const shouldScroll = textWidth > 0 && containerWidth > 0 && textWidth > containerWidth;
   const scrollDistance = shouldScroll ? textWidth - containerWidth : 0;
@@ -76,7 +81,7 @@ export const MarqueeText = memo(function MarqueeText({
   // Include childrenKey so the animation restarts for every new track,
   // even if shouldScroll / scrollDistance happen to be identical.
   useEffect(() => {
-    if (!shouldScroll) {
+    if (!shouldScroll || !isActive) {
       translateX.setValue(0);
       return;
     }
@@ -113,7 +118,7 @@ export const MarqueeText = memo(function MarqueeText({
       loop.stop();
       animationRef.current = null;
     };
-  }, [shouldScroll, scrollDistance, speed, pauseDuration, initialDelay, translateX, childrenKey]);
+  }, [shouldScroll, isActive, scrollDistance, speed, pauseDuration, initialDelay, translateX, childrenKey]);
 
   const innerWidth = (textWidth > 0 && !isStale) ? textWidth : 10000;
 

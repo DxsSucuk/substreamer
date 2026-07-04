@@ -1,3 +1,4 @@
+import { appStateStore } from '../store/appStateStore';
 import { scanStatusStore } from '../store/scanStatusStore';
 import {
   getScanStatus as apiGetScanStatus,
@@ -7,6 +8,24 @@ import {
 const POLL_INTERVAL_MS = 2000;
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+/** True when polling was stopped because the app backgrounded (vs. scan done),
+ *  so it can resume on foreground if the scan is still running. */
+let pausedForBackground = false;
+
+// Pause the 2s status poll (a network request each tick) while backgrounded;
+// resume on foreground if a scan is still in progress.
+appStateStore.subscribe((state, prev) => {
+  if (state.isActive === prev.isActive) return;
+  if (!state.isActive) {
+    if (pollTimer != null) {
+      stopPolling();
+      pausedForBackground = true;
+    }
+  } else if (pausedForBackground) {
+    pausedForBackground = false;
+    if (scanStatusStore.getState().scanning) startPolling();
+  }
+});
 
 /**
  * Hook invoked when a scan transitions from scanning:true to scanning:false.

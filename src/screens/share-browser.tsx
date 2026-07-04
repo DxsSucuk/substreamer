@@ -30,6 +30,7 @@ import { EditShareSheet } from '../components/EditShareSheet';
 import { EmptyState } from '../components/EmptyState';
 import { GradientBackground } from '../components/GradientBackground';
 import { BottomChrome } from '../components/BottomChrome';
+import { useAppActive } from '../hooks/useAppActive';
 import { useRefreshControlKey } from '../hooks/useRefreshControlKey';
 import { useTheme } from '../hooks/useTheme';
 import { useThemedAlert } from '../hooks/useThemedAlert';
@@ -77,6 +78,22 @@ export function ShareBrowserScreen() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const deleteAnim = useSharedValue(0);
+  const isActive = useAppActive();
+
+  // Own the delete spinner's lifecycle: loop only while a delete is in flight
+  // AND foregrounded — so a hung delete can't spin `withRepeat(-1)` forever
+  // off-screen. Cancels on completion (deletingId → null) or background.
+  useEffect(() => {
+    if (deletingId != null && isActive) {
+      deleteAnim.value = withRepeat(
+        withTiming(1, { duration: 1200, easing: Easing.linear }),
+        -1,
+      );
+    } else {
+      cancelAnimation(deleteAnim);
+      deleteAnim.value = 0;
+    }
+  }, [deletingId, isActive, deleteAnim]);
 
   const deleteAnimStyle = useAnimatedStyle(() => ({
     transform: [
@@ -132,16 +149,9 @@ export function ShareBrowserScreen() {
         confirmLabel: t('delete'),
         destructive: true,
         onConfirm: async () => {
+          // The spinner is driven by the deletingId + isActive effect above.
           setDeletingId(share.id);
-          deleteAnim.value = 0;
-          deleteAnim.value = withRepeat(
-            withTiming(1, { duration: 1200, easing: Easing.linear }),
-            -1,
-          );
-
           const success = await sharesStore.getState().removeShare(share.id);
-
-          cancelAnimation(deleteAnim);
           setDeletingId(null);
           if (!success) {
             alert(t('error'), t('failedToDeleteShare'));
@@ -149,7 +159,7 @@ export function ShareBrowserScreen() {
         },
       });
     },
-    [deleteAnim],
+    [confirm, t, alert],
   );
 
   const dynamicStyles = useMemo(

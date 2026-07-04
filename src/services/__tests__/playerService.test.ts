@@ -28,6 +28,7 @@ const mockSetQueueLoading = jest.fn();
 const mockSetQueueFormats = jest.fn();
 const mockAddQueueFormat = jest.fn();
 const mockClearQueueFormats = jest.fn();
+const mockSetTrackSource = jest.fn();
 const mockPlayerStoreSetState = jest.fn();
 
 jest.mock('../../store/playerStore', () => ({
@@ -52,6 +53,7 @@ jest.mock('../../store/playerStore', () => ({
       setQueueFormats: mockSetQueueFormats,
       addQueueFormat: mockAddQueueFormat,
       clearQueueFormats: mockClearQueueFormats,
+      setTrackSource: mockSetTrackSource,
     })),
     setState: (...args: unknown[]) => mockPlayerStoreSetState(...args),
   },
@@ -170,6 +172,7 @@ const defaultPlayerState = () => ({
   setQueueFormats: mockSetQueueFormats,
   addQueueFormat: mockAddQueueFormat,
   clearQueueFormats: mockClearQueueFormats,
+  setTrackSource: mockSetTrackSource,
 });
 
 beforeAll(async () => {
@@ -583,9 +586,11 @@ describe('onStateChange', () => {
 });
 
 describe('onProgress', () => {
-  it('writes position/duration/buffered to the store', () => {
+  it('writes position/duration + absolute buffered edge (position + buffered-ahead)', () => {
+    // RNQP `buffered` is seconds AHEAD of position; the store holds the absolute
+    // edge. Background throttling of onProgress is native (configure), not here.
     emit('progress', { position: 12, duration: 200, buffered: 30 });
-    expect(mockSetProgress).toHaveBeenCalledWith(12, 200, 30);
+    expect(mockSetProgress).toHaveBeenCalledWith(12, 200, 42);
   });
 });
 

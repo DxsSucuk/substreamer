@@ -37,7 +37,7 @@ export interface PlayerProgressBarProps {
   position: number;
   /** Total duration of the current track in seconds. */
   duration: number;
-  /** How far ahead the player has buffered, in seconds. */
+  /** Absolute buffered edge from the start of the track, in seconds. */
   bufferedPosition?: number;
   /** Theme colors. */
   colors: ThemeColors;

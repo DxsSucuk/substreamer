@@ -41,6 +41,7 @@ import { ShuffleOverlay } from '@/components/ShuffleOverlay';
 import { SkipIntervalButton } from '@/components/SkipIntervalButton';
 import { SleepTimerButton } from '@/components/SleepTimerButton';
 import { SleepTimerCapsule } from '@/components/SleepTimerCapsule';
+import { PlaybackSourceBadge } from '@/components/PlaybackSourceBadge';
 import { QueueItemRow } from '@/components/QueueItemRow';
 import { closeOpenRow } from '@/components/SwipeableRow';
 import { type ThemeColors } from '@/constants/theme';
@@ -520,6 +521,9 @@ const PlayerContent = memo(function PlayerContent({
           <View style={styles.sleepCapsuleOverlay} pointerEvents="box-none">
             <SleepTimerCapsule />
           </View>
+          <View style={styles.sourceBadgeOverlay} pointerEvents="none">
+            <PlaybackSourceBadge />
+          </View>
         </View>
       </View>
 
@@ -884,6 +888,11 @@ const styles = StyleSheet.create({
     bottom: 12,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  sourceBadgeOverlay: {
+    position: 'absolute',
+    right: 12,
+    bottom: 12,
   },
   trackInfo: {
     paddingHorizontal: HERO_PADDING,

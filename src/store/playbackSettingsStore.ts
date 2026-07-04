@@ -87,6 +87,20 @@ export type RemoteControlMode = 'skip-track' | 'skip-interval';
 /** Whether artist play/shuffle buttons use top songs or all songs across all albums. */
 export type ArtistPlayMode = 'topSongs' | 'allSongs';
 
+/** Track-count options for the RNQP lookahead cache (tracks prefetched ahead). */
+export const LOOKAHEAD_COUNTS = [3, 5, 10, 20] as const;
+export type LookaheadCount = (typeof LOOKAHEAD_COUNTS)[number];
+
+/**
+ * Fixed on-disk budget for the lookahead cache, in MB. Set ONCE at startup (via
+ * the RNQP `configure()` initial-cache-size option) and never resized at
+ * runtime — so track count is the only utilization lever and behaviour is
+ * identical on iOS + Android (avoids Media3's SimpleCache live-resize limit).
+ * Generous enough that the largest (20-track) window never size-evicts; the
+ * window is preferentially kept, so this is really a history-retention + disk cap.
+ */
+export const LOOKAHEAD_MAX_CACHE_MB = 512;
+
 export interface PlaybackSettingsState {
   /** Maximum bitrate for streaming. null = no limit (server default). */
   maxBitRate: MaxBitRate;
@@ -119,6 +133,11 @@ export interface PlaybackSettingsState {
   /** Whether artist play/shuffle uses top songs or all songs. */
   artistPlayMode: ArtistPlayMode;
 
+  /** Whether the RNQP lookahead cache is enabled (proactive prefetch of upcoming tracks). */
+  lookaheadEnabled: boolean;
+  /** How many upcoming tracks the lookahead cache proactively caches. */
+  lookaheadCount: LookaheadCount;
+
   setMaxBitRate: (bitRate: MaxBitRate) => void;
   setStreamFormat: (format: StreamFormat) => void;
   setEstimateContentLength: (enabled: boolean) => void;
@@ -133,6 +152,8 @@ export interface PlaybackSettingsState {
   setSkipForwardInterval: (interval: SkipInterval) => void;
   setRemoteControlMode: (mode: RemoteControlMode) => void;
   setArtistPlayMode: (mode: ArtistPlayMode) => void;
+  setLookaheadEnabled: (enabled: boolean) => void;
+  setLookaheadCount: (count: LookaheadCount) => void;
 }
 
 const PERSIST_KEY = 'substreamer-playback-settings';
@@ -173,6 +194,8 @@ export const playbackSettingsStore = create<PlaybackSettingsState>()(
       skipForwardInterval: 30,
       remoteControlMode: 'skip-track',
       artistPlayMode: 'topSongs',
+      lookaheadEnabled: true,
+      lookaheadCount: 3,
 
       setMaxBitRate: (maxBitRate) => set({ maxBitRate }),
       setStreamFormat: (streamFormat) => set({ streamFormat: normalizeFormat(streamFormat) }),
@@ -188,6 +211,8 @@ export const playbackSettingsStore = create<PlaybackSettingsState>()(
       setSkipForwardInterval: (skipForwardInterval) => set({ skipForwardInterval }),
       setRemoteControlMode: (remoteControlMode) => set({ remoteControlMode }),
       setArtistPlayMode: (artistPlayMode) => set({ artistPlayMode }),
+      setLookaheadEnabled: (lookaheadEnabled) => set({ lookaheadEnabled }),
+      setLookaheadCount: (lookaheadCount) => set({ lookaheadCount }),
     }),
     {
       name: PERSIST_KEY,
@@ -209,6 +234,8 @@ export const playbackSettingsStore = create<PlaybackSettingsState>()(
         skipForwardInterval: state.skipForwardInterval,
         remoteControlMode: state.remoteControlMode,
         artistPlayMode: state.artistPlayMode,
+        lookaheadEnabled: state.lookaheadEnabled,
+        lookaheadCount: state.lookaheadCount,
       }),
     }
   )

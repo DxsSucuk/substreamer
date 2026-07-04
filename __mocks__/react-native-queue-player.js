@@ -68,7 +68,13 @@ const trackPlayer = {
   setBrowseSnapshot: jest.fn(),
   donateVoiceVocabulary: jest.fn(),
   setLookaheadCache: jest.fn(() => Promise.resolve()),
-  getLookaheadCacheStatus: jest.fn(() => ({})),
+  getLookaheadCacheStatus: jest.fn(() => ({
+    enabled: true,
+    currentSizeMb: 0,
+    maxSizeMb: 512,
+    tracksFullyCached: 0,
+    currentlyCaching: [],
+  })),
   clearLookaheadCache: jest.fn(() => Promise.resolve()),
   setReplayGainMode: jest.fn(() => Promise.resolve()),
   getReplayGainMode: jest.fn(() => 'off'),
@@ -130,6 +136,11 @@ module.exports = {
     isAvailable: true,
   }),
   useAudioRoute: () => ({ kind: 'speaker', name: '' }),
+  useLookaheadCache: () => ({
+    status: trackPlayer.getLookaheadCacheStatus(),
+    setConfig: trackPlayer.setLookaheadCache,
+    clear: trackPlayer.clearLookaheadCache,
+  }),
   // test helpers
   __trackPlayer: trackPlayer,
   __emit: (name, ...args) => {

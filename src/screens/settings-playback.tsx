@@ -8,6 +8,7 @@ import { BottomChrome } from '../components/BottomChrome';
 import { GradientBackground } from '../components/GradientBackground';
 import { BackgroundPlaybackCard } from '../components/settings/BackgroundPlaybackCard';
 import { DownloadingCard } from '../components/settings/DownloadingCard';
+import { LookaheadCacheCard } from '../components/settings/LookaheadCacheCard';
 import { PlayerControlsCard } from '../components/settings/PlayerControlsCard';
 import { RemoteControlsCard } from '../components/settings/RemoteControlsCard';
 import { SkipIntervalsCard } from '../components/settings/SkipIntervalsCard';
@@ -15,7 +16,7 @@ import { StreamingCard } from '../components/settings/StreamingCard';
 import { StreamFormatSheet } from '../components/StreamFormatSheet';
 import { useTheme } from '../hooks/useTheme';
 import { useThemedAlert } from '../hooks/useThemedAlert';
-import { updateRemoteCapabilities } from '../services/playerService';
+import { applyLookaheadCacheConfig, updateRemoteCapabilities } from '../services/playerService';
 import { playbackSettingsStore } from '../store/playbackSettingsStore';
 import { settingsStyles } from '../styles/settingsStyles';
 
@@ -38,6 +39,8 @@ export function SettingsPlaybackScreen() {
   const skipBackwardInterval = playbackSettingsStore((s) => s.skipBackwardInterval);
   const skipForwardInterval = playbackSettingsStore((s) => s.skipForwardInterval);
   const remoteControlMode = playbackSettingsStore((s) => s.remoteControlMode);
+  const lookaheadEnabled = playbackSettingsStore((s) => s.lookaheadEnabled);
+  const lookaheadCount = playbackSettingsStore((s) => s.lookaheadCount);
 
   const isDefault =
     maxBitRate === null &&
@@ -49,7 +52,9 @@ export function SettingsPlaybackScreen() {
     !showSleepTimerButton &&
     skipBackwardInterval === 15 &&
     skipForwardInterval === 30 &&
-    remoteControlMode === 'skip-track';
+    remoteControlMode === 'skip-track' &&
+    lookaheadEnabled &&
+    lookaheadCount === 3;
 
   const handleResetDefaults = useCallback(() => {
     confirm({
@@ -69,7 +74,10 @@ export function SettingsPlaybackScreen() {
         s.setSkipBackwardInterval(15);
         s.setSkipForwardInterval(30);
         s.setRemoteControlMode('skip-track');
+        s.setLookaheadEnabled(true);
+        s.setLookaheadCount(3);
         updateRemoteCapabilities();
+        void applyLookaheadCacheConfig();
       },
     });
   }, [confirm, t]);
@@ -83,6 +91,7 @@ export function SettingsPlaybackScreen() {
           showsVerticalScrollIndicator={false}
         >
           <StreamingCard />
+          <LookaheadCacheCard />
           <DownloadingCard />
           <PlayerControlsCard />
           <SkipIntervalsCard />

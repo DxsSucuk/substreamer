@@ -22,6 +22,7 @@ import {
 import { backgroundPlaybackPromptStore } from '../store/backgroundPlaybackPromptStore';
 import { playbackToastStore } from '../store/playbackToastStore';
 import { playerStore } from '../store/playerStore';
+import { appStateStore } from '../store/appStateStore';
 import { sleepTimerStore } from '../store/sleepTimerStore';
 import { shuffleArray } from '../utils/arrayHelpers';
 import { addCompletedScrobble, sendNowPlaying } from './scrobbleService';
@@ -103,6 +104,10 @@ export async function initPlayer(): Promise<void> {
   await tp.setRepeatMode(mapRepeatMode(settings.repeatMode));
   await tp.setPlaybackSpeed(settings.playbackRate);
 
+  // Lookahead cache: enable + track count from settings (fixed max is set at
+  // configure()). Runtime-settable via applyLookaheadCacheConfig().
+  await applyLookaheadCacheConfig();
+
   // --- Playback state → store ---
   tp.onStateChange((state) => {
     const store = playerStore.getState();
@@ -113,9 +118,14 @@ export async function initPlayer(): Promise<void> {
     }
   });
 
-  // --- Progress → store (native ~2Hz, fires while backgrounded) ---
+  // --- Progress → store. Foreground 500ms; near-paused (10s) while backgrounded
+  // — the background throttle is handled natively via configure(
+  // backgroundProgressUpdateIntervalMs), which re-emits immediately on
+  // foreground, so no app-side gating of the store write is needed here. ---
   tp.onProgress(({ position, duration, buffered }) => {
-    playerStore.getState().setProgress(position, duration, buffered);
+    // RNQP `buffered` is seconds buffered AHEAD of `position`; the store +
+    // progress bar want the absolute buffered edge from the start of the track.
+    playerStore.getState().setProgress(position, duration, position + buffered);
     const currentTrack = playerStore.getState().currentTrack;
     if (currentTrack?.id && position > 0) {
       persistPositionIfDue(position, currentTrack.id, currentTrack.duration);
@@ -132,7 +142,14 @@ export async function initPlayer(): Promise<void> {
     } else {
       playerStore.getState().setCurrentTrack(null, null);
     }
+    refreshTrackSource();
   });
+
+  // --- Playback source (local / cached / streaming) → store. No dedicated
+  // event, so re-read on the signals that can flip it: a streaming track
+  // becomes 'cached' once the lookahead cache holds it / it fully buffers. ---
+  tp.onCacheStatusChange(() => refreshTrackSource());
+  tp.onFullyBufferedChange(() => refreshTrackSource());
 
   // --- Completion scrobble: deterministic, keyed to the played track index.
   // RNQP fires the 90% milestone once per playthrough (and again each loop
@@ -163,13 +180,29 @@ export async function initPlayer(): Promise<void> {
 
   // --- Sleep timer → store. RNQP emits only on arm/clear/convert/fire, so a
   // 1s interval recomputes the display countdown from the wall-clock deadline
-  // (the UI reads sleepTimerStore.remaining). ---
+  // (the UI reads sleepTimerStore.remaining). The native timer fires the actual
+  // pause; this interval is display-only, so it's paused while backgrounded (the
+  // capsule is invisible) and resumed on foreground. ---
   let sleepTimerInterval: ReturnType<typeof setInterval> | null = null;
-  tp.onSleepTimerChange((state) => {
+  const stopSleepCountdown = () => {
     if (sleepTimerInterval) {
       clearInterval(sleepTimerInterval);
       sleepTimerInterval = null;
     }
+  };
+  const startSleepCountdown = (endTimeSec: number) => {
+    stopSleepCountdown();
+    const tick = () => {
+      const remaining = Math.max(0, Math.round(endTimeSec - Date.now() / 1000));
+      sleepTimerStore.getState().setRemaining(remaining);
+    };
+    tick();
+    if (appStateStore.getState().isActive) {
+      sleepTimerInterval = setInterval(tick, 1000);
+    }
+  };
+  tp.onSleepTimerChange((state) => {
+    stopSleepCountdown();
     const store = sleepTimerStore.getState();
     if (!state.active) {
       store.clear();
@@ -178,21 +211,23 @@ export async function initPlayer(): Promise<void> {
     const endTimeSec = state.endsAtEpochMs != null ? state.endsAtEpochMs / 1000 : null;
     store.setTimer(endTimeSec, state.endOfTrack);
     if (!state.endOfTrack && endTimeSec != null) {
-      const tick = () => {
-        const remaining = Math.max(0, Math.round(endTimeSec - Date.now() / 1000));
-        sleepTimerStore.getState().setRemaining(remaining);
-      };
-      tick();
-      sleepTimerInterval = setInterval(tick, 1000);
+      startSleepCountdown(endTimeSec);
     } else {
       store.setRemaining(null);
     }
   });
 
-  // --- Flush the resume position to SQLite when backgrounding. Native events
-  // keep the store synced across suspension, so no resume-time reconcile. ---
+  // --- On background: flush the resume position to SQLite + pause the
+  // sleep-timer display countdown. On foreground: resume the countdown. ---
   AppState.addEventListener('change', (next) => {
-    if (next !== 'active') {
+    if (next === 'active') {
+      // Resume the sleep-timer display countdown if one is armed.
+      const st = sleepTimerStore.getState();
+      if (st.endTime != null && !st.endOfTrack) {
+        startSleepCountdown(st.endTime);
+      }
+    } else {
+      stopSleepCountdown();
       const { position, currentTrack } = playerStore.getState();
       if (currentTrack?.id && position > 0) {
         flushPosition(position, currentTrack.id, currentTrack.duration);
@@ -482,6 +517,31 @@ export async function updateRemoteCapabilities(): Promise<void> {
     forwardJumpInterval: skipForwardInterval,
     backwardJumpInterval: skipBackwardInterval,
   });
+}
+
+/** Push the current playback source (local / cached / streaming) into the store. */
+function refreshTrackSource(): void {
+  playerStore.getState().setTrackSource(tp.getCurrentTrackSource() ?? null);
+}
+
+/**
+ * Apply the lookahead-cache config from settings: enable + track count (both
+ * runtime-settable, live on both platforms). The disk budget is fixed at
+ * `configure()` (`lookaheadCacheMaxSizeMb`), so it isn't part of this call.
+ * Called at startup and whenever the user changes the cache settings.
+ */
+export async function applyLookaheadCacheConfig(): Promise<void> {
+  const { lookaheadEnabled, lookaheadCount } = playbackSettingsStore.getState();
+  await tp.setLookaheadCache({
+    enabled: lookaheadEnabled,
+    lookaheadCount,
+    evictionPolicy: 'lru',
+  });
+}
+
+/** Wipe the lookahead cache (upcoming-track prefetch). Does not stop prefetch. */
+export async function clearLookaheadCache(): Promise<void> {
+  await tp.clearLookaheadCache();
 }
 
 /** Clear the current error and re-attempt the errored track. */

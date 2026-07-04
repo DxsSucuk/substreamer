@@ -7,6 +7,7 @@
  */
 
 import { create } from 'zustand';
+import type { TrackSource } from 'react-native-queue-player';
 
 import { type EffectiveFormat } from '../types/audio';
 import type { Child } from '../services/subsonicService';
@@ -32,7 +33,7 @@ export interface PlayerState {
   position: number;
   /** Duration of the current track in seconds. */
   duration: number;
-  /** How far ahead the player has buffered, in seconds. */
+  /** Absolute buffered edge from the start of the track, in seconds. */
   bufferedPosition: number;
   /** Last playback error message, or null when healthy. */
   error: string | null;
@@ -42,6 +43,8 @@ export interface PlayerState {
   queueLoading: boolean;
   /** Effective post-transcode format for each track in the current queue, keyed by song ID. */
   queueFormats: Record<string, EffectiveFormat>;
+  /** Where the active track is playing from: local file, lookahead cache, or live stream. */
+  trackSource: TrackSource | null;
 
   /* ---- Setters (called by playerService) ---- */
   setCurrentTrack: (track: Child | null, index?: number | null) => void;
@@ -54,6 +57,7 @@ export interface PlayerState {
   setQueueFormats: (formats: Record<string, EffectiveFormat>) => void;
   addQueueFormat: (songId: string, fmt: EffectiveFormat) => void;
   clearQueueFormats: () => void;
+  setTrackSource: (source: TrackSource | null) => void;
 }
 
 export const playerStore = create<PlayerState>()((set) => ({
@@ -68,8 +72,14 @@ export const playerStore = create<PlayerState>()((set) => ({
   retrying: false,
   queueLoading: false,
   queueFormats: {},
+  trackSource: null,
 
-  setCurrentTrack: (track, index) => set({ currentTrack: track, currentTrackIndex: index ?? null }),
+  setCurrentTrack: (track, index) =>
+    set({
+      currentTrack: track,
+      currentTrackIndex: index ?? null,
+      ...(track ? {} : { trackSource: null }),
+    }),
   setPlaybackState: (playbackState) => set({ playbackState }),
   setQueue: (queue) => set({ queue }),
   setProgress: (position, duration, buffered) =>
@@ -85,4 +95,5 @@ export const playerStore = create<PlayerState>()((set) => ({
   addQueueFormat: (songId, fmt) =>
     set((state) => ({ queueFormats: { ...state.queueFormats, [songId]: fmt } })),
   clearQueueFormats: () => set({ queueFormats: {} }),
+  setTrackSource: (trackSource) => set({ trackSource }),
 }));
