@@ -1,17 +1,14 @@
 /**
- * PlaybackSpeedSheet — bottom-sheet picker for playback speed (+ a pitch
- * correction selector, currently hidden), opened from the player's
- * PlaybackRateButton.
+ * PlaybackSpeedSheet — bottom-sheet picker for playback speed + a pitch
+ * correction selector, opened from the player's PlaybackRateButton.
  *
  * Speed: every supported rate (slowest → fastest) as a wrapping grid of pills
  * so all options stay visible at once; the current rate is highlighted and
  * tapping another applies it immediately (the sheet stays open so the user can
  * keep adjusting).
  *
- * Pitch correction (None / Voice / Music): UI is gated off via
- * SHOW_PITCH_CORRECTION until the audio-processing backing is wired up — the
- * store setting + selector code stay in place ready to re-enable (see
- * plans/playback-rate-pitch-correction.md).
+ * Pitch correction (None / Voice / Music): only effective at rate != 1x
+ * (RNQP auto-bypasses at 1x). None follows the rate; Voice/Music preserve pitch.
  */
 
 import { memo, useCallback } from 'react';
@@ -20,7 +17,7 @@ import { useTranslation } from 'react-i18next';
 
 import { BottomSheet } from './BottomSheet';
 import { useTheme } from '../hooks/useTheme';
-import { applyPlaybackRate } from '../services/playerService';
+import { applyPitchCorrection, applyPlaybackRate } from '../services/playerService';
 import {
   PITCH_CORRECTION_MODES,
   PLAYBACK_RATES,
@@ -29,12 +26,6 @@ import {
   type PlaybackRate,
 } from '../store/playbackSettingsStore';
 import { selectionAsync } from '../utils/haptics';
-
-/**
- * Hide the pitch-correction selector until the audio-processing backing is
- * implemented. Flip to `true` once the player honours the setting.
- */
-const SHOW_PITCH_CORRECTION = false;
 
 /** Compact rate label: 1 → "1x", 0.75 → ".75x", 1.25 → "1.25x". */
 function formatRate(rate: number): string {
@@ -59,20 +50,16 @@ export const PlaybackSpeedSheet = memo(function PlaybackSpeedSheet({ visible, on
   const { t } = useTranslation();
   const playbackRate = playbackSettingsStore((s) => s.playbackRate);
   const pitchCorrection = playbackSettingsStore((s) => s.pitchCorrection);
-  const setPitchCorrection = playbackSettingsStore((s) => s.setPitchCorrection);
 
   const handleSelectRate = useCallback((rate: PlaybackRate) => {
     selectionAsync();
     void applyPlaybackRate(rate);
   }, []);
 
-  const handleSelectPitch = useCallback(
-    (mode: PitchCorrection) => {
-      selectionAsync();
-      setPitchCorrection(mode);
-    },
-    [setPitchCorrection],
-  );
+  const handleSelectPitch = useCallback((mode: PitchCorrection) => {
+    selectionAsync();
+    void applyPitchCorrection(mode);
+  }, []);
 
   return (
     <BottomSheet visible={visible} onClose={onClose} maxHeight="55%" scrollable={false}>
@@ -103,36 +90,30 @@ export const PlaybackSpeedSheet = memo(function PlaybackSpeedSheet({ visible, on
         })}
       </View>
 
-      {SHOW_PITCH_CORRECTION && (
-        <>
-          <Text style={[styles.sectionLabel, { color: colors.label }]}>
-            {t('pitchCorrection')}
-          </Text>
-          <View style={styles.pitchRow}>
-            {PITCH_CORRECTION_MODES.map((mode) => {
-              const active = mode === pitchCorrection;
-              return (
-                <Pressable
-                  key={mode}
-                  onPress={() => handleSelectPitch(mode)}
-                  style={({ pressed }) => [
-                    styles.pill,
-                    styles.pitchPill,
-                    { backgroundColor: active ? colors.primary : colors.inputBg },
-                    pressed && styles.pillPressed,
-                  ]}
-                >
-                  <Text
-                    style={[styles.pillLabel, { color: active ? '#fff' : colors.textSecondary }]}
-                  >
-                    {t(PITCH_LABEL_KEYS[mode])}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        </>
-      )}
+      <Text style={[styles.sectionLabel, { color: colors.label }]}>
+        {t('pitchCorrection')}
+      </Text>
+      <View style={styles.pitchRow}>
+        {PITCH_CORRECTION_MODES.map((mode) => {
+          const active = mode === pitchCorrection;
+          return (
+            <Pressable
+              key={mode}
+              onPress={() => handleSelectPitch(mode)}
+              style={({ pressed }) => [
+                styles.pill,
+                styles.pitchPill,
+                { backgroundColor: active ? colors.primary : colors.inputBg },
+                pressed && styles.pillPressed,
+              ]}
+            >
+              <Text style={[styles.pillLabel, { color: active ? '#fff' : colors.textSecondary }]}>
+                {t(PITCH_LABEL_KEYS[mode])}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
     </BottomSheet>
   );
 });

@@ -135,6 +135,7 @@ import {
   rebuildQueueForServerSwitch,
   updateRemoteCapabilities,
   applyPlaybackMode,
+  applyPitchCorrection,
 } from '../playerService';
 
 // The global __mocks__/react-native-queue-player.js exposes the shared player
@@ -756,5 +757,16 @@ describe('applyPlaybackMode', () => {
       kind: 'crossfade',
       crossfadeDurationMs: 8000,
     });
+  });
+});
+
+describe('applyPitchCorrection', () => {
+  afterEach(() => playbackSettingsStore.setState({ pitchCorrection: 'none' } as any));
+
+  it('persists the mode and pushes it to the engine', async () => {
+    mockTP.setPitchCorrectionMode.mockClear();
+    await applyPitchCorrection('voice');
+    expect(playbackSettingsStore.getState().pitchCorrection).toBe('voice');
+    expect(mockTP.setPitchCorrectionMode).toHaveBeenCalledWith('voice');
   });
 });

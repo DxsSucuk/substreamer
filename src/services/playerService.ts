@@ -16,6 +16,7 @@ import { getTrackPlayer } from 'react-native-queue-player';
 import { type EffectiveFormat } from '../types/audio';
 import {
   playbackSettingsStore,
+  type PitchCorrection,
   type PlaybackRate,
   type RepeatModeSetting,
 } from '../store/playbackSettingsStore';
@@ -120,6 +121,9 @@ export async function initPlayer(): Promise<void> {
   const settings = playbackSettingsStore.getState();
   await tp.setRepeatMode(mapRepeatMode(settings.repeatMode));
   await tp.setPlaybackSpeed(settings.playbackRate);
+  // Pitch correction (only effective at rate != 1x). RNQP defaults to 'voice',
+  // so the persisted mode must be pushed explicitly (our default is 'none').
+  await tp.setPitchCorrectionMode(settings.pitchCorrection);
 
   // Lookahead cache: enable + track count from settings (fixed max is set at
   // configure()). Runtime-settable via applyLookaheadCacheConfig().
@@ -833,6 +837,16 @@ export async function cycleRepeatMode(): Promise<void> {
 export async function applyPlaybackRate(rate: PlaybackRate): Promise<void> {
   playbackSettingsStore.getState().setPlaybackRate(rate);
   await tp.setPlaybackSpeed(rate);
+}
+
+/**
+ * Set the pitch-correction mode (none / voice / music). Only effective at rate
+ * != 1x; RNQP persists it + auto-bypasses at 1x, so it need not be re-applied on
+ * rate changes. Persists the choice + pushes it to the engine.
+ */
+export async function applyPitchCorrection(mode: PitchCorrection): Promise<void> {
+  playbackSettingsStore.getState().setPitchCorrection(mode);
+  await tp.setPitchCorrectionMode(mode);
 }
 
 /**
