@@ -610,21 +610,70 @@ describe('onTrackChange', () => {
   });
 });
 
-describe('onPlaybackMilestone', () => {
-  it('scrobbles at the 90% milestone for the played track', async () => {
+describe('playback-report scrobble', () => {
+  // Reset the per-play guard to track index 0 (queue-replaced ⇒ no completion
+  // scrobble), then clear mocks so each case starts from a known state.
+  async function armPlay(trigger: number) {
+    playbackSettingsStore.setState({ scrobbleTrigger: trigger } as any);
     const queue = [makeChild('t1'), makeChild('t2')];
     await playTrack(queue[0], queue);
+    emit('trackChange', { id: 't1' }, 0, 'queue-replaced');
     jest.clearAllMocks();
-    emit('milestone', 90, 0);
+  }
+
+  it('scrobbles at exactly the configured milestone (default 50%)', async () => {
+    await armPlay(50);
+    emit('milestone', 50, 0);
     expect(addCompletedScrobble).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }), undefined);
   });
 
-  it('does not scrobble below 90%', async () => {
-    const queue = [makeChild('t1')];
-    await playTrack(queue[0], queue);
-    jest.clearAllMocks();
-    emit('milestone', 50, 0);
+  it('does not scrobble at other milestones', async () => {
+    await armPlay(50);
+    emit('milestone', 25, 0);
+    emit('milestone', 75, 0);
     expect(addCompletedScrobble).not.toHaveBeenCalled();
+  });
+
+  it('reports exactly once per play (milestone, not again on later milestones or completion)', async () => {
+    await armPlay(50);
+    emit('milestone', 50, 0);
+    emit('milestone', 75, 0);
+    emit('milestone', 90, 0);
+    emit('trackChange', { id: 't2' }, 1, 'auto-advance');
+    expect(addCompletedScrobble).toHaveBeenCalledTimes(1);
+  });
+
+  it('completion fallback reports when the milestone was skipped by a seek', async () => {
+    await armPlay(50);
+    // The 50 milestone is consumed silently by a seek → never emitted; the track
+    // then finishes and auto-advances.
+    emit('trackChange', { id: 't2' }, 1, 'auto-advance');
+    expect(addCompletedScrobble).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }), undefined);
+  });
+
+  it('does not report on a user skip (not a natural completion)', async () => {
+    await armPlay(50);
+    emit('trackChange', { id: 't2' }, 1, 'user-skip-next');
+    expect(addCompletedScrobble).not.toHaveBeenCalled();
+  });
+
+  it('trigger 100 reports only on completion, never on a milestone', async () => {
+    await armPlay(100);
+    emit('milestone', 25, 0);
+    emit('milestone', 50, 0);
+    emit('milestone', 90, 0);
+    expect(addCompletedScrobble).not.toHaveBeenCalled();
+    emit('trackChange', { id: 't2' }, 1, 'auto-advance');
+    expect(addCompletedScrobble).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }), undefined);
+  });
+
+  it('re-scrobbles each repeat-one loop (milestone value wraps down)', async () => {
+    await armPlay(50);
+    emit('milestone', 50, 0); // loop 1
+    emit('milestone', 90, 0);
+    emit('milestone', 25, 0); // loop 2 begins → guard resets
+    emit('milestone', 50, 0); // loop 2
+    expect(addCompletedScrobble).toHaveBeenCalledTimes(2);
   });
 });
 

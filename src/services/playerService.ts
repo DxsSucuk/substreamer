@@ -83,6 +83,23 @@ let hydrationPromise: Promise<void> | null = null;
 /** Pending resume position from a persisted-queue restore, consumed by hydrate. */
 let pendingResumePosition: { trackId: string; position: number } | null = null;
 
+/* --- Playback-report scrobble guard: exactly one report per playthrough.
+ * `activeScrobbleIndex` = the track whose current play the guard tracks;
+ * `activeScrobbleDone` flips once the configured milestone OR the completion
+ * fallback has reported it; `lastMilestoneValue` detects a repeat-one loop
+ * (milestone value wraps 90→25) so the loop starts a fresh playthrough. --- */
+let activeScrobbleIndex: number | null = null;
+let activeScrobbleDone = false;
+let lastMilestoneValue = 0;
+
+/** Report a completed play once per playthrough, guarded by `activeScrobbleDone`. */
+function reportPlay(trackIndex: number): void {
+  if (activeScrobbleDone) return;
+  activeScrobbleDone = true;
+  const child = currentChildQueue[trackIndex];
+  if (child) addCompletedScrobble(child, trackPlaylistMap.get(child.id));
+}
+
 /* ------------------------------------------------------------------ */
 /*  Init                                                               */
 /* ------------------------------------------------------------------ */
@@ -133,7 +150,13 @@ export async function initPlayer(): Promise<void> {
   });
 
   // --- Active-track change → store + now-playing scrobble + persist ---
-  tp.onTrackChange((track, index) => {
+  tp.onTrackChange((track, index, reason) => {
+    // Completion fallback: a natural auto-advance means the OUTGOING track
+    // finished — report it if the configured milestone was missed (e.g. a seek
+    // skipped it). User skips / queue replacement are NOT completion.
+    if (reason === 'auto-advance' && activeScrobbleIndex != null) {
+      reportPlay(activeScrobbleIndex);
+    }
     if (track?.id) {
       const child = currentChildQueue.find((c) => c.id === track.id) ?? null;
       playerStore.getState().setCurrentTrack(child, index ?? null);
@@ -142,6 +165,10 @@ export async function initPlayer(): Promise<void> {
     } else {
       playerStore.getState().setCurrentTrack(null, null);
     }
+    // Start a fresh playthrough for the incoming track.
+    activeScrobbleIndex = index != null && index >= 0 ? index : null;
+    activeScrobbleDone = false;
+    lastMilestoneValue = 0;
     refreshTrackSource();
   });
 
@@ -151,14 +178,20 @@ export async function initPlayer(): Promise<void> {
   tp.onCacheStatusChange(() => refreshTrackSource());
   tp.onFullyBufferedChange(() => refreshTrackSource());
 
-  // --- Completion scrobble: deterministic, keyed to the played track index.
-  // RNQP fires the 90% milestone once per playthrough (and again each loop
-  // under repeat-one), replacing the RNTP played-until-end event-ordering
-  // choreography. ---
+  // --- Playback-report scrobble at the user-configured milestone (25/50/75/90;
+  // 100 = on-completion only, which never matches a milestone so only the
+  // completion fallback fires). Exact match; the completion fallback in
+  // onTrackChange/onQueueEnd catches a milestone skipped by a seek. ---
   tp.onPlaybackMilestone((milestone, trackIndex) => {
-    if (milestone < 90) return;
-    const child = currentChildQueue[trackIndex];
-    if (child) addCompletedScrobble(child, trackPlaylistMap.get(child.id));
+    // New track, or a repeat-one loop (milestone value wraps down) → fresh play.
+    if (trackIndex !== activeScrobbleIndex || milestone < lastMilestoneValue) {
+      activeScrobbleIndex = trackIndex;
+      activeScrobbleDone = false;
+    }
+    lastMilestoneValue = milestone;
+    if (milestone === playbackSettingsStore.getState().scrobbleTrigger) {
+      reportPlay(trackIndex);
+    }
   });
 
   // --- Errors. Transient errors are auto-retried natively; surface the error
@@ -169,8 +202,10 @@ export async function initPlayer(): Promise<void> {
     store.setRetrying(false);
   });
 
-  // --- Queue end: pin progress to 100% so the bar completes. ---
+  // --- Queue end: report the final track's play (completion fallback) if the
+  // milestone was missed, then pin progress to 100% so the bar completes. ---
   tp.onQueueEnd(() => {
+    if (activeScrobbleIndex != null) reportPlay(activeScrobbleIndex);
     const currentTrack = playerStore.getState().currentTrack;
     const endDuration = currentTrack?.duration ?? 0;
     if (endDuration > 0) {

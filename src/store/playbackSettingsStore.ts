@@ -92,6 +92,15 @@ export const LOOKAHEAD_COUNTS = [3, 5, 10, 20] as const;
 export type LookaheadCount = (typeof LOOKAHEAD_COUNTS)[number];
 
 /**
+ * Percent-of-track milestones at which the playback-report scrobble may fire.
+ * 25/50/75/90 map to RNQP `onPlaybackMilestone`; `100` is a sentinel for
+ * "on completion only" (RNQP never emits a 100 milestone, so the exact-match
+ * trigger never fires and only the always-on completion fallback scrobbles).
+ */
+export const SCROBBLE_MILESTONES = [25, 50, 75, 90, 100] as const;
+export type ScrobbleTrigger = (typeof SCROBBLE_MILESTONES)[number];
+
+/**
  * Fixed on-disk budget for the lookahead cache, in MB. Set ONCE at startup (via
  * the RNQP `configure()` initial-cache-size option) and never resized at
  * runtime — so track count is the only utilization lever and behaviour is
@@ -138,6 +147,10 @@ export interface PlaybackSettingsState {
   /** How many upcoming tracks the lookahead cache proactively caches. */
   lookaheadCount: LookaheadCount;
 
+  /** Percent of a track at which the playback-report scrobble fires (25/50/75/90);
+   *  100 = report on completion only. Completion is always a fallback. */
+  scrobbleTrigger: ScrobbleTrigger;
+
   setMaxBitRate: (bitRate: MaxBitRate) => void;
   setStreamFormat: (format: StreamFormat) => void;
   setEstimateContentLength: (enabled: boolean) => void;
@@ -154,6 +167,7 @@ export interface PlaybackSettingsState {
   setArtistPlayMode: (mode: ArtistPlayMode) => void;
   setLookaheadEnabled: (enabled: boolean) => void;
   setLookaheadCount: (count: LookaheadCount) => void;
+  setScrobbleTrigger: (trigger: ScrobbleTrigger) => void;
 }
 
 const PERSIST_KEY = 'substreamer-playback-settings';
@@ -196,6 +210,7 @@ export const playbackSettingsStore = create<PlaybackSettingsState>()(
       artistPlayMode: 'topSongs',
       lookaheadEnabled: true,
       lookaheadCount: 3,
+      scrobbleTrigger: 50,
 
       setMaxBitRate: (maxBitRate) => set({ maxBitRate }),
       setStreamFormat: (streamFormat) => set({ streamFormat: normalizeFormat(streamFormat) }),
@@ -213,6 +228,7 @@ export const playbackSettingsStore = create<PlaybackSettingsState>()(
       setArtistPlayMode: (artistPlayMode) => set({ artistPlayMode }),
       setLookaheadEnabled: (lookaheadEnabled) => set({ lookaheadEnabled }),
       setLookaheadCount: (lookaheadCount) => set({ lookaheadCount }),
+      setScrobbleTrigger: (scrobbleTrigger) => set({ scrobbleTrigger }),
     }),
     {
       name: PERSIST_KEY,
@@ -236,6 +252,7 @@ export const playbackSettingsStore = create<PlaybackSettingsState>()(
         artistPlayMode: state.artistPlayMode,
         lookaheadEnabled: state.lookaheadEnabled,
         lookaheadCount: state.lookaheadCount,
+        scrobbleTrigger: state.scrobbleTrigger,
       }),
     }
   )
