@@ -125,6 +125,9 @@ export async function initPlayer(): Promise<void> {
   // configure()). Runtime-settable via applyLookaheadCacheConfig().
   await applyLookaheadCacheConfig();
 
+  // Gapless / crossfade track transitions.
+  await applyPlaybackMode();
+
   // --- Playback state → store ---
   tp.onStateChange((state) => {
     const store = playerStore.getState();
@@ -577,6 +580,19 @@ export async function applyLookaheadCacheConfig(): Promise<void> {
 /** Wipe the lookahead cache (upcoming-track prefetch). Does not stop prefetch. */
 export async function clearLookaheadCache(): Promise<void> {
   await tp.clearLookaheadCache();
+}
+
+/**
+ * Apply the gapless/crossfade transition mode from settings. RNQP applies the
+ * change at the next track boundary; the crossfade duration is only sent when
+ * the mode is `crossfade`. Called at startup and when the user changes it.
+ */
+export async function applyPlaybackMode(): Promise<void> {
+  const { playbackMode, crossfadeDurationMs } = playbackSettingsStore.getState();
+  await tp.setPlaybackMode({
+    kind: playbackMode,
+    crossfadeDurationMs: playbackMode === 'crossfade' ? crossfadeDurationMs : undefined,
+  });
 }
 
 /** Clear the current error and re-attempt the errored track. */

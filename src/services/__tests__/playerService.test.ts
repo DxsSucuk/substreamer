@@ -134,6 +134,7 @@ import {
   playSongNext,
   rebuildQueueForServerSwitch,
   updateRemoteCapabilities,
+  applyPlaybackMode,
 } from '../playerService';
 
 // The global __mocks__/react-native-queue-player.js exposes the shared player
@@ -731,5 +732,29 @@ describe('applyLocalPlayToPlayer', () => {
     });
     applyLocalPlayToPlayer('other', now);
     expect(mockPlayerStoreSetState).not.toHaveBeenCalled();
+  });
+});
+
+describe('applyPlaybackMode', () => {
+  afterEach(() => playbackSettingsStore.setState({ playbackMode: 'gapless', crossfadeDurationMs: 5000 } as any));
+
+  it('sends gapless with no crossfade duration', async () => {
+    playbackSettingsStore.setState({ playbackMode: 'gapless', crossfadeDurationMs: 5000 } as any);
+    mockTP.setPlaybackMode.mockClear();
+    await applyPlaybackMode();
+    expect(mockTP.setPlaybackMode).toHaveBeenCalledWith({
+      kind: 'gapless',
+      crossfadeDurationMs: undefined,
+    });
+  });
+
+  it('sends crossfade with the configured duration', async () => {
+    playbackSettingsStore.setState({ playbackMode: 'crossfade', crossfadeDurationMs: 8000 } as any);
+    mockTP.setPlaybackMode.mockClear();
+    await applyPlaybackMode();
+    expect(mockTP.setPlaybackMode).toHaveBeenCalledWith({
+      kind: 'crossfade',
+      crossfadeDurationMs: 8000,
+    });
   });
 });

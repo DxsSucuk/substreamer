@@ -9,6 +9,7 @@ import { GradientBackground } from '../components/GradientBackground';
 import { BackgroundPlaybackCard } from '../components/settings/BackgroundPlaybackCard';
 import { DownloadingCard } from '../components/settings/DownloadingCard';
 import { LookaheadCacheCard } from '../components/settings/LookaheadCacheCard';
+import { PlaybackModeCard } from '../components/settings/PlaybackModeCard';
 import { PlayerControlsCard } from '../components/settings/PlayerControlsCard';
 import { RemoteControlsCard } from '../components/settings/RemoteControlsCard';
 import { SkipIntervalsCard } from '../components/settings/SkipIntervalsCard';
@@ -16,7 +17,7 @@ import { StreamingCard } from '../components/settings/StreamingCard';
 import { StreamFormatSheet } from '../components/StreamFormatSheet';
 import { useTheme } from '../hooks/useTheme';
 import { useThemedAlert } from '../hooks/useThemedAlert';
-import { applyLookaheadCacheConfig, updateRemoteCapabilities } from '../services/playerService';
+import { applyLookaheadCacheConfig, applyPlaybackMode, updateRemoteCapabilities } from '../services/playerService';
 import { playbackSettingsStore } from '../store/playbackSettingsStore';
 import { settingsStyles } from '../styles/settingsStyles';
 
@@ -41,6 +42,8 @@ export function SettingsPlaybackScreen() {
   const remoteControlMode = playbackSettingsStore((s) => s.remoteControlMode);
   const lookaheadEnabled = playbackSettingsStore((s) => s.lookaheadEnabled);
   const lookaheadCount = playbackSettingsStore((s) => s.lookaheadCount);
+  const playbackMode = playbackSettingsStore((s) => s.playbackMode);
+  const crossfadeDurationMs = playbackSettingsStore((s) => s.crossfadeDurationMs);
 
   const isDefault =
     maxBitRate === null &&
@@ -54,7 +57,9 @@ export function SettingsPlaybackScreen() {
     skipForwardInterval === 30 &&
     remoteControlMode === 'skip-track' &&
     lookaheadEnabled &&
-    lookaheadCount === 3;
+    lookaheadCount === 3 &&
+    playbackMode === 'gapless' &&
+    crossfadeDurationMs === 5000;
 
   const handleResetDefaults = useCallback(() => {
     confirm({
@@ -76,8 +81,11 @@ export function SettingsPlaybackScreen() {
         s.setRemoteControlMode('skip-track');
         s.setLookaheadEnabled(true);
         s.setLookaheadCount(3);
+        s.setPlaybackMode('gapless');
+        s.setCrossfadeDurationMs(5000);
         updateRemoteCapabilities();
         void applyLookaheadCacheConfig();
+        void applyPlaybackMode();
       },
     });
   }, [confirm, t]);
@@ -94,6 +102,7 @@ export function SettingsPlaybackScreen() {
           <LookaheadCacheCard />
           <DownloadingCard />
           <PlayerControlsCard />
+          <PlaybackModeCard />
           <SkipIntervalsCard />
           <RemoteControlsCard />
           {/* Battery-optimization exemption — affects background playback, so it

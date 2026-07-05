@@ -100,6 +100,18 @@ export type LookaheadCount = (typeof LOOKAHEAD_COUNTS)[number];
 export const SCROBBLE_MILESTONES = [25, 50, 75, 90, 100] as const;
 export type ScrobbleTrigger = (typeof SCROBBLE_MILESTONES)[number];
 
+/** Track-transition mode. Maps to RNQP `setPlaybackMode({ kind })`. */
+export const PLAYBACK_MODES = ['gapless', 'crossfade'] as const;
+export type PlaybackModeSetting = (typeof PLAYBACK_MODES)[number];
+
+/**
+ * Crossfade durations offered in the UI (ms) — a curated subset of RNQP's valid
+ * 500 ms-quantised 1000–12000 range (`crossfadeDurationBounds`). Only read when
+ * mode is `crossfade`.
+ */
+export const CROSSFADE_DURATIONS_MS = [1000, 2000, 3000, 4000, 5000, 6000, 8000, 10000, 12000] as const;
+export type CrossfadeDurationMs = (typeof CROSSFADE_DURATIONS_MS)[number];
+
 /**
  * Fixed on-disk budget for the lookahead cache, in MB. Set ONCE at startup (via
  * the RNQP `configure()` initial-cache-size option) and never resized at
@@ -151,6 +163,11 @@ export interface PlaybackSettingsState {
    *  100 = report on completion only. Completion is always a fallback. */
   scrobbleTrigger: ScrobbleTrigger;
 
+  /** Track-transition mode: gapless auto-advance or crossfade. */
+  playbackMode: PlaybackModeSetting;
+  /** Crossfade duration in ms (only applied when `playbackMode === 'crossfade'`). */
+  crossfadeDurationMs: CrossfadeDurationMs;
+
   setMaxBitRate: (bitRate: MaxBitRate) => void;
   setStreamFormat: (format: StreamFormat) => void;
   setEstimateContentLength: (enabled: boolean) => void;
@@ -168,6 +185,8 @@ export interface PlaybackSettingsState {
   setLookaheadEnabled: (enabled: boolean) => void;
   setLookaheadCount: (count: LookaheadCount) => void;
   setScrobbleTrigger: (trigger: ScrobbleTrigger) => void;
+  setPlaybackMode: (mode: PlaybackModeSetting) => void;
+  setCrossfadeDurationMs: (ms: CrossfadeDurationMs) => void;
 }
 
 const PERSIST_KEY = 'substreamer-playback-settings';
@@ -211,6 +230,8 @@ export const playbackSettingsStore = create<PlaybackSettingsState>()(
       lookaheadEnabled: true,
       lookaheadCount: 3,
       scrobbleTrigger: 50,
+      playbackMode: 'gapless',
+      crossfadeDurationMs: 5000,
 
       setMaxBitRate: (maxBitRate) => set({ maxBitRate }),
       setStreamFormat: (streamFormat) => set({ streamFormat: normalizeFormat(streamFormat) }),
@@ -229,6 +250,8 @@ export const playbackSettingsStore = create<PlaybackSettingsState>()(
       setLookaheadEnabled: (lookaheadEnabled) => set({ lookaheadEnabled }),
       setLookaheadCount: (lookaheadCount) => set({ lookaheadCount }),
       setScrobbleTrigger: (scrobbleTrigger) => set({ scrobbleTrigger }),
+      setPlaybackMode: (playbackMode) => set({ playbackMode }),
+      setCrossfadeDurationMs: (crossfadeDurationMs) => set({ crossfadeDurationMs }),
     }),
     {
       name: PERSIST_KEY,
@@ -253,6 +276,8 @@ export const playbackSettingsStore = create<PlaybackSettingsState>()(
         lookaheadEnabled: state.lookaheadEnabled,
         lookaheadCount: state.lookaheadCount,
         scrobbleTrigger: state.scrobbleTrigger,
+        playbackMode: state.playbackMode,
+        crossfadeDurationMs: state.crossfadeDurationMs,
       }),
     }
   )
