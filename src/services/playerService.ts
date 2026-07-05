@@ -11,7 +11,7 @@
 
 import { AppState, Platform } from 'react-native';
 import i18n from '../i18n/i18n';
-import { getTrackPlayer } from 'react-native-queue-player';
+import { getTrackPlayer, getEqualizer } from 'react-native-queue-player';
 
 import { type EffectiveFormat } from '../types/audio';
 import {
@@ -24,6 +24,7 @@ import { backgroundPlaybackPromptStore } from '../store/backgroundPlaybackPrompt
 import { playbackToastStore } from '../store/playbackToastStore';
 import { playerStore } from '../store/playerStore';
 import { appStateStore } from '../store/appStateStore';
+import { equalizerSettingsStore, EQ_CUSTOM_PRESET_LABEL } from '../store/equalizerSettingsStore';
 import { sleepTimerStore } from '../store/sleepTimerStore';
 import { shuffleArray } from '../utils/arrayHelpers';
 import { addCompletedScrobble, sendNowPlaying } from './scrobbleService';
@@ -53,6 +54,9 @@ import { isFireOS } from '../utils/isFireOS';
 /** The RNQP player singleton. Safe to hold — `getTrackPlayer()` always returns
  *  the same instance; the engine is configured in `playerBootstrap.ts`. */
 const tp = getTrackPlayer();
+
+/** The RNQP equalizer singleton. */
+const eq = getEqualizer();
 
 /**
  * One-time Fire-OS background-playback guidance. Fired the first time the user
@@ -131,6 +135,10 @@ export async function initPlayer(): Promise<void> {
 
   // Gapless / crossfade track transitions.
   await applyPlaybackMode();
+
+  // Equalizer: RNQP's native EQ doesn't restore active state across restarts,
+  // so re-apply the persisted enabled flag + band gains.
+  await applyEqualizerConfig();
 
   // --- Playback state → store ---
   tp.onStateChange((state) => {
@@ -597,6 +605,63 @@ export async function applyPlaybackMode(): Promise<void> {
     kind: playbackMode,
     crossfadeDurationMs: playbackMode === 'crossfade' ? crossfadeDurationMs : undefined,
   });
+}
+
+/* ------------------------------------------------------------------ */
+/*  Equalizer                                                          */
+/* ------------------------------------------------------------------ */
+
+/** Re-apply the persisted equalizer state (band gains + enabled) to the engine. */
+export async function applyEqualizerConfig(): Promise<void> {
+  const { enabled, gains } = equalizerSettingsStore.getState();
+  await eq.setAllBandGains(gains);
+  await eq.setEnabled(enabled);
+}
+
+/** Toggle the equalizer on/off (persists). */
+export async function setEqualizerEnabled(enabled: boolean): Promise<void> {
+  equalizerSettingsStore.getState().setEnabled(enabled);
+  await eq.setEnabled(enabled);
+}
+
+/** Apply a preset (built-in or custom) by name; persists the resulting gains. */
+export async function applyEqualizerPreset(name: string): Promise<void> {
+  const preset = eq.getPresets().find((p) => p.name === name);
+  const gains = preset ? preset.gains.slice() : equalizerSettingsStore.getState().gains;
+  const s = equalizerSettingsStore.getState();
+  s.setGains(gains);
+  s.setPresetName(name);
+  await eq.setAllBandGains(gains);
+}
+
+/** Set one band's gain (persists; marks the selected preset as Custom). */
+export async function setEqualizerBandGain(index: number, gainDb: number): Promise<void> {
+  const s = equalizerSettingsStore.getState();
+  s.setBandGain(index, gainDb);
+  s.setPresetName(EQ_CUSTOM_PRESET_LABEL);
+  await eq.setBandGain(index, gainDb);
+}
+
+/** Reset all bands to flat (persists). */
+export async function resetEqualizer(): Promise<void> {
+  equalizerSettingsStore.getState().resetGains();
+  await eq.reset();
+}
+
+/** Save the current gains as a named custom preset (RNQP persists it natively). */
+export async function saveEqualizerPreset(name: string): Promise<void> {
+  await eq.saveCustomPreset(name);
+  equalizerSettingsStore.getState().setPresetName(name);
+}
+
+/** Delete a custom preset (RNQP native). */
+export async function deleteEqualizerPreset(name: string): Promise<void> {
+  await eq.deleteCustomPreset(name);
+}
+
+/** The available presets (16 built-ins + user customs). */
+export function getEqualizerPresets(): ReturnType<typeof eq.getPresets> {
+  return eq.getPresets();
 }
 
 /** Clear the current error and re-attempt the errored track. */

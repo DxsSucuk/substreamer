@@ -113,10 +113,69 @@ const cast = {
   CastErrorCodes: { CONNECT_FAILED: 'cast_connect_failed', AUTH_REQUIRED: 'cast_auth_required' },
 };
 
+// --- Equalizer: stateful mock so UI + service wrappers behave realistically ---
+const EQ_BAND_FREQUENCIES_HZ = [31, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+const EQ_BAND_COUNT = 10;
+const EQ_GAIN_MIN_DB = -12;
+const EQ_GAIN_MAX_DB = 12;
+const EQ_FLAT_PRESET_NAME = 'Flat';
+const eqBuiltinPresets = [
+  { name: 'Flat', gains: new Array(10).fill(0), builtin: true },
+  { name: 'Rock', gains: [5, 4, 3, 1, -1, -1, 2, 3, 4, 4], builtin: true },
+  { name: 'Jazz', gains: [4, 3, 1, 2, -2, -2, 0, 1, 3, 4], builtin: true },
+];
+let eqEnabled = false;
+let eqBands = EQ_BAND_FREQUENCIES_HZ.map((hz) => ({ frequencyHz: hz, gainDb: 0 }));
+let eqCustomPresets = [];
+const eqSetGains = (gains) => {
+  eqBands = eqBands.map((b, i) => ({ ...b, frequencyHz: b.frequencyHz, gainDb: gains[i] ?? 0 }));
+};
+const equalizer = {
+  setEnabled: jest.fn((v) => { eqEnabled = v; return Promise.resolve(); }),
+  isEnabled: jest.fn(() => eqEnabled),
+  getBands: jest.fn(() => eqBands),
+  setBandGain: jest.fn((i, g) => { eqBands = eqBands.map((b, idx) => (idx === i ? { ...b, gainDb: g } : b)); return Promise.resolve(); }),
+  setAllBandGains: jest.fn((gains) => { eqSetGains(gains); return Promise.resolve(); }),
+  applyPreset: jest.fn((name) => {
+    const p = [...eqBuiltinPresets, ...eqCustomPresets].find((x) => x.name === name);
+    if (p) eqSetGains(p.gains);
+    return Promise.resolve();
+  }),
+  getPresets: jest.fn(() => [...eqBuiltinPresets, ...eqCustomPresets]),
+  saveCustomPreset: jest.fn((name) => {
+    eqCustomPresets = eqCustomPresets.filter((p) => p.name !== name);
+    eqCustomPresets.push({ name, gains: eqBands.map((b) => b.gainDb), builtin: false });
+    return Promise.resolve();
+  }),
+  deleteCustomPreset: jest.fn((name) => { eqCustomPresets = eqCustomPresets.filter((p) => p.name !== name); return Promise.resolve(); }),
+  reset: jest.fn(() => { eqSetGains(new Array(10).fill(0)); return Promise.resolve(); }),
+  onBandChange: jest.fn(() => () => {}),
+  onEnabledChange: jest.fn((cb) => { cb(eqEnabled); return () => {}; }),
+};
+
 module.exports = {
   __esModule: true,
   getTrackPlayer: jest.fn(() => trackPlayer),
-  getEqualizer: jest.fn(() => ({})),
+  getEqualizer: jest.fn(() => equalizer),
+  EQ_BAND_FREQUENCIES_HZ,
+  EQ_BAND_COUNT,
+  EQ_GAIN_MIN_DB,
+  EQ_GAIN_MAX_DB,
+  EQ_FLAT_PRESET_NAME,
+  isBuiltinPreset: (presets, name) => presets.some((p) => p.name === name && p.builtin),
+  useEqualizer: () => ({
+    enabled: equalizer.isEnabled(),
+    bands: equalizer.getBands(),
+    presets: equalizer.getPresets(),
+    setEnabled: equalizer.setEnabled,
+    setBandGain: equalizer.setBandGain,
+    setAllBandGains: equalizer.setAllBandGains,
+    applyPreset: equalizer.applyPreset,
+    saveCustomPreset: equalizer.saveCustomPreset,
+    deleteCustomPreset: equalizer.deleteCustomPreset,
+    reset: equalizer.reset,
+  }),
+  __equalizer: equalizer,
   getVisualizer: jest.fn(() => ({})),
   getCastManager: jest.fn(() => ({})),
   Cast: cast,

@@ -8,6 +8,7 @@ import { BottomChrome } from '../components/BottomChrome';
 import { GradientBackground } from '../components/GradientBackground';
 import { BackgroundPlaybackCard } from '../components/settings/BackgroundPlaybackCard';
 import { DownloadingCard } from '../components/settings/DownloadingCard';
+import { EqualizerCard } from '../components/settings/EqualizerCard';
 import { LookaheadCacheCard } from '../components/settings/LookaheadCacheCard';
 import { PlaybackModeCard } from '../components/settings/PlaybackModeCard';
 import { PlayerControlsCard } from '../components/settings/PlayerControlsCard';
@@ -103,6 +104,7 @@ export function SettingsPlaybackScreen() {
           <DownloadingCard />
           <PlayerControlsCard />
           <PlaybackModeCard />
+          <EqualizerCard />
           <SkipIntervalsCard />
           <RemoteControlsCard />
           {/* Battery-optimization exemption — affects background playback, so it

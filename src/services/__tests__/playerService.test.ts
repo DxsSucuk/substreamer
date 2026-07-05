@@ -136,12 +136,21 @@ import {
   updateRemoteCapabilities,
   applyPlaybackMode,
   applyPitchCorrection,
+  applyEqualizerConfig,
+  setEqualizerEnabled,
+  applyEqualizerPreset,
+  setEqualizerBandGain,
+  resetEqualizer,
+  saveEqualizerPreset,
+  deleteEqualizerPreset,
 } from '../playerService';
+import { equalizerSettingsStore, EQ_CUSTOM_PRESET_LABEL } from '../../store/equalizerSettingsStore';
 
 // The global __mocks__/react-native-queue-player.js exposes the shared player
 // instance + an event emitter.
 const rnqp = require('react-native-queue-player');
 const mockTP = rnqp.__trackPlayer as Record<string, jest.Mock>;
+const mockEq = rnqp.__equalizer as Record<string, jest.Mock>;
 const emit = rnqp.__emit as (name: string, ...args: unknown[]) => void;
 
 const makeChild = (id: string, overrides?: Partial<Child>): Child => ({
@@ -768,5 +777,58 @@ describe('applyPitchCorrection', () => {
     await applyPitchCorrection('voice');
     expect(playbackSettingsStore.getState().pitchCorrection).toBe('voice');
     expect(mockTP.setPitchCorrectionMode).toHaveBeenCalledWith('voice');
+  });
+});
+
+describe('equalizer wrappers', () => {
+  const FLAT = new Array(10).fill(0);
+
+  beforeEach(() => {
+    equalizerSettingsStore.setState({ enabled: false, gains: FLAT.slice(), presetName: 'Flat' });
+    Object.values(mockEq).forEach((fn) => typeof fn?.mockClear === 'function' && fn.mockClear());
+  });
+
+  it('applyEqualizerConfig re-applies persisted gains + enabled to the engine', async () => {
+    equalizerSettingsStore.setState({ enabled: true, gains: [3, 0, 0, 0, 0, 0, 0, 0, 0, 3] });
+    await applyEqualizerConfig();
+    expect(mockEq.setAllBandGains).toHaveBeenCalledWith([3, 0, 0, 0, 0, 0, 0, 0, 0, 3]);
+    expect(mockEq.setEnabled).toHaveBeenCalledWith(true);
+  });
+
+  it('setEqualizerEnabled persists + pushes to the engine', async () => {
+    await setEqualizerEnabled(true);
+    expect(equalizerSettingsStore.getState().enabled).toBe(true);
+    expect(mockEq.setEnabled).toHaveBeenCalledWith(true);
+  });
+
+  it('applyEqualizerPreset loads the preset gains + name into store and engine', async () => {
+    await applyEqualizerPreset('Rock');
+    const rock = [5, 4, 3, 1, -1, -1, 2, 3, 4, 4];
+    expect(equalizerSettingsStore.getState().gains).toEqual(rock);
+    expect(equalizerSettingsStore.getState().presetName).toBe('Rock');
+    expect(mockEq.setAllBandGains).toHaveBeenCalledWith(rock);
+  });
+
+  it('setEqualizerBandGain updates one band and flips the preset to Custom', async () => {
+    await setEqualizerBandGain(2, 6);
+    expect(equalizerSettingsStore.getState().gains[2]).toBe(6);
+    expect(equalizerSettingsStore.getState().presetName).toBe(EQ_CUSTOM_PRESET_LABEL);
+    expect(mockEq.setBandGain).toHaveBeenCalledWith(2, 6);
+  });
+
+  it('resetEqualizer restores flat gains + Flat preset and resets the engine', async () => {
+    equalizerSettingsStore.setState({ gains: [4, 4, 4, 4, 4, 4, 4, 4, 4, 4], presetName: 'Custom' });
+    await resetEqualizer();
+    expect(equalizerSettingsStore.getState().gains).toEqual(FLAT);
+    expect(equalizerSettingsStore.getState().presetName).toBe('Flat');
+    expect(mockEq.reset).toHaveBeenCalled();
+  });
+
+  it('save/delete custom preset delegate to the engine', async () => {
+    await saveEqualizerPreset('Mine');
+    expect(mockEq.saveCustomPreset).toHaveBeenCalledWith('Mine');
+    expect(equalizerSettingsStore.getState().presetName).toBe('Mine');
+    await deleteEqualizerPreset('Mine');
+    expect(mockEq.deleteCustomPreset).toHaveBeenCalledWith('Mine');
   });
 });
