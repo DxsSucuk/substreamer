@@ -67,9 +67,6 @@ export function StreamingCard() {
           </View>
         </Pressable>
       </View>
-      <Text style={[styles.warning, { color: colors.textSecondary }]}>
-        {t('formatCompatibilityWarning')}
-      </Text>
     </View>
   );
 }
@@ -89,11 +86,5 @@ const styles = StyleSheet.create({
   },
   label: {
     fontSize: 16,
-  },
-  warning: {
-    fontSize: 12,
-    lineHeight: 17,
-    marginTop: 10,
-    marginHorizontal: 4,
   },
 });

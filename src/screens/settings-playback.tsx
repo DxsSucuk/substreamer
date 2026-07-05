@@ -100,11 +100,11 @@ export function SettingsPlaybackScreen() {
           showsVerticalScrollIndicator={false}
         >
           <StreamingCard />
-          <LookaheadCacheCard />
           <DownloadingCard />
-          <PlayerControlsCard />
-          <PlaybackModeCard />
           <EqualizerCard />
+          <PlaybackModeCard />
+          <LookaheadCacheCard />
+          <PlayerControlsCard />
           <SkipIntervalsCard />
           <RemoteControlsCard />
           {/* Battery-optimization exemption — affects background playback, so it

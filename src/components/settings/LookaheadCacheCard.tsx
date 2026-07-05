@@ -13,15 +13,14 @@ import {
   type LookaheadCount,
 } from '../../store/playbackSettingsStore';
 import { settingsStyles } from '../../styles/settingsStyles';
-import { formatBytes } from '../../utils/formatters';
 import { DropdownRow, type DropdownOption } from './DropdownRow';
 import { SettingsSectionTitle } from './SettingsSectionTitle';
 
 /**
  * Lookahead-cache controls. The user turns caching on/off and picks how many
- * upcoming tracks to keep ready; the on-disk budget is fixed and managed by the
- * engine, so it's shown as a plain size figure rather than a limit bar. Track
- * count is the real utilization lever (the engine only prefetches the window).
+ * upcoming tracks to keep ready; the on-disk budget is fixed and engine-managed
+ * (not user-configurable), so it isn't surfaced. Track count is the real
+ * utilization lever — the "tracks ready" bar reflects it.
  */
 export function LookaheadCacheCard() {
   const { t } = useTranslation();
@@ -80,9 +79,6 @@ export function LookaheadCacheCard() {
             <Text style={[styles.toggleLabel, { color: colors.textPrimary }]}>
               {t('lookaheadCacheEnable')}
             </Text>
-            <Text style={[styles.toggleHint, { color: colors.textSecondary }]}>
-              {t('lookaheadCacheHint')}
-            </Text>
           </View>
           <Switch
             testID="lookahead-toggle"
@@ -100,16 +96,6 @@ export function LookaheadCacheCard() {
             onChange={handleCountChange}
           />
         )}
-
-        {/* Cache size (plain figure — budget is fixed/engine-managed) */}
-        <View style={[settingsStyles.infoRow, { borderBottomColor: colors.border }]}>
-          <Text style={[settingsStyles.infoLabel, { color: colors.textPrimary }]}>
-            {t('cacheSize')}
-          </Text>
-          <Text style={[settingsStyles.infoValue, { color: colors.textSecondary }]}>
-            {formatBytes(status.currentSizeMb * 1024 * 1024)}
-          </Text>
-        </View>
 
         {/* Tracks ready out of the limit */}
         {enabled && (
@@ -166,9 +152,8 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  toggleText: { flex: 1, gap: 2 },
+  toggleText: { flex: 1 },
   toggleLabel: { fontSize: 16, fontWeight: '500' },
-  toggleHint: { fontSize: 12 },
   readyBlock: {
     paddingHorizontal: 16,
     paddingVertical: 12,

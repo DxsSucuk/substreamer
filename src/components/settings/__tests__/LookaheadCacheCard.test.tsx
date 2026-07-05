@@ -43,10 +43,11 @@ describe('LookaheadCacheCard', () => {
     playbackSettingsStore.setState({ lookaheadEnabled: true, lookaheadCount: 3 });
   });
 
-  it('renders the enable toggle, size figure and clear button', () => {
+  it('renders the enable toggle, tracks-ready and clear button', () => {
     render(<LookaheadCacheCard />);
     expect(screen.getByText('Cache upcoming tracks')).toBeTruthy();
-    expect(screen.getByText('Cache size')).toBeTruthy();
+    // Cache size is engine-managed / not user-configurable, so it isn't shown.
+    expect(screen.queryByText('Cache size')).toBeNull();
     expect(screen.getByText('Clear cache')).toBeTruthy();
     // Tracks-ready shows "2 of 3" while enabled.
     expect(screen.getByText('2 of 3')).toBeTruthy();
