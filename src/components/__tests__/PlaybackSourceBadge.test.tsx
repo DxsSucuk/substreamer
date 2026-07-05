@@ -29,25 +29,24 @@ describe('PlaybackSourceBadge', () => {
     expect(screen.queryByTestId('source-badge-local')).toBeNull();
   });
 
-  it('shows the cloud glyph while streaming', () => {
+  it('shows the cloud-circle glyph while streaming', () => {
     act(() => playerStore.getState().setTrackSource('streaming'));
     render(<PlaybackSourceBadge />);
     expect(screen.getByTestId('source-badge-streaming')).toBeTruthy();
-    expect(screen.getByTestId('icon-cloud-outline')).toBeTruthy();
+    expect(screen.getByTestId('icon-cloud-circle')).toBeTruthy();
   });
 
-  it('shows the storage glyph when cached', () => {
+  it('shows the offline-bolt (lightning-bolt-circle) glyph when cached', () => {
     act(() => playerStore.getState().setTrackSource('cached'));
     render(<PlaybackSourceBadge />);
     expect(screen.getByTestId('source-badge-cached')).toBeTruthy();
-    expect(screen.getByTestId('icon-harddisk')).toBeTruthy();
+    expect(screen.getByTestId('icon-lightning-bolt-circle')).toBeTruthy();
   });
 
-  it('shows the downloaded icon when playing a local file', () => {
+  it('shows the arrow-down-circle glyph when playing a local file', () => {
     act(() => playerStore.getState().setTrackSource('local'));
     render(<PlaybackSourceBadge />);
     expect(screen.getByTestId('source-badge-local')).toBeTruthy();
-    // DownloadedIcon renders the Ionicons arrow-down-circle glyph.
     expect(screen.getByTestId('icon-arrow-down-circle')).toBeTruthy();
   });
 });
