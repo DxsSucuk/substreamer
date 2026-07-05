@@ -13,14 +13,16 @@ import {
   type LookaheadCount,
 } from '../../store/playbackSettingsStore';
 import { settingsStyles } from '../../styles/settingsStyles';
+import { formatBytes } from '../../utils/formatters';
 import { DropdownRow, type DropdownOption } from './DropdownRow';
 import { SettingsSectionTitle } from './SettingsSectionTitle';
 
 /**
  * Lookahead-cache controls. The user turns caching on/off and picks how many
- * upcoming tracks to keep ready; the on-disk budget is fixed and engine-managed
- * (not user-configurable), so it isn't surfaced. Track count is the real
- * utilization lever — the "tracks ready" bar reflects it.
+ * upcoming tracks to keep ready; the on-disk budget is fixed and engine-managed.
+ * The usage bar shows how much of that budget is currently used — driven live by
+ * RNQP's `onCacheStatusChange` (via `useLookaheadCache`), so it updates as tracks
+ * are cached or evicted.
  */
 export function LookaheadCacheCard() {
   const { t } = useTranslation();
@@ -67,7 +69,9 @@ export function LookaheadCacheCard() {
     });
   }, [confirm, t]);
 
-  const readyFraction = count > 0 ? Math.min(1, status.tracksFullyCached / count) : 0;
+  const usedFraction =
+    status.maxSizeMb > 0 ? Math.min(1, status.currentSizeMb / status.maxSizeMb) : 0;
+  const showUsage = enabled || status.currentSizeMb > 0;
 
   return (
     <View style={settingsStyles.section}>
@@ -97,22 +101,25 @@ export function LookaheadCacheCard() {
           />
         )}
 
-        {/* Tracks ready out of the limit */}
-        {enabled && (
-          <View style={styles.readyBlock}>
-            <View style={styles.readyRow}>
+        {/* Space used out of the fixed budget (live via onCacheStatusChange) */}
+        {showUsage && (
+          <View style={styles.usageBlock}>
+            <View style={styles.usageRow}>
               <Text style={[settingsStyles.infoLabel, { color: colors.textPrimary }]}>
-                {t('cacheTracksReady')}
+                {t('cacheUsed')}
               </Text>
               <Text style={[settingsStyles.infoValue, { color: colors.textSecondary }]}>
-                {t('cacheTracksReadyValue', { ready: status.tracksFullyCached, total: count })}
+                {t('cacheUsedValue', {
+                  used: formatBytes(status.currentSizeMb * 1024 * 1024),
+                  total: formatBytes(status.maxSizeMb * 1024 * 1024),
+                })}
               </Text>
             </View>
-            <View style={[styles.readyTrack, { backgroundColor: colors.inputBg }]}>
+            <View style={[styles.usageTrack, { backgroundColor: colors.inputBg }]}>
               <View
                 style={[
-                  styles.readyFill,
-                  { backgroundColor: colors.primary, width: `${readyFraction * 100}%` },
+                  styles.usageFill,
+                  { backgroundColor: colors.primary, width: `${usedFraction * 100}%` },
                 ]}
               />
             </View>
@@ -154,24 +161,24 @@ const styles = StyleSheet.create({
   },
   toggleText: { flex: 1 },
   toggleLabel: { fontSize: 16, fontWeight: '500' },
-  readyBlock: {
+  usageBlock: {
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: 'transparent',
     gap: 8,
   },
-  readyRow: {
+  usageRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
   },
-  readyTrack: {
+  usageTrack: {
     height: 6,
     borderRadius: 3,
     overflow: 'hidden',
   },
-  readyFill: {
+  usageFill: {
     height: '100%',
     borderRadius: 3,
   },

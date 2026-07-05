@@ -43,21 +43,34 @@ describe('LookaheadCacheCard', () => {
     playbackSettingsStore.setState({ lookaheadEnabled: true, lookaheadCount: 3 });
   });
 
-  it('renders the enable toggle, tracks-ready and clear button', () => {
+  it('renders the enable toggle, live cache-usage bar and clear button', () => {
     render(<LookaheadCacheCard />);
     expect(screen.getByText('Cache upcoming tracks')).toBeTruthy();
-    // Cache size is engine-managed / not user-configurable, so it isn't shown.
-    expect(screen.queryByText('Cache size')).toBeNull();
+    expect(screen.getByText('Cache used')).toBeTruthy();
+    // Usage shows space used of the fixed budget (12 MB of 512 MB).
+    expect(screen.getByText('12 MB of 512 MB')).toBeTruthy();
     expect(screen.getByText('Clear cache')).toBeTruthy();
-    // Tracks-ready shows "2 of 3" while enabled.
-    expect(screen.getByText('2 of 3')).toBeTruthy();
   });
 
-  it('turning caching off hides the count selector + tracks-ready', () => {
+  it('turning caching off hides the count selector but keeps residual usage visible', () => {
     playbackSettingsStore.setState({ lookaheadEnabled: false });
     render(<LookaheadCacheCard />);
     expect(screen.queryByText('Tracks to cache')).toBeNull();
-    expect(screen.queryByText('Tracks ready')).toBeNull();
+    // 12 MB is still cached, so usage stays visible so the user can clear it.
+    expect(screen.getByText('Cache used')).toBeTruthy();
+  });
+
+  it('hides the usage bar when caching is off and the cache is empty', () => {
+    mockTP.getLookaheadCacheStatus.mockReturnValue({
+      enabled: false,
+      currentSizeMb: 0,
+      maxSizeMb: 512,
+      tracksFullyCached: 0,
+      currentlyCaching: [],
+    });
+    playbackSettingsStore.setState({ lookaheadEnabled: false });
+    render(<LookaheadCacheCard />);
+    expect(screen.queryByText('Cache used')).toBeNull();
   });
 
   it('toggling the switch updates the store and re-applies the cache config', () => {
