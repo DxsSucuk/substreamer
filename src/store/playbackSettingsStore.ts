@@ -113,6 +113,15 @@ export const CROSSFADE_DURATIONS_MS = [1000, 2000, 3000, 4000, 5000, 6000, 8000,
 export type CrossfadeDurationMs = (typeof CROSSFADE_DURATIONS_MS)[number];
 
 /**
+ * ReplayGain loudness normalisation. Maps directly to RNQP `setReplayGainMode`:
+ * 'off' (no normalisation, default), 'track' (even loudness across a shuffled
+ * mix), 'album' (preserve an album's intentional dynamics — no track-gain
+ * fallback for untagged tracks).
+ */
+export const REPLAY_GAIN_MODES = ['off', 'track', 'album'] as const;
+export type ReplayGainModeSetting = (typeof REPLAY_GAIN_MODES)[number];
+
+/**
  * Fixed on-disk budget for the lookahead cache, in MB. Set ONCE at startup (via
  * the RNQP `configure()` initial-cache-size option) and never resized at
  * runtime — so track count is the only utilization lever and behaviour is
@@ -168,6 +177,9 @@ export interface PlaybackSettingsState {
   /** Crossfade duration in ms (only applied when `playbackMode === 'crossfade'`). */
   crossfadeDurationMs: CrossfadeDurationMs;
 
+  /** ReplayGain loudness normalisation: off / track / album. */
+  replayGainMode: ReplayGainModeSetting;
+
   setMaxBitRate: (bitRate: MaxBitRate) => void;
   setStreamFormat: (format: StreamFormat) => void;
   setEstimateContentLength: (enabled: boolean) => void;
@@ -187,6 +199,7 @@ export interface PlaybackSettingsState {
   setScrobbleTrigger: (trigger: ScrobbleTrigger) => void;
   setPlaybackMode: (mode: PlaybackModeSetting) => void;
   setCrossfadeDurationMs: (ms: CrossfadeDurationMs) => void;
+  setReplayGainMode: (mode: ReplayGainModeSetting) => void;
 }
 
 const PERSIST_KEY = 'substreamer-playback-settings';
@@ -232,6 +245,7 @@ export const playbackSettingsStore = create<PlaybackSettingsState>()(
       scrobbleTrigger: 50,
       playbackMode: 'gapless',
       crossfadeDurationMs: 5000,
+      replayGainMode: 'off',
 
       setMaxBitRate: (maxBitRate) => set({ maxBitRate }),
       setStreamFormat: (streamFormat) => set({ streamFormat: normalizeFormat(streamFormat) }),
@@ -252,6 +266,7 @@ export const playbackSettingsStore = create<PlaybackSettingsState>()(
       setScrobbleTrigger: (scrobbleTrigger) => set({ scrobbleTrigger }),
       setPlaybackMode: (playbackMode) => set({ playbackMode }),
       setCrossfadeDurationMs: (crossfadeDurationMs) => set({ crossfadeDurationMs }),
+      setReplayGainMode: (replayGainMode) => set({ replayGainMode }),
     }),
     {
       name: PERSIST_KEY,
@@ -278,6 +293,7 @@ export const playbackSettingsStore = create<PlaybackSettingsState>()(
         scrobbleTrigger: state.scrobbleTrigger,
         playbackMode: state.playbackMode,
         crossfadeDurationMs: state.crossfadeDurationMs,
+        replayGainMode: state.replayGainMode,
       }),
     }
   )

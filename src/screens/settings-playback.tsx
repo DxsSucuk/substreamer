@@ -13,12 +13,13 @@ import { LookaheadCacheCard } from '../components/settings/LookaheadCacheCard';
 import { PlaybackModeCard } from '../components/settings/PlaybackModeCard';
 import { PlayerControlsCard } from '../components/settings/PlayerControlsCard';
 import { RemoteControlsCard } from '../components/settings/RemoteControlsCard';
+import { ReplayGainCard } from '../components/settings/ReplayGainCard';
 import { SkipIntervalsCard } from '../components/settings/SkipIntervalsCard';
 import { StreamingCard } from '../components/settings/StreamingCard';
 import { StreamFormatSheet } from '../components/StreamFormatSheet';
 import { useTheme } from '../hooks/useTheme';
 import { useThemedAlert } from '../hooks/useThemedAlert';
-import { applyLookaheadCacheConfig, applyPlaybackMode, updateRemoteCapabilities } from '../services/playerService';
+import { applyLookaheadCacheConfig, applyPlaybackMode, applyReplayGain, updateRemoteCapabilities } from '../services/playerService';
 import { playbackSettingsStore } from '../store/playbackSettingsStore';
 import { settingsStyles } from '../styles/settingsStyles';
 
@@ -45,6 +46,7 @@ export function SettingsPlaybackScreen() {
   const lookaheadCount = playbackSettingsStore((s) => s.lookaheadCount);
   const playbackMode = playbackSettingsStore((s) => s.playbackMode);
   const crossfadeDurationMs = playbackSettingsStore((s) => s.crossfadeDurationMs);
+  const replayGainMode = playbackSettingsStore((s) => s.replayGainMode);
 
   const isDefault =
     maxBitRate === null &&
@@ -60,7 +62,8 @@ export function SettingsPlaybackScreen() {
     lookaheadEnabled &&
     lookaheadCount === 3 &&
     playbackMode === 'gapless' &&
-    crossfadeDurationMs === 5000;
+    crossfadeDurationMs === 5000 &&
+    replayGainMode === 'off';
 
   const handleResetDefaults = useCallback(() => {
     confirm({
@@ -84,9 +87,11 @@ export function SettingsPlaybackScreen() {
         s.setLookaheadCount(3);
         s.setPlaybackMode('gapless');
         s.setCrossfadeDurationMs(5000);
+        s.setReplayGainMode('off');
         updateRemoteCapabilities();
         void applyLookaheadCacheConfig();
         void applyPlaybackMode();
+        void applyReplayGain();
       },
     });
   }, [confirm, t]);
@@ -102,6 +107,7 @@ export function SettingsPlaybackScreen() {
           <StreamingCard />
           <DownloadingCard />
           <EqualizerCard />
+          <ReplayGainCard />
           <PlaybackModeCard />
           <LookaheadCacheCard />
           <PlayerControlsCard />

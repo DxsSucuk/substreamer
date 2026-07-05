@@ -140,6 +140,10 @@ export async function initPlayer(): Promise<void> {
   // so re-apply the persisted enabled flag + band gains.
   await applyEqualizerConfig();
 
+  // ReplayGain loudness normalisation (off / track / album) — also not restored
+  // natively across restarts, so re-apply the persisted choice.
+  await applyReplayGain();
+
   // --- Playback state → store ---
   tp.onStateChange((state) => {
     const store = playerStore.getState();
@@ -912,6 +916,14 @@ export async function applyPlaybackRate(rate: PlaybackRate): Promise<void> {
 export async function applyPitchCorrection(mode: PitchCorrection): Promise<void> {
   playbackSettingsStore.getState().setPitchCorrection(mode);
   await tp.setPitchCorrectionMode(mode);
+}
+
+/**
+ * Push the persisted ReplayGain mode (off / track / album) to the engine. RNQP
+ * doesn't restore this across restarts, so it's re-applied at boot from settings.
+ */
+export async function applyReplayGain(): Promise<void> {
+  await tp.setReplayGainMode(playbackSettingsStore.getState().replayGainMode);
 }
 
 /**

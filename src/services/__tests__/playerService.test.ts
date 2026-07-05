@@ -136,6 +136,7 @@ import {
   updateRemoteCapabilities,
   applyPlaybackMode,
   applyPitchCorrection,
+  applyReplayGain,
   applyEqualizerConfig,
   setEqualizerEnabled,
   applyEqualizerPreset,
@@ -777,6 +778,24 @@ describe('applyPitchCorrection', () => {
     await applyPitchCorrection('voice');
     expect(playbackSettingsStore.getState().pitchCorrection).toBe('voice');
     expect(mockTP.setPitchCorrectionMode).toHaveBeenCalledWith('voice');
+  });
+});
+
+describe('applyReplayGain', () => {
+  afterEach(() => playbackSettingsStore.setState({ replayGainMode: 'off' } as any));
+
+  it('pushes the persisted mode to the engine', async () => {
+    playbackSettingsStore.setState({ replayGainMode: 'album' } as any);
+    mockTP.setReplayGainMode.mockClear();
+    await applyReplayGain();
+    expect(mockTP.setReplayGainMode).toHaveBeenCalledWith('album');
+  });
+
+  it('pushes off when disabled', async () => {
+    playbackSettingsStore.setState({ replayGainMode: 'off' } as any);
+    mockTP.setReplayGainMode.mockClear();
+    await applyReplayGain();
+    expect(mockTP.setReplayGainMode).toHaveBeenCalledWith('off');
   });
 });
 
