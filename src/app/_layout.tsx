@@ -75,6 +75,7 @@ import { connectivityStore } from '../store/connectivityStore';
 import { deferredMusicCacheInit, getMusicCacheStats, initMusicCache } from '../services/musicCacheService';
 import { checkStorageLimit } from '../services/storageService';
 import { initPlayer, removeNonDownloadedTracks, restorePersistedQueueAfterBoot } from '../services/playerService';
+import { refreshCarSnapshot } from '../services/carService';
 import { flushPersistedQueue } from '../services/queuePersistenceService';
 import { initNetInfoConfig } from '../services/netInfoConfig';
 import { startMonitoring, stopMonitoring } from '../services/connectivityService';
@@ -269,6 +270,12 @@ async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
   // Thereafter it's kept current by optimistic in-memory patches from song-index
   // writes — no full rebuild on every album-detail sync.
   await stage('initSongLibrary', () => { initSongLibrary(); });
+  if (getCancelled()) return;
+
+  // Re-push the CarPlay / Android Auto browse snapshot now the library stores
+  // are hydrated — a cold car wake that rendered an empty skeleton self-corrects.
+  // No-op unless a car is currently connected.
+  idleStage('refreshCarSnapshot', () => { refreshCarSnapshot(); });
   if (getCancelled()) return;
 
   // Recover any image-download-queue rows left stalled by a previous

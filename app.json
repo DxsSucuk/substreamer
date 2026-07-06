@@ -23,7 +23,11 @@
           "NSAllowsArbitraryLoads": true
         },
         "ITSAppUsesNonExemptEncryption": false,
-        "NSLocationWhenInUseUsageDescription": "Location access is needed to detect your WiFi network name for automatic offline mode switching."
+        "NSLocationWhenInUseUsageDescription": "Location access is needed to detect your WiFi network name for automatic offline mode switching.",
+        "INAlternativeAppNames": [
+          { "INAlternativeAppName": "Substreamer", "INAlternativeAppNamePronunciationHint": "Sub Streamer" },
+          { "INAlternativeAppName": "Sub Streamer" }
+        ]
       },
       "entitlements": {
         "com.apple.developer.networking.wifi-info": true,
@@ -99,6 +103,7 @@
       ],
       "./plugins/location-feature-optional",
       "./plugins/strip-push-entitlement",
+      "./plugins/with-android-app-actions",
       "expo-notifications",
       "expo-sharing",
       "expo-localization",

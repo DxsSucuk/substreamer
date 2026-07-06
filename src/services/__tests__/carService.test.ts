@@ -1,0 +1,133 @@
+jest.mock('../../store/persistence/kvStorage', () =>
+  require('../../store/persistence/__mocks__/kvStorage'),
+);
+
+import { __test } from '../carService';
+import {
+  sectionId,
+  listId,
+  albumId,
+  azLetterId,
+  favTrackId,
+} from '../carService.helpers';
+import { albumLibraryStore } from '../../store/albumLibraryStore';
+import { albumListsStore } from '../../store/albumListsStore';
+import { favoritesStore } from '../../store/favoritesStore';
+import { playlistLibraryStore } from '../../store/playlistLibraryStore';
+import { albumDetailStore } from '../../store/albumDetailStore';
+import { offlineModeStore } from '../../store/offlineModeStore';
+import { musicCacheStore } from '../../store/musicCacheStore';
+
+const album = (id: string, name: string) => ({ id, name, artist: 'Artist' } as any);
+const song = (id: string) => ({ id, title: `Song ${id}`, artist: 'Artist', albumId: 'al-1' } as any);
+const playlist = (id: string, name: string) => ({ id, name, songCount: 3 } as any);
+
+beforeEach(() => {
+  offlineModeStore.setState({ offlineMode: false } as any);
+  musicCacheStore.setState({ cachedItems: {} } as any);
+  albumLibraryStore.setState({
+    albums: [album('al-a', 'Abbey Road'), album('al-z', 'Zooropa')],
+  } as any);
+  albumListsStore.setState({
+    recentlyAdded: [album('al-a', 'Abbey Road')],
+    recentlyPlayed: [],
+    frequentlyPlayed: [],
+    randomSelection: [album('al-z', 'Zooropa')],
+  } as any);
+  favoritesStore.setState({
+    songs: [song('s1'), song('s2'), song('s3')],
+    albums: [],
+    artists: [],
+  } as any);
+  playlistLibraryStore.setState({ playlists: [playlist('p1', 'Roadtrip')] } as any);
+});
+
+describe('buildSnapshot', () => {
+  it('builds exactly the 4 sections in order', () => {
+    const snap = __test.buildSnapshot();
+    expect(snap.rootId).toBe('root');
+    expect(snap.sections.map((s) => s.id)).toEqual([
+      sectionId('home'),
+      sectionId('favorites'),
+      sectionId('albums'),
+      sectionId('playlists'),
+    ]);
+  });
+
+  it('Home lists non-empty curated rows; Favorites are flat playable songs', () => {
+    const snap = __test.buildSnapshot();
+    const home = snap.sections.find((s) => s.id === sectionId('home'))!;
+    // recentlyAdded + randomSelection have items; recentlyPlayed/frequently don't.
+    expect(home.items.map((i) => i.id)).toEqual([
+      listId('recentlyAdded'),
+      listId('randomSelection'),
+    ]);
+    expect(home.items.every((i) => i.hasChildren && !i.playable)).toBe(true);
+
+    const favs = snap.sections.find((s) => s.id === sectionId('favorites'))!;
+    expect(favs.items.map((i) => i.id)).toEqual([favTrackId(0), favTrackId(1), favTrackId(2)]);
+    expect(favs.items.every((i) => i.playable && !i.hasChildren)).toBe(true);
+  });
+
+  it('Albums section is A–Z letter buckets (not flat albums)', () => {
+    const snap = __test.buildSnapshot();
+    const albums = snap.sections.find((s) => s.id === sectionId('albums'))!;
+    expect(albums.items.map((i) => i.title)).toEqual(['A', 'Z']);
+    expect(albums.items.map((i) => i.id)).toEqual([azLetterId('A'), azLetterId('Z')]);
+  });
+
+  it('Playlists shown directly as drill rows', () => {
+    const snap = __test.buildSnapshot();
+    const pls = snap.sections.find((s) => s.id === sectionId('playlists'))!;
+    expect(pls.items.map((i) => i.title)).toEqual(['Roadtrip']);
+    expect(pls.items[0].hasChildren).toBe(true);
+  });
+});
+
+describe('resolveBrowseChildren', () => {
+  it('list:* → album drill rows', async () => {
+    const rows = await __test.resolveBrowseChildren(listId('recentlyAdded'));
+    expect(rows.map((r) => r.id)).toEqual([albumId('al-a')]);
+    expect(rows[0].hasChildren).toBe(true);
+  });
+
+  it('azLetter → albums under that letter as drill rows', async () => {
+    const rows = await __test.resolveBrowseChildren(azLetterId('A'));
+    expect(rows.map((r) => r.id)).toEqual([albumId('al-a')]);
+  });
+
+  it('album:<id> → its tracks as playable rows (via detail store)', async () => {
+    albumDetailStore.setState({
+      fetchAlbum: jest.fn(async () => ({ song: [song('s1'), song('s2')] })),
+    } as any);
+    const rows = await __test.resolveBrowseChildren(albumId('al-a'));
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.playable && !r.hasChildren)).toBe(true);
+    expect(rows[0].id).toBe('track:album:al-a:0');
+  });
+});
+
+describe('resolvePlayback', () => {
+  it('track:fav:<i> → the full favorites queue at that index', async () => {
+    const r = await __test.resolvePlayback(favTrackId(1));
+    expect(r.queue.map((c) => c.id)).toEqual(['s1', 's2', 's3']);
+    expect(r.startIndex).toBe(1);
+    expect(r.sourcePlaylistId).toBeNull();
+  });
+
+  it('track:playlist:<id>:<i> → full playlist queue + sourcePlaylistId', async () => {
+    const { playlistDetailStore } = require('../../store/playlistDetailStore');
+    playlistDetailStore.setState({
+      fetchPlaylist: jest.fn(async () => ({ entry: [song('s1'), song('s2'), song('s3')] })),
+    });
+    const r = await __test.resolvePlayback('track:playlist:p1:2');
+    expect(r.queue).toHaveLength(3);
+    expect(r.startIndex).toBe(2);
+    expect(r.sourcePlaylistId).toBe('p1');
+  });
+
+  it('unknown id → empty queue', async () => {
+    const r = await __test.resolvePlayback('bogus');
+    expect(r.queue).toEqual([]);
+  });
+});

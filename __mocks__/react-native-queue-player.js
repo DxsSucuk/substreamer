@@ -153,10 +153,30 @@ const equalizer = {
   onEnabledChange: jest.fn((cb) => { cb(eqEnabled); return () => {}; }),
 };
 
+// --- Automotive (CarPlay / Android Auto) ---
+const SectionIcon = {
+  Home: 'home',
+  Library: 'library',
+  Playlists: 'playlists',
+  Favourites: 'favourites',
+  Albums: 'albums',
+  Artists: 'artists',
+  Songs: 'songs',
+  Genres: 'genres',
+  RecentlyPlayed: 'recently-played',
+  Radio: 'radio',
+  Search: 'search',
+  Downloaded: 'downloaded',
+  Podcasts: 'podcasts',
+};
+
 module.exports = {
   __esModule: true,
   getTrackPlayer: jest.fn(() => trackPlayer),
   getEqualizer: jest.fn(() => equalizer),
+  SectionIcon,
+  registerPlaybackService: jest.fn(),
+  unregisterPlaybackService: jest.fn(),
   EQ_BAND_FREQUENCIES_HZ,
   EQ_BAND_COUNT,
   EQ_GAIN_MIN_DB,

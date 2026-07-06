@@ -16,6 +16,7 @@
 import { getTrackPlayer } from 'react-native-queue-player';
 
 import { errMessage } from '../utils/errorMessage';
+import { installCarService } from './carService';
 import { LOOKAHEAD_MAX_CACHE_MB } from '../store/playbackSettingsStore';
 
 // The lookahead-cache disk budget AND eviction policy are fixed here at
@@ -37,6 +38,14 @@ void getTrackPlayer()
     // natively. Native re-emits immediately on foreground so the UI resumes live.
     progressUpdateIntervalMs: 500,
     backgroundProgressUpdateIntervalMs: 10000,
+  })
+  .then(() => {
+    // Register the CarPlay / Android Auto browse service AFTER configure() has
+    // bound the native service — registering earlier lands the callbacks on a
+    // null binder and silently drops the snapshot. installCarService is
+    // idempotent; this covers the cold car / Siri / Assistant wake that runs
+    // this bundle before any screen (or login) mounts.
+    installCarService();
   })
   .catch((e) => {
     // eslint-disable-next-line no-console
