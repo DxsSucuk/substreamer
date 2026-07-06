@@ -1,5 +1,27 @@
 # Changelog
 
+## [8.0.80] - 2026-07-06
+
+- feat(car): CarPlay + Android Auto support
+- refactor(home): extract album-list composition into homeSectionsService
+- adjustment for cache config to app start
+- feat(settings): live cache-usage bar in the playback cache card
+- feat(player): ReplayGain loudness normalisation setting
+- style(player): unify playback-source badge icons
+- refactor(settings): tidy Sound & Playback layout and copy
+- feat(player): graphical equalizer
+- feat(player): enable pitch correction at non-1x speed
+- feat(player): gapless / crossfade playback mode setting
+- feat(scrobble): configurable milestone for the playback report
+- feat(rnqp): lookahead cache + source badge, buffered fix, background-CPU throttling
+- chore(rnqp): bump react-native-nitro-modules to 0.36.1
+- fix(rnqp): dedupe React via Metro resolver (fixes route picker crash)
+- feat(rnqp): audio route picker (Cast + AirPlay/Bluetooth)
+- chore(rnqp): delete vendored react-native-track-player fork (E4)
+- chore(rnqp): cutover native config — remove RNTP, enable RNQP plugin
+- feat(rnqp): migrate player core from RNTP fork to react-native-queue-player
+- chore(rnqp): add react-native-queue-player + nitro-modules deps
+- ci: update coverage badge [skip ci]
 ## [8.0.79] - 2026-07-02
 
 - fix(player): keep hero gradient colour across player tab switches
