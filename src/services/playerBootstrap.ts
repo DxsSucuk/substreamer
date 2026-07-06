@@ -18,15 +18,20 @@ import { getTrackPlayer } from 'react-native-queue-player';
 import { errMessage } from '../utils/errorMessage';
 import { LOOKAHEAD_MAX_CACHE_MB } from '../store/playbackSettingsStore';
 
-// The lookahead-cache disk budget is fixed here at configure() so Android's
-// Media3 SimpleCache is built at the right size (it can't resize live). Enable +
-// track count are then applied live via playerService.applyLookaheadCacheConfig().
+// The lookahead-cache disk budget AND eviction policy are fixed here at
+// configure() — Android's Media3 SimpleCache is built at the right size (it
+// can't resize live), and eviction is a configure-time property (changing it
+// clears + rebuilds the cache). Enable + track count are then applied live via
+// playerService.applyLookaheadCacheConfig().
 void getTrackPlayer()
   .configure({
     audioContentType: 'music',
     userAgent: 'substreamer8',
     autoRetries: 3,
     lookaheadCacheMaxSizeMb: LOOKAHEAD_MAX_CACHE_MB,
+    // LRU keeps the most-recently-played tracks (best for a client where users
+    // re-listen). RNQP's default is already 'lru'; pinned here for clarity.
+    lookaheadCacheEvictionPolicy: 'lru',
     // Progress fan-out: 500ms foreground; near-paused (10s) while backgrounded so
     // the off-screen progress firehose (and its re-render loop) is throttled
     // natively. Native re-emits immediately on foreground so the UI resumes live.

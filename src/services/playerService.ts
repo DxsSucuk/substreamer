@@ -580,16 +580,16 @@ function refreshTrackSource(): void {
 
 /**
  * Apply the lookahead-cache config from settings: enable + track count (both
- * runtime-settable, live on both platforms). The disk budget is fixed at
- * `configure()` (`lookaheadCacheMaxSizeMb`), so it isn't part of this call.
- * Called at startup and whenever the user changes the cache settings.
+ * runtime-settable, live on both platforms). The disk budget and eviction
+ * policy are fixed at `configure()` (`lookaheadCacheMaxSizeMb` /
+ * `lookaheadCacheEvictionPolicy`), so they aren't part of this call. Called at
+ * startup and whenever the user changes the cache settings.
  */
 export async function applyLookaheadCacheConfig(): Promise<void> {
   const { lookaheadEnabled, lookaheadCount } = playbackSettingsStore.getState();
   await tp.setLookaheadCache({
     enabled: lookaheadEnabled,
     lookaheadCount,
-    evictionPolicy: 'lru',
   });
 }
 
