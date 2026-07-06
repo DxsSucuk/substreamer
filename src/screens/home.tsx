@@ -2,7 +2,7 @@ import Ionicons from "@react-native-vector-icons/ionicons/static";
 import { useIsFocused } from "expo-router/react-navigation";
 import { FlashList } from '@shopify/flash-list';
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   Pressable,
   ScrollView,
@@ -30,6 +30,7 @@ import WaveformLogo from '../components/WaveformLogo';
 import { computeStreaks, dateKey } from '../hooks/usePlaybackAnalytics';
 import { useTheme } from '../hooks/useTheme';
 import type { AlbumID3, Playlist } from '../services/subsonicService';
+import { composeHomeAlbumSections } from '../services/homeSectionsService';
 import { albumLibraryStore } from '../store/albumLibraryStore';
 import {
   albumListsStore,
@@ -41,7 +42,6 @@ import { pendingScrobbleStore } from '../store/pendingScrobbleStore';
 import { filterBarStore } from '../store/filterBarStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import { musicCacheStore } from '../store/musicCacheStore';
-import { albumPassesDownloadedFilter } from '../store/persistence/cachedItemHelpers';
 import { LIST_LENGTH_DISPLAY_CAP } from '../store/layoutPreferencesStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { playlistLibraryStore } from '../store/playlistLibraryStore';
@@ -307,13 +307,6 @@ function PlaylistSection({
   );
 }
 
-const SECTION_ORDER: AlbumListType[] = [
-  'recentlyAdded',
-  'recentlyPlayed',
-  'frequentlyPlayed',
-  'randomSelection',
-];
-
 function AnimatedStatIcon({
   value,
   iconBgColor,
@@ -395,42 +388,40 @@ export function HomeScreen() {
   const allLibraryAlbums = albumLibraryStore((s) => s.albums);
   const allPlaylists = playlistLibraryStore((s) => s.playlists);
 
-  const allSections: Record<AlbumListType, AlbumID3[]> = useMemo(
-    () => ({
+  // Which album lists appear (order + downloaded/favorites filtering + offline
+  // drop-Random + Downloaded Albums) is owned by the shared homeSectionsService
+  // selector, so the Home screen and the CarPlay/Android Auto browse tree agree.
+  const albumSections = useMemo(
+    () =>
+      composeHomeAlbumSections({
+        recentlyAdded,
+        recentlyPlayed,
+        frequentlyPlayed,
+        randomSelection,
+        allLibraryAlbums,
+        offlineMode,
+        downloadedOnly,
+        favoritesOnly,
+        starredAlbums,
+        cachedItems,
+        includePartial,
+      }),
+    [
       recentlyAdded,
       recentlyPlayed,
       frequentlyPlayed,
       randomSelection,
-    }),
-    [recentlyAdded, recentlyPlayed, frequentlyPlayed, randomSelection],
+      allLibraryAlbums,
+      offlineMode,
+      downloadedOnly,
+      favoritesOnly,
+      starredAlbums,
+      cachedItems,
+      includePartial,
+    ],
   );
 
-  const filteredSections = useMemo(() => {
-    if (!downloadedOnly && !favoritesOnly) return allSections;
-
-    const starredIds = favoritesOnly
-      ? new Set(starredAlbums.map((a) => a.id))
-      : null;
-
-    const result: Record<string, AlbumID3[]> = {};
-    for (const key of SECTION_ORDER) {
-      result[key] = allSections[key].filter((album) => {
-        if (downloadedOnly && !albumPassesDownloadedFilter(album, cachedItems, includePartial)) {
-          return false;
-        }
-        if (starredIds && !starredIds.has(album.id)) return false;
-        return true;
-      });
-    }
-    return result as Record<AlbumListType, AlbumID3[]>;
-  }, [allSections, downloadedOnly, favoritesOnly, cachedItems, starredAlbums, includePartial]);
-
   const hasAnyFilters = downloadedOnly || favoritesOnly;
-
-  const downloadedAlbums = useMemo(() => {
-    if (!downloadedOnly) return [];
-    return allLibraryAlbums.filter((a) => albumPassesDownloadedFilter(a, cachedItems, includePartial));
-  }, [downloadedOnly, allLibraryAlbums, cachedItems, includePartial]);
 
   const downloadedPlaylists = useMemo(() => {
     if (!downloadedOnly) return [];
@@ -440,9 +431,14 @@ export function HomeScreen() {
 
   const offlineEmpty = useMemo(() => {
     if (!downloadedOnly) return false;
-    if (downloadedAlbums.length > 0 || downloadedPlaylists.length > 0) return false;
-    return SECTION_ORDER.every((key) => filteredSections[key].length === 0);
-  }, [downloadedOnly, downloadedAlbums, downloadedPlaylists, filteredSections]);
+    const hasDownloadedAlbums = albumSections.some(
+      (s) => s.type === 'downloadedAlbums' && s.albums.length > 0,
+    );
+    if (hasDownloadedAlbums || downloadedPlaylists.length > 0) return false;
+    return albumSections
+      .filter((s) => s.type !== 'downloadedAlbums')
+      .every((s) => s.albums.length === 0);
+  }, [downloadedOnly, albumSections, downloadedPlaylists]);
 
   return (
     <View style={styles.container}>
@@ -566,21 +562,23 @@ export function HomeScreen() {
           </View>
           <GenreChipSection genreCounts={genreCounts} colors={colors} />
           <ResumeBookmarksSection />
-          {downloadedOnly && (
-            <>
-              <DownloadedAlbumSection albums={downloadedAlbums} colors={colors} />
-              <PlaylistSection playlists={downloadedPlaylists} colors={colors} />
-            </>
-          )}
-          {SECTION_ORDER.map((key) => {
-            if (offlineMode && key === 'randomSelection') return null;
-            const sectionAlbums = filteredSections[key];
-            if (hasAnyFilters && sectionAlbums.length === 0) return null;
+          {albumSections.map((section) => {
+            if (section.type === 'downloadedAlbums') {
+              // Downloaded Albums renders its own placeholder when empty, and is
+              // immediately followed by the downloaded-playlists section.
+              return (
+                <Fragment key={section.type}>
+                  <DownloadedAlbumSection albums={section.albums} colors={colors} />
+                  <PlaylistSection playlists={downloadedPlaylists} colors={colors} />
+                </Fragment>
+              );
+            }
+            if (hasAnyFilters && section.albums.length === 0) return null;
             return (
               <AlbumSection
-                key={key}
-                listType={key}
-                albums={sectionAlbums}
+                key={section.type}
+                listType={section.type}
+                albums={section.albums}
                 colors={colors}
                 offlineMode={offlineMode}
               />
