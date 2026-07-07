@@ -11,7 +11,7 @@ if (expoModulesCorePlugin.exists()) {
 }
 
 android {
-  namespace "expo.modules.asyncfs"
+  namespace = "expo.modules.asyncfs"
 
   compileSdk rootProject.ext.has("compileSdkVersion") ? rootProject.ext.get("compileSdkVersion") : 35
 

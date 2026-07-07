@@ -11,7 +11,7 @@ if (expoModulesCorePlugin.exists()) {
 }
 
 android {
-  namespace "expo.modules.movetoback"
+  namespace = "expo.modules.movetoback"
 
   compileSdk rootProject.ext.has("compileSdkVersion") ? rootProject.ext.get("compileSdkVersion") : 35
 
