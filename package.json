@@ -82,12 +82,12 @@
     "react-native-gesture-handler": "~2.32.0",
     "react-native-nitro-modules": "^0.36.1",
     "react-native-queue-player": "^1.0.0",
-    "react-native-reanimated": "4.5.0",
+    "react-native-reanimated": "4.5.1",
     "react-native-reorderable-list": "^0.18.0",
     "react-native-safe-area-context": "^5.8.0",
     "react-native-screens": "^4.24.0",
     "react-native-svg": "^15.15.5",
-    "react-native-worklets": "0.10.0",
+    "react-native-worklets": "0.10.2",
     "subsonic-api": "file:./modules/subsonic-api",
     "zustand": "^5.0.14"
   },
@@ -111,7 +111,9 @@
         "@shopify/flash-list",
         "react-native-bootsplash",
         "react-native-safe-area-context",
-        "react-native-svg"
+        "react-native-svg",
+        "react-native-reanimated",
+        "react-native-worklets"
       ]
     },
     "doctor": {
