@@ -1,5 +1,11 @@
 # Changelog
 
+## [8.0.81] - 2026-07-07
+
+- chore: bump reanimated and worklets (resolves worklets specific crash on android)
+- chore: deprecation warnings for local expo modules
+- chore: expo sdk57 update
+- chore: expo-doctor dep bumps
 ## [8.0.80] - 2026-07-06
 
 - feat(car): CarPlay + Android Auto support
