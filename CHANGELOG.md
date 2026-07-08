@@ -1,5 +1,9 @@
 # Changelog
 
+## [8.0.82] - 2026-07-08
+
+- chore: bump expo deps
+- chore: bump react-native-queue-player to 1.0.2 (ktor R8 proguard fix)
 ## [8.0.81] - 2026-07-07
 
 - chore: bump reanimated and worklets (resolves worklets specific crash on android)
