@@ -156,13 +156,13 @@ export function albumsForLetter(albums: ReadonlyArray<AzItem>, letter: string): 
  * exceeds the per-node cap — second-char sub-bucket rows (`az:albums:<L>:<lo>-<hi>`)
  * so every child stays under the cap.
  */
-export function resolveAlbumLetterNode(
+export async function resolveAlbumLetterNode(
   albumsInLetter: ReadonlyArray<AzItem>,
   letter: string,
-  toAlbumRow: (a: AzItem) => BrowseItem,
-): BrowseItem[] {
+  toAlbumRow: (a: AzItem) => Promise<BrowseItem>,
+): Promise<BrowseItem[]> {
   if (albumsInLetter.length <= CAR_MAX_ITEMS_PER_NODE) {
-    return albumsInLetter.map(toAlbumRow);
+    return Promise.all(albumsInLetter.map(toAlbumRow));
   }
   // Pack consecutive second-char groups into non-overlapping buckets <= cap.
   const counts = new Map<string, number>();

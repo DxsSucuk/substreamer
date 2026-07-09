@@ -40,12 +40,11 @@ import {
 
 import WaveformLogo from './WaveformLogo';
 import {
-  buildRemoteImageUrl,
   ensureCached,
   isRemoteFailed,
   reportBadCache,
   reportBadRemote,
-  resolveCachedImageUri,
+  resolveDisplayImage,
   subscribeImageCacheUpdate,
 } from '../services/imageCacheService';
 import { logImageCache } from '../services/imageCacheLogger';
@@ -132,10 +131,12 @@ export const CachedImage = memo(function CachedImage({
   // cover-art resolution below.
   const [resolveToken, bumpResolve] = useReducer((x: number) => x + 1, 0);
 
-  // Locally-resolved cover URI, filled asynchronously from the DB (the single
-  // source of truth) — NO synchronous FS/SQLite on render. Null while resolving
-  // or when not cached; the REMOTE/PLACEHOLDER branches cover that window.
-  const [cachedUri, setCachedUri] = useState<string | null>(null);
+  // Resolved display target, filled asynchronously via the shared resolver
+  // (`resolveDisplayImage` — the single source of truth also used by the CarPlay
+  // browse service): a `file://` cache hit (`isRemote:false`) or the server URL
+  // (`isRemote:true`), or null while resolving / placeholder. NO synchronous
+  // FS/SQLite on render.
+  const [resolved, setResolved] = useState<{ uri: string; isRemote: boolean } | null>(null);
 
   // Per-mount flag: "I already tried the local URI and it failed." Reset on a
   // cache-update or an id/size change (fresh attempt).
@@ -149,48 +150,48 @@ export const CachedImage = memo(function CachedImage({
     // Reset synchronously (React's "adjust state during render" pattern) so a
     // recycled FlashList cell never shows the previous cover while the new one
     // resolves.
-    setCachedUri(null);
+    setResolved(null);
   }
 
   const remoteFailed = coverArtId ? isRemoteFailed(coverArtId) : false;
   const offline = offlineModeStore((s) => s.offlineMode);
 
-  // Resolve the local cover URI asynchronously (DB-authoritative). On a miss,
-  // ask the service to cache it; the subscription below re-resolves when it
-  // lands. `sourceFallback` exposes the 600px source while smaller variants
-  // are still resizing — better than a placeholder.
+  // Resolve the display target asynchronously via the shared resolver (file://
+  // cache first, then the server URL — gated on offline + the remote-failed
+  // set). On a genuine cache miss, ask the service to cache it; the subscription
+  // below re-resolves when it lands. `offline` is a dep so an offline flip
+  // re-resolves; `resolveToken` covers the remote-failed flip + onError retry.
   useEffect(() => {
     if (!coverArtId) {
-      setCachedUri(null);
+      setResolved(null);
       return;
     }
     let cancelled = false;
-    resolveCachedImageUri(coverArtId, size, { sourceFallback: true })
-      .then((uri) => {
+    resolveDisplayImage(coverArtId, size, {
+      offline,
+      skipCache: localErroredRef.current,
+    })
+      .then((r) => {
         if (cancelled) return;
-        setCachedUri(uri);
-        if (!uri) ensureCached(coverArtId);
+        setResolved(r);
+        // Cache miss (no local file) → fetch it; NOT when we deliberately
+        // skipped a bad cached file (it exists; reportBadCache handled it).
+        if (!localErroredRef.current && (r == null || r.isRemote)) {
+          ensureCached(coverArtId);
+        }
       })
       .catch(() => {
-        if (!cancelled) setCachedUri(null);
+        if (!cancelled) setResolved(null);
       });
     return () => {
       cancelled = true;
     };
-  }, [coverArtId, size, resolveToken]);
+  }, [coverArtId, size, resolveToken, offline]);
 
-  // Pick what to render: LOCAL > REMOTE > PLACEHOLDER.
-  let renderUri: string | undefined;
-  let isRemote = false;
-  if (cachedUri && !localErroredRef.current) {
-    renderUri = cachedUri;
-  } else if (coverArtId && !offline && !remoteFailed) {
-    const url = buildRemoteImageUrl(coverArtId, size);
-    if (url) {
-      renderUri = url;
-      isRemote = true;
-    }
-  }
+  // What to render: the shared resolver already picked LOCAL vs REMOTE (gated on
+  // offline + the remote-failed set); fall back to the bundled placeholder URI.
+  let renderUri: string | undefined = resolved?.uri;
+  const isRemote = resolved?.isRemote ?? false;
   if (!renderUri && fallbackUri) renderUri = fallbackUri;
 
   // Subscribe — fires on file landed OR remote-failed flag flipped.
@@ -205,15 +206,15 @@ export const CachedImage = memo(function CachedImage({
   // Error handler — three branches, no retry tower.
   const onError = useCallback(() => {
     if (!coverArtId) return;
-    const hadCached = cachedUri != null && !localErroredRef.current;
+    const hadCached = resolved != null && !resolved.isRemote; // was showing a file:// cache hit
     if (hadCached) {
       localErroredRef.current = true;
       reportBadCache(coverArtId, size);
-    } else if (isRemote) {
+    } else if (resolved?.isRemote) {
       void reportBadRemote(coverArtId);
     }
     bumpResolve();
-  }, [coverArtId, size, cachedUri, isRemote]);
+  }, [coverArtId, size, resolved]);
 
   // Layout measurement for placeholder logo sizing.
   const [layoutSize, setLayoutSize] = useState<{ w: number; h: number } | null>(null);
@@ -239,7 +240,7 @@ export const CachedImage = memo(function CachedImage({
       }
       return;
     }
-    const where = cachedUri && !localErroredRef.current
+    const where = resolved && !resolved.isRemote
       ? 'local'
       : isRemote
         ? 'remote'
@@ -247,7 +248,7 @@ export const CachedImage = memo(function CachedImage({
     logImageCache(
       `CachedImage state id=${coverArtId} size=${size} ${where} remoteFailed=${remoteFailed}`,
     );
-  }, [coverArtId, size, cachedUri, isRemote, remoteFailed, fallbackUri]);
+  }, [coverArtId, size, resolved, isRemote, remoteFailed, fallbackUri]);
 
   const flatStyle = StyleSheet.flatten(style) as (ImageStyle & ViewStyle) | undefined;
   const logoSize = computeLogoSize(

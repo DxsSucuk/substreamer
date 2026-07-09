@@ -109,23 +109,23 @@ describe('albumsForLetter', () => {
 });
 
 describe('resolveAlbumLetterNode', () => {
-  const toAlbumRow = (a: AzItem): BrowseItem => ({
+  const toAlbumRow = async (a: AzItem): Promise<BrowseItem> => ({
     id: albumId(a.id),
     title: a.title,
     playable: false,
     hasChildren: true,
   });
 
-  it('returns album rows directly when under the cap', () => {
+  it('returns album rows directly when under the cap', async () => {
     const albums: AzItem[] = [
       { id: '1', title: 'Apple' },
       { id: '2', title: 'Abbey' },
     ];
-    const rows = resolveAlbumLetterNode(albumsForLetter(albums, 'A'), 'A', toAlbumRow);
+    const rows = await resolveAlbumLetterNode(albumsForLetter(albums, 'A'), 'A', toAlbumRow);
     expect(rows.map((r) => r.id)).toEqual([albumId('2'), albumId('1')]);
   });
 
-  it('sub-buckets a fat letter so every child stays under the cap', () => {
+  it('sub-buckets a fat letter so every child stays under the cap', async () => {
     // 600 "S.." albums with varied second chars → over the 500 cap.
     const alpha = 'abcdefghijklmnopqrstuvwxyz';
     const albums: AzItem[] = Array.from({ length: 600 }, (_, i) => ({
@@ -133,7 +133,7 @@ describe('resolveAlbumLetterNode', () => {
       title: `S${alpha[i % 26]}${i} Sessions`,
     }));
     const inLetter = albumsForLetter(albums, 'S');
-    const rows = resolveAlbumLetterNode(inLetter, 'S', toAlbumRow);
+    const rows = await resolveAlbumLetterNode(inLetter, 'S', toAlbumRow);
 
     // All rows are sub-buckets (not album leaves), each drillable.
     expect(rows.length).toBeGreaterThan(1);

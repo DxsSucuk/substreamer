@@ -109,6 +109,7 @@
       "./plugins/location-feature-optional",
       "./plugins/strip-push-entitlement",
       "./plugins/with-android-app-actions",
+      "./plugins/with-carplay-appearance-fix",
       "expo-notifications",
       "expo-sharing",
       "expo-localization",

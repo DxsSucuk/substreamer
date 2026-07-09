@@ -65,6 +65,7 @@ const trackPlayer = {
   getCanSkipNext: jest.fn(() => false),
   getCanSkipPrevious: jest.fn(() => false),
   getSkipCapability: jest.fn(() => ({ canSkipNext: false, canSkipPrevious: false })),
+  isCarConnected: jest.fn(() => true),
   setBrowseSnapshot: jest.fn(),
   donateVoiceVocabulary: jest.fn(),
   setLookaheadCache: jest.fn(() => Promise.resolve()),

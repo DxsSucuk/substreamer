@@ -116,6 +116,7 @@ import { addCompletedScrobble, sendNowPlaying } from '../scrobbleService';
 import { getCoverArtUrl, getStreamUrl, type Child } from '../subsonicService';
 import {
   initPlayer,
+  restorePersistedQueueAfterBoot,
   playTrack,
   togglePlayPause,
   skipToNext,
@@ -229,6 +230,78 @@ describe('initPlayer', () => {
   it('registered the RNQP player + emitter used by these tests', () => {
     expect(typeof mockTP.setQueue).toBe('function');
     expect(typeof emit).toBe('function');
+  });
+});
+
+describe('restorePersistedQueueAfterBoot — live car-session adoption', () => {
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+  it('adopts a live (playing) car session: no engine re-drive, ignores the stale persisted queue', async () => {
+    // A car/Siri browse tap started playback THIS process — playTrack sets currentChildQueue.
+    const carQueue = [makeChild('c1'), makeChild('c2')];
+    await playTrack(carQueue[0], carQueue);
+    mockTP.setQueue.mockClear();
+    mockTP.play.mockClear();
+    mockTP.seekTo.mockClear();
+    mockSetCurrentTrack.mockClear();
+
+    // Engine reports a live playing session; a STALE queue sits on disk.
+    mockTP.getQueue.mockReturnValue([{ id: 'c1' }, { id: 'c2' }]);
+    mockTP.getState.mockReturnValue('playing');
+    mockTP.getCurrentTrackIndex.mockReturnValue(0);
+    mockGetPersistedQueue.mockReturnValue({ queue: [makeChild('OLD')], currentTrackIndex: 0 });
+
+    restorePersistedQueueAfterBoot();
+
+    // Did NOT re-drive the engine (no restart); adopted the LIVE track, not 'OLD'.
+    expect(mockTP.setQueue).not.toHaveBeenCalled();
+    expect(mockTP.play).not.toHaveBeenCalled();
+    expect(mockTP.seekTo).not.toHaveBeenCalled();
+    expect(mockSetCurrentTrack).toHaveBeenCalledWith(expect.objectContaining({ id: 'c1' }), 0);
+  });
+
+  it('adopts a PAUSED car session without restarting', async () => {
+    const carQueue = [makeChild('c1')];
+    await playTrack(carQueue[0], carQueue);
+    mockTP.setQueue.mockClear();
+    mockTP.play.mockClear();
+
+    mockTP.getQueue.mockReturnValue([{ id: 'c1' }]);
+    mockTP.getState.mockReturnValue('paused');
+    mockTP.getCurrentTrackIndex.mockReturnValue(0);
+
+    restorePersistedQueueAfterBoot();
+
+    expect(mockTP.setQueue).not.toHaveBeenCalled();
+    expect(mockTP.play).not.toHaveBeenCalled();
+  });
+
+  it('falls through to the normal restore when the engine is empty', async () => {
+    mockTP.getQueue.mockReturnValue([]);
+    mockTP.getState.mockReturnValue('none');
+    mockTP.getCurrentTrackIndex.mockReturnValue(-1);
+    mockGetPersistedQueue.mockReturnValue({
+      queue: [makeChild('p1'), makeChild('p2')],
+      currentTrackIndex: 1,
+    });
+
+    restorePersistedQueueAfterBoot();
+    await flush();
+
+    // restorePersistedQueue() seeded the store from the persisted queue (index 1).
+    expect(mockSetCurrentTrack).toHaveBeenCalledWith(expect.objectContaining({ id: 'p2' }), 1);
+  });
+
+  it('does NOT adopt an ended leftover queue — falls through to restore', async () => {
+    mockTP.getQueue.mockReturnValue([{ id: 'x' }]);
+    mockTP.getState.mockReturnValue('ended');
+    mockTP.getCurrentTrackIndex.mockReturnValue(0);
+    mockGetPersistedQueue.mockReturnValue({ queue: [makeChild('p1')], currentTrackIndex: 0 });
+
+    restorePersistedQueueAfterBoot();
+    await flush();
+
+    expect(mockSetCurrentTrack).toHaveBeenCalledWith(expect.objectContaining({ id: 'p1' }), 0);
   });
 });
 

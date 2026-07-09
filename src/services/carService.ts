@@ -25,9 +25,11 @@ import type {
 import { getTrackPlayer, registerPlaybackService, SectionIcon } from 'react-native-queue-player';
 
 import type { AlbumID3, Child, Playlist } from './subsonicService';
-import { getCoverArtUrl } from './subsonicService';
 import { buildPlayableQueue } from './playerHelpers';
 import { playTrack } from './playerService';
+import { resolveDisplayImage } from './imageCacheService';
+import { coverArtForAlbum, coverArtForPlaylist } from '../utils/coverArtId';
+import { resolveSongCoverArt } from '../hooks/useSongCoverArt';
 import {
   performOfflineSearch,
   performOnlineSearch,
@@ -46,6 +48,7 @@ import { offlineModeStore } from '../store/offlineModeStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import { albumPassesDownloadedFilter } from '../store/persistence/cachedItemHelpers';
+import { awaitKvHydration } from '../store/persistence/rehydrate';
 import i18n from '../i18n/i18n';
 import {
   CAR_ROOT_ID,
@@ -127,54 +130,86 @@ function homeInput() {
 /*  Browse-item mappers                                                */
 /* ------------------------------------------------------------------ */
 
-function albumRow(album: AlbumID3): BrowseItem {
+/**
+ * Row artwork via the app's SHARED resolver (`resolveDisplayImage`) — the same
+ * file:// cache → server-URL decision (offline/remote-failed-gated) `CachedImage`
+ * uses. Keyed off the entity's coverArt VALUE (never the id — #202).
+ */
+async function resolveRowArtwork(coverArtValue: string | undefined): Promise<string | undefined> {
+  if (!coverArtValue) return undefined;
+  return (await resolveDisplayImage(coverArtValue, ART_SIZE, { offline: isOffline() }))?.uri;
+}
+
+/** Resolve artwork for a set of coverArt values, DEDUPED — album mode makes a
+ *  whole album's songs share one value, so a track list collapses to ~1 lookup. */
+async function artworkByValue(
+  values: ReadonlyArray<string | undefined>,
+): Promise<Map<string, string | undefined>> {
+  const distinct = [...new Set(values.filter((v): v is string => !!v))];
+  const resolved = await Promise.all(
+    distinct.map(async (v) => [v, await resolveRowArtwork(v)] as const),
+  );
+  return new Map(resolved);
+}
+
+async function albumRow(album: AlbumID3): Promise<BrowseItem> {
   return {
     id: albumId(album.id),
     title: album.name,
     subtitle: album.artist ?? undefined,
-    artworkUrl: getCoverArtUrl(album.coverArt ?? album.id, ART_SIZE) ?? undefined,
+    artworkUrl: await resolveRowArtwork(coverArtForAlbum(album)),
     playable: false,
     hasChildren: true,
   };
 }
 
-/** A–Z leaf album row — artwork via the coverArt carried on the AzItem (no
- *  artist subtitle; the AzItem carries only id/title/coverArt). */
-const toAzAlbumRow = (a: AzItem): BrowseItem => ({
+/** A–Z leaf album row — artwork via the coverArt VALUE carried on the AzItem
+ *  (no artist subtitle; the AzItem carries only id/title/coverArt). */
+const toAzAlbumRow = async (a: AzItem): Promise<BrowseItem> => ({
   id: albumId(a.id),
   title: a.title,
-  artworkUrl: getCoverArtUrl(a.coverArt ?? a.id, ART_SIZE) ?? undefined,
+  artworkUrl: await resolveRowArtwork(a.coverArt),
   playable: false,
   hasChildren: true,
 });
 
-function playlistRow(pl: Playlist): BrowseItem {
+async function playlistRow(pl: Playlist): Promise<BrowseItem> {
   return {
     id: playlistId(pl.id),
     title: pl.name,
     subtitle: i18n.t('cacheTracksValue', { count: pl.songCount }),
-    artworkUrl: getCoverArtUrl(pl.coverArt ?? pl.id, ART_SIZE) ?? undefined,
+    artworkUrl: await resolveRowArtwork(coverArtForPlaylist(pl)),
     playable: false,
     hasChildren: true,
   };
 }
 
-function trackRow(track: Child, id: string): BrowseItem {
-  return {
-    id,
-    title: track.title,
-    subtitle: track.artist ?? undefined,
-    artworkUrl: getCoverArtUrl(track.coverArt ?? track.albumId ?? track.id, ART_SIZE) ?? undefined,
-    playable: true,
-    hasChildren: false,
-  };
+/** Playable song rows for a list, DEDUPED on cover art. `idFor(index)` builds
+ *  the per-context media id (album / playlist / fav / search). */
+async function trackRows(
+  tracks: ReadonlyArray<Child>,
+  idFor: (index: number) => string,
+): Promise<BrowseItem[]> {
+  const values = tracks.map((t) => resolveSongCoverArt(t));
+  const artMap = await artworkByValue(values);
+  return tracks.map((t, i) => {
+    const cv = values[i];
+    return {
+      id: idFor(i),
+      title: t.title,
+      subtitle: t.artist ?? undefined,
+      artworkUrl: cv ? artMap.get(cv) : undefined,
+      playable: true,
+      hasChildren: false,
+    };
+  });
 }
 
 /* ------------------------------------------------------------------ */
 /*  Snapshot                                                           */
 /* ------------------------------------------------------------------ */
 
-function buildSnapshot(): BrowseSnapshot {
+async function buildSnapshot(): Promise<BrowseSnapshot> {
   // Home: curated album lists (offline recomposed — drop Random, add
   // Downloaded Albums, filter to downloaded) — one drill row per non-empty list.
   const homeItems: BrowseItem[] = composeHomeAlbumSections(homeInput())
@@ -187,17 +222,18 @@ function buildSnapshot(): BrowseSnapshot {
     }));
 
   // Favorites: flat playable songs (display-capped; play uses the same list).
-  const favItems: BrowseItem[] = favoriteSongs()
-    .slice(0, CAR_MAX_ITEMS_PER_NODE)
-    .map((s, i) => trackRow(s, favTrackId(i)));
+  const favItems = await trackRows(
+    favoriteSongs().slice(0, CAR_MAX_ITEMS_PER_NODE),
+    favTrackId,
+  );
 
   // Albums: A–Z letter buckets first (mandatory — libraries exceed the cap).
   const albumItems = albumLetterRows(azItems());
 
   // Playlists: shown directly (display-capped; play loads the full list).
-  const playlistItems: BrowseItem[] = playlistSet()
-    .slice(0, CAR_MAX_ITEMS_PER_NODE)
-    .map(playlistRow);
+  const playlistItems = await Promise.all(
+    playlistSet().slice(0, CAR_MAX_ITEMS_PER_NODE).map(playlistRow),
+  );
 
   const sections: BrowseSection[] = [
     { id: sectionId('home'), title: i18n.t('home'), icon: SectionIcon.Home, items: homeItems },
@@ -249,18 +285,19 @@ async function resolveBrowseChildren(parentId: string): Promise<BrowseItem[]> {
   switch (p.kind) {
     case 'list': {
       const section = composeHomeAlbumSections(homeInput()).find((s) => s.type === p.list);
-      return (section?.albums ?? []).map(albumRow);
+      return Promise.all((section?.albums ?? []).map(albumRow));
     }
     case 'azLetter':
       return resolveAlbumLetterNode(albumsForLetter(azItems(), p.letter), p.letter, toAzAlbumRow);
     case 'azBucket':
-      return albumsForBucket(azItems(), p.letter, p.lo, p.hi).map(toAzAlbumRow);
+      return Promise.all(albumsForBucket(azItems(), p.letter, p.lo, p.hi).map(toAzAlbumRow));
     case 'album':
-      return (await albumSongs(p.albumId)).map((s, i) => trackRow(s, albumTrackId(p.albumId, i)));
+      return trackRows(await albumSongs(p.albumId), (i) => albumTrackId(p.albumId, i));
     case 'playlist':
-      return (await playlistSongs(p.playlistId))
-        .slice(0, CAR_MAX_ITEMS_PER_NODE)
-        .map((s, i) => trackRow(s, playlistTrackId(p.playlistId, i)));
+      return trackRows(
+        (await playlistSongs(p.playlistId)).slice(0, CAR_MAX_ITEMS_PER_NODE),
+        (i) => playlistTrackId(p.playlistId, i),
+      );
     default:
       return [];
   }
@@ -360,8 +397,8 @@ async function resolveSearch(query: string): Promise<BrowseItem[]> {
     ? await performOfflineSearch(query)
     : await performOnlineSearch(query);
   lastSearchSongs = results.songs;
-  const songRows = results.songs.map((s, i) => trackRow(s, `${SEARCH_ID_PREFIX}${i}`));
-  const albumRows = results.albums.map(albumRow);
+  const songRows = await trackRows(results.songs, (i) => `${SEARCH_ID_PREFIX}${i}`);
+  const albumRows = await Promise.all(results.albums.map(albumRow));
   // Songs first (most likely intent), then album drill rows; cap per node.
   return [...songRows, ...albumRows].slice(0, CAR_MAX_ITEMS_PER_NODE);
 }
@@ -389,8 +426,17 @@ function donateVocabulary(): void {
 
 async function pushSnapshot(): Promise<void> {
   try {
-    const snapshot = buildSnapshot();
-    getTrackPlayer().setBrowseSnapshot(snapshot);
+    // Single source of truth for "a car is listening": RNQP's native, process-scoped
+    // connection state, which survives a missed onCarConnect (e.g. the CarPlay scene
+    // attached before this JS process registered its handler on a headless launch).
+    // Gating here means no buildSnapshot / setBrowseSnapshot work at all on the
+    // phone-only path, and every caller inherits it.
+    if (getTrackPlayer().isCarConnected()) {
+      const snapshot = await buildSnapshot();
+      getTrackPlayer().setBrowseSnapshot(snapshot);
+    }
+    // Siri vocabulary is iOS SiriKit (INVocabulary) — phone-side, independent of any
+    // car connection — so it is NOT car-gated (unlike the browse snapshot above).
     donateVocabulary();
   } catch (e) {
     console.warn(`${LOG_TAG} pushSnapshot failed:`, e);
@@ -421,11 +467,9 @@ const handler: PlaybackServiceHandler = {
     return rnTracks;
   },
   onCarConnect: () => {
-    carConnected = true;
+    // RNQP sets its native connection flag BEFORE firing this callback, so the
+    // gated pushSnapshot() sees isCarConnected() === true and proceeds.
     void pushSnapshot();
-  },
-  onCarDisconnect: () => {
-    carConnected = false;
   },
   onServiceReady: (reason) => {
     if (reason === 'service-reborn') {
@@ -438,19 +482,41 @@ const handler: PlaybackServiceHandler = {
 };
 
 let installed = false;
-let carConnected = false;
 let subscribed = false;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+/** Store-subscription disposers, captured so `__test.reset()` can tear them down. */
+const carSubscriptions: Array<() => void> = [];
 
 /** Coalesce library-change re-pushes into one push per ~30s, and only while a
  *  car is connected — never churn the native cache on every store write
- *  (anti-refresh-loop). */
+ *  (anti-refresh-loop). `pushSnapshot` re-checks the live connection at fire time,
+ *  so a mid-window disconnect makes the deferred push a no-op. */
 function scheduleRefresh(): void {
-  if (!carConnected || refreshTimer) return;
+  if (refreshTimer || !getTrackPlayer().isCarConnected()) return;
   refreshTimer = setTimeout(() => {
     refreshTimer = null;
-    if (carConnected) void pushSnapshot();
+    void pushSnapshot();
   }, 30_000);
+}
+
+/**
+ * Headless data load: on a CarPlay / Siri cold-launch the phone app's UI never
+ * mounts, so the browse-feeding stores are not hydrated by the normal startup
+ * chain (`_layout` → `awaitKvHydration`). Requiring the user to open the app
+ * first is the anti-pattern RNQP is built to avoid, so we load the persisted
+ * library here — await SQLite hydration of the library stores (+ the cache map
+ * for offline filtering), then re-push the now-populated snapshot. Idempotent:
+ * `awaitKvHydration` resolves immediately once already hydrated (e.g. the app
+ * was opened), so this is a cheap no-op re-push on non-headless launches.
+ */
+async function hydrateThenPush(): Promise<void> {
+  try {
+    await awaitKvHydration();
+    await musicCacheStore.getState().hydrateFromDbAsync();
+  } catch (e) {
+    console.warn(`${LOG_TAG} hydrateThenPush failed:`, e);
+  }
+  void pushSnapshot();
 }
 
 /**
@@ -463,18 +529,29 @@ export function installCarService(): void {
   if (installed) return;
   installed = true;
   registerPlaybackService(() => handler);
+  // Immediate push so the section tabs appear instantly WHEN a car is already
+  // connected (e.g. a headless launch where the scene attached first); pushSnapshot
+  // self-gates on the connection, so this no-ops on a phone-only launch. Content is
+  // filled in by hydrateThenPush() once the persisted library loads from SQLite —
+  // no phone-app open required.
   void pushSnapshot();
+  void hydrateThenPush();
   if (!subscribed) {
     subscribed = true;
-    // Offline flip rebuilds the whole tree — push immediately (connect-gated).
-    offlineModeStore.subscribe((state, prev) => {
-      if (state.offlineMode !== prev.offlineMode && carConnected) void pushSnapshot();
-    });
-    // Library changes → a debounced, connect-gated refresh so the car tree
-    // stays current without churning on every write. Module-lifetime subs.
-    albumListsStore.subscribe(scheduleRefresh);
-    favoritesStore.subscribe(scheduleRefresh);
-    playlistLibraryStore.subscribe(scheduleRefresh);
+    // Offline flip rebuilds the whole tree — re-push. pushSnapshot self-gates on the
+    // live car connection, so this is safe whether or not a car is attached.
+    carSubscriptions.push(
+      offlineModeStore.subscribe((state, prev) => {
+        if (state.offlineMode !== prev.offlineMode) void pushSnapshot();
+      }),
+    );
+    // Library changes → a debounced, self-gated refresh so the car tree stays
+    // current without churning on every write. Module-lifetime subs.
+    carSubscriptions.push(
+      albumListsStore.subscribe(scheduleRefresh),
+      favoritesStore.subscribe(scheduleRefresh),
+      playlistLibraryStore.subscribe(scheduleRefresh),
+    );
   }
 }
 
@@ -484,8 +561,24 @@ export function installCarService(): void {
  * self-corrects. No-op when no car is connected.
  */
 export function refreshCarSnapshot(): void {
-  if (carConnected) void pushSnapshot();
+  void pushSnapshot();
 }
 
-/** Internal resolvers exposed for unit tests (not part of the public API). */
-export const __test = { buildSnapshot, resolveBrowseChildren, resolvePlayback };
+/** Internal resolvers + lifecycle hooks exposed for unit tests (not public API). */
+export const __test = {
+  buildSnapshot,
+  resolveBrowseChildren,
+  resolvePlayback,
+  pushSnapshot,
+  /** Tear down subscriptions + reset module state so install-path tests isolate. */
+  reset: () => {
+    carSubscriptions.forEach((dispose) => dispose());
+    carSubscriptions.length = 0;
+    if (refreshTimer) {
+      clearTimeout(refreshTimer);
+      refreshTimer = null;
+    }
+    installed = false;
+    subscribed = false;
+  },
+};

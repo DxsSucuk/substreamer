@@ -295,12 +295,62 @@ export async function initPlayer(): Promise<void> {
 /* ------------------------------------------------------------------ */
 
 /**
+ * True when the shared engine already holds an ACTIVE session this process
+ * lifetime — a car/Siri browse tap started playback (via `playTrack`) before the
+ * phone UI mounted. `configure()` wipes the engine on every launch, so a
+ * non-empty active queue at boot can only be this-process car/Siri.
+ */
+function hasLiveEngineSession(): boolean {
+  const queue = tp.getQueue();
+  const idx = tp.getCurrentTrackIndex();
+  if (queue.length === 0 || idx < 0 || idx >= queue.length) return false;
+  const state = tp.getState();
+  return (
+    state === 'playing' ||
+    state === 'buffering' ||
+    state === 'loading' ||
+    state === 'paused' ||
+    state === 'error'
+  );
+}
+
+/**
+ * Adopt a live car/Siri session on phone-app open: read-only reconcile of the
+ * store to the live engine, WITHOUT touching the engine. `currentChildQueue` is
+ * authoritative (the car's `playTrack` set it); align the current index to the
+ * engine's truth so a headless auto-advance doesn't leave the mini-player a
+ * track behind. Never setQueue/seekTo/play, never set `hydrationPromise`, never
+ * clear the persisted queue, leave `pendingResumePosition` null.
+ */
+function adoptLiveEngineSession(): void {
+  const liveIndex = tp.getCurrentTrackIndex();
+  const store = playerStore.getState();
+  if (currentChildQueue.length > 0) {
+    store.setQueue(currentChildQueue);
+    const formats: Record<string, EffectiveFormat> = {};
+    for (const child of currentChildQueue) formats[child.id] = stampQueueFormat(child);
+    store.setQueueFormats(formats);
+    const liveChild = currentChildQueue[liveIndex] ?? store.currentTrack ?? null;
+    store.setCurrentTrack(liveChild, liveIndex >= 0 ? liveIndex : null);
+  }
+  store.setTrackSource(tp.getCurrentTrackSource() ?? null);
+  store.setPlaybackState(mapState(tp.getState()));
+}
+
+/**
  * Restore the previous session's queue, driven from the root layout after the
  * animated splash. `restorePersistedQueue()` seeds the Zustand store
  * synchronously so the mini player renders immediately; if a queue exists it
  * kicks off the async hydration that loads it into the native engine.
  */
 export function restorePersistedQueueAfterBoot(): void {
+  // A car/Siri browse tap may have started playback in this same process before
+  // the phone UI mounted (shared RNQP engine). Adopt that live session instead
+  // of re-driving the engine with setQueue (which restarts the current track).
+  if (hasLiveEngineSession()) {
+    adoptLiveEngineSession();
+    return;
+  }
   const needsHydration = restorePersistedQueue();
   if (needsHydration) {
     hydrationPromise = hydrateRestoredQueue().finally(() => {

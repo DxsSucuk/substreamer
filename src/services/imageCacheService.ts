@@ -1128,6 +1128,34 @@ export function buildRemoteImageUrl(
   return getCoverArtUrl(coverArtId, size);
 }
 
+/**
+ * Resolve the URI to DISPLAY for a cover — the single decision shared by
+ * `CachedImage` and headless consumers (the CarPlay / Android-Auto browse
+ * service). Prefers the on-disk cache (`file://`), then the server URL, gated on
+ * offline + the remote-failed set — exactly how `CachedImage` picks its render
+ * URI. Returns `{ isRemote }` so a component can drive its error reporting; a
+ * service just reads `.uri`.
+ *
+ * `skipCache` bypasses the local cache (used by `CachedImage` after a cached
+ * file has errored, to fall straight to the server URL). Returns `null` when
+ * nothing is displayable (no id, or offline/failed with no cached file) — the
+ * caller renders its placeholder / omits the artwork.
+ */
+export async function resolveDisplayImage(
+  coverArtId: string | undefined,
+  size: number,
+  opts: { offline: boolean; skipCache?: boolean },
+): Promise<{ uri: string; isRemote: boolean } | null> {
+  if (!coverArtId) return null;
+  if (!opts.skipCache) {
+    const cached = await resolveCachedImageUri(coverArtId, size, { sourceFallback: true });
+    if (cached) return { uri: cached, isRemote: false };
+  }
+  if (opts.offline || isRemoteFailed(coverArtId)) return null;
+  const remote = buildRemoteImageUrl(coverArtId, size);
+  return remote ? { uri: remote, isRemote: true } : null;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Queue processing                                                   */
 /* ------------------------------------------------------------------ */

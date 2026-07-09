@@ -2,7 +2,7 @@ jest.mock('../../store/persistence/kvStorage', () =>
   require('../../store/persistence/__mocks__/kvStorage'),
 );
 
-import { __test } from '../carService';
+import { __test, installCarService } from '../carService';
 import {
   sectionId,
   listId,
@@ -43,8 +43,8 @@ beforeEach(() => {
 });
 
 describe('buildSnapshot', () => {
-  it('builds exactly the 4 sections in order', () => {
-    const snap = __test.buildSnapshot();
+  it('builds exactly the 4 sections in order', async () => {
+    const snap = await __test.buildSnapshot();
     expect(snap.rootId).toBe('root');
     expect(snap.sections.map((s) => s.id)).toEqual([
       sectionId('home'),
@@ -54,8 +54,8 @@ describe('buildSnapshot', () => {
     ]);
   });
 
-  it('Home lists non-empty curated rows; Favorites are flat playable songs', () => {
-    const snap = __test.buildSnapshot();
+  it('Home lists non-empty curated rows; Favorites are flat playable songs', async () => {
+    const snap = await __test.buildSnapshot();
     const home = snap.sections.find((s) => s.id === sectionId('home'))!;
     // recentlyAdded + randomSelection have items; recentlyPlayed/frequently don't.
     expect(home.items.map((i) => i.id)).toEqual([
@@ -69,15 +69,15 @@ describe('buildSnapshot', () => {
     expect(favs.items.every((i) => i.playable && !i.hasChildren)).toBe(true);
   });
 
-  it('Albums section is A–Z letter buckets (not flat albums)', () => {
-    const snap = __test.buildSnapshot();
+  it('Albums section is A–Z letter buckets (not flat albums)', async () => {
+    const snap = await __test.buildSnapshot();
     const albums = snap.sections.find((s) => s.id === sectionId('albums'))!;
     expect(albums.items.map((i) => i.title)).toEqual(['A', 'Z']);
     expect(albums.items.map((i) => i.id)).toEqual([azLetterId('A'), azLetterId('Z')]);
   });
 
-  it('Playlists shown directly as drill rows', () => {
-    const snap = __test.buildSnapshot();
+  it('Playlists shown directly as drill rows', async () => {
+    const snap = await __test.buildSnapshot();
     const pls = snap.sections.find((s) => s.id === sectionId('playlists'))!;
     expect(pls.items.map((i) => i.title)).toEqual(['Roadtrip']);
     expect(pls.items[0].hasChildren).toBe(true);
@@ -129,5 +129,107 @@ describe('resolvePlayback', () => {
   it('unknown id → empty queue', async () => {
     const r = await __test.resolvePlayback('bogus');
     expect(r.queue).toEqual([]);
+  });
+});
+
+/** Flush pending microtasks + one macrotask tick (real timers only). */
+const flushAsync = () => new Promise((resolve) => setImmediate(resolve));
+
+describe('pushSnapshot — connection gate', () => {
+  const tp = require('react-native-queue-player').getTrackPlayer();
+
+  afterEach(() => {
+    tp.isCarConnected.mockReturnValue(true);
+    tp.setBrowseSnapshot.mockClear();
+    tp.donateVoiceVocabulary.mockClear();
+  });
+
+  it('builds + pushes the browse snapshot when a car is connected', async () => {
+    tp.isCarConnected.mockReturnValue(true);
+    tp.setBrowseSnapshot.mockClear();
+    await __test.pushSnapshot();
+    expect(tp.setBrowseSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips buildSnapshot/setBrowseSnapshot with no car, but still donates Siri vocab', async () => {
+    tp.isCarConnected.mockReturnValue(false);
+    tp.setBrowseSnapshot.mockClear();
+    tp.donateVoiceVocabulary.mockClear();
+    await __test.pushSnapshot();
+    expect(tp.setBrowseSnapshot).not.toHaveBeenCalled();
+    // Siri vocabulary is phone-side (SiriKit) — never car-gated.
+    expect(tp.donateVoiceVocabulary).toHaveBeenCalled();
+  });
+});
+
+describe('offline flip → snapshot re-push (installCarService subscription)', () => {
+  const tp = require('react-native-queue-player').getTrackPlayer();
+
+  beforeEach(() => {
+    __test.reset();
+    tp.isCarConnected.mockReturnValue(true);
+  });
+  afterEach(() => {
+    __test.reset();
+    tp.isCarConnected.mockReturnValue(true);
+    tp.setBrowseSnapshot.mockClear();
+  });
+
+  it('re-pushes on an offline flip when connected — without any onCarConnect', async () => {
+    installCarService();
+    await flushAsync(); // settle install-time async pushes
+    tp.setBrowseSnapshot.mockClear();
+
+    offlineModeStore.getState().setOfflineMode(true);
+    await flushAsync();
+    expect(tp.setBrowseSnapshot).toHaveBeenCalled();
+  });
+
+  it('does not push on an offline flip when no car is connected', async () => {
+    tp.isCarConnected.mockReturnValue(false);
+    installCarService();
+    await flushAsync();
+    tp.setBrowseSnapshot.mockClear();
+
+    offlineModeStore.getState().setOfflineMode(true);
+    await flushAsync();
+    expect(tp.setBrowseSnapshot).not.toHaveBeenCalled();
+  });
+});
+
+describe('scheduleRefresh — library-change gate', () => {
+  const tp = require('react-native-queue-player').getTrackPlayer();
+
+  beforeEach(() => {
+    __test.reset();
+    jest.useFakeTimers();
+    tp.isCarConnected.mockReturnValue(true);
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+    __test.reset();
+    tp.isCarConnected.mockReturnValue(true);
+    tp.setBrowseSnapshot.mockClear();
+  });
+
+  it('coalesces a library change into a push after 30s when connected', async () => {
+    installCarService();
+    await jest.advanceTimersByTimeAsync(0);
+    tp.setBrowseSnapshot.mockClear();
+
+    favoritesStore.setState({ songs: [song('s1')], albums: [], artists: [] } as any);
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(tp.setBrowseSnapshot).toHaveBeenCalled();
+  });
+
+  it('does not arm a refresh when no car is connected', async () => {
+    tp.isCarConnected.mockReturnValue(false);
+    installCarService();
+    await jest.advanceTimersByTimeAsync(0);
+    tp.setBrowseSnapshot.mockClear();
+
+    favoritesStore.setState({ songs: [song('s1')], albums: [], artists: [] } as any);
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(tp.setBrowseSnapshot).not.toHaveBeenCalled();
   });
 });

@@ -44,6 +44,23 @@ let cacheUpdateListener: (() => void) | null = null;
 jest.mock('../../services/imageCacheService', () => ({
   resolveCachedImageUri: (id: string, size: number) =>
     Promise.resolve(mockGetCachedImageUri(id, size)),
+  // Mirror the real resolveDisplayImage (file:// cache → server URL, gated on
+  // offline + remote-failed) by composing the mocked primitives, so the tests'
+  // existing per-primitive setups still drive CachedImage's render branches.
+  resolveDisplayImage: async (
+    id: string,
+    size: number,
+    opts: { offline: boolean; skipCache?: boolean },
+  ) => {
+    if (!id) return null;
+    if (!opts.skipCache) {
+      const cached = mockGetCachedImageUri(id, size);
+      if (cached) return { uri: cached, isRemote: false };
+    }
+    if (opts.offline || mockIsRemoteFailed(id)) return null;
+    const remote = mockBuildRemoteImageUrl(id, size);
+    return remote ? { uri: remote, isRemote: true } : null;
+  },
   ensureCached: (id: string) => mockEnsureCached(id),
   reportBadCache: (id: string, size: number) => mockReportBadCache(id, size),
   reportBadRemote: (id: string) => mockReportBadRemote(id),
