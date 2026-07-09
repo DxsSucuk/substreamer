@@ -1,5 +1,9 @@
 # Changelog
 
+## [8.0.83] - 2026-07-09
+
+- fix(carplay): headless divergence fixes + offline snapshot refresh
+- chore: fix some npm audit findings
 ## [8.0.82] - 2026-07-08
 
 - chore: bump expo deps
