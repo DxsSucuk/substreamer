@@ -29,6 +29,7 @@ import { buildPlayableQueue } from './playerHelpers';
 import { playTrack } from './playerService';
 import { resolveDisplayImage } from './imageCacheService';
 import { coverArtForAlbum, coverArtForPlaylist } from '../utils/coverArtId';
+import { baseCollator } from '../utils/intl';
 import { resolveSongCoverArt } from '../hooks/useSongCoverArt';
 import {
   performOfflineSearch,
@@ -417,7 +418,7 @@ async function resolveSearch(query: string): Promise<BrowseItem[]> {
 /* ------------------------------------------------------------------ */
 
 function uniqueSorted(values: string[]): string[] {
-  return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
+  return Array.from(new Set(values)).sort((a, b) => baseCollator.compare(a, b));
 }
 
 function donateVocabulary(): void {

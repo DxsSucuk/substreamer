@@ -16,6 +16,8 @@
  */
 import type { BrowseItem } from 'react-native-queue-player';
 
+import { baseCollator } from '../utils/intl';
+
 /** Per-node item cap (CarPlay `CPListTemplate.maximumItemCount` / Android Auto). */
 export const CAR_MAX_ITEMS_PER_NODE = 500;
 
@@ -132,7 +134,7 @@ function secondChar(title: string): string {
 function compareLetters(x: string, y: string): number {
   if (x === '#') return 1;
   if (y === '#') return -1;
-  return x.localeCompare(y);
+  return baseCollator.compare(x, y);
 }
 
 /** The Albums tab's top level: one row per non-empty letter bucket. */
@@ -151,7 +153,7 @@ export function albumLetterRows(albums: ReadonlyArray<AzItem>): BrowseItem[] {
 export function albumsForLetter(albums: ReadonlyArray<AzItem>, letter: string): AzItem[] {
   return albums
     .filter((a) => bucketLetter(a.title) === letter)
-    .sort((a, b) => a.title.localeCompare(b.title));
+    .sort((a, b) => baseCollator.compare(a.title, b.title));
 }
 
 /**
