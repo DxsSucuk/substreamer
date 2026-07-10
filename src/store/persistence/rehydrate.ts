@@ -12,6 +12,8 @@ import { imageDownloadQueueStore } from '../imageDownloadQueueStore';
 import { musicCacheStore } from '../musicCacheStore';
 import { offlineModeStore } from '../offlineModeStore';
 import { pendingScrobbleStore } from '../pendingScrobbleStore';
+import { playbackSettingsStore } from '../playbackSettingsStore';
+import { playlistDetailStore } from '../playlistDetailStore';
 import { playlistLibraryStore } from '../playlistLibraryStore';
 import { scanStatusStore } from '../scanStatusStore';
 import { serverInfoStore } from '../serverInfoStore';
@@ -116,6 +118,10 @@ const STARTUP_KV_STORES = [
   serverInfoStore,
   syncStatusStore,
   scanStatusStore,
+  // Detail/settings caches the headless (car/voice) service reads offline before any
+  // UI mounts — awaited here so a headless start + the app boot both have them ready.
+  playlistDetailStore,
+  playbackSettingsStore,
 ];
 
 /**

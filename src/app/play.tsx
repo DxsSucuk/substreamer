@@ -1,7 +1,7 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef } from 'react';
 
-import { dispatchVoiceSearchRequest } from '../services/carService';
+import { dispatchVoiceSearchRequest } from '../services/headlessMediaService';
 import { buildMediaSearchRequest } from '../services/voiceDeepLinkMapper';
 
 /**
@@ -10,7 +10,7 @@ import { buildMediaSearchRequest } from '../services/voiceDeepLinkMapper';
  * plugins/with-android-app-actions.js → shortcuts.xml). The url-template
  * `substreamer://play{?artist,album,song,playlist,genre}` routes here; we map
  * the query params to a MediaSearchRequest, dispatch through the same
- * carService resolver + playback path CarPlay / Android Auto uses, then
+ * headlessMediaService resolver + playback path CarPlay / Android Auto uses, then
  * redirect to the tabs so the user lands on the player with playback started.
  */
 export default function PlayDeepLinkRoute() {

@@ -16,7 +16,7 @@ import {
   resolveAlbumLetterNode,
   CAR_MAX_ITEMS_PER_NODE,
   type AzItem,
-} from '../carService.helpers';
+} from '../headlessMediaService.helpers';
 import type { BrowseItem } from 'react-native-queue-player';
 
 describe('parseMediaId', () => {

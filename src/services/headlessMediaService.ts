@@ -5,13 +5,13 @@
  * taps/voice to the app's `playTrack()` (which carries all app bookkeeping —
  * offline filtering, streaming, artwork, scrobble). Registered at bootstrap
  * (AFTER `configure()`) so a cold car / Siri / Assistant wake is served before
- * any UI mounts. Mirrors the RNQP demo's `carService.ts` lifecycle:
- *   installCarService → registerPlaybackService(() => handler) + pushSnapshot,
+ * any UI mounts. Mirrors the RNQP demo's `headlessMediaService.ts` lifecycle:
+ *   installHeadlessMediaService → registerPlaybackService(() => handler) + pushSnapshot,
  *   push on onCarConnect, re-install on onServiceReady('service-reborn').
  *
  * The four sections (platform ~4-tab limit): Home (curated album lists, offline
  * recomposed via homeSectionsService), Favorites (flat songs), Albums (A–Z
- * buckets), Playlists. See src/services/carService.helpers.ts for the id scheme
+ * buckets), Playlists. See src/services/headlessMediaService.helpers.ts for the id scheme
  * + A–Z bucketing, and plans/carplay-android-auto.md for the full design.
  */
 import type {
@@ -33,7 +33,6 @@ import { resolveSongCoverArt } from '../hooks/useSongCoverArt';
 import {
   performOfflineSearch,
   performOnlineSearch,
-  getOfflineSongsAll,
   getOfflineSongsByGenre,
 } from './searchService';
 import { getLocalTrackUri } from './musicCacheService';
@@ -48,7 +47,7 @@ import { offlineModeStore } from '../store/offlineModeStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import { albumPassesDownloadedFilter } from '../store/persistence/cachedItemHelpers';
-import { awaitKvHydration } from '../store/persistence/rehydrate';
+import { awaitKvHydration, rehydrateAllStores } from '../store/persistence/rehydrate';
 import i18n from '../i18n/i18n';
 import {
   CAR_ROOT_ID,
@@ -66,9 +65,9 @@ import {
   albumsForBucket,
   resolveAlbumLetterNode,
   type AzItem,
-} from './carService.helpers';
+} from './headlessMediaService.helpers';
 
-const LOG_TAG = '[carService]';
+const LOG_TAG = '[headlessMediaService]';
 const ART_SIZE = 300;
 const SEARCH_ID_PREFIX = 'search:';
 
@@ -105,7 +104,12 @@ function playlistSet(): Playlist[] {
 }
 
 function azItems(): AzItem[] {
-  return albumSet().map((a) => ({ id: a.id, title: a.name, coverArt: a.coverArt ?? undefined }));
+  return albumSet().map((a) => ({
+    id: a.id,
+    title: a.name,
+    coverArt: a.coverArt ?? undefined,
+    subtitle: a.artist ?? undefined,
+  }));
 }
 
 function homeInput() {
@@ -163,11 +167,12 @@ async function albumRow(album: AlbumID3): Promise<BrowseItem> {
   };
 }
 
-/** A–Z leaf album row — artwork via the coverArt VALUE carried on the AzItem
- *  (no artist subtitle; the AzItem carries only id/title/coverArt). */
+/** A–Z leaf album row — artwork + artist subtitle via the values carried on the
+ *  AzItem, so it matches the home-list album rows (bucketing only uses `title`). */
 const toAzAlbumRow = async (a: AzItem): Promise<BrowseItem> => ({
   id: albumId(a.id),
   title: a.title,
+  subtitle: a.subtitle,
   artworkUrl: await resolveRowArtwork(a.coverArt),
   playable: false,
   hasChildren: true,
@@ -258,29 +263,30 @@ async function buildSnapshot(): Promise<BrowseSnapshot> {
 /*  Drilldown resolution                                               */
 /* ------------------------------------------------------------------ */
 
-/** Album tracks — server fetch, falling back to the offline cache. */
+/** Album tracks via the SHARED offline-aware `fetchAlbum` — same function + source
+ *  the app's album screen uses (online → server; offline → persisted detail cache). */
 async function albumSongs(id: string): Promise<Child[]> {
   try {
-    const album = await albumDetailStore.getState().fetchAlbum(id);
-    if (album?.song?.length) return album.song;
+    return (await albumDetailStore.getState().fetchAlbum(id))?.song ?? [];
   } catch (e) {
     console.warn(`${LOG_TAG} fetchAlbum(${id}) failed:`, e);
+    return [];
   }
-  return getOfflineSongsAll().filter((s) => s.albumId === id);
 }
 
-/** Playlist entries — server fetch (best-effort; empty on failure). */
+/** Playlist entries via the SHARED offline-aware `fetchPlaylist` — same function +
+ *  source the app's playlist screen uses (online → server; offline → detail cache). */
 async function playlistSongs(id: string): Promise<Child[]> {
   try {
-    const pl = await playlistDetailStore.getState().fetchPlaylist(id);
-    if (pl?.entry?.length) return pl.entry;
+    return (await playlistDetailStore.getState().fetchPlaylist(id))?.entry ?? [];
   } catch (e) {
     console.warn(`${LOG_TAG} fetchPlaylist(${id}) failed:`, e);
+    return [];
   }
-  return [];
 }
 
 async function resolveBrowseChildren(parentId: string): Promise<BrowseItem[]> {
+  await ensureHeadlessDataReady();
   const p = parseMediaId(parentId);
   switch (p.kind) {
     case 'list': {
@@ -320,6 +326,7 @@ const clampIndex = (i: number, q: readonly Child[]): number =>
 let lastSearchSongs: Child[] = [];
 
 async function resolvePlayback(mediaId: string): Promise<ResolvedPlayback> {
+  await ensureHeadlessDataReady();
   if (mediaId.startsWith(SEARCH_ID_PREFIX)) {
     const i = Number(mediaId.slice(SEARCH_ID_PREFIX.length));
     if (Number.isInteger(i) && i >= 0 && i < lastSearchSongs.length) {
@@ -356,6 +363,7 @@ function findPlaylistByName(name: string): Playlist | undefined {
 /** Resolve a voice request → a Child[] to play. Structured fields first
  *  (playlist by name, then genre), else the query's song matches. */
 async function resolveVoice(request: MediaSearchRequest): Promise<Child[]> {
+  await ensureHeadlessDataReady();
   if (request.playlist) {
     const pl = findPlaylistByName(request.playlist);
     if (pl) {
@@ -392,6 +400,7 @@ async function getOnlineSongsByGenre(genre: string): Promise<Child[]> {
 }
 
 async function resolveSearch(query: string): Promise<BrowseItem[]> {
+  await ensureHeadlessDataReady();
   if (query.trim().length === 0) return [];
   const results = isOffline()
     ? await performOfflineSearch(query)
@@ -474,9 +483,9 @@ const handler: PlaybackServiceHandler = {
   onServiceReady: (reason) => {
     if (reason === 'service-reborn') {
       // The OS rebuilt the service after a kill; its BrowseDataProvider starts
-      // empty. Drop the guard so installCarService re-registers + re-pushes.
+      // empty. Drop the guard so installHeadlessMediaService re-registers + re-pushes.
       installed = false;
-      installCarService();
+      installHeadlessMediaService();
     }
   },
 };
@@ -485,7 +494,9 @@ let installed = false;
 let subscribed = false;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 /** Store-subscription disposers, captured so `__test.reset()` can tear them down. */
-const carSubscriptions: Array<() => void> = [];
+const headlessSubscriptions: Array<() => void> = [];
+/** Memoized full-hydration promise (see `ensureHeadlessDataReady`). */
+let dataReadyPromise: Promise<void> | null = null;
 
 /** Coalesce library-change re-pushes into one push per ~30s, and only while a
  *  car is connected — never churn the native cache on every store write
@@ -500,22 +511,27 @@ function scheduleRefresh(): void {
 }
 
 /**
- * Headless data load: on a CarPlay / Siri cold-launch the phone app's UI never
- * mounts, so the browse-feeding stores are not hydrated by the normal startup
- * chain (`_layout` → `awaitKvHydration`). Requiring the user to open the app
- * first is the anti-pattern RNQP is built to avoid, so we load the persisted
- * library here — await SQLite hydration of the library stores (+ the cache map
- * for offline filtering), then re-push the now-populated snapshot. Idempotent:
- * `awaitKvHydration` resolves immediately once already hydrated (e.g. the app
- * was opened), so this is a cheap no-op re-push on non-headless launches.
+ * Full headless hydration, memoized. On a CarPlay / Siri cold-launch the phone
+ * app's UI never mounts, so the normal startup hydration chain (`_layout` →
+ * `rehydrateAllStores()` + `awaitKvHydration()`) never runs. We run the SAME pair
+ * here so every headless surface — browse, voice, and CarPlay if plugged in after
+ * a voice-triggered start — reads fully-hydrated stores (same data the app uses).
+ * Memoized: runs once per process, and is a cheap no-op await once the app has
+ * been opened (every store already hydrated). Awaited by `hydrateThenPush` and at
+ * the top of each RNQP resolver so nothing reads `isOffline()`/stores too early.
  */
-async function hydrateThenPush(): Promise<void> {
-  try {
-    await awaitKvHydration();
-    await musicCacheStore.getState().hydrateFromDbAsync();
-  } catch (e) {
-    console.warn(`${LOG_TAG} hydrateThenPush failed:`, e);
+function ensureHeadlessDataReady(): Promise<void> {
+  if (!dataReadyPromise) {
+    dataReadyPromise = Promise.all([rehydrateAllStores(), awaitKvHydration()])
+      .then(() => {})
+      .catch((e) => console.warn(`${LOG_TAG} ensureHeadlessDataReady failed:`, e));
   }
+  return dataReadyPromise;
+}
+
+/** Hydrate the full store set, then push the now-populated browse snapshot. */
+async function hydrateThenPush(): Promise<void> {
+  await ensureHeadlessDataReady();
   void pushSnapshot();
 }
 
@@ -525,7 +541,7 @@ async function hydrateThenPush(): Promise<void> {
  * `configure()` resolves. RNQP's `registerPlaybackService` is itself idempotent
  * (replaces prior registrations); the guard is bookkeeping for our bootstrap.
  */
-export function installCarService(): void {
+export function installHeadlessMediaService(): void {
   if (installed) return;
   installed = true;
   registerPlaybackService(() => handler);
@@ -540,14 +556,14 @@ export function installCarService(): void {
     subscribed = true;
     // Offline flip rebuilds the whole tree — re-push. pushSnapshot self-gates on the
     // live car connection, so this is safe whether or not a car is attached.
-    carSubscriptions.push(
+    headlessSubscriptions.push(
       offlineModeStore.subscribe((state, prev) => {
         if (state.offlineMode !== prev.offlineMode) void pushSnapshot();
       }),
     );
     // Library changes → a debounced, self-gated refresh so the car tree stays
     // current without churning on every write. Module-lifetime subs.
-    carSubscriptions.push(
+    headlessSubscriptions.push(
       albumListsStore.subscribe(scheduleRefresh),
       favoritesStore.subscribe(scheduleRefresh),
       playlistLibraryStore.subscribe(scheduleRefresh),
@@ -560,7 +576,7 @@ export function installCarService(): void {
  * after `initPlayer()`), so a cold car wake that rendered an empty skeleton
  * self-corrects. No-op when no car is connected.
  */
-export function refreshCarSnapshot(): void {
+export function refreshHeadlessMediaSnapshot(): void {
   void pushSnapshot();
 }
 
@@ -572,13 +588,14 @@ export const __test = {
   pushSnapshot,
   /** Tear down subscriptions + reset module state so install-path tests isolate. */
   reset: () => {
-    carSubscriptions.forEach((dispose) => dispose());
-    carSubscriptions.length = 0;
+    headlessSubscriptions.forEach((dispose) => dispose());
+    headlessSubscriptions.length = 0;
     if (refreshTimer) {
       clearTimeout(refreshTimer);
       refreshTimer = null;
     }
     installed = false;
     subscribed = false;
+    dataReadyPromise = null;
   },
 };

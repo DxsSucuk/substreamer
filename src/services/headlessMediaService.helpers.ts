@@ -1,7 +1,7 @@
 /**
  * Pure, store-free helpers for the CarPlay / Android Auto browse tree — the
  * media-id scheme and the A–Z bucketing for large album libraries. Kept free of
- * stores + native so it's unit-testable in jest. `carService.ts` supplies the
+ * stores + native so it's unit-testable in jest. `headlessMediaService.ts` supplies the
  * data + artwork and wires these into the RNQP handler.
  *
  * ID scheme (`type:payload`, colon-delimited, one `parseMediaId` dispatcher):
@@ -112,6 +112,9 @@ export interface AzItem {
   /** Optional cover-art value carried through so leaf rows can render artwork
    *  (the A–Z bucketing itself only uses `title`). */
   coverArt?: string;
+  /** Optional subtitle (album artist) carried through so leaf rows match the
+   *  home-list album rows (the A–Z bucketing itself only uses `title`). */
+  subtitle?: string;
 }
 
 /** Bucket key for a title: uppercased first char, or '#' for non-alpha. */

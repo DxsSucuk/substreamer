@@ -2,14 +2,15 @@ jest.mock('../../store/persistence/kvStorage', () =>
   require('../../store/persistence/__mocks__/kvStorage'),
 );
 
-import { __test, installCarService } from '../carService';
+import { __test, installHeadlessMediaService } from '../headlessMediaService';
 import {
   sectionId,
   listId,
   albumId,
   azLetterId,
   favTrackId,
-} from '../carService.helpers';
+  playlistId,
+} from '../headlessMediaService.helpers';
 import { albumLibraryStore } from '../../store/albumLibraryStore';
 import { albumListsStore } from '../../store/albumListsStore';
 import { favoritesStore } from '../../store/favoritesStore';
@@ -91,9 +92,11 @@ describe('resolveBrowseChildren', () => {
     expect(rows[0].hasChildren).toBe(true);
   });
 
-  it('azLetter → albums under that letter as drill rows', async () => {
+  it('azLetter → albums under that letter as drill rows (with artist subtitle)', async () => {
     const rows = await __test.resolveBrowseChildren(azLetterId('A'));
     expect(rows.map((r) => r.id)).toEqual([albumId('al-a')]);
+    // Album rows always carry the artist as subtitle, matching home-list rows.
+    expect(rows[0].subtitle).toBe('Artist');
   });
 
   it('album:<id> → its tracks as playable rows (via detail store)', async () => {
@@ -104,6 +107,31 @@ describe('resolveBrowseChildren', () => {
     expect(rows).toHaveLength(2);
     expect(rows.every((r) => r.playable && !r.hasChildren)).toBe(true);
     expect(rows[0].id).toBe('track:album:al-a:0');
+  });
+
+  it('playlist:<id> offline → tracks from the persisted detail cache (shared fetchPlaylist)', async () => {
+    const { playlistDetailStore } = require('../../store/playlistDetailStore');
+    // Offline: the REAL fetchPlaylist short-circuits to the persisted cache — the same
+    // function + source the app's playlist screen uses. No headless-specific fallback.
+    offlineModeStore.setState({ offlineMode: true } as any);
+    playlistDetailStore.setState({
+      playlists: {
+        p1: { playlist: { id: 'p1', entry: [song('s1'), song('s2')] }, retrievedAt: 0 },
+      },
+    } as any);
+    const rows = await __test.resolveBrowseChildren(playlistId('p1'));
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.playable && !r.hasChildren)).toBe(true);
+  });
+
+  it('album:<id> offline → tracks from the persisted detail cache (shared fetchAlbum)', async () => {
+    offlineModeStore.setState({ offlineMode: true } as any);
+    albumDetailStore.setState({
+      albums: { 'al-a': { album: { id: 'al-a', song: [song('s1'), song('s2')] }, retrievedAt: 0 } },
+    } as any);
+    const rows = await __test.resolveBrowseChildren(albumId('al-a'));
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.playable && !r.hasChildren)).toBe(true);
   });
 });
 
@@ -162,7 +190,7 @@ describe('pushSnapshot — connection gate', () => {
   });
 });
 
-describe('offline flip → snapshot re-push (installCarService subscription)', () => {
+describe('offline flip → snapshot re-push (installHeadlessMediaService subscription)', () => {
   const tp = require('react-native-queue-player').getTrackPlayer();
 
   beforeEach(() => {
@@ -176,7 +204,7 @@ describe('offline flip → snapshot re-push (installCarService subscription)', (
   });
 
   it('re-pushes on an offline flip when connected — without any onCarConnect', async () => {
-    installCarService();
+    installHeadlessMediaService();
     await flushAsync(); // settle install-time async pushes
     tp.setBrowseSnapshot.mockClear();
 
@@ -187,7 +215,7 @@ describe('offline flip → snapshot re-push (installCarService subscription)', (
 
   it('does not push on an offline flip when no car is connected', async () => {
     tp.isCarConnected.mockReturnValue(false);
-    installCarService();
+    installHeadlessMediaService();
     await flushAsync();
     tp.setBrowseSnapshot.mockClear();
 
@@ -213,7 +241,7 @@ describe('scheduleRefresh — library-change gate', () => {
   });
 
   it('coalesces a library change into a push after 30s when connected', async () => {
-    installCarService();
+    installHeadlessMediaService();
     await jest.advanceTimersByTimeAsync(0);
     tp.setBrowseSnapshot.mockClear();
 
@@ -224,7 +252,7 @@ describe('scheduleRefresh — library-change gate', () => {
 
   it('does not arm a refresh when no car is connected', async () => {
     tp.isCarConnected.mockReturnValue(false);
-    installCarService();
+    installHeadlessMediaService();
     await jest.advanceTimersByTimeAsync(0);
     tp.setBrowseSnapshot.mockClear();
 

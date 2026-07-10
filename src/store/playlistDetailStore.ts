@@ -12,6 +12,7 @@ import {
   type PlaylistWithSongs,
 } from '../services/subsonicService';
 import { ratingStore } from './ratingStore';
+import { offlineModeStore } from './offlineModeStore';
 
 interface PlaylistDetailEntry {
   playlist: PlaylistWithSongs;
@@ -50,6 +51,12 @@ export const playlistDetailStore = create<PlaylistDetailState>()(
       playlists: {},
 
       fetchPlaylist: async (id: string, opts?: { prefetchCovers?: boolean }) => {
+        // Offline: never hit the network — serve the persisted cached detail, the same
+        // source the playlist-detail screen renders. One shared offline path for the app
+        // AND the headless car/voice service (they both call fetchPlaylist).
+        if (offlineModeStore.getState().offlineMode) {
+          return get().playlists[id]?.playlist ?? null;
+        }
         const prefetchCovers = opts?.prefetchCovers ?? true;
         await ensureCoverArtAuth();
         const data = await getPlaylist(id);

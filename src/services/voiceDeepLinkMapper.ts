@@ -1,6 +1,6 @@
 /**
  * Maps Android App Actions deep links into the RNQP `MediaSearchRequest` shape
- * so Google Assistant voice queries flow through the same carService resolver
+ * so Google Assistant voice queries flow through the same headlessMediaService resolver
  * as `onPlayFromSearchRequest`.
  *
  * Flow: "Hey Google, play <artist> on Substreamer" → Assistant fires

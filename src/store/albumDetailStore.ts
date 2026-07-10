@@ -18,6 +18,7 @@ import {
 } from './persistence/detailTables';
 import { ratingStore } from './ratingStore';
 import { songIndexStore } from './songIndexStore';
+import { offlineModeStore } from './offlineModeStore';
 
 /** Hard budget for a single album-detail fetch. */
 const FETCH_TIMEOUT_MS = 15_000;
@@ -73,6 +74,12 @@ export const albumDetailStore = create<AlbumDetailState>()((set, get) => ({
   hasHydrated: false,
 
   fetchAlbum: async (id: string, opts?: { prefetchCovers?: boolean; syncToLibrary?: 'ifAbsent' | 'replace' }) => {
+    // Offline: never hit the network — serve the persisted cached detail, the same
+    // source the album-detail screen renders. One shared offline path for the app AND
+    // the headless car/voice service (they both call fetchAlbum).
+    if (offlineModeStore.getState().offlineMode) {
+      return get().albums[id]?.album ?? null;
+    }
     const prefetchCovers = opts?.prefetchCovers ?? true;
     const result = await withTimeout(async () => {
       await ensureCoverArtAuth();
