@@ -2,7 +2,7 @@
   "expo": {
     "name": "substreamer",
     "slug": "substreamer",
-    "version": "8.0.83",
+    "version": "8.0.84",
     "scheme": "substreamer",
     "platforms": [
       "android",
@@ -13,7 +13,7 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "bundleIdentifier": "com.ghenry22.substream2",
-      "buildNumber": "168",
+      "buildNumber": "169",
       "supportsTablet": true,
       "infoPlist": {
         "UIBackgroundModes": [
@@ -50,7 +50,7 @@
         "POST_NOTIFICATIONS"
       ],
       "predictiveBackGestureEnabled": false,
-      "versionCode": 80000168,
+      "versionCode": 80000169,
       "package": "com.ghenry22.substream2"
     },
     "web": {

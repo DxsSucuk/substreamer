@@ -1,5 +1,8 @@
 # Changelog
 
+## [8.0.84] - 2026-07-10
+
+- refactor(headless): headlessMediaService rename + shared offline data path
 ## [8.0.83] - 2026-07-09
 
 - fix(carplay): headless divergence fixes + offline snapshot refresh
