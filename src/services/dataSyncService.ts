@@ -28,11 +28,31 @@ import { syncStatusStore, type SyncScope } from '../store/syncStatusStore';
 import { fireAndForget } from '../utils/fireAndForget';
 import { runPool } from '../utils/promisePool';
 import { minDelay } from '../utils/stringHelpers';
+import {
+  countLibraryAlbumsAsync,
+  deleteLibraryAlbumsAsync,
+} from '../store/persistence/libraryAlbumsTable';
+import {
+  bulkUpsertSongs,
+  countSongIndexAsync,
+  getDetailedAlbumIdsAsync,
+} from '../store/persistence/detailTables';
+import { songIndexStore } from '../store/songIndexStore';
+import { songLibraryStore } from '../store/songLibraryStore';
 import { registerMusicCacheOnAlbumReferencedHook } from './musicCacheService';
 import { fetchScanStatus, registerScanCompletedHook } from './scanService';
 import { registerScrobbleBatchCompletedHook } from './scrobbleService';
 import { canUserScan } from './serverCapabilityService';
-import { ensureCoverArtAuth, fetchServerInfo, getAlbum, getRecentlyAddedAlbums, type AlbumID3 } from './subsonicService';
+import {
+  ensureCoverArtAuth,
+  fetchServerInfo,
+  getAlbum,
+  getRecentlyAddedAlbums,
+  probeEmptySearch3,
+  searchSongsPage,
+  type AlbumID3,
+  type Child,
+} from './subsonicService';
 
 /** Bounded concurrency for the album-detail walk. */
 const WALK_CONCURRENCY = 4;
@@ -56,12 +76,27 @@ const STARTUP_PREFETCH_SETTLE_MS = 1500;
  */
 function isLibrarySyncPending(): boolean {
   const lib = albumLibraryStore.getState();
-  if (lib.albums.length === 0) return true;
-  const detail = albumDetailStore.getState().albums;
-  for (const album of lib.albums) {
-    if (!Object.prototype.hasOwnProperty.call(detail, album.id)) return true;
+  const status = syncStatusStore.getState();
+  // Pending if the album list or the song index hasn't fully synced. O(1) —
+  // no per-album detail scan (album_details is on-demand now).
+  return lib.albums.length === 0 || !status.librarySyncComplete || !status.songSyncComplete;
+}
+
+/**
+ * One-time upgrade seed: `songSyncComplete` is a new flag (defaults false). An
+ * existing install already has a fully-populated `song_index` from the old
+ * album-detail walk, so seed it complete to avoid a needless full song re-sync
+ * on the first launch after the update.
+ */
+async function maybeSeedSongSyncComplete(): Promise<void> {
+  if (syncStatusStore.getState().songSyncComplete) return;
+  // Key off the actual table counts, not the persisted flag (which may not have
+  // carried from an older build): a populated song_index + library_albums means
+  // a previous version already fully synced. Seeds the count from disk truth too.
+  const [songs, albums] = await Promise.all([countSongIndexAsync(), countLibraryAlbumsAsync()]);
+  if (songs > 0 && albums > 0) {
+    syncStatusStore.getState().markSongSyncComplete();
   }
-  return false;
 }
 
 export type PullToRefreshScope =
@@ -93,7 +128,18 @@ async function performScope(scope: SyncScope): Promise<void> {
       await albumListsStore.getState().refreshAll();
       return;
     case 'albums':
-      await albumLibraryStore.getState().fetchAllAlbums();
+      // Pull-to-refresh. If the initial paginated list fetch never finished,
+      // resume it (fetchAllAlbums picks up from COUNT(*)). Once the library is
+      // fully fetched, a full re-download would be wasteful at scale — instead
+      // run the cheap incremental change-detection (newest-album probe) which
+      // ingests server-added albums and fires the detail walk. (Server-side
+      // removals / bulk metadata rewrites are handled by the explicit
+      // Settings → Sync Library force-resync.)
+      if (!syncStatusStore.getState().librarySyncComplete) {
+        await albumLibraryStore.getState().fetchAllAlbums();
+      } else {
+        await onScanCompleted();
+      }
       return;
     case 'artists':
       await artistLibraryStore.getState().fetchAllArtists();
@@ -217,6 +263,9 @@ function handleServerSwitchIfNeeded(): void {
   cancelAllSyncs('server-switch');
   albumDetailStore.getState().clearAlbums();
   albumLibraryStore.getState().clearAlbums();
+  // Reset the song sync + re-probe capability for the new server.
+  syncStatusStore.getState().resetSongSync();
+  syncStatusStore.getState().setSyncStrategy(null);
   syncStatusStore.getState().setLastKnownMarkers({
     lastKnownServerUrl: currentIdentity,
     // Reset content-change markers so the newest-album probe re-baselines
@@ -251,7 +300,17 @@ async function startupOrResumeFlow(): Promise<void> {
   // network fan-out off the splash → first-paint critical path.
   runWhenIdle(() => {
     setTimeout(async () => {
-      const libPromise = albumLibraryStore.getState().albums.length === 0
+      // Full album-LIST fetch only when it isn't already complete on disk. A
+      // completed library with rows present skips straight to change-detection;
+      // an interrupted/partial fetch (librarySyncComplete=false) resumes the
+      // pager from COUNT(*). Reads SQL COUNT (disk truth), not the in-memory
+      // array, so hydration timing can't trigger a spurious full re-fetch.
+      const rowCount = await countLibraryAlbumsAsync();
+      const needsLibraryFetch =
+        !syncStatusStore.getState().librarySyncComplete ||
+        rowCount === 0 ||
+        albumLibraryStore.getState().albums.length === 0;
+      const libPromise = needsLibraryFetch
         ? albumLibraryStore.getState().fetchAllAlbums()
         : Promise.resolve();
 
@@ -272,10 +331,13 @@ async function startupOrResumeFlow(): Promise<void> {
         /* library fetch swallows its own errors; walk will see empty albums */
       }
       if (!offlineModeStore.getState().offlineMode) {
+        // One-time upgrade seed: existing installs already have a populated
+        // song_index (from the old walk). Mark the new song sync complete so
+        // they don't needlessly re-fetch the whole song catalog.
+        await maybeSeedSongSyncComplete();
         // Detect changes since last session (scan status or newest-album
-        // probe) and surface any new albums + their details before
-        // running the full walk. Detect errors are swallowed — fire the
-        // walk either way.
+        // probe) and surface any new albums + their songs. Detect errors are
+        // swallowed — fire the song sync either way.
         fireAndForget(
           detectChanges().then((result) => {
             if (result.changedAlbumIds.length > 0) {
@@ -287,8 +349,11 @@ async function startupOrResumeFlow(): Promise<void> {
           }),
           'sync.detectChanges',
         );
-        // Fire-and-forget — walk progress is visible via the pill banner.
-        fireAndForget(runFullAlbumDetailSync(), 'sync.runFullAlbumDetailSync');
+        // Populate the flat Songs list (fast paged search3, or the walk
+        // fallback) unless already done. Progress is visible via the banner.
+        if (!syncStatusStore.getState().songSyncComplete) {
+          fireAndForget(syncSongLibrary(), 'sync.syncSongLibrary');
+        }
       }
     }, STARTUP_PREFETCH_SETTLE_MS);
   });
@@ -373,15 +438,26 @@ export async function onScanCompleted(
   if (newAlbums.length > 0) {
     lib.upsertAlbums(newAlbums);
   }
-  // Fetch detail for each new album so the walk's reconciliation picks it up
-  // and the flat song index stays in sync without waiting for a full walk.
-  // `prefetchCovers: false` — background metadata sync; covers cache on
-  // first user-visible view.
-  const detail = albumDetailStore.getState();
+  // Pull the changed albums' SONGS into song_index (album_details stays
+  // on-demand). Keeps the flat Songs list current without a full re-sync.
+  await fetchSongsForAlbums(changedAlbumIds);
+}
+
+/**
+ * Fetch the given albums' track lists via `getAlbum` and write them into
+ * `song_index` only (NOT `album_details` — that stays on-demand). Used by the
+ * incremental change paths (scan-completed, reconcile-added, album-referenced)
+ * so newly-surfaced albums' songs land in the flat Songs list.
+ */
+async function fetchSongsForAlbums(ids: readonly string[]): Promise<void> {
+  if (ids.length === 0 || offlineModeStore.getState().offlineMode) return;
   await Promise.all(
-    changedAlbumIds.map((id) =>
-      detail.fetchAlbum(id, { prefetchCovers: false }).catch(() => null),
-    ),
+    ids.map(async (id) => {
+      const album = await getAlbum(id).catch(() => null);
+      if (album?.song && album.song.length > 0) {
+        songIndexStore.getState().upsertSongsForAlbum(id, album.song);
+      }
+    }),
   );
 }
 
@@ -419,8 +495,13 @@ export async function onAlbumReferenced(albumId: string): Promise<void> {
     const album = await getAlbum(albumId);
     if (album) {
       // Drop `song` — the library is a song-less AlbumID3[].
-      const { song: _song, ...albumMeta } = album;
+      const { song, ...albumMeta } = album;
       albumLibraryStore.getState().upsertAlbums([albumMeta]);
+      // Also index this album's songs (C3) — otherwise an album first seen via
+      // a download / recentlyAdded surface never lands in the flat Songs list.
+      if (song && song.length > 0) {
+        songIndexStore.getState().upsertSongsForAlbum(albumId, song);
+      }
     }
   } catch {
     /* best-effort: a missed reference resolves on the next full sync */
@@ -500,19 +581,23 @@ export function reconcileAlbumLibrary(
   for (const id of oldIds) {
     if (!newSet.has(id)) removed.push(id);
   }
-  let addedCount = 0;
+  const added: string[] = [];
   for (const id of newIds) {
-    if (!oldSet.has(id)) addedCount++;
+    if (!oldSet.has(id)) added.push(id);
   }
 
   if (removed.length > 0) {
     // `removeEntries` on the detail store cascades the song-index delete.
     albumDetailStore.getState().removeEntries(removed);
+    // Also delete the lean list rows — without this, a server-deleted album
+    // would resurrect on the next `library_albums` hydrate.
+    fireAndForget(deleteLibraryAlbumsAsync(removed), 'sync.reconcileRemovals');
   }
 
-  if (addedCount > 0 && !offlineModeStore.getState().offlineMode) {
-    // Fire-and-forget — walk is async and in-flight dedup-safe.
-    fireAndForget(runFullAlbumDetailSync(), 'sync.reconcileAlbumLibrary');
+  if (added.length > 0 && !offlineModeStore.getState().offlineMode) {
+    // Index the added albums' songs (song_index only; album_details stays
+    // on-demand). NOT a full walk — the song sync already ran / will run.
+    fireAndForget(fetchSongsForAlbums(added), 'sync.reconcileAdded');
   }
 }
 
@@ -534,10 +619,12 @@ export function reconcileAlbumLibrary(
  */
 export async function forceFullResync(): Promise<void> {
   cancelAllSyncs('force-resync');
-  // Reset orchestration state so the banner starts clean.
-  syncStatusStore.getState().resetDetailSync();
+  // Reset orchestration state so the banner starts clean + re-probe capability.
+  syncStatusStore.getState().resetSongSync();
+  syncStatusStore.getState().setSyncStrategy(null);
   // Clear all cached data. `albumDetailStore.clearAlbums` cascades to
-  // `songIndexStore` via the `clearDetailTables` helper.
+  // `songIndexStore` via the `clearDetailTables` helper. `albumLibraryStore.
+  // clearAlbums` resets the album-list markers (cursor/complete).
   albumDetailStore.getState().clearAlbums();
   albumLibraryStore.getState().clearAlbums();
 
@@ -547,8 +634,22 @@ export async function forceFullResync(): Promise<void> {
     return;
   }
 
-  // Refetch the library — its reconcile hook kicks off the walk.
+  // Refetch the album list, then the song list.
   await albumLibraryStore.getState().fetchAllAlbums();
+  await syncSongLibrary();
+}
+
+/**
+ * Resume a paused/incomplete library sync from where it left off (the settings
+ * "Resume" button). Continues the album list if it didn't finish, then the song
+ * sync — both resume from their persisted cursors, no clear.
+ */
+export async function resumeSync(): Promise<void> {
+  if (offlineModeStore.getState().offlineMode) return;
+  if (!syncStatusStore.getState().librarySyncComplete) {
+    await albumLibraryStore.getState().fetchAllAlbums();
+  }
+  await syncSongLibrary();
 }
 
 /**
@@ -696,6 +797,112 @@ async function runDetectChanges(): Promise<{
  * Honors `offlineModeStore.offlineMode` (bails early) and the generation
  * counter on `syncStatusStore` (stale workers exit).
  */
+/** Fast-path song page size. Sync time is flat across 2.5k/5k/20k, so the
+ *  bottleneck is total-song work (network transfer + JSON parse + insert +
+ *  in-memory rebuild), NOT round-trips. 5k keeps the counter ticking a handful
+ *  of times without extra round-trips mattering. */
+const SEARCH3_SONG_PAGE = 5000;
+/** Infinite-loop backstop for the fast song loop. */
+const SONG_PAGE_CEILING = 20000;
+
+/**
+ * Populate `song_index` (the flat Songs list) — the second sync step after the
+ * album list. FAST path: page empty-query `search3` by `songOffset` in 10k
+ * chunks → bulk-upsert each page into `song_index` (resumable via the persisted
+ * `songSyncCursor`). BASIC path (or if fast-path songs come back without
+ * `albumId`): the per-album `getAlbum` walk (`runFullAlbumDetailSync`, which also
+ * caches `album_details` and marks `songSyncComplete` on completion).
+ * Idempotent via `inFlight('song-sync')`; gated on `songSyncComplete`.
+ */
+export async function syncSongLibrary(): Promise<void> {
+  const existing = syncStatusStore.getState().getInFlight('song-sync');
+  if (existing) return existing;
+  let settle: () => void;
+  const p = new Promise<void>((resolve) => {
+    settle = resolve;
+  });
+  syncStatusStore.getState().setInFlight('song-sync', p);
+  try {
+    await doSongSync();
+  } finally {
+    settle!();
+    syncStatusStore.getState().clearInFlight('song-sync');
+  }
+  return p;
+}
+
+async function doSongSync(): Promise<void> {
+  const status = syncStatusStore.getState();
+  if (offlineModeStore.getState().offlineMode) {
+    status.setDetailSyncPhase('paused-offline');
+    return;
+  }
+  if (status.songSyncComplete) return;
+
+  const capturedGen = status.generation;
+  const genChanged = (): boolean => syncStatusStore.getState().generation !== capturedGen;
+
+  // Strategy follows the album-list probe (persisted). Probe here only if the
+  // album list never ran (shouldn't happen — songs sync after the list).
+  let strat = syncStatusStore.getState().songSyncStrategy ?? syncStatusStore.getState().syncStrategy;
+  if (strat == null) {
+    strat = (await probeEmptySearch3()) ? 'search3' : 'basic';
+    if (genChanged()) return;
+    syncStatusStore.getState().setSyncStrategy(strat);
+  }
+
+  if (strat === 'basic') {
+    syncStatusStore.getState().setSongSyncStrategy('basic');
+    await runFullAlbumDetailSync(); // the walk marks songSyncComplete on completion
+    return;
+  }
+
+  // --- FAST path: paged search3 songs → bulk-upsert song_index ---
+  syncStatusStore.getState().setSongSyncStrategy('search3');
+  syncStatusStore.getState().setDetailSyncPhase('syncing');
+  syncStatusStore.getState().setDetailSyncTotal(0); // indeterminate (no per-album count)
+  let offset = syncStatusStore.getState().songSyncCursor;
+  let firstPage = offset === 0;
+  let pageCount = 0;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    if (genChanged()) return;
+    if (offlineModeStore.getState().offlineMode) {
+      syncStatusStore.getState().setDetailSyncPhase('paused-offline');
+      return;
+    }
+    // eslint-disable-next-line no-await-in-loop
+    const page: Child[] = await searchSongsPage(SEARCH3_SONG_PAGE, offset);
+    if (page.length === 0) break;
+    if (firstPage) {
+      firstPage = false;
+      // albumId is optional in the spec; song_index keys on it. If the server
+      // doesn't populate it, the fast path is unsafe → fall back to the walk.
+      const missing = page.filter((s) => !s.albumId).length;
+      if (missing / page.length > 0.01) {
+        syncStatusStore.getState().setSongSyncStrategy('basic');
+        await runFullAlbumDetailSync();
+        return;
+      }
+    }
+    if (genChanged()) return;
+    // eslint-disable-next-line no-await-in-loop
+    await bulkUpsertSongs(page);
+    offset += page.length; // advance by the songOffset position (server-returned count)
+    syncStatusStore.getState().setSongSyncCursor(offset);
+    // Set the count from the actual DB row count — NOT a per-page accumulator,
+    // which double-counts when a re-sync upserts songs already in the table.
+    // eslint-disable-next-line no-await-in-loop
+    await songIndexStore.getState().refreshCountFromDb();
+    if ((pageCount += 1) > SONG_PAGE_CEILING) break;
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+  if (genChanged()) return;
+  await songLibraryStore.getState().rebuildFromDb();
+  syncStatusStore.getState().markSongSyncComplete();
+}
+
 export async function runFullAlbumDetailSync(): Promise<void> {
   const existing = syncStatusStore.getState().getInFlight('full-walk');
   if (existing) return existing;
@@ -732,15 +939,23 @@ async function doWalk(): Promise<void> {
   }
 
   // --- compute missing (reconciliation) ---
-  const detailAlbums = albumDetailStore.getState().albums;
+  // Determine "already detailed" from the SQL id set (disk truth), NOT the
+  // in-memory `albumDetailStore.albums` map. On a large library that map may be
+  // empty/incomplete when the walk runs (its hydration parses every envelope);
+  // reading the lean `SELECT id FROM album_details` set means we skip already-
+  // detailed albums correctly and never re-walk all of them each launch.
+  const detailedIds = await getDetailedAlbumIdsAsync();
   const missing: string[] = [];
   for (const album of libState.albums) {
-    if (!Object.prototype.hasOwnProperty.call(detailAlbums, album.id)) {
+    if (!detailedIds.has(album.id)) {
       missing.push(album.id);
     }
   }
   if (missing.length === 0) {
-    syncStatusStore.getState().resetDetailSync();
+    syncStatusStore.getState().setDetailSyncPhase('idle');
+    syncStatusStore.getState().setDetailSyncTotal(0);
+    // Every album is detailed → its songs are all in song_index → song sync done.
+    syncStatusStore.getState().markSongSyncComplete();
     return;
   }
 
@@ -803,6 +1018,12 @@ async function doWalk(): Promise<void> {
     // the next walk picks up remaining missing IDs via reconciliation.
     syncStatusStore.getState().setDetailSyncPhase('idle');
     syncStatusStore.getState().setDetailSyncTotal(0);
+    // Mark the song sync complete only if EVERY album is now detailed (no
+    // partial-failure remainder) — else the next walk retries the stragglers.
+    const nowDetailed = await getDetailedAlbumIdsAsync();
+    if (albumLibraryStore.getState().albums.every((a) => nowDetailed.has(a.id))) {
+      syncStatusStore.getState().markSongSyncComplete();
+    }
   } finally {
     unsubGen();
     unsubOffline();
@@ -832,7 +1053,9 @@ export async function recoverStalledSync(): Promise<void> {
     syncStatusStore.getState().setDetailSyncPhase('paused-offline');
     return;
   }
-  await runFullAlbumDetailSync();
+  // Resume the song sync (fast path resumes from `songSyncCursor`; the walk
+  // fallback resumes from the detailed-ids reconciliation).
+  await syncSongLibrary();
 }
 
 /**

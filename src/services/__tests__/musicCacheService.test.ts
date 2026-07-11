@@ -175,6 +175,11 @@ jest.mock('../../store/persistence/kvStorage', () => require('../../store/persis
 // can mutate in-memory state without touching a real DB.
 jest.mock('../../store/persistence/musicCacheTables', () => {
   const edges: Array<{ itemId: string; position: number; songId: string }> = [];
+  // Item ids stamped `derived = true` (auto-created partial-album grouping
+  // rows). Tracked here because the SQL layer's REAL-ref count and the
+  // orphan-pruning both hinge on it. Any item NOT in this set is REAL.
+  const derivedItems = new Set<string>();
+  const isDerived = (itemId: string) => derivedItems.has(itemId);
   return {
     // Hydrate helpers — return empty; tests seed in-memory state directly.
     hydrateCachedSongs: jest.fn(() => ({})),
@@ -195,18 +200,60 @@ jest.mock('../../store/persistence/musicCacheTables', () => {
     countSongRefs: jest.fn((songId: string) =>
       edges.filter((e) => e.songId === songId).length,
     ),
+    // REAL-holder refcount: only edges whose holder item is NOT derived.
+    // A legacy/unknown item (never stamped derived) counts as REAL, matching
+    // the production `COALESCE(derived,0)=0` guard.
+    countRealSongRefs: jest.fn((songId: string) =>
+      edges.filter((e) => e.songId === songId && !isDerived(e.itemId)).length,
+    ),
+    // Orphan a song that lost its last REAL holder: strip every remaining
+    // edge (keeping surviving holders contiguous), then prune any DERIVED
+    // holder left empty. Returns touched + pruned holders so the store can
+    // mirror the change in memory. Mirrors the production transaction.
+    orphanSongEverywhere: jest.fn((songId: string) => {
+      const affected = new Set<string>();
+      const removed = edges.filter((e) => e.songId === songId);
+      for (const e of removed) affected.add(e.itemId);
+      // Remove the edges (highest position first per holder so the shift is
+      // collision-free), decrementing higher positions to stay contiguous.
+      const sorted = [...removed].sort((a, b) => b.position - a.position);
+      for (const e of sorted) {
+        const i = edges.findIndex(
+          (x) => x.itemId === e.itemId && x.position === e.position && x.songId === songId,
+        );
+        if (i >= 0) edges.splice(i, 1);
+        for (const x of edges) {
+          if (x.itemId === e.itemId && x.position > e.position) x.position -= 1;
+        }
+      }
+      const prunedItems: string[] = [];
+      for (const itemId of affected) {
+        const remaining = edges.filter((e) => e.itemId === itemId).length;
+        if (remaining === 0 && isDerived(itemId)) {
+          derivedItems.delete(itemId);
+          prunedItems.push(itemId);
+        }
+      }
+      return { affectedItems: [...affected], prunedItems };
+    }),
     findOrphanSongs: jest.fn(() => []),
     // cached_songs writes
     upsertCachedSong: jest.fn(),
     deleteCachedSong: jest.fn(),
-    // cached_items writes
-    upsertCachedItem: jest.fn(),
+    // cached_items writes — stamp/clear derived-ness so the REAL-ref count and
+    // orphan-pruning stay faithful (`derived: true` marks a partial grouping;
+    // any explicit non-derived write upgrades it back to a real holder).
+    upsertCachedItem: jest.fn((item: { itemId: string; derived?: boolean }) => {
+      if (item?.derived) derivedItems.add(item.itemId);
+      else derivedItems.delete(item.itemId);
+    }),
     deleteCachedItem: jest.fn((itemId: string) => {
       // Cascade — remove all edges referencing this item so refcount is
       // correct for the store's orphan detection.
       for (let i = edges.length - 1; i >= 0; i--) {
         if (edges[i].itemId === itemId) edges.splice(i, 1);
       }
+      derivedItems.delete(itemId);
     }),
     // edges
     insertCachedItemSong: jest.fn((itemId: string, position: number, songId: string) => {
@@ -228,15 +275,22 @@ jest.mock('../../store/persistence/musicCacheTables', () => {
     updateDownloadQueueItem: jest.fn(),
     reorderDownloadQueue: jest.fn(),
     markDownloadComplete: jest.fn((queueId, item, songs, incomingEdges) => {
+      // An explicit finished download is a REAL holder.
+      if (item?.derived) derivedItems.add(item.itemId);
+      else derivedItems.delete(item.itemId);
       for (const e of incomingEdges) {
         edges.push({ itemId: item.itemId, position: e.position, songId: e.songId });
       }
     }),
     bulkReplace: jest.fn(),
-    clearAllMusicCacheRows: jest.fn(() => { edges.length = 0; }),
+    clearAllMusicCacheRows: jest.fn(() => {
+      edges.length = 0;
+      derivedItems.clear();
+    }),
     // Test helpers
     __edges: edges,
-    __resetEdges: () => { edges.length = 0; },
+    __derivedItems: derivedItems,
+    __resetEdges: () => { edges.length = 0; derivedItems.clear(); },
     __setDbForTests: jest.fn(),
   };
 });
@@ -1430,6 +1484,38 @@ describe('demoteAlbumToPartial', () => {
     const result = demoteAlbumToPartial('album-1');
     expect(result).toEqual({ demoted: false, removed: false });
     expect(musicCacheStore.getState().cachedItems['album-1']).toBeDefined();
+  });
+
+  it('flips the demoted album to DERIVED so a shared song orphans when the OTHER holder is removed later', () => {
+    // Repro of the reported bug: playlist P (real) holds s1; album A (explicitly
+    // downloaded → real) holds s1 + s1a. Removing the album demotes it to partial
+    // (keeps s1, drops s1a). The demoted album must become a DERIVED grouping so
+    // that removing the playlist later actually orphans s1 + prunes the album —
+    // rather than leaving s1 downloaded and the album stuck partial.
+    mockFileExists = true;
+    seedSong(makeCachedSong('s1'));
+    seedSong(makeCachedSong('s1a'));
+    seedItem('album-A', { type: 'album', songIds: ['s1', 's1a'], expectedSongCount: 2 });
+    seedItem('pl-1', { type: 'playlist', songIds: ['s1'] });
+
+    // Remove the album download → demote.
+    const result = demoteAlbumToPartial('album-A');
+    expect(result).toEqual({ demoted: true, removed: false });
+    // The album row is now a derived partial (not a real holder of s1).
+    expect(persistenceMock.__derivedItems.has('album-A')).toBe(true);
+    const album = musicCacheStore.getState().cachedItems['album-A'];
+    expect(album?.derived).toBe(true);
+    expect(album?.songIds).toEqual(['s1']);
+    expect(musicCacheStore.getState().cachedSongs['s1a']).toBeUndefined();
+    // s1 is still downloaded — held by the real playlist.
+    expect(musicCacheStore.getState().cachedSongs['s1']).toBeDefined();
+
+    // Now remove the playlist → s1 loses its last REAL holder → orphaned, and
+    // the emptied derived album row is pruned.
+    musicCacheStore.getState().removeCachedItem('pl-1');
+    expect(musicCacheStore.getState().cachedSongs['s1']).toBeUndefined();
+    expect(musicCacheStore.getState().cachedItems['album-A']).toBeUndefined();
+    expect(musicCacheStore.getState().cachedItems['pl-1']).toBeUndefined();
   });
 });
 

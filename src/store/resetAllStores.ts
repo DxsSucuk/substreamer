@@ -13,6 +13,7 @@ import {
   dropAllPendingPersistWrites,
 } from './persistence';
 import { clearDetailTables } from './persistence/detailTables';
+import { clearLibraryAlbums } from './persistence/libraryAlbumsTable';
 import { clearPendingScrobbles } from './persistence/pendingScrobbleTable';
 import { clearScrobbles } from './persistence/scrobbleTable';
 import { clearMusicCacheTables } from './musicCacheStore';
@@ -143,6 +144,9 @@ export function resetAllStores(): void {
   // `storage` key-value table that `clearKvStorage()` wipes, so they would
   // otherwise persist stale rows across logout.
   clearDetailTables();
+  // albumLibraryStore is row-based now (`library_albums`), in its own table;
+  // wipe it here so the browse list doesn't survive logout.
+  clearLibraryAlbums();
   // completedScrobbleStore also persists to a per-row table (`scrobble_events`)
   // in its own connection; truncate it here so logged-out state is clean.
   clearScrobbles();

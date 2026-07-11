@@ -39,6 +39,7 @@ export const BannerStack = memo(function BannerStack() {
   const offlineMode = offlineModeStore((s) => s.offlineMode);
   const isStorageFull = storageLimitStore((s) => s.isStorageFull);
   const syncPhase = syncStatusStore((s) => s.detailSyncPhase);
+  const listSyncPhase = syncStatusStore((s) => s.librarySyncPhase);
   const imageQueueCycleId = imageDownloadQueueStore((s) => s.cycleId);
   const imageQueueTotal = imageDownloadQueueStore((s) => s.cycleTotal);
   const imageQueuePhase = imageDownloadQueueStore((s) => s.phase);
@@ -66,7 +67,14 @@ export const BannerStack = memo(function BannerStack() {
     || syncPhase === 'paused-metered';
   if (isSyncError) return <LibrarySyncBanner />;
 
-  if (syncPhase === 'syncing' || syncPhase === 'paused-offline') {
+  // Album-LIST fetch progress (paginated `library_albums` sync) shares this
+  // slot — it runs before the detail walk, so surface it here too.
+  if (
+    syncPhase === 'syncing'
+    || syncPhase === 'paused-offline'
+    || listSyncPhase === 'fetching'
+    || listSyncPhase === 'paused-offline'
+  ) {
     return <LibrarySyncBanner />;
   }
 

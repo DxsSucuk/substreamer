@@ -12,7 +12,11 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
-import { syncStatusStore, type DetailSyncPhase } from '../store/syncStatusStore';
+import {
+  syncStatusStore,
+  type DetailSyncPhase,
+  type LibrarySyncPhase,
+} from '../store/syncStatusStore';
 
 import type { IoniconsName } from '../utils/iconNames';
 const CAPSULE_HEIGHT = 44;
@@ -47,10 +51,12 @@ function getVariant(
   t: (key: string, opts?: Record<string, unknown>) => string,
 ): Variant | null {
   if (phase === 'syncing') {
+    // `total > 0` on the basic-path walk (per-album progress); `total === 0` on
+    // the fast paged-search3 song sync (indeterminate — no per-album count).
     return {
       icon: 'sync',
       iconColor: ACCENT_BLUE,
-      label: `${t('syncingLibrary')} ${completed} / ${total}`,
+      label: total > 0 ? `${t('syncingLibrary')} ${completed} / ${total}` : t('syncingLibrary'),
       tappable: true,
     };
   }
@@ -73,18 +79,53 @@ function getVariant(
   return null;
 }
 
+/**
+ * Variant for the album-LIST fetch (paginated into `library_albums`), shown
+ * BEFORE the detail walk. `librarySyncCount` climbs as pages arrive. Suppressed
+ * below `MIN_TOTAL_TO_SHOW` so a small library (one instant page) doesn't flash.
+ */
+function getListVariant(
+  phase: LibrarySyncPhase,
+  count: number,
+  t: (key: string, opts?: Record<string, unknown>) => string,
+): Variant | null {
+  if (phase === 'fetching') {
+    if (count < MIN_TOTAL_TO_SHOW) return null;
+    return {
+      icon: 'sync',
+      iconColor: ACCENT_BLUE,
+      label: `${t('fetchingLibrary')} ${count}`,
+      tappable: true,
+    };
+  }
+  if (phase === 'paused-offline') {
+    return {
+      icon: 'cloud-offline',
+      iconColor: WARNING_AMBER,
+      label: t('syncPausedOffline'),
+      tappable: false,
+    };
+  }
+  return null;
+}
+
 export const LibrarySyncBanner = memo(function LibrarySyncBanner() {
   const { t } = useTranslation();
   const router = useRouter();
   const phase = syncStatusStore((s) => s.detailSyncPhase);
   const total = syncStatusStore((s) => s.detailSyncTotal);
   const completed = syncStatusStore((s) => s.detailSyncCompleted);
+  const listPhase = syncStatusStore((s) => s.librarySyncPhase);
+  const listCount = syncStatusStore((s) => s.librarySyncCount);
   const bannerDismissedAt = syncStatusStore((s) => s.bannerDismissedAt);
 
   const suppressed = bannerDismissedAt != null;
   const tinyLibrary = total > 0 && total < MIN_TOTAL_TO_SHOW;
-  const variant = getVariant(phase, completed, total, t);
-  const visible = variant != null && !suppressed && !tinyLibrary;
+  // The album-LIST fetch runs first (the detail walk is gated on it), so its
+  // variant takes priority. It carries its own small-library suppression.
+  const listVariant = getListVariant(listPhase, listCount, t);
+  const variant = listVariant ?? (tinyLibrary ? null : getVariant(phase, completed, total, t));
+  const visible = variant != null && !suppressed;
 
   const prevVisible = useRef(visible);
 

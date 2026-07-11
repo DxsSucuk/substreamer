@@ -14,6 +14,7 @@ import {
   clearDetailTables,
   deleteAlbumDetail,
   hydrateAlbumDetailsAsync,
+  persistAlbumDetailAndSongsAsync,
   upsertAlbumDetailAsync,
 } from './persistence/detailTables';
 import { ratingStore } from './ratingStore';
@@ -100,10 +101,14 @@ export const albumDetailStore = create<AlbumDetailState>()((set, get) => ({
             [id]: { album: data, retrievedAt },
           },
         });
-        void upsertAlbumDetailAsync(id, data, retrievedAt);
-        // Route song-index writes through songIndexStore so its mutation
-        // counter (and totalCount) stay consistent with the SQL table.
-        songIndexStore.getState().upsertSongsForAlbum(id, data.song ?? []);
+        // ONE atomic disk write of album_details + song_index so an interrupted
+        // walk never leaves a half-persisted album (the detail row exists iff
+        // its songs do). The in-memory songs-view is patched immediately; the
+        // settings song count refreshes after the write commits.
+        songIndexStore.getState().patchSongsInMemory(id, data.song ?? []);
+        void persistAlbumDetailAndSongsAsync(id, data, retrievedAt).then((delta) =>
+          songIndexStore.getState().addSongsToCount(delta),
+        );
 
         // Optimistically reflect this album in the lean library list (#202) so
         // album-mode song covers resolve and pull-to-refresh edits propagate.

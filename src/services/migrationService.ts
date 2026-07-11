@@ -2161,6 +2161,36 @@ const MIGRATION_TASKS: MigrationTask[] = [
     },
   },
 
+  {
+    id: 31,
+    name: 'Flag derived partial-album rows for download cleanup',
+    run: async (log) => {
+      // Distinguish REAL download holders (album-full / playlist / favorites /
+      // song) from the auto-created partial `album:<id>` grouping rows, so
+      // removing a favorites/playlist download actually orphans its tracks.
+      // The flag is stamped at creation going forward; this backfills existing
+      // rows. SAFE: a genuine full album download has edges == expected_song_count
+      // (stays derived = 0, never wrong-deleted); a sub-full album row is a
+      // derived partial → 1. Only imperfection is a full-count partial staying 0
+      // (non-destructive wrong-keep; self-heals when its edges next change).
+      const added = addColumnIfMissing('cached_items', 'derived', 'INTEGER DEFAULT 0');
+      const db = getDb();
+      if (db) {
+        try {
+          db.runSync(
+            `UPDATE cached_items SET derived = 1
+               WHERE type = 'album'
+                 AND (SELECT COUNT(*) FROM cached_item_songs
+                        WHERE item_id = cached_items.item_id) < expected_song_count;`,
+          );
+        } catch (e) {
+          log(`[m31] derived backfill failed: ${errMessage(e)}`);
+        }
+      }
+      log(`[m31] derived column ${added ? 'added' : 'present'}; partial-album rows flagged`);
+    },
+  },
+
   // -------------------------------------------------------------------
   // TEMPLATE – How to add a new migration task:
   //

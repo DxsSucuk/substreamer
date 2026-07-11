@@ -62,6 +62,7 @@ export async function rehydrateAllStores(): Promise<RehydrationResult> {
   const result: RehydrationResult = { succeeded: [], failed: [] };
   const stores: Array<[string, () => Promise<void>]> = [
     ['albumDetail', () => albumDetailStore.getState().hydrateFromDbAsync()],
+    ['albumLibrary', () => albumLibraryStore.getState().hydrateFromDbAsync()],
     ['songIndex', () => songIndexStore.getState().hydrateFromDbAsync()],
     ['completedScrobble', () => completedScrobbleStore.getState().hydrateFromDbAsync()],
     ['pendingScrobble', () => pendingScrobbleStore.getState().hydrateFromDbAsync()],
@@ -109,7 +110,11 @@ export async function rehydrateAllStores(): Promise<RehydrationResult> {
 const STARTUP_KV_STORES = [
   offlineModeStore,
   autoOfflineStore,
-  albumLibraryStore,
+  // albumLibraryStore is NO LONGER here: it's row-based now (not KV-persisted),
+  // so it has no `persist` API to await. Its `hydrateFromDbAsync` runs in
+  // `rehydrateAllStores` above (awaited before `onStartup`), and the startup
+  // "needs full fetch?" gate reads SQL `COUNT(*)` rather than the in-memory
+  // array — so there's no empty-window race to guard here.
   artistLibraryStore,
   playlistLibraryStore,
   albumListsStore,

@@ -46,7 +46,7 @@ import {
 } from '../store/musicCacheStore';
 import {
   countCachedSongs,
-  countSongRefs,
+  countRealSongRefs,
   insertCachedItemSong,
 } from '../store/persistence/musicCacheTables';
 import { logImageCache } from './imageCacheLogger';
@@ -788,11 +788,14 @@ export async function enqueueAlbumDownload(albumId: string): Promise<void> {
 
     if (missingSongs.length === 0) {
       // No missing songs — refresh `expectedSongCount` so the defensive
-      // partial classification self-corrects and return.
+      // partial classification self-corrects and return. `derived: false`
+      // upgrades a partial row that reached full count via favorites/playlist
+      // into a real, explicit album download (overrides the spread's stale flag).
       musicCacheStore.getState().upsertCachedItem({
         ...existing,
         expectedSongCount: album.song.length,
         rawJson: refreshedEnvelope,
+        derived: false,
       });
       return;
     }
@@ -809,6 +812,8 @@ export async function enqueueAlbumDownload(albumId: string): Promise<void> {
         ...existing,
         expectedSongCount: album.song.length,
         rawJson: refreshedEnvelope,
+        // Explicit album download — upgrade a possibly-derived partial to real.
+        derived: false,
       });
     }
 
@@ -920,6 +925,8 @@ export async function enqueueSongDownload(song: Child): Promise<void> {
         parentAlbumId: song.albumId ?? existing.albumId,
         lastSyncAt: Date.now(),
         downloadedAt: Date.now(),
+        // Explicit individual-song download — a real holder.
+        derived: false,
       },
       [song.id],
     );
@@ -1125,6 +1132,10 @@ async function ensurePartialAlbumEdge(
       lastSyncAt: now,
       downloadedAt: now,
       rawJson: buildCachedItemEnvelope(albumId, 'album'),
+      // Auto-created partial-album grouping — NOT a real download holder. Songs
+      // here orphan when their last real holder (playlist/favorites/song/full
+      // album) is removed; this row is pruned once empty.
+      derived: true,
     },
     [song.id],
   );
@@ -1629,7 +1640,9 @@ export function computeAlbumRemovalOutcome(
   const orphanSongIds: string[] = [];
   let survivorCount = 0;
   for (const sid of cached.songIds) {
-    if (countSongRefs(sid) <= 1) {
+    // Only REAL holders keep a song; the album being removed is `derived=0` and
+    // counts, so `<= 1` means "held only by this album" → would orphan.
+    if (countRealSongRefs(sid) <= 1) {
       orphanSongIds.push(sid);
     } else {
       survivorCount++;
@@ -1685,6 +1698,18 @@ export function demoteAlbumToPartial(
     // decremented refcount-via-COUNT. Update the in-memory mirrors.
     trackToItems.delete(songId);
     trackUriMap.delete(songId);
+  }
+
+  // The album is now a PARTIAL grouping: every surviving song is — by the
+  // survivor definition (`countRealSongRefs > 1`) — also held by another REAL
+  // holder (a playlist/favorites/song download). Flip the album to `derived` so
+  // it no longer independently keeps those songs alive: when their last real
+  // holder is removed they orphan and this row is pruned. Without this, removing
+  // that playlist/favorites later would leave the album's shared song downloaded
+  // and the album stuck in the partial state.
+  const demotedRow = musicCacheStore.getState().cachedItems[itemId];
+  if (demotedRow) {
+    musicCacheStore.getState().upsertCachedItem({ ...demotedRow, derived: true });
   }
 
   // Delete orphan files OFF-THREAD (best-effort), then re-check the storage

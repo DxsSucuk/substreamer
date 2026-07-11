@@ -33,7 +33,10 @@ export function useLibrarySyncBackgroundNotification() {
   useEffect(() => {
     ensureChannel();
     const sub = AppState.addEventListener('change', async (next) => {
-      const isWalking = syncStatusStore.getState().detailSyncPhase === 'syncing';
+      // Only the slow basic-path walk warrants a background notification; the
+      // fast paged-search3 song sync is done in seconds.
+      const st = syncStatusStore.getState();
+      const isWalking = st.detailSyncPhase === 'syncing' && st.songSyncStrategy === 'basic';
 
       if (next === 'background' && isWalking) {
         const { granted } = await Notifications.requestPermissionsAsync();

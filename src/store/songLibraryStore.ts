@@ -30,6 +30,11 @@ interface SongLibraryState {
   building: boolean;
   /** Build the list from `song_index` if not already built (or `force` to rebuild). */
   build: (force?: boolean) => Promise<void>;
+  /** Force a re-read from `song_index` after a BULK table change (the paged song
+   *  sync bypasses `patchAlbum`, so it wouldn't otherwise trigger a rebuild).
+   *  Sets `dirty` so an in-flight build re-reads, waits for it, then forces a
+   *  guaranteed-fresh build. */
+  rebuildFromDb: () => Promise<void>;
   /** Optimistically merge one album's songs into the in-memory list. */
   patchAlbum: (albumId: string, songs: readonly Child[]) => void;
   /** Optimistically remove songs for the given albums from the in-memory list. */
@@ -131,6 +136,19 @@ export const songLibraryStore = create<SongLibraryState>()((set, get) => ({
 
     inFlight = run;
     return run;
+  },
+
+  rebuildFromDb: async () => {
+    dirty = true;
+    const current = inFlight;
+    if (current) {
+      try {
+        await current; // let the in-flight build re-read (via dirty) and settle
+      } catch {
+        /* build swallows its own errors */
+      }
+    }
+    await get().build(true); // guaranteed-fresh read of the just-bulk-written table
   },
 
   patchAlbum: (albumId, songs) => {

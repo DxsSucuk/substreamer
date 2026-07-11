@@ -26,7 +26,7 @@ beforeEach(() => {
 
 describe('useLibrarySyncKeepAwake', () => {
   it('activates keep-awake while a walk is syncing', () => {
-    syncStatusStore.setState({ detailSyncPhase: 'syncing' });
+    syncStatusStore.setState({ detailSyncPhase: 'syncing', songSyncStrategy: 'basic' });
     renderHook(() => useLibrarySyncKeepAwake());
     expect(mockActivate).toHaveBeenCalledWith('library-sync');
   });
@@ -40,7 +40,7 @@ describe('useLibrarySyncKeepAwake', () => {
   it('transitions activate/deactivate as phase flips', () => {
     const { rerender } = renderHook(() => useLibrarySyncKeepAwake());
     act(() => {
-      syncStatusStore.setState({ detailSyncPhase: 'syncing' });
+      syncStatusStore.setState({ detailSyncPhase: 'syncing', songSyncStrategy: 'basic' });
     });
     rerender({});
     expect(mockActivate).toHaveBeenCalled();
@@ -53,7 +53,7 @@ describe('useLibrarySyncKeepAwake', () => {
   });
 
   it('cleans up on unmount', () => {
-    syncStatusStore.setState({ detailSyncPhase: 'syncing' });
+    syncStatusStore.setState({ detailSyncPhase: 'syncing', songSyncStrategy: 'basic' });
     const { unmount } = renderHook(() => useLibrarySyncKeepAwake());
     mockDeactivate.mockClear();
     unmount();
@@ -62,7 +62,7 @@ describe('useLibrarySyncKeepAwake', () => {
 
   it('swallows activate/deactivate errors (activity unavailable)', () => {
     mockActivate.mockImplementationOnce(() => Promise.reject(new Error('unavailable')));
-    syncStatusStore.setState({ detailSyncPhase: 'syncing' });
+    syncStatusStore.setState({ detailSyncPhase: 'syncing', songSyncStrategy: 'basic' });
     expect(() => renderHook(() => useLibrarySyncKeepAwake())).not.toThrow();
   });
 });

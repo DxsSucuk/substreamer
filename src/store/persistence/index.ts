@@ -36,6 +36,10 @@ export * from './pendingScrobbleTable';
 // Detail-cache row-table API
 export * from './detailTables';
 
+// Library album-list row-table API (lean AlbumID3 browse list; replaces the
+// old `substreamer-album-library` KV blob)
+export * from './libraryAlbumsTable';
+
 // Image-cache row-table API
 export * from './imageCacheTable';
 

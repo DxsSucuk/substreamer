@@ -255,6 +255,133 @@ export async function upsertSongsForAlbumAsync(albumId: string, songs: Child[]):
   }
 }
 
+/**
+ * Persist an album's detail row AND its song-index rows in ONE transaction
+ * (serialized on the same mutex as other song_index writes). The detail row
+ * exists **iff** its songs are persisted — so a crash mid-write can never leave
+ * a half-persisted album (a stuck "detailed but song-less" state that the walk
+ * would treat as done). The detail row's presence is the crash-safe "walk done"
+ * marker. Replaces the previous two separate writes (`upsertAlbumDetailAsync` +
+ * `upsertSongsForAlbumAsync`) on the album-fetch / walk path. An empty album (0
+ * songs) commits atomically = complete (not falsely broken).
+ */
+export async function persistAlbumDetailAndSongsAsync(
+  id: string,
+  album: AlbumWithSongsID3,
+  retrievedAt: number,
+): Promise<number> {
+  const db = getDb();
+  if (db === null) return 0;
+  const songs = album.song ?? [];
+  // Net change to the song_index row count = rows inserted − rows the DELETE
+  // removed. Lets callers keep a running total without a `SELECT COUNT(*)` per
+  // album (which was O(n) on a growing table → O(n²) over a full sync). For a
+  // fresh walk album the DELETE removes nothing, so this is just "songs written".
+  let delta = 0;
+  try {
+    await serializeSongIndexWrite(() =>
+      db.withTransactionAsync(async () => {
+        await db.runAsync(
+          'INSERT OR REPLACE INTO album_details (id, json, retrievedAt) VALUES (?, ?, ?);',
+          [id, JSON.stringify(album), retrievedAt],
+        );
+        const del = await db.runAsync('DELETE FROM song_index WHERE albumId = ?;', [id]);
+        let inserted = 0;
+        for (const song of songs) {
+          if (!song.id) continue;
+          // eslint-disable-next-line no-await-in-loop
+          await db.runAsync(
+            `INSERT OR REPLACE INTO song_index
+               (id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc, raw_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+            [
+              song.id,
+              id,
+              song.title ?? null,
+              song.artist ?? null,
+              song.album ?? null,
+              song.duration ?? null,
+              song.coverArt ?? null,
+              song.userRating ?? null,
+              song.starred ? 1 : 0,
+              song.year ?? null,
+              song.track ?? null,
+              song.discNumber ?? null,
+              JSON.stringify(song),
+            ],
+          );
+          inserted += 1;
+        }
+        delta = inserted - (del.changes ?? 0);
+      }),
+    );
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[detailTables] persistAlbumDetailAndSongsAsync failed id=' + id, e);
+    return 0;
+  }
+  return delta;
+}
+
+/**
+ * Bulk `INSERT OR REPLACE` a page of songs into `song_index` (the fast paged
+ * `search3` sync). One transaction (via the mutex) with chunked multi-row
+ * INSERTs (~500 rows/statement). No leading DELETE — pages accumulate by song
+ * id; removals are handled by the album-removal reap, and a force-resync clears
+ * the table first. Skips rows without `id`/`albumId` (the caller guards that
+ * `albumId` is populated before choosing this path). Returns the number of rows
+ * written (for the running `totalCount`, no `SELECT COUNT(*)`).
+ */
+export async function bulkUpsertSongs(songs: readonly Child[]): Promise<number> {
+  const db = getDb();
+  if (db === null) return 0;
+  const valid = songs.filter((s) => s.id && s.albumId);
+  if (valid.length === 0) return 0;
+  const COLS = 13;
+  const CHUNK = 500;
+  try {
+    await serializeSongIndexWrite(() =>
+      db.withTransactionAsync(async () => {
+        for (let i = 0; i < valid.length; i += CHUNK) {
+          const batch = valid.slice(i, i + CHUNK);
+          const rowPlaceholder = `(${Array(COLS).fill('?').join(', ')})`;
+          const placeholders = batch.map(() => rowPlaceholder).join(', ');
+          const params: unknown[] = [];
+          for (const s of batch) {
+            params.push(
+              s.id,
+              s.albumId,
+              s.title ?? null,
+              s.artist ?? null,
+              s.album ?? null,
+              s.duration ?? null,
+              s.coverArt ?? null,
+              s.userRating ?? null,
+              s.starred ? 1 : 0,
+              s.year ?? null,
+              s.track ?? null,
+              s.discNumber ?? null,
+              JSON.stringify(s),
+            );
+          }
+          // eslint-disable-next-line no-await-in-loop
+          await db.runAsync(
+            `INSERT OR REPLACE INTO song_index
+               (id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc, raw_json)
+               VALUES ${placeholders};`,
+            params,
+          );
+        }
+      }),
+    );
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[detailTables] bulkUpsertSongs failed', e);
+    return 0;
+  }
+  return valid.length;
+}
+
 /** Remove song_index rows for a set of album IDs. Used by orphan reaping. */
 export function deleteSongsForAlbums(albumIds: readonly string[]): void {
   const db = getDb();
@@ -455,5 +582,57 @@ export function countAlbumDetails(): number {
     return row?.c ?? 0;
   } catch {
     return 0;
+  }
+}
+
+/** Async counterpart of {@link countAlbumDetails} — runs off the JS thread. */
+export async function countAlbumDetailsAsync(): Promise<number> {
+  const db = getDb();
+  if (db === null) return 0;
+  try {
+    const row = await db.getFirstAsync<{ c: number }>('SELECT COUNT(*) AS c FROM album_details;');
+    return row?.c ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * The set of album ids that have a persisted detail row — the detail walk's
+ * completion signal. Lean (`SELECT id` only), so it scales to a 100k library
+ * without parsing every envelope. The walk computes `missing = libraryIds − this`
+ * from disk truth instead of the in-memory `albumDetailStore.albums` map, so it
+ * never re-walks already-detailed albums even if that map isn't hydrated.
+ */
+export async function getDetailedAlbumIdsAsync(): Promise<Set<string>> {
+  const db = getDb();
+  if (db === null) return new Set();
+  try {
+    const rows = await db.getAllAsync<{ id: string }>('SELECT id FROM album_details;');
+    const out = new Set<string>();
+    for (const r of rows) out.add(r.id);
+    return out;
+  } catch {
+    return new Set();
+  }
+}
+
+/** Read a single album detail row by id (on-demand, off the JS thread). Used by
+ *  the bounded/on-demand `albumDetailStore` cache when an album isn't resident
+ *  in memory (offline detail view / first open). */
+export async function getAlbumDetailByIdAsync(
+  id: string,
+): Promise<{ album: AlbumWithSongsID3; retrievedAt: number } | null> {
+  const db = getDb();
+  if (db === null) return null;
+  try {
+    const row = await db.getFirstAsync<{ json: string; retrievedAt: number }>(
+      'SELECT json, retrievedAt FROM album_details WHERE id = ?;',
+      [id],
+    );
+    if (!row) return null;
+    return { album: JSON.parse(row.json) as AlbumWithSongsID3, retrievedAt: row.retrievedAt };
+  } catch {
+    return null;
   }
 }

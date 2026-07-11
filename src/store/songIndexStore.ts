@@ -25,6 +25,17 @@ export interface SongIndexState {
 
   /** Write one album's songs into the index, replacing any prior entries for that album. */
   upsertSongsForAlbum: (albumId: string, songs: Child[]) => void;
+  /** Patch the in-memory songs-library view for an album WITHOUT a disk write —
+   *  used when the song_index write is done atomically elsewhere (fetchAlbum's
+   *  combined album_details + song_index transaction). */
+  patchSongsInMemory: (albumId: string, songs: Child[]) => void;
+  /** Adjust `totalCount` by a known net row delta (inserted − replaced) after an
+   *  atomic album persist commits — avoids a `SELECT COUNT(*)` per album. */
+  addSongsToCount: (delta: number) => void;
+  /** Set `totalCount` from the authoritative DB row count (one COUNT). Used by
+   *  the bulk paged song sync — a per-page delta would double-count on a re-sync
+   *  that upserts already-present songs. */
+  refreshCountFromDb: () => Promise<void>;
   /** Reap songs for a batch of albums (Phase-5 orphan reaping). */
   deleteSongsForAlbums: (albumIds: readonly string[]) => void;
   /** Reset and re-read the count from the database (background COUNT). */
@@ -49,6 +60,18 @@ export const songIndexStore = create<SongIndexState>()((set) => ({
       await dbUpsertSongsForAlbumAsync(albumId, songs);
       set({ totalCount: await countSongIndexAsync() });
     })();
+  },
+
+  patchSongsInMemory: (albumId, songs) => {
+    songLibraryStore.getState().patchAlbum(albumId, songs);
+  },
+
+  addSongsToCount: (delta) => {
+    set((s) => ({ totalCount: Math.max(0, s.totalCount + delta) }));
+  },
+
+  refreshCountFromDb: async () => {
+    set({ totalCount: await countSongIndexAsync() });
   },
 
   deleteSongsForAlbums: (albumIds) => {

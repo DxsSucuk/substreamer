@@ -157,6 +157,30 @@ try {
     'CREATE INDEX IF NOT EXISTS idx_song_index_title ON song_index (lower(title));',
   );
 
+  // library_albums — the lean album-browse LIST (all albums, song-less
+  // `AlbumID3`). Replaces the old `substreamer-album-library` KV blob: written
+  // progressively one page at a time by the paginated album-list sync so a
+  // very large library persists as it arrives (no monolithic blob that fails
+  // at ~100k) and resumes across restarts. `raw_json` is the full `AlbumID3`
+  // envelope (repo convention — never drop fields); the other columns are hot
+  // paths only: `sortKey` for ordered hydration (`ORDER BY sortKey`), and
+  // `starred`/`userRating` so ratings reconcile without parsing every blob.
+  // No FK. Headless-safe: this CREATE runs on every getDb(), so the table
+  // exists even on a headless-first boot (migrations don't run headless).
+  db.execSync(
+    `CREATE TABLE IF NOT EXISTS library_albums (
+       id TEXT PRIMARY KEY NOT NULL,
+       sortKey TEXT NOT NULL,
+       starred INTEGER,
+       userRating INTEGER,
+       created INTEGER,
+       raw_json TEXT NOT NULL
+     );`,
+  );
+  db.execSync(
+    'CREATE INDEX IF NOT EXISTS idx_library_albums_sortKey ON library_albums (sortKey, id);',
+  );
+
   // scrobble_events — completed scrobbles.
   db.execSync(
     `CREATE TABLE IF NOT EXISTS scrobble_events (
@@ -230,7 +254,8 @@ try {
        parent_album_id TEXT,
        last_sync_at INTEGER NOT NULL,
        downloaded_at INTEGER NOT NULL,
-       raw_json TEXT
+       raw_json TEXT,
+       derived INTEGER DEFAULT 0
      );`,
   );
   db.execSync(

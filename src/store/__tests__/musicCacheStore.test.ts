@@ -21,6 +21,8 @@ jest.mock('../persistence/musicCacheTables', () => ({
   removeCachedItemSong: jest.fn(),
   reorderCachedItemSongs: jest.fn(),
   countSongRefs: jest.fn(() => 0),
+  countRealSongRefs: jest.fn(() => 0),
+  orphanSongEverywhere: jest.fn(() => ({ affectedItems: [], prunedItems: [] })),
   clearAllMusicCacheRows: jest.fn(),
 }));
 
@@ -28,6 +30,7 @@ jest.mock('../persistence/kvStorage', () => require('../persistence/__mocks__/kv
 
 import {
   clearAllMusicCacheRows,
+  countRealSongRefs,
   countSongRefs,
   deleteCachedItem,
   deleteCachedSong,
@@ -39,6 +42,7 @@ import {
   hydrateDownloadQueueAsync,
   insertDownloadQueueItem,
   markDownloadComplete,
+  orphanSongEverywhere,
   removeCachedItemSong,
   removeDownloadQueueItem,
   reorderCachedItemSongs,
@@ -79,6 +83,8 @@ const mockDeleteCachedSong = deleteCachedSong as jest.Mock;
 const mockRemoveCachedItemSong = removeCachedItemSong as jest.Mock;
 const mockReorderCachedItemSongs = reorderCachedItemSongs as jest.Mock;
 const mockCountSongRefs = countSongRefs as jest.Mock;
+const mockCountRealSongRefs = countRealSongRefs as jest.Mock;
+const mockOrphanSongEverywhere = orphanSongEverywhere as jest.Mock;
 const mockClearAllMusicCacheRows = clearAllMusicCacheRows as jest.Mock;
 
 /* ------------------------------------------------------------------ */
@@ -166,6 +172,10 @@ beforeEach(() => {
   mockHydrateCachedItemsAsync.mockResolvedValue({});
   mockHydrateDownloadQueueAsync.mockResolvedValue([]);
   mockCountSongRefs.mockReturnValue(0);
+  // Orphan-path defaults: every song is orphan (0 real refs) and orphaning it
+  // touches/prunes nothing extra. Individual scenarios override these.
+  mockCountRealSongRefs.mockReturnValue(0);
+  mockOrphanSongEverywhere.mockReturnValue({ affectedItems: [], prunedItems: [] });
   // Wipe the in-memory kvStorage mock between tests.
   kvStorage.removeItem(SETTINGS_KEY);
 });
@@ -528,29 +538,34 @@ describe('upsertCachedItem', () => {
 /* ------------------------------------------------------------------ */
 
 describe('removeCachedItem', () => {
-  it('removes item and all songs whose refcount drops to 0', () => {
+  it('removes item and all songs whose REAL refcount drops to 0', () => {
     musicCacheStore.setState({
       cachedItems: { a: makeItem('a', ['s1', 's2']) },
       cachedSongs: { s1: makeSong('s1'), s2: makeSong('s2') },
     });
-    mockCountSongRefs.mockReturnValue(0);
+    // No REAL holder remains for either song → both orphan. `orphanSongEverywhere`
+    // touches/prunes nothing else here (simple standalone album).
+    mockCountRealSongRefs.mockReturnValue(0);
+    mockOrphanSongEverywhere.mockReturnValue({ affectedItems: [], prunedItems: [] });
 
     const orphans = musicCacheStore.getState().removeCachedItem('a');
 
     expect(mockDeleteCachedItem).toHaveBeenCalledWith('a');
-    expect(mockCountSongRefs).toHaveBeenCalledTimes(2);
-    expect(mockCountSongRefs).toHaveBeenCalledWith('s1');
-    expect(mockCountSongRefs).toHaveBeenCalledWith('s2');
-    expect(mockDeleteCachedSong).toHaveBeenCalledTimes(2);
-    expect(mockDeleteCachedSong).toHaveBeenCalledWith('s1');
-    expect(mockDeleteCachedSong).toHaveBeenCalledWith('s2');
+    expect(mockCountRealSongRefs).toHaveBeenCalledTimes(2);
+    expect(mockCountRealSongRefs).toHaveBeenCalledWith('s1');
+    expect(mockCountRealSongRefs).toHaveBeenCalledWith('s2');
+    // Orphaning goes through orphanSongEverywhere, NOT deleteCachedSong.
+    expect(mockOrphanSongEverywhere).toHaveBeenCalledTimes(2);
+    expect(mockOrphanSongEverywhere).toHaveBeenCalledWith('s1');
+    expect(mockOrphanSongEverywhere).toHaveBeenCalledWith('s2');
+    expect(mockDeleteCachedSong).not.toHaveBeenCalled();
     expect(orphans).toEqual(['s1', 's2']);
     const state = musicCacheStore.getState();
     expect(state.cachedItems['a']).toBeUndefined();
     expect(state.cachedSongs).toEqual({});
   });
 
-  it('keeps songs that are still referenced by another item', () => {
+  it('keeps songs that still have a REAL holder (another item)', () => {
     musicCacheStore.setState({
       cachedItems: {
         a: makeItem('a', ['s1', 's2']),
@@ -558,14 +573,17 @@ describe('removeCachedItem', () => {
       },
       cachedSongs: { s1: makeSong('s1'), s2: makeSong('s2') },
     });
-    // s1 still referenced by 'b', s2 orphaned.
-    mockCountSongRefs.mockImplementation((songId: string) => (songId === 's1' ? 1 : 0));
+    // s1 still has a REAL holder ('b'), s2 has none → only s2 orphans.
+    mockCountRealSongRefs.mockImplementation((songId: string) => (songId === 's1' ? 1 : 0));
+    mockOrphanSongEverywhere.mockReturnValue({ affectedItems: [], prunedItems: [] });
 
     const orphans = musicCacheStore.getState().removeCachedItem('a');
 
     expect(orphans).toEqual(['s2']);
-    expect(mockDeleteCachedSong).toHaveBeenCalledTimes(1);
-    expect(mockDeleteCachedSong).toHaveBeenCalledWith('s2');
+    // Only the orphan is passed to orphanSongEverywhere; the survivor is not.
+    expect(mockOrphanSongEverywhere).toHaveBeenCalledTimes(1);
+    expect(mockOrphanSongEverywhere).toHaveBeenCalledWith('s2');
+    expect(mockDeleteCachedSong).not.toHaveBeenCalled();
     const state = musicCacheStore.getState();
     expect(state.cachedItems['a']).toBeUndefined();
     expect(state.cachedItems['b']).toBeDefined();
@@ -587,18 +605,21 @@ describe('removeCachedItem', () => {
 /* ------------------------------------------------------------------ */
 
 describe('removeCachedItemSong', () => {
-  it('removes edge + deletes song when refcount drops to 0', () => {
+  it('removes edge + orphans song when REAL refcount drops to 0', () => {
     musicCacheStore.setState({
       cachedItems: { a: makeItem('a', ['s1', 's2', 's3']) },
       cachedSongs: { s1: makeSong('s1'), s2: makeSong('s2'), s3: makeSong('s3') },
     });
-    mockCountSongRefs.mockReturnValue(0);
+    // After the edge is removed, s2 has no REAL holder left → orphan it.
+    mockCountRealSongRefs.mockReturnValue(0);
+    mockOrphanSongEverywhere.mockReturnValue({ affectedItems: [], prunedItems: [] });
 
     const result = musicCacheStore.getState().removeCachedItemSong('a', 2);
 
     expect(mockRemoveCachedItemSong).toHaveBeenCalledWith('a', 2);
-    expect(mockCountSongRefs).toHaveBeenCalledWith('s2');
-    expect(mockDeleteCachedSong).toHaveBeenCalledWith('s2');
+    expect(mockCountRealSongRefs).toHaveBeenCalledWith('s2');
+    expect(mockOrphanSongEverywhere).toHaveBeenCalledWith('s2');
+    expect(mockDeleteCachedSong).not.toHaveBeenCalled();
     expect(result).toEqual({ orphanedSongId: 's2' });
     const state = musicCacheStore.getState();
     expect(state.cachedItems['a'].songIds).toEqual(['s1', 's3']);
@@ -607,16 +628,18 @@ describe('removeCachedItemSong', () => {
     expect(state.cachedSongs['s3']).toBeDefined();
   });
 
-  it('removes edge but keeps song when refcount > 0', () => {
+  it('removes edge but keeps song when a REAL holder remains', () => {
     musicCacheStore.setState({
       cachedItems: { a: makeItem('a', ['s1', 's2']) },
       cachedSongs: { s1: makeSong('s1'), s2: makeSong('s2') },
     });
-    mockCountSongRefs.mockReturnValue(1);
+    // A REAL holder still references s1 → not orphaned.
+    mockCountRealSongRefs.mockReturnValue(1);
 
     const result = musicCacheStore.getState().removeCachedItemSong('a', 1);
 
     expect(result).toEqual({ orphanedSongId: null });
+    expect(mockOrphanSongEverywhere).not.toHaveBeenCalled();
     expect(mockDeleteCachedSong).not.toHaveBeenCalled();
     const state = musicCacheStore.getState();
     expect(state.cachedItems['a'].songIds).toEqual(['s2']);
@@ -642,6 +665,183 @@ describe('removeCachedItemSong', () => {
     const result = musicCacheStore.getState().removeCachedItemSong('a', 2);
     expect(result).toEqual({ orphanedSongId: null });
     expect(mockRemoveCachedItemSong).not.toHaveBeenCalled();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  derived-holder orphan matrix (#derived — removing a real holder)   */
+/*                                                                     */
+/*  These drive the mocked countRealSongRefs / orphanSongEverywhere to */
+/*  simulate the SQL layer's answers, then assert the store's IN-MEMORY */
+/*  cachedItems/cachedSongs reconciliation. The store mirrors, in one   */
+/*  set(), the pruned holders + the orphaned-song filtering across      */
+/*  surviving (derived) holders.                                        */
+/* ------------------------------------------------------------------ */
+
+describe('removeCachedItem — derived-holder orphan matrix', () => {
+  it('removing favorites orphans a song held only by a derived album; the album is pruned', () => {
+    // In memory: favorites (real, holds S) + a derived album:A (also holds S).
+    musicCacheStore.setState({
+      cachedItems: {
+        __starred__: makeItem('__starred__', ['S'], { type: 'favorites' }),
+        'album:A': makeItem('album:A', ['S'], { derived: true }),
+      },
+      cachedSongs: { S: makeSong('S') },
+    });
+    // S has no REAL holder once favorites is gone → orphan. The SQL layer
+    // reports album:A as both touched and pruned (it was derived + emptied).
+    mockCountRealSongRefs.mockReturnValue(0);
+    mockOrphanSongEverywhere.mockReturnValue({
+      affectedItems: ['album:A'],
+      prunedItems: ['album:A'],
+    });
+
+    const orphans = musicCacheStore.getState().removeCachedItem('__starred__');
+
+    expect(orphans).toEqual(['S']);
+    expect(mockOrphanSongEverywhere).toHaveBeenCalledWith('S');
+    const state = musicCacheStore.getState();
+    // Removed item gone, pruned derived holder gone, orphan song gone.
+    expect(state.cachedItems['__starred__']).toBeUndefined();
+    expect(state.cachedItems['album:A']).toBeUndefined();
+    expect(state.cachedSongs['S']).toBeUndefined();
+  });
+
+  it('removing favorites orphans S but the derived album survives holding an individually-downloaded S2', () => {
+    // Derived album:A holds S (from favorites) AND S2 (individually downloaded
+    // via song:S2). Removing favorites orphans S — but album:A survives because
+    // it still holds S2 (kept alive by the real song:S2 holder).
+    musicCacheStore.setState({
+      cachedItems: {
+        __starred__: makeItem('__starred__', ['S'], { type: 'favorites' }),
+        'album:A': makeItem('album:A', ['S', 'S2'], { derived: true }),
+        'song:S2': makeItem('song:S2', ['S2'], { type: 'song' }),
+      },
+      cachedSongs: { S: makeSong('S'), S2: makeSong('S2') },
+    });
+    mockCountRealSongRefs.mockReturnValue(0); // S has no real holder left
+    mockOrphanSongEverywhere.mockReturnValue({
+      affectedItems: ['album:A'], // album:A lost S's edge...
+      prunedItems: [], // ...but survived (still holds S2)
+    });
+
+    const orphans = musicCacheStore.getState().removeCachedItem('__starred__');
+
+    expect(orphans).toEqual(['S']);
+    const state = musicCacheStore.getState();
+    expect(state.cachedItems['__starred__']).toBeUndefined();
+    // album:A survives with only S2 — the orphaned S is filtered out of songIds.
+    expect(state.cachedItems['album:A']).toBeDefined();
+    expect(state.cachedItems['album:A'].songIds).toEqual(['S2']);
+    // song:S2 real holder untouched.
+    expect(state.cachedItems['song:S2']).toBeDefined();
+    // S gone, S2 still cached.
+    expect(state.cachedSongs['S']).toBeUndefined();
+    expect(state.cachedSongs['S2']).toBeDefined();
+  });
+
+  it('does not orphan a song that still has a surviving REAL holder', () => {
+    // Removing album 'a', but S1 is also in a real playlist pl-1.
+    musicCacheStore.setState({
+      cachedItems: {
+        a: makeItem('a', ['S1']),
+        'pl-1': makeItem('pl-1', ['S1'], { type: 'playlist' }),
+      },
+      cachedSongs: { S1: makeSong('S1') },
+    });
+    mockCountRealSongRefs.mockReturnValue(1); // pl-1 still holds S1
+
+    const orphans = musicCacheStore.getState().removeCachedItem('a');
+
+    expect(orphans).toEqual([]);
+    // Never orphaned → orphanSongEverywhere is not called.
+    expect(mockOrphanSongEverywhere).not.toHaveBeenCalled();
+    const state = musicCacheStore.getState();
+    expect(state.cachedItems['a']).toBeUndefined();
+    expect(state.cachedItems['pl-1']).toBeDefined();
+    expect(state.cachedItems['pl-1'].songIds).toEqual(['S1']);
+    expect(state.cachedSongs['S1']).toBeDefined();
+  });
+});
+
+describe('removeCachedItemSong — derived-holder orphan matrix', () => {
+  it('orphans a song held only by a derived album; the album is pruned', () => {
+    // Remove S from favorites (position 1). S is also on derived album:A.
+    musicCacheStore.setState({
+      cachedItems: {
+        __starred__: makeItem('__starred__', ['S'], { type: 'favorites' }),
+        'album:A': makeItem('album:A', ['S'], { derived: true }),
+      },
+      cachedSongs: { S: makeSong('S') },
+    });
+    mockCountRealSongRefs.mockReturnValue(0);
+    mockOrphanSongEverywhere.mockReturnValue({
+      affectedItems: ['album:A'],
+      prunedItems: ['album:A'],
+    });
+
+    const result = musicCacheStore.getState().removeCachedItemSong('__starred__', 1);
+
+    expect(result).toEqual({ orphanedSongId: 'S' });
+    expect(mockRemoveCachedItemSong).toHaveBeenCalledWith('__starred__', 1);
+    expect(mockOrphanSongEverywhere).toHaveBeenCalledWith('S');
+    const state = musicCacheStore.getState();
+    // The favorites row survives (empty) — removeCachedItemSong only removes the
+    // one edge; the holder itself is not pruned by this path.
+    expect(state.cachedItems['__starred__']).toBeDefined();
+    expect(state.cachedItems['__starred__'].songIds).toEqual([]);
+    // Derived album pruned, song orphaned.
+    expect(state.cachedItems['album:A']).toBeUndefined();
+    expect(state.cachedSongs['S']).toBeUndefined();
+  });
+
+  it('orphans S but keeps the derived album that still holds an individually-downloaded S2', () => {
+    musicCacheStore.setState({
+      cachedItems: {
+        __starred__: makeItem('__starred__', ['S'], { type: 'favorites' }),
+        'album:A': makeItem('album:A', ['S', 'S2'], { derived: true }),
+        'song:S2': makeItem('song:S2', ['S2'], { type: 'song' }),
+      },
+      cachedSongs: { S: makeSong('S'), S2: makeSong('S2') },
+    });
+    mockCountRealSongRefs.mockReturnValue(0);
+    mockOrphanSongEverywhere.mockReturnValue({
+      affectedItems: ['album:A'],
+      prunedItems: [],
+    });
+
+    const result = musicCacheStore.getState().removeCachedItemSong('__starred__', 1);
+
+    expect(result).toEqual({ orphanedSongId: 'S' });
+    const state = musicCacheStore.getState();
+    expect(state.cachedItems['__starred__'].songIds).toEqual([]);
+    // album:A survives with only S2 — S filtered out of its songIds.
+    expect(state.cachedItems['album:A']).toBeDefined();
+    expect(state.cachedItems['album:A'].songIds).toEqual(['S2']);
+    expect(state.cachedItems['song:S2']).toBeDefined();
+    expect(state.cachedSongs['S']).toBeUndefined();
+    expect(state.cachedSongs['S2']).toBeDefined();
+  });
+
+  it('does not orphan when a surviving REAL holder remains', () => {
+    musicCacheStore.setState({
+      cachedItems: {
+        'pl-1': makeItem('pl-1', ['S1', 'S2'], { type: 'playlist' }),
+        'pl-2': makeItem('pl-2', ['S1'], { type: 'playlist' }),
+      },
+      cachedSongs: { S1: makeSong('S1'), S2: makeSong('S2') },
+    });
+    mockCountRealSongRefs.mockReturnValue(1); // pl-2 still holds S1
+
+    const result = musicCacheStore.getState().removeCachedItemSong('pl-1', 1);
+
+    expect(result).toEqual({ orphanedSongId: null });
+    expect(mockOrphanSongEverywhere).not.toHaveBeenCalled();
+    const state = musicCacheStore.getState();
+    expect(state.cachedItems['pl-1'].songIds).toEqual(['S2']);
+    expect(state.cachedItems['pl-2'].songIds).toEqual(['S1']);
+    expect(state.cachedSongs['S1']).toBeDefined();
+    expect(state.cachedSongs['S2']).toBeDefined();
   });
 });
 

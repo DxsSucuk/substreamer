@@ -18,7 +18,9 @@ import {
   countCachedItems,
   countCachedSongs,
   countDownloadQueueItems,
+  countRealSongRefs,
   countSongRefs,
+  orphanSongEverywhere,
   deleteCachedItem,
   deleteCachedSong,
   remapCachedSongId,
@@ -74,6 +76,8 @@ interface ItemRec {
   parent_album_id: string | null;
   last_sync_at: number;
   downloaded_at: number;
+  raw_json: string | null;
+  derived: number | null;
 }
 
 interface EdgeRec {
@@ -198,6 +202,8 @@ function makeFakeDb() {
         parent_album_id,
         last_sync_at,
         downloaded_at,
+        raw_json,
+        derived,
       ] = params as [
         string,
         string,
@@ -208,6 +214,8 @@ function makeFakeDb() {
         string | null,
         number,
         number,
+        string | null,
+        number | null,
       ];
       if (items.has(item_id)) {
         items.delete(item_id);
@@ -225,6 +233,8 @@ function makeFakeDb() {
         parent_album_id,
         last_sync_at,
         downloaded_at,
+        raw_json: raw_json ?? null,
+        derived: derived ?? null,
       });
       return;
     }
@@ -241,6 +251,8 @@ function makeFakeDb() {
         parent_album_id,
         last_sync_at,
         downloaded_at,
+        raw_json,
+        derived,
       ] = params as [
         string,
         string,
@@ -251,7 +263,14 @@ function makeFakeDb() {
         string | null,
         number,
         number,
+        string | null,
+        number | null,
       ];
+      // Mirror the real ON CONFLICT clause:
+      //   raw_json = COALESCE(excluded.raw_json, raw_json) — preserve a richer
+      //     existing envelope when the incoming write has none.
+      //   derived  = excluded.derived — always overwrite.
+      const prev = items.get(item_id);
       items.set(item_id, {
         item_id,
         type,
@@ -262,6 +281,8 @@ function makeFakeDb() {
         parent_album_id,
         last_sync_at,
         downloaded_at,
+        raw_json: (raw_json ?? null) !== null ? raw_json ?? null : prev?.raw_json ?? null,
+        derived: derived ?? null,
       });
       return;
     }
@@ -565,6 +586,36 @@ function makeFakeDb() {
         for (const edge of edges.values()) if (edge.song_id === songId) c += 1;
         return { c } as T;
       }
+      // countRealSongRefs — count only edges whose holder item is NOT derived.
+      // `COALESCE(i.derived, 0) = 0` treats a legacy/NULL row as REAL.
+      if (
+        s ===
+        'SELECT COUNT(*) AS c FROM cached_item_songs e JOIN cached_items i ON e.item_id = i.item_id WHERE e.song_id = ? AND COALESCE(i.derived, 0) = 0;'
+      ) {
+        const songId = params[0] as string;
+        let c = 0;
+        for (const edge of edges.values()) {
+          if (edge.song_id !== songId) continue;
+          const item = items.get(edge.item_id);
+          // Missing item row can't join → not counted (INNER JOIN semantics).
+          if (!item) continue;
+          if ((item.derived ?? 0) === 0) c += 1;
+        }
+        return { c } as T;
+      }
+      // orphanSongEverywhere — per-holder remaining-edge count.
+      if (s === 'SELECT COUNT(*) AS c FROM cached_item_songs WHERE item_id = ?;') {
+        const itemId = params[0] as string;
+        let c = 0;
+        for (const edge of edges.values()) if (edge.item_id === itemId) c += 1;
+        return { c } as T;
+      }
+      // orphanSongEverywhere — is this holder derived? NULL coalesces to 0.
+      if (s === 'SELECT COALESCE(derived, 0) AS d FROM cached_items WHERE item_id = ?;') {
+        const itemId = params[0] as string;
+        const item = items.get(itemId);
+        return { d: item ? item.derived ?? 0 : 0 } as T;
+      }
       // Used by remapCachedSongId to confirm the old row exists before
       // swapping. Fake returns the existence sentinel when the song is
       // in the in-memory map.
@@ -616,6 +667,15 @@ function makeFakeDb() {
           .filter((e) => e.item_id === itemId)
           .sort((a, b) => a.position - b.position)
           .map((e) => ({ song_id: e.song_id })) as T[];
+      }
+      // orphanSongEverywhere — every (item_id, position) edge for a song.
+      // Checked before the `item_id`-only branch below since both share the
+      // `SELECT item_id ... WHERE song_id = ?` prefix.
+      if (s === 'SELECT item_id, position FROM cached_item_songs WHERE song_id = ?;') {
+        const songId = params[0] as string;
+        return Array.from(edges.values())
+          .filter((e) => e.song_id === songId)
+          .map((e) => ({ item_id: e.item_id, position: e.position })) as T[];
       }
       if (s.startsWith('SELECT item_id FROM cached_item_songs WHERE song_id = ?')) {
         const songId = params[0] as string;
@@ -861,6 +921,9 @@ describe('musicCacheTables — cached_items + edges', () => {
       lastSyncAt: 1_700_000_000_000,
       downloadedAt: 1_700_000_000_000,
       songIds: [],
+      // `mapItemRow` sets `derived` unconditionally (NULL → false), so a
+      // real (non-derived) holder always hydrates with `derived: false`.
+      derived: false,
     });
   });
 
@@ -1016,6 +1079,170 @@ describe('musicCacheTables — cached_items + edges', () => {
     insertCachedItemSong('pl-1', 1, 's1');
     expect(countSongRefs('s1')).toBe(2);
     expect(countSongRefs('s-missing')).toBe(0);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  countRealSongRefs — REAL holders only (derived edges don't count)  */
+/* ------------------------------------------------------------------ */
+
+describe('musicCacheTables — countRealSongRefs', () => {
+  it('counts only the REAL holder when a real + a derived item both edge a song', () => {
+    upsertCachedSong(makeSong({ id: 's1' }));
+    // Real holder (favorites — no derived flag set → 0).
+    upsertCachedItem(makeItem({ itemId: '__starred__', type: 'favorites' }));
+    // Derived partial-album grouping holder.
+    upsertCachedItem(makeItem({ itemId: 'album:A', type: 'album', derived: true }));
+    insertCachedItemSong('__starred__', 1, 's1');
+    insertCachedItemSong('album:A', 1, 's1');
+
+    // Raw edge count sees both edges; the REAL-ref count sees only the holder.
+    expect(countSongRefs('s1')).toBe(2);
+    expect(countRealSongRefs('s1')).toBe(1);
+  });
+
+  it('returns 0 when a song is only referenced by derived holders', () => {
+    upsertCachedSong(makeSong({ id: 's1' }));
+    upsertCachedItem(makeItem({ itemId: 'album:A', type: 'album', derived: true }));
+    upsertCachedItem(makeItem({ itemId: 'album:B', type: 'album', derived: true }));
+    insertCachedItemSong('album:A', 1, 's1');
+    insertCachedItemSong('album:B', 1, 's1');
+
+    expect(countSongRefs('s1')).toBe(2);
+    expect(countRealSongRefs('s1')).toBe(0);
+  });
+
+  it('counts every real holder (real + real → 2)', () => {
+    upsertCachedSong(makeSong({ id: 's1' }));
+    upsertCachedItem(makeItem({ itemId: 'pl-1', type: 'playlist' }));
+    upsertCachedItem(makeItem({ itemId: '__starred__', type: 'favorites' }));
+    insertCachedItemSong('pl-1', 1, 's1');
+    insertCachedItemSong('__starred__', 1, 's1');
+
+    expect(countRealSongRefs('s1')).toBe(2);
+  });
+
+  it('treats a legacy NULL-derived item as REAL', () => {
+    upsertCachedSong(makeSong({ id: 's1' }));
+    // Write the item row directly with derived = NULL to simulate a legacy row
+    // predating the `derived` column backfill (COALESCE(derived,0) → real).
+    upsertCachedItem(makeItem({ itemId: 'legacy-alb', type: 'album' }));
+    fakeDb.items.set('legacy-alb', {
+      ...(fakeDb.items.get('legacy-alb') as any),
+      derived: null,
+    });
+    insertCachedItemSong('legacy-alb', 1, 's1');
+
+    expect(countRealSongRefs('s1')).toBe(1);
+  });
+
+  it('returns 0 for a song with no edges at all', () => {
+    expect(countRealSongRefs('nobody')).toBe(0);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  orphanSongEverywhere — drop all edges + song row, prune derived    */
+/* ------------------------------------------------------------------ */
+
+describe('musicCacheTables — orphanSongEverywhere', () => {
+  // Assert every surviving item keeps contiguous 1..n positions and no edge
+  // references a song row that was deleted.
+  function assertPositionsContiguous(itemId: string): void {
+    const positions = Array.from(fakeDb.edges.values())
+      .filter((e) => e.item_id === itemId)
+      .map((e) => e.position)
+      .sort((a, b) => a - b);
+    const expected = positions.map((_, i) => i + 1);
+    expect(positions).toEqual(expected);
+  }
+
+  it('drops the song edge + row but keeps a derived holder that still holds another song', () => {
+    // Derived album:A holds S (pos 1) and T (pos 2). S loses its last real
+    // holder; orphaning S must remove S's edge, delete cached_songs[S], keep A
+    // (still holds T), and re-contiguous A's positions (T → pos 1).
+    upsertCachedSong(makeSong({ id: 'S' }));
+    upsertCachedSong(makeSong({ id: 'T' }));
+    upsertCachedItem(makeItem({ itemId: 'album:A', type: 'album', derived: true }));
+    insertCachedItemSong('album:A', 1, 'S');
+    insertCachedItemSong('album:A', 2, 'T');
+
+    const result = orphanSongEverywhere('S');
+
+    expect(result.affectedItems).toEqual(['album:A']);
+    expect(result.prunedItems).toEqual([]);
+    // S's edge and song row are gone; T remains.
+    expect(getSongIdsForItem('album:A')).toEqual(['T']);
+    expect(hydrateCachedSongs()['S']).toBeUndefined();
+    expect(hydrateCachedSongs()['T']).toBeDefined();
+    // A survives as a holder.
+    expect(hydrateCachedItems()['album:A']).toBeDefined();
+    // No leftover edge references the deleted song, positions stay contiguous.
+    expect(getItemIdsForSong('S')).toEqual([]);
+    assertPositionsContiguous('album:A');
+  });
+
+  it('prunes a derived holder when the orphaned song was its only song', () => {
+    upsertCachedSong(makeSong({ id: 'S' }));
+    upsertCachedItem(makeItem({ itemId: 'album:A', type: 'album', derived: true }));
+    insertCachedItemSong('album:A', 1, 'S');
+
+    const result = orphanSongEverywhere('S');
+
+    expect(result.affectedItems).toEqual(['album:A']);
+    expect(result.prunedItems).toEqual(['album:A']);
+    expect(hydrateCachedSongs()['S']).toBeUndefined();
+    // Emptied derived holder is pruned.
+    expect(hydrateCachedItems()['album:A']).toBeUndefined();
+    expect(getItemIdsForSong('S')).toEqual([]);
+  });
+
+  it('never prunes a REAL holder even when it is emptied of its last song', () => {
+    // A real holder (playlist) with a single song. Orphaning that song empties
+    // the playlist, but a REAL holder is never auto-pruned — the user still
+    // "downloaded" it and the row must survive as an (empty) intent.
+    upsertCachedSong(makeSong({ id: 'S' }));
+    upsertCachedItem(makeItem({ itemId: 'pl-1', type: 'playlist' }));
+    insertCachedItemSong('pl-1', 1, 'S');
+
+    const result = orphanSongEverywhere('S');
+
+    expect(result.affectedItems).toEqual(['pl-1']);
+    expect(result.prunedItems).toEqual([]);
+    expect(hydrateCachedSongs()['S']).toBeUndefined();
+    // Real holder survives even though it is now empty.
+    expect(hydrateCachedItems()['pl-1']).toBeDefined();
+    expect(getSongIdsForItem('pl-1')).toEqual([]);
+    expect(getItemIdsForSong('S')).toEqual([]);
+  });
+
+  it('removes edges across a derived + real holder, pruning only the emptied derived one', () => {
+    // S edged by a derived album:A (only S) and a real favorites (holds S + U).
+    // Orphaning S: drops both S edges + cached_songs[S], prunes album:A
+    // (derived, now empty), keeps favorites (real) with U re-contiguous.
+    upsertCachedSong(makeSong({ id: 'S' }));
+    upsertCachedSong(makeSong({ id: 'U' }));
+    upsertCachedItem(makeItem({ itemId: 'album:A', type: 'album', derived: true }));
+    upsertCachedItem(makeItem({ itemId: '__starred__', type: 'favorites' }));
+    insertCachedItemSong('album:A', 1, 'S');
+    insertCachedItemSong('__starred__', 1, 'S');
+    insertCachedItemSong('__starred__', 2, 'U');
+
+    const result = orphanSongEverywhere('S');
+
+    expect(result.affectedItems.sort()).toEqual(['__starred__', 'album:A']);
+    expect(result.prunedItems).toEqual(['album:A']);
+    expect(hydrateCachedSongs()['S']).toBeUndefined();
+    expect(hydrateCachedItems()['album:A']).toBeUndefined();
+    // Favorites survives with only U, positions re-contiguous (1).
+    expect(getSongIdsForItem('__starred__')).toEqual(['U']);
+    assertPositionsContiguous('__starred__');
+    expect(getItemIdsForSong('S')).toEqual([]);
+  });
+
+  it('is a safe no-op for a song that has no edges', () => {
+    const result = orphanSongEverywhere('ghost');
+    expect(result).toEqual({ affectedItems: [], prunedItems: [] });
   });
 });
 

@@ -45,7 +45,7 @@ beforeEach(() => {
 
 describe('useLibrarySyncBackgroundNotification', () => {
   it('posts a notification when backgrounded during an active sync', async () => {
-    syncStatusStore.setState({ detailSyncPhase: 'syncing' });
+    syncStatusStore.setState({ detailSyncPhase: 'syncing', songSyncStrategy: 'basic' });
     renderHook(() => useLibrarySyncBackgroundNotification());
     await appStateListener!('background');
     expect(mockRequestPermissions).toHaveBeenCalled();
@@ -59,7 +59,7 @@ describe('useLibrarySyncBackgroundNotification', () => {
   });
 
   it('dismisses the notification when returning to active', async () => {
-    syncStatusStore.setState({ detailSyncPhase: 'syncing' });
+    syncStatusStore.setState({ detailSyncPhase: 'syncing', songSyncStrategy: 'basic' });
     renderHook(() => useLibrarySyncBackgroundNotification());
     await appStateListener!('background');
     await appStateListener!('active');
@@ -68,7 +68,7 @@ describe('useLibrarySyncBackgroundNotification', () => {
 
   it('skips scheduling when permissions are denied', async () => {
     mockRequestPermissions.mockResolvedValueOnce({ granted: false });
-    syncStatusStore.setState({ detailSyncPhase: 'syncing' });
+    syncStatusStore.setState({ detailSyncPhase: 'syncing', songSyncStrategy: 'basic' });
     renderHook(() => useLibrarySyncBackgroundNotification());
     await appStateListener!('background');
     expect(mockScheduleNotification).not.toHaveBeenCalled();

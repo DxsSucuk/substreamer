@@ -57,6 +57,15 @@ export interface CachedItemRow {
    * no natural envelope.
    */
   rawJson?: string;
+  /**
+   * `true` for an auto-created partial `album:<id>` grouping row (built by
+   * `ensurePartialAlbumEdge` so playlist/favorites/song-downloaded tracks are
+   * browsable by album). Such rows are NOT "real" download holders: a song's
+   * file lives only as long as a REAL holder (album-full / playlist / favorites
+   * / `song:<id>`) references it. Stamped by which function creates the row,
+   * never inferred from counts. Defaults to `false`.
+   */
+  derived?: boolean;
 }
 
 export interface DownloadQueueRow {
@@ -109,6 +118,7 @@ interface RawItemRow {
   last_sync_at: number;
   downloaded_at: number;
   raw_json: string | null;
+  derived: number | null;
 }
 
 interface RawQueueRow {
@@ -162,6 +172,10 @@ function mapItemRow(row: RawItemRow, songIds: string[]): CachedItemRow {
   if (row.cover_art_id !== null) out.coverArtId = row.cover_art_id;
   if (row.parent_album_id !== null) out.parentAlbumId = row.parent_album_id;
   if (row.raw_json !== null) out.rawJson = row.raw_json;
+  // Unconditional (NOT the `!== null` optional pattern): a legacy/NULL row maps
+  // to `false`, matching the `COALESCE(derived,0)` orphan-count guard so no real
+  // holder is ever mistaken for derived.
+  out.derived = row.derived === 1;
   return out;
 }
 
@@ -253,7 +267,7 @@ export function hydrateCachedItems(): Record<string, CachedItemRow> {
   try {
     const items = db.getAllSync<RawItemRow>(
       `SELECT item_id, type, name, artist, cover_art_id, expected_song_count,
-              parent_album_id, last_sync_at, downloaded_at, raw_json
+              parent_album_id, last_sync_at, downloaded_at, raw_json, derived
          FROM cached_items;`,
     );
     const edges = db.getAllSync<{ item_id: string; song_id: string }>(
@@ -347,7 +361,7 @@ export async function hydrateCachedItemsAsync(): Promise<Record<string, CachedIt
   try {
     const items = await db.getAllAsync<RawItemRow>(
       `SELECT item_id, type, name, artist, cover_art_id, expected_song_count,
-              parent_album_id, last_sync_at, downloaded_at, raw_json
+              parent_album_id, last_sync_at, downloaded_at, raw_json, derived
          FROM cached_items;`,
     );
     const edges = await db.getAllAsync<{ item_id: string; song_id: string }>(
@@ -476,6 +490,93 @@ export function countSongRefs(songId: string): number {
   } catch {
     return 0;
   }
+}
+
+/**
+ * Count only REAL download holders of a song — edges whose item is NOT a derived
+ * partial-album grouping (`derived = 0`). `COALESCE(derived,0)` treats a legacy /
+ * NULL row as real (never as derived), so a real holder can never be miscounted
+ * as derived and wrongly orphaned. When this hits 0 the song's file may be deleted
+ * even if derived partial-album edges still reference it.
+ */
+export function countRealSongRefs(songId: string): number {
+  const db = getDb();
+  if (db === null) return 0;
+  try {
+    const row = db.getFirstSync<{ c: number }>(
+      `SELECT COUNT(*) AS c FROM cached_item_songs e
+         JOIN cached_items i ON e.item_id = i.item_id
+        WHERE e.song_id = ? AND COALESCE(i.derived, 0) = 0;`,
+      [songId],
+    );
+    return row?.c ?? 0;
+  } catch {
+    // Fail SAFE: if the `derived` column doesn't exist yet (migration #31 not run
+    // — e.g. a headless start before the UI migration pass) the JOIN throws.
+    // Fall back to the raw all-edges count so we degrade to the OLD, non-destructive
+    // behaviour (a song stays until it has zero edges) rather than returning 0 and
+    // mass-orphaning everything.
+    return countSongRefs(songId);
+  }
+}
+
+/**
+ * Orphan a song that has lost its last REAL holder. It may still carry derived
+ * partial-album edges, so — in one transaction — remove every remaining edge
+ * (position-preserving per item, so surviving derived rows keep contiguous
+ * positions), then delete the song row (safe only once no edge refers to it —
+ * `cached_item_songs.song_id` has no ON DELETE CASCADE and `foreign_keys = ON`),
+ * then prune any derived holder left with zero edges. Returns the touched holders
+ * + the pruned ones so the store can mirror the change in memory.
+ */
+export function orphanSongEverywhere(
+  songId: string,
+): { affectedItems: string[]; prunedItems: string[] } {
+  const db = getDb();
+  const affectedItems: string[] = [];
+  const prunedItems: string[] = [];
+  if (db === null) return { affectedItems, prunedItems };
+  try {
+    const edges = db.getAllSync<{ item_id: string; position: number }>(
+      'SELECT item_id, position FROM cached_item_songs WHERE song_id = ?;',
+      [songId],
+    );
+    const holders = [...new Set(edges.map((e) => e.item_id))];
+    db.withTransactionSync(() => {
+      for (const e of edges) {
+        // Inline position-preserving delete — cannot call `removeCachedItemSong`
+        // here (it opens its own transaction; SQLite can't nest).
+        db.runSync(
+          'DELETE FROM cached_item_songs WHERE item_id = ? AND position = ?;',
+          [e.item_id, e.position],
+        );
+        db.runSync(
+          'UPDATE cached_item_songs SET position = position - 1 WHERE item_id = ? AND position > ?;',
+          [e.item_id, e.position],
+        );
+      }
+      db.runSync('DELETE FROM cached_songs WHERE song_id = ?;', [songId]);
+      for (const itemId of holders) {
+        affectedItems.push(itemId);
+        const cnt = db.getFirstSync<{ c: number }>(
+          'SELECT COUNT(*) AS c FROM cached_item_songs WHERE item_id = ?;',
+          [itemId],
+        );
+        if ((cnt?.c ?? 0) > 0) continue;
+        const der = db.getFirstSync<{ d: number }>(
+          'SELECT COALESCE(derived, 0) AS d FROM cached_items WHERE item_id = ?;',
+          [itemId],
+        );
+        if ((der?.d ?? 0) === 1) {
+          db.runSync('DELETE FROM cached_items WHERE item_id = ?;', [itemId]);
+          prunedItems.push(itemId);
+        }
+      }
+    });
+  } catch {
+    /* dropped */
+  }
+  return { affectedItems, prunedItems };
 }
 
 /* ------------------------------------------------------------------ */
@@ -643,8 +744,8 @@ function upsertCachedItemInternal(db: InternalDb, item: Omit<CachedItemRow, 'son
   db.runSync(
     `INSERT INTO cached_items
        (item_id, type, name, artist, cover_art_id, expected_song_count,
-        parent_album_id, last_sync_at, downloaded_at, raw_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        parent_album_id, last_sync_at, downloaded_at, raw_json, derived)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(item_id) DO UPDATE SET
          type = excluded.type,
          name = excluded.name,
@@ -654,7 +755,8 @@ function upsertCachedItemInternal(db: InternalDb, item: Omit<CachedItemRow, 'son
          parent_album_id = excluded.parent_album_id,
          last_sync_at = excluded.last_sync_at,
          downloaded_at = excluded.downloaded_at,
-         raw_json = COALESCE(excluded.raw_json, raw_json);`,
+         raw_json = COALESCE(excluded.raw_json, raw_json),
+         derived = excluded.derived;`,
     [
       item.itemId,
       item.type,
@@ -666,6 +768,7 @@ function upsertCachedItemInternal(db: InternalDb, item: Omit<CachedItemRow, 'son
       item.lastSyncAt,
       item.downloadedAt,
       item.rawJson ?? null,
+      item.derived ? 1 : 0,
     ],
   );
 }

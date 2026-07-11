@@ -13,8 +13,13 @@ export type SyncScope =
   | 'genres'
   | 'all'
   | 'full-walk'
+  | 'song-sync'
   | 'change-detect';
 
+/** Phase of the SONG fetch (the second sync step). `syncing` covers both the
+ *  fast paged-`search3` song loop and the basic-path per-album walk (the walk is
+ *  now the basic-path song fetch). Named `DetailSync*` for history — it tracks
+ *  the song population, not album detail (which is on-demand only). */
 export type DetailSyncPhase =
   | 'idle'
   | 'syncing'
@@ -22,6 +27,18 @@ export type DetailSyncPhase =
   | 'paused-auth-error'
   | 'paused-metered'
   | 'error';
+
+/** Phase of the album-LIST fetch (distinct from the song fetch above). The
+ *  list is fetched into `library_albums`; this drives the "Fetching library… N
+ *  albums" banner and the "already fetched?" gate. */
+export type LibrarySyncPhase = 'idle' | 'fetching' | 'paused-offline';
+
+/** Which transport the library sync is using, decided by a capability probe
+ *  (`search3` empty-query supported?). `search3` = fast paged `search3`
+ *  (albums via `albumOffset`, songs via `songOffset`, 10k chunks). `basic` =
+ *  legacy `getAlbumList2` (albums) + per-album `getAlbum` walk (songs). Persisted
+ *  so an interrupted sync resumes on the right path. `null` = not yet probed. */
+export type SyncStrategy = 'search3' | 'basic';
 
 interface LastKnownMarkers {
   lastChangeDetectionAt: number | null;
@@ -45,6 +62,37 @@ export interface SyncStatusState extends LastKnownMarkers {
    *  restart since this field is not persisted). */
   bannerDismissedAt: number | null;
 
+  // --- Album-LIST sync (paginated fetch into `library_albums`) ---
+  /** Phase of the paginated album-list fetch. */
+  librarySyncPhase: LibrarySyncPhase;
+  /** True once the full album list has been fetched end-to-end. The startup
+   *  gate skips a full re-fetch when this is set and rows exist; an
+   *  interrupted fetch leaves it false so the pager resumes from `COUNT(*)`. */
+  librarySyncComplete: boolean;
+  /** Albums fetched so far in the current/last list sync — banner display. */
+  librarySyncCount: number;
+  /** Resume cursor for the album-LIST fetch: the next offset to request on the
+   *  fast paged-`search3` path (advanced by each committed page). */
+  librarySyncCursor: number;
+  /** Epoch ms of the last completed album-list fetch — settings display.
+   *  Persisted here (not in `albumLibraryStore`, which is now row-based and
+   *  keeps no persisted scalar). */
+  librarySyncLastFetchedAt: number | null;
+
+  // --- Sync strategy (capability probe) ---
+  /** Transport for the whole library sync (album list + songs), from the
+   *  empty-query `search3` probe. Persisted for resume routing. */
+  syncStrategy: SyncStrategy | null;
+
+  // --- Song sync (populates `song_index`) ---
+  /** Strategy the song fetch actually uses — normally `syncStrategy`, but forced
+   *  to `basic` (the walk) if fast-path songs come back without `albumId`. */
+  songSyncStrategy: SyncStrategy | null;
+  /** Resume cursor for the fast paged-`search3` song loop (`songOffset`). */
+  songSyncCursor: number;
+  /** True once every song has been fetched into `song_index`. Startup gate. */
+  songSyncComplete: boolean;
+
   // Ephemeral
   generation: number;
   inFlight: Map<SyncScope, Promise<void>>;
@@ -58,6 +106,18 @@ export interface SyncStatusState extends LastKnownMarkers {
   setLastKnownMarkers: (partial: Partial<LastKnownMarkers>) => void;
   setBannerDismissedAt: (at: number | null) => void;
   resetDetailSync: () => void;
+  // Album-list sync actions
+  setLibrarySyncPhase: (phase: LibrarySyncPhase) => void;
+  setLibrarySyncProgress: (count: number) => void;
+  setLibrarySyncCursor: (cursor: number) => void;
+  markLibrarySyncComplete: () => void;
+  resetLibrarySync: () => void;
+  // Strategy + song-sync actions
+  setSyncStrategy: (strategy: SyncStrategy | null) => void;
+  setSongSyncStrategy: (strategy: SyncStrategy | null) => void;
+  setSongSyncCursor: (cursor: number) => void;
+  markSongSyncComplete: () => void;
+  resetSongSync: () => void;
   bumpGeneration: () => void;
   setInFlight: (scope: SyncScope, promise: Promise<void>) => void;
   clearInFlight: (scope: SyncScope) => void;
@@ -73,6 +133,17 @@ export const syncStatusStore = create<SyncStatusState>()(
       detailSyncTotal: 0,
       detailSyncCompleted: 0,
       bannerDismissedAt: null,
+
+      librarySyncPhase: 'idle',
+      librarySyncComplete: false,
+      librarySyncCount: 0,
+      librarySyncCursor: 0,
+      librarySyncLastFetchedAt: null,
+
+      syncStrategy: null,
+      songSyncStrategy: null,
+      songSyncCursor: 0,
+      songSyncComplete: false,
 
       lastChangeDetectionAt: null,
       lastKnownServerUrl: null,
@@ -104,6 +175,37 @@ export const syncStatusStore = create<SyncStatusState>()(
           detailSyncCompleted: 0,
           bannerDismissedAt: null,
         }),
+      setLibrarySyncPhase: (phase) => set({ librarySyncPhase: phase }),
+      setLibrarySyncProgress: (count) => set({ librarySyncCount: count }),
+      setLibrarySyncCursor: (cursor) => set({ librarySyncCursor: cursor }),
+      markLibrarySyncComplete: () =>
+        set({
+          librarySyncComplete: true,
+          librarySyncPhase: 'idle',
+          librarySyncLastFetchedAt: Date.now(),
+        }),
+      resetLibrarySync: () =>
+        set({
+          librarySyncPhase: 'idle',
+          librarySyncComplete: false,
+          librarySyncCount: 0,
+          librarySyncCursor: 0,
+          librarySyncLastFetchedAt: null,
+        }),
+      setSyncStrategy: (strategy) => set({ syncStrategy: strategy }),
+      setSongSyncStrategy: (strategy) => set({ songSyncStrategy: strategy }),
+      setSongSyncCursor: (cursor) => set({ songSyncCursor: cursor }),
+      markSongSyncComplete: () =>
+        set({ songSyncComplete: true, detailSyncPhase: 'idle', detailSyncTotal: 0, detailSyncCompleted: 0 }),
+      resetSongSync: () =>
+        set({
+          songSyncStrategy: null,
+          songSyncCursor: 0,
+          songSyncComplete: false,
+          detailSyncPhase: 'idle',
+          detailSyncTotal: 0,
+          detailSyncCompleted: 0,
+        }),
       bumpGeneration: () => set({ generation: get().generation + 1 }),
       setInFlight: (scope, promise) => {
         // Replace (not mutate) the Map so Zustand selector subscribers using
@@ -130,6 +232,15 @@ export const syncStatusStore = create<SyncStatusState>()(
         // bannerDismissedAt is session-only by design — the banner comes
         // back on the next app launch if the walk is still active. Not
         // persisted.
+        librarySyncPhase: state.librarySyncPhase,
+        librarySyncComplete: state.librarySyncComplete,
+        librarySyncCount: state.librarySyncCount,
+        librarySyncCursor: state.librarySyncCursor,
+        librarySyncLastFetchedAt: state.librarySyncLastFetchedAt,
+        syncStrategy: state.syncStrategy,
+        songSyncStrategy: state.songSyncStrategy,
+        songSyncCursor: state.songSyncCursor,
+        songSyncComplete: state.songSyncComplete,
         lastChangeDetectionAt: state.lastChangeDetectionAt,
         lastKnownServerUrl: state.lastKnownServerUrl,
         lastKnownServerSongCount: state.lastKnownServerSongCount,

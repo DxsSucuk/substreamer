@@ -13,13 +13,18 @@ jest.mock('expo-sqlite', () => ({
 
 import { __setDbForTests } from '../db';
 import {
+  bulkUpsertSongs,
   clearDetailTables,
   countAlbumDetails,
+  countAlbumDetailsAsync,
   countSongIndex,
   deleteAlbumDetail,
   deleteSongsForAlbums,
   fetchAllSongsByTitleAsync,
+  getAlbumDetailByIdAsync,
+  getDetailedAlbumIdsAsync,
   hydrateAlbumDetails,
+  persistAlbumDetailAndSongsAsync,
   upsertAlbumDetail,
   upsertSongsForAlbum,
 } from '../detailTables';
@@ -51,10 +56,15 @@ function makeFakeDb() {
       const [id, json, retrievedAt] = params as [string, string, number];
       albumDetails.set(id, { id, json, retrievedAt });
     } else if (s.startsWith('INSERT OR REPLACE INTO song_index')) {
-      const [id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc] =
-        params as [string, string, string | null, string | null, string | null, number | null, string | null,
-          number | null, number | null, number | null, number | null, number | null];
-      songIndex.set(id, { id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc });
+      // Handles single-row (13 params) AND multi-row batch INSERTs
+      // (`bulkUpsertSongs`) — iterate params in 13-column chunks.
+      const COLS = 13;
+      for (let i = 0; i + COLS <= params.length; i += COLS) {
+        const [id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc] =
+          params.slice(i, i + COLS) as [string, string, string | null, string | null, string | null,
+            number | null, string | null, number | null, number | null, number | null, number | null, number | null];
+        songIndex.set(id, { id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc });
+      }
     } else if (s.startsWith('DELETE FROM album_details WHERE id = ?')) {
       albumDetails.delete(params[0] as string);
     } else if (s.startsWith('DELETE FROM album_details')) {
@@ -95,6 +105,9 @@ function makeFakeDb() {
       if (s.startsWith('SELECT id, json, retrievedAt FROM album_details')) {
         return Array.from(albumDetails.values()) as T[];
       }
+      if (s.startsWith('SELECT id FROM album_details')) {
+        return Array.from(albumDetails.keys()).map((id) => ({ id })) as T[];
+      }
       // fetchAllSongsByTitle — detect by the multi-alias SELECT and the
       // FROM song_index clause; honor optional JOIN + WHERE starred = 1.
       if (/SELECT .*AS id, .*AS albumId, .*AS title.*FROM song_index/.test(s)) {
@@ -119,9 +132,30 @@ function makeFakeDb() {
     getAllAsync<T>(sql: string): Promise<T[]> {
       return Promise.resolve(this.getAllSync<T>(sql));
     },
+    getFirstAsync<T>(sql: string, params: readonly unknown[] = []): Promise<T | null> {
+      const s = sql.replace(/\s+/g, ' ').trim();
+      if (s.includes('COUNT(*) AS c FROM album_details')) {
+        return Promise.resolve({ c: albumDetails.size } as T);
+      }
+      if (s.includes('COUNT(*) AS c FROM song_index')) {
+        return Promise.resolve({ c: songIndex.size } as T);
+      }
+      if (s.startsWith('SELECT json, retrievedAt FROM album_details WHERE id = ?')) {
+        const row = albumDetails.get(params[0] as string);
+        return Promise.resolve((row ? { json: row.json, retrievedAt: row.retrievedAt } : null) as T | null);
+      }
+      return Promise.resolve(null);
+    },
     runSync,
+    runAsync(sql: string, params: readonly unknown[] = []): Promise<{ changes: number; lastInsertRowId: number }> {
+      runSync(sql, params);
+      return Promise.resolve({ changes: 0, lastInsertRowId: 0 });
+    },
     execSync: () => {},
     withTransactionSync: (fn: () => void) => fn(),
+    async withTransactionAsync(task: () => Promise<void>): Promise<void> {
+      await task();
+    },
   };
 }
 
@@ -204,6 +238,89 @@ describe('detailTables — album_details', () => {
     fakeDb.albumDetails.set('a2', { id: 'a2', json: JSON.stringify(makeAlbum('a2')), retrievedAt: 2 });
     const restored = hydrateAlbumDetails();
     expect(Object.keys(restored).sort()).toEqual(['a2']);
+  });
+});
+
+describe('detailTables — atomic persist + walk-completion helpers (Phase B)', () => {
+  it('persistAlbumDetailAndSongsAsync writes the detail row AND its songs, returning the net song delta', async () => {
+    const delta = await persistAlbumDetailAndSongsAsync('a1', makeAlbum('a1', [{ id: 's1' }, { id: 's2' }]), 1700000000000);
+    expect(countAlbumDetails()).toBe(1);
+    expect(countSongIndex()).toBe(2);
+    expect(delta).toBe(2); // fresh album: 2 inserted, 0 deleted
+    expect(hydrateAlbumDetails()['a1'].retrievedAt).toBe(1700000000000);
+  });
+
+  it('persistAlbumDetailAndSongsAsync commits an empty album as complete (detail row, 0 songs)', async () => {
+    await persistAlbumDetailAndSongsAsync('a1', makeAlbum('a1', []), 1);
+    expect(countAlbumDetails()).toBe(1);
+    expect(countSongIndex()).toBe(0);
+    // The detail row's presence is the "done" marker — a song-count heuristic
+    // would wrongly flag this as broken.
+    expect(await getDetailedAlbumIdsAsync()).toEqual(new Set(['a1']));
+  });
+
+  it('persistAlbumDetailAndSongsAsync replaces prior songs for the same album (retag-safe)', async () => {
+    await persistAlbumDetailAndSongsAsync('a1', makeAlbum('a1', [{ id: 's1' }, { id: 's2' }]), 1);
+    await persistAlbumDetailAndSongsAsync('a1', makeAlbum('a1', [{ id: 's3' }]), 2);
+    expect(countSongIndex()).toBe(1);
+    expect(Array.from(fakeDb.songIndex.keys())).toEqual(['s3']);
+  });
+
+  it('getDetailedAlbumIdsAsync returns the set of persisted detail ids', async () => {
+    await persistAlbumDetailAndSongsAsync('a1', makeAlbum('a1', [{ id: 's1' }]), 1);
+    await persistAlbumDetailAndSongsAsync('a2', makeAlbum('a2', [{ id: 's2' }]), 1);
+    expect(await getDetailedAlbumIdsAsync()).toEqual(new Set(['a1', 'a2']));
+  });
+
+  it('getDetailedAlbumIdsAsync is empty when nothing is detailed', async () => {
+    expect(await getDetailedAlbumIdsAsync()).toEqual(new Set());
+  });
+
+  it('getAlbumDetailByIdAsync round-trips one album; null for a miss', async () => {
+    await persistAlbumDetailAndSongsAsync('a1', makeAlbum('a1', [{ id: 's1' }]), 42);
+    const got = await getAlbumDetailByIdAsync('a1');
+    expect(got?.retrievedAt).toBe(42);
+    expect(got?.album.id).toBe('a1');
+    expect(await getAlbumDetailByIdAsync('nope')).toBeNull();
+  });
+
+  it('countAlbumDetailsAsync counts detail rows', async () => {
+    await persistAlbumDetailAndSongsAsync('a1', makeAlbum('a1'), 1);
+    await persistAlbumDetailAndSongsAsync('a2', makeAlbum('a2'), 1);
+    expect(await countAlbumDetailsAsync()).toBe(2);
+  });
+});
+
+describe('detailTables — bulkUpsertSongs (paged fast-path song sync)', () => {
+  it('batch-inserts a flat song list, readable back', async () => {
+    const songs = [
+      { id: 's1', albumId: 'a1', title: 'One' },
+      { id: 's2', albumId: 'a1', title: 'Two' },
+      { id: 's3', albumId: 'a2', title: 'Three' },
+    ] as any;
+    const n = await bulkUpsertSongs(songs);
+    expect(n).toBe(3);
+    expect(countSongIndex()).toBe(3);
+  });
+
+  it('skips songs without id or albumId (albumId keys the index)', async () => {
+    const songs = [
+      { id: 's1', albumId: 'a1', title: 'One' },
+      { id: 's2', title: 'no albumId' },
+      { albumId: 'a1', title: 'no id' },
+    ] as any;
+    const n = await bulkUpsertSongs(songs);
+    expect(n).toBe(1);
+    expect(countSongIndex()).toBe(1);
+  });
+
+  it('upserts by song id across pages (no leading DELETE)', async () => {
+    await bulkUpsertSongs([{ id: 's1', albumId: 'a1', title: 'Old' }] as any);
+    await bulkUpsertSongs([
+      { id: 's1', albumId: 'a1', title: 'New' },
+      { id: 's2', albumId: 'a1', title: 'Two' },
+    ] as any);
+    expect(countSongIndex()).toBe(2);
   });
 });
 

@@ -542,22 +542,57 @@ export async function getLyricsForTrack(
 }
 
 /**
- * Attempt to fetch all albums via search3 with an empty query.
- * Some servers return the full library this way (any sane library fits within
- * the requested count); others return nothing, in which case the caller falls
- * back to the paginated getAlbumList2 path (see albumLibraryStore). (#204)
+ * Capability probe: does this server support an empty-query `search3` (the
+ * fast library-sync path)? A tiny `albumCount:10` request — if it returns any
+ * albums, the empty query "match all" works and we can page `search3` in bulk;
+ * otherwise the caller falls back to the legacy `getAlbumList2` + per-album
+ * walk path. (#204)
  */
-export async function searchAllAlbums(): Promise<AlbumID3[]> {
+export async function probeEmptySearch3(): Promise<boolean> {
+  const api = getApi();
+  if (!api) return false;
+  const response = await api.search3({ query: '', albumCount: 10, songCount: 0, artistCount: 0 });
+  throwIfSubsonicFailure(response, 'search3');
+  return (response.searchResult3?.album?.length ?? 0) > 0;
+}
+
+/**
+ * Fetch one page of albums via empty-query `search3` (fast path). Paged with
+ * `albumOffset` in bulk chunks (`search3.albumCount` is uncapped). The caller
+ * loops until a page returns 0.
+ */
+export async function searchAlbumsPage(count: number, offset: number): Promise<AlbumID3[]> {
   const api = getApi();
   if (!api) return [];
   const response = await api.search3({
     query: '',
-    albumCount: 100000,
+    albumCount: count,
+    albumOffset: offset,
     songCount: 0,
     artistCount: 0,
   });
   throwIfSubsonicFailure(response, 'search3');
   return response.searchResult3?.album ?? [];
+}
+
+/**
+ * Fetch one page of songs via empty-query `search3` (fast path). Paged with
+ * `songOffset`; the caller loops until a page returns 0 and bulk-inserts each
+ * page into `song_index`. Each `Child` carries `albumId` (verified per-page by
+ * the caller, since the field is optional in the spec).
+ */
+export async function searchSongsPage(count: number, offset: number): Promise<Child[]> {
+  const api = getApi();
+  if (!api) return [];
+  const response = await api.search3({
+    query: '',
+    songCount: count,
+    songOffset: offset,
+    albumCount: 0,
+    artistCount: 0,
+  });
+  throwIfSubsonicFailure(response, 'search3');
+  return response.searchResult3?.song ?? [];
 }
 
 /**
@@ -571,6 +606,27 @@ export async function getAlbumListAlphabetical(
   if (!api) return [];
   const response = await api.getAlbumList2({
     type: 'alphabeticalByArtist',
+    size,
+    offset,
+  });
+  throwIfSubsonicFailure(response, 'getAlbumList2');
+  return response.albumList2?.album ?? [];
+}
+
+/**
+ * Fetch a page of albums sorted alphabetically by NAME. Used by the paginated
+ * library-list sync (`albumLibraryStore.fetchAllAlbums`). `alphabeticalByName`
+ * (vs `…ByArtist`) gives the most stable offset paging across servers — album
+ * name is a stable per-row key, whereas artist sorting has known ordering
+ * quirks (e.g. Navidrome #3185). Order only needs to be stable + complete
+ * across offsets; the client re-sorts by the user's preference afterward.
+ * `getAlbumList2.size` is spec-capped at 500 across all supported servers.
+ */
+export async function getAlbumsPageByName(size: number, offset: number): Promise<AlbumID3[]> {
+  const api = getApi();
+  if (!api) return [];
+  const response = await api.getAlbumList2({
+    type: 'alphabeticalByName',
     size,
     offset,
   });

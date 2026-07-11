@@ -24,7 +24,8 @@ import { type Child } from 'subsonic-api';
 
 import {
   clearAllMusicCacheRows,
-  countSongRefs,
+  countRealSongRefs,
+  orphanSongEverywhere,
   deleteCachedItem as deleteCachedItemRow,
   deleteCachedSong as deleteCachedSongRow,
   hydrateCachedItemsAsync,
@@ -378,22 +379,36 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
     const state = get();
     const item = state.cachedItems[itemId];
     const affectedSongIds = item?.songIds ?? [];
-    // Delete the item row (cascades edges) before checking refcounts.
+    // Delete the item row (cascades its own edges) before counting real refs.
     deleteCachedItemRow(itemId);
     const orphaned: string[] = [];
+    const touchedHolders = new Set<string>();
+    const prunedHolders = new Set<string>();
     for (const songId of affectedSongIds) {
-      if (countSongRefs(songId) === 0) {
-        deleteCachedSongRow(songId);
+      // Orphan only when no REAL holder remains — a derived partial-album edge
+      // does NOT keep a song alive. `orphanSongEverywhere` removes the remaining
+      // (derived) edges + song row and prunes any derived holder left empty.
+      if (countRealSongRefs(songId) === 0) {
+        const { affectedItems, prunedItems } = orphanSongEverywhere(songId);
         orphaned.push(songId);
+        affectedItems.forEach((i) => touchedHolders.add(i));
+        prunedItems.forEach((i) => prunedHolders.add(i));
       }
     }
     set((prev) => {
-      const { [itemId]: _removed, ...restItems } = prev.cachedItems;
-      const nextSongs = { ...prev.cachedSongs };
-      for (const songId of orphaned) {
-        delete nextSongs[songId];
+      const orphanSet = new Set(orphaned);
+      const nextItems = { ...prev.cachedItems };
+      delete nextItems[itemId];
+      for (const pid of prunedHolders) delete nextItems[pid];
+      // Surviving derived holders that lost an orphaned song: drop it from songIds.
+      for (const hid of touchedHolders) {
+        if (prunedHolders.has(hid)) continue;
+        const h = nextItems[hid];
+        if (h) nextItems[hid] = { ...h, songIds: h.songIds.filter((s) => !orphanSet.has(s)) };
       }
-      return { cachedItems: restItems, cachedSongs: nextSongs };
+      const nextSongs = { ...prev.cachedSongs };
+      for (const songId of orphaned) delete nextSongs[songId];
+      return { cachedItems: nextItems, cachedSongs: nextSongs };
     });
     return orphaned;
   },
@@ -410,20 +425,35 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
     const songId = item.songIds[index];
     removeCachedItemSongRow(itemId, position);
     let orphanedSongId: string | null = null;
-    if (countSongRefs(songId) === 0) {
-      deleteCachedSongRow(songId);
+    let touchedHolders: string[] = [];
+    let prunedHolders: string[] = [];
+    // `removeCachedItemSongRow` already dropped this item's edge, so a real-ref
+    // count of 0 means no OTHER real holder remains.
+    if (countRealSongRefs(songId) === 0) {
+      const { affectedItems, prunedItems } = orphanSongEverywhere(songId);
       orphanedSongId = songId;
+      touchedHolders = affectedItems;
+      prunedHolders = prunedItems;
     }
     set((prev) => {
       const prevItem = prev.cachedItems[itemId];
-      if (!prevItem) return prev;
-      const nextSongIds = prevItem.songIds.filter((_, i) => i !== index);
-      const nextItems = {
-        ...prev.cachedItems,
-        [itemId]: { ...prevItem, songIds: nextSongIds },
-      };
+      const nextItems = { ...prev.cachedItems };
+      if (prevItem) {
+        nextItems[itemId] = {
+          ...prevItem,
+          songIds: prevItem.songIds.filter((_, i) => i !== index),
+        };
+      }
       if (orphanedSongId === null) {
         return { cachedItems: nextItems };
+      }
+      const prunedSet = new Set(prunedHolders);
+      for (const pid of prunedHolders) delete nextItems[pid];
+      // Surviving derived holders of the orphaned song lost it too.
+      for (const hid of touchedHolders) {
+        if (prunedSet.has(hid) || hid === itemId) continue;
+        const h = nextItems[hid];
+        if (h) nextItems[hid] = { ...h, songIds: h.songIds.filter((s) => s !== orphanedSongId) };
       }
       const { [orphanedSongId]: _gone, ...restSongs } = prev.cachedSongs;
       return { cachedItems: nextItems, cachedSongs: restSongs };

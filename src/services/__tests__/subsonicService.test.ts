@@ -729,27 +729,65 @@ describe('getRandomAlbums', () => {
   });
 });
 
-describe('searchAllAlbums', () => {
-  it('returns albums on success', async () => {
+describe('probeEmptySearch3 + paged search3 fetchers', () => {
+  it('probeEmptySearch3 is true when the empty query returns albums', async () => {
+    const { default: SubsonicAPI } = require('subsonic-api');
+    SubsonicAPI.prototype.search3 = jest.fn().mockResolvedValue({
+      searchResult3: { album: [{ id: 'a1' }] },
+    });
+    const { probeEmptySearch3, getApi } = require('../subsonicService');
+    getApi();
+    expect(await probeEmptySearch3()).toBe(true);
+    expect(SubsonicAPI.prototype.search3).toHaveBeenCalledWith({
+      query: '',
+      albumCount: 10,
+      songCount: 0,
+      artistCount: 0,
+    });
+  });
+
+  it('probeEmptySearch3 is false when the empty query returns nothing', async () => {
+    const { default: SubsonicAPI } = require('subsonic-api');
+    SubsonicAPI.prototype.search3 = jest.fn().mockResolvedValue({ searchResult3: {} });
+    const { probeEmptySearch3, getApi } = require('../subsonicService');
+    getApi();
+    expect(await probeEmptySearch3()).toBe(false);
+  });
+
+  it('searchAlbumsPage pages by albumOffset', async () => {
     const { default: SubsonicAPI } = require('subsonic-api');
     SubsonicAPI.prototype.search3 = jest.fn().mockResolvedValue({
       searchResult3: { album: [{ id: 'a1' }, { id: 'a2' }] },
     });
-    const { searchAllAlbums, getApi } = require('../subsonicService');
+    const { searchAlbumsPage, getApi } = require('../subsonicService');
     getApi();
-    const result = await searchAllAlbums();
+    const result = await searchAlbumsPage(10000, 20);
     expect(result).toEqual([{ id: 'a1' }, { id: 'a2' }]);
+    expect(SubsonicAPI.prototype.search3).toHaveBeenCalledWith({
+      query: '',
+      albumCount: 10000,
+      albumOffset: 20,
+      songCount: 0,
+      artistCount: 0,
+    });
   });
 
-  it('returns empty when search result has no albums', async () => {
+  it('searchSongsPage pages by songOffset and returns songs', async () => {
     const { default: SubsonicAPI } = require('subsonic-api');
     SubsonicAPI.prototype.search3 = jest.fn().mockResolvedValue({
-      searchResult3: {},
+      searchResult3: { song: [{ id: 's1', albumId: 'a1' }] },
     });
-    const { searchAllAlbums, getApi } = require('../subsonicService');
+    const { searchSongsPage, getApi } = require('../subsonicService');
     getApi();
-    const result = await searchAllAlbums();
-    expect(result).toEqual([]);
+    const result = await searchSongsPage(10000, 0);
+    expect(result).toEqual([{ id: 's1', albumId: 'a1' }]);
+    expect(SubsonicAPI.prototype.search3).toHaveBeenCalledWith({
+      query: '',
+      songCount: 10000,
+      songOffset: 0,
+      albumCount: 0,
+      artistCount: 0,
+    });
   });
 });
 
