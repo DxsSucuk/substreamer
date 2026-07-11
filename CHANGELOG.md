@@ -1,5 +1,10 @@
 # Changelog
 
+## [8.0.85] - 2026-07-11
+
+- chore(deps): bump react-native-queue-player to 1.0.7
+- feat(library-sync): capability-probed paged search3 + download-refcount cleanup
+- fix(intl): use baseCollator, not localeCompare, in headless media service
 ## [8.0.84] - 2026-07-10
 
 - refactor(headless): headlessMediaService rename + shared offline data path
