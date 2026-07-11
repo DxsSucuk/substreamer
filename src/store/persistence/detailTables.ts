@@ -5,7 +5,7 @@
  */
 import type { AlbumWithSongsID3, Child } from '../../services/subsonicService';
 
-import { getDb } from './db';
+import { getDb, serializeDbWrite } from './db';
 
 /* ------------------------------------------------------------------ */
 /*  album_details                                                      */
@@ -198,23 +198,15 @@ export function upsertSongsForAlbum(albumId: string, songs: Child[]): void {
  * patch). Atomic, like the sync version.
  */
 /**
- * Serialize song_index async transactions. expo-sqlite's `withTransactionAsync`
- * is NOT exclusive — concurrent calls on the shared connection interleave
- * BEGIN/COMMIT and can torn-commit or silently drop a batch. During a library
- * sync the WALK_CONCURRENCY=4 album walk fires these writers concurrently, so a
- * promise-chain mutex keeps at most one song_index transaction in flight. A
- * thrown task can't break the chain (the `.then(undefined-undefined)` always
- * settles it).
+ * Serialize song_index async transactions through the connection-wide mutex.
+ * expo-sqlite's `withTransactionAsync` is NOT exclusive — concurrent async
+ * transactions on the shared connection interleave BEGIN/COMMIT (Android rejects
+ * the nested BEGIN; iOS tolerates it). song_index, album_details, and
+ * library_albums all share ONE connection, so they must share ONE chain — see
+ * `serializeDbWrite` in ./db. (Kept as a named alias so the intent reads locally
+ * at each call site.)
  */
-let songIndexWriteChain: Promise<unknown> = Promise.resolve();
-function serializeSongIndexWrite<T>(task: () => Promise<T>): Promise<T> {
-  const run = songIndexWriteChain.then(task, task);
-  songIndexWriteChain = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run;
-}
+const serializeSongIndexWrite = serializeDbWrite;
 
 export async function upsertSongsForAlbumAsync(albumId: string, songs: Child[]): Promise<void> {
   const db = getDb();

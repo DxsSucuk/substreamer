@@ -59,6 +59,9 @@ describe('persistence/db (happy path)', () => {
       'PRAGMA journal_mode = WAL;',
       'PRAGMA synchronous = NORMAL;',
       'PRAGMA foreign_keys = ON;',
+      'PRAGMA busy_timeout = 5000;',
+      'PRAGMA cache_size = -32000;',
+      'PRAGMA temp_store = MEMORY;',
     ]);
   });
 
@@ -86,6 +89,19 @@ describe('persistence/db (happy path)', () => {
       'cached_images',
       'image_download_queue',
     ]);
+  });
+
+  it('reads the tuning PRAGMAs back at boot to validate they applied', () => {
+    const readbacks = mockGetFirstSync.mock.calls
+      .map((c) => c[0] as string)
+      .filter((sql) => sql.startsWith('PRAGMA'));
+    expect(readbacks).toEqual(
+      expect.arrayContaining([
+        'PRAGMA busy_timeout;',
+        'PRAGMA cache_size;',
+        'PRAGMA temp_store;',
+      ]),
+    );
   });
 
   it('creates every expected index', () => {

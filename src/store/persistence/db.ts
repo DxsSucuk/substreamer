@@ -98,6 +98,39 @@ try {
   db.execSync('PRAGMA synchronous = NORMAL;');
   db.execSync('PRAGMA foreign_keys = ON;');
 
+  // ---- Tuning PRAGMAs (per-connection; set once on the shared handle) ----
+  // busy_timeout: wait-and-retry for up to 5s on a locked connection instead of
+  //   failing instantly (default 0). Belt-and-braces against transient locks
+  //   from a WAL checkpoint or any second handle.
+  // cache_size: negative = KiB, so -32000 ≈ 32 MB of page cache (default ~2 MB).
+  //   Keeps song_index's index b-trees hot across a 38k-row bulk upsert and the
+  //   full-table hydration reads.
+  // temp_store = MEMORY (2): keep ORDER BY / temp b-trees in RAM — the songs
+  //   (`ORDER BY lower(title)`) and albums (`ORDER BY sortKey`) hydration sorts.
+  db.execSync('PRAGMA busy_timeout = 5000;');
+  db.execSync('PRAGMA cache_size = -32000;');
+  db.execSync('PRAGMA temp_store = MEMORY;');
+
+  // Validate the tuning PRAGMAs actually applied. They're per-connection and a
+  // silently-ignored one (unsupported build, typo) would degrade quietly, so
+  // read the effective values back once at boot. Raw rows are logged so the
+  // output is robust to column-name assumptions (busy_timeout→`timeout`,
+  // cache_size→`cache_size`, temp_store→`temp_store` where 2=MEMORY).
+  // `console.*` is stripped from release builds — this is a dev/Metro-only
+  // diagnostic, visible on both iOS and Android when running the dev client.
+  try {
+    // eslint-disable-next-line no-console
+    console.log('[db] PRAGMA readback', {
+      busy_timeout: db.getFirstSync('PRAGMA busy_timeout;'),
+      cache_size: db.getFirstSync('PRAGMA cache_size;'),
+      temp_store: db.getFirstSync('PRAGMA temp_store;'),
+      journal_mode: db.getFirstSync('PRAGMA journal_mode;'),
+    });
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[db] PRAGMA readback failed', e);
+  }
+
   // ---- Schema ----
   // Created in FK-safe order: parents before children. Every CREATE is
   // `IF NOT EXISTS` so a second launch against an existing DB is a no-op.
@@ -368,6 +401,34 @@ try {
 /** Shared handle accessor. Returns null when the DB failed to open. */
 export function getDb(): InternalDb | null {
   return db;
+}
+
+/**
+ * Global write-serialization mutex for the shared connection.
+ *
+ * `withTransactionAsync` is NOT exclusive: it issues `BEGIN`, then yields the JS
+ * thread while its inner `runAsync` calls queue on the native background thread.
+ * A second async transaction can slip its own `BEGIN` into that gap. Android's
+ * SQLite rejects the nested `BEGIN` outright ("cannot start a transaction within
+ * a transaction" / "cannot rollback - no transaction is active"); iOS happens to
+ * tolerate the interleave, which is why this only surfaced on Android.
+ *
+ * Every row-table module shares ONE connection (`getDb()`), so a per-module
+ * mutex only serializes a module against itself and lets cross-module
+ * transactions collide (e.g. the library-album page write vs the song_index
+ * write during a sync). ALL async transactions must funnel through this single
+ * chain so at most one is ever in flight connection-wide. (`withTransactionSync`
+ * is exempt — it runs to completion without yielding, so it can't interleave.)
+ * A thrown task can't break the chain (the settle-to-undefined always resolves).
+ */
+let dbWriteChain: Promise<unknown> = Promise.resolve();
+export function serializeDbWrite<T>(task: () => Promise<T>): Promise<T> {
+  const run = dbWriteChain.then(task, task);
+  dbWriteChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
 }
 
 /**

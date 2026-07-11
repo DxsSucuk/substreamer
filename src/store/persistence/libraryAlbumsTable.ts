@@ -14,7 +14,7 @@
  */
 import type { AlbumID3 } from '../../services/subsonicService';
 
-import { getDb } from './db';
+import { getDb, serializeDbWrite } from './db';
 
 /** How the caller derives the stored sort key for a row. Passed in (not
  *  computed here) so this table module doesn't import the stores that own the
@@ -22,22 +22,15 @@ import { getDb } from './db';
 export type LibraryAlbumSortKeyFn = (album: AlbumID3) => string;
 
 /**
- * Serialize `library_albums` async transactions. expo-sqlite's
- * `withTransactionAsync` is NOT exclusive on the shared connection — concurrent
- * calls interleave BEGIN/COMMIT and can torn-commit or drop a batch. The
- * progressive pager, change-detection `upsertAlbums`, and `applyLocalPlay` can
- * all write concurrently, so a promise-chain mutex keeps at most one
- * transaction in flight (mirrors `serializeSongIndexWrite` in detailTables).
+ * Serialize `library_albums` async transactions through the connection-wide
+ * mutex. `withTransactionAsync` is NOT exclusive — concurrent async transactions
+ * on the shared connection interleave BEGIN/COMMIT (Android rejects the nested
+ * BEGIN; iOS tolerates it). library_albums shares the connection with
+ * song_index / album_details, so a per-table chain isn't enough: the album page
+ * write and the song write during a sync would still collide. All async
+ * transactions share ONE chain — see `serializeDbWrite` in ./db.
  */
-let libraryAlbumWriteChain: Promise<unknown> = Promise.resolve();
-function serializeLibraryAlbumWrite<T>(task: () => Promise<T>): Promise<T> {
-  const run = libraryAlbumWriteChain.then(task, task);
-  libraryAlbumWriteChain = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run;
-}
+const serializeLibraryAlbumWrite = serializeDbWrite;
 
 /** Coerce `AlbumID3.created` (a Date at the type level, but a string after a
  *  JSON round-trip) to an epoch-ms number for the hot column, or null. */
