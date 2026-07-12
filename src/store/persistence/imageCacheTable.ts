@@ -12,8 +12,12 @@
  * `ON CONFLICT` upsert below, makes a mid-generation crash safe: the
  * partially-cached directory simply has fewer rows in the table, and the
  * next `cacheAllSizes()` / reconciliation pass regenerates what's missing.
+ *
+ * All DB access is async so the image download/reconcile worker never blocks
+ * the JS thread; writes funnel through `serializeDbWrite` (the connection-wide
+ * mutex).
  */
-import { getDb, type InternalDb } from './db';
+import { getDb, serializeDbWrite, type InternalDb } from './db';
 
 export interface CachedImageRow {
   coverArtId: string;
@@ -64,55 +68,9 @@ const EMPTY_AGGREGATES: ImageCacheAggregates = {
 };
 
 /**
- * Single-query derivation of every aggregate the store needs. Replaces the
- * two-walk `getImageCacheStats()` filesystem scan on every launch.
- */
-export function hydrateImageCacheAggregates(): ImageCacheAggregates {
-  const db = getDb();
-  if (db === null) return { ...EMPTY_AGGREGATES };
-  try {
-    const totals = db.getFirstSync<{
-      total_bytes: number | null;
-      file_count: number;
-      image_count: number;
-    }>(
-      `SELECT
-         COALESCE(SUM(bytes), 0) AS total_bytes,
-         COUNT(*) AS file_count,
-         COUNT(DISTINCT cover_art_id) AS image_count
-       FROM cached_images;`,
-    );
-    // Exclude cover_art_ids currently in the image-download queue: those
-    // rows are "in progress" (queued or downloading), not "incomplete".
-    // Mid-refresh a cover is briefly missing variants between delete and
-    // download-complete, and without this filter the Settings count
-    // ticks up to 1 and back to 0 on every row, making the screen flash.
-    const incomplete = db.getFirstSync<{ c: number }>(
-      `SELECT COUNT(*) AS c FROM (
-         SELECT cover_art_id FROM cached_images
-           WHERE cover_art_id NOT IN (
-             SELECT cover_art_id FROM image_download_queue
-           )
-           GROUP BY cover_art_id HAVING COUNT(*) < 4
-       );`,
-    );
-    return {
-      totalBytes: totals?.total_bytes ?? 0,
-      fileCount: totals?.file_count ?? 0,
-      imageCount: totals?.image_count ?? 0,
-      incompleteCount: incomplete?.c ?? 0,
-    };
-  } catch {
-    return { ...EMPTY_AGGREGATES };
-  }
-}
-
-/**
- * Async twin of {@link hydrateImageCacheAggregates}. Uses `getFirstAsync` so the
- * two scans of `cached_images` run on a background native thread instead of
- * blocking the JS thread. Use this on interactive/hot paths (e.g. the recalc
- * after every image download); the sync version is reserved for one-shot boot
- * hydration where ordering matters.
+ * Single-query derivation of every aggregate the store needs. Runs both scans
+ * of `cached_images` on expo-sqlite's background thread. Replaces the two-walk
+ * `getImageCacheStats()` filesystem scan.
  */
 export async function hydrateImageCacheAggregatesAsync(): Promise<ImageCacheAggregates> {
   const db = getDb();
@@ -129,7 +87,11 @@ export async function hydrateImageCacheAggregatesAsync(): Promise<ImageCacheAggr
          COUNT(DISTINCT cover_art_id) AS image_count
        FROM cached_images;`,
     );
-    // See the sync version for why in-queue cover_art_ids are excluded.
+    // Exclude cover_art_ids currently in the image-download queue: those rows
+    // are "in progress" (queued or downloading), not "incomplete". Mid-refresh
+    // a cover is briefly missing variants between delete and download-complete,
+    // and without this filter the Settings count ticks up to 1 and back to 0 on
+    // every row, making the screen flash.
     const incomplete = await db.getFirstAsync<{ c: number }>(
       `SELECT COUNT(*) AS c FROM (
          SELECT cover_art_id FROM cached_images
@@ -154,8 +116,8 @@ export async function hydrateImageCacheAggregatesAsync(): Promise<ImageCacheAggr
 /*  Single-variant writes                                              */
 /* ------------------------------------------------------------------ */
 
-function upsertCachedImageInternal(db: InternalDb, row: CachedImageRow): void {
-  db.runSync(
+async function upsertCachedImageInternal(db: InternalDb, row: CachedImageRow): Promise<void> {
+  await db.runAsync(
     `INSERT INTO cached_images (cover_art_id, size, ext, bytes, cached_at)
        VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(cover_art_id, size) DO UPDATE SET
@@ -170,12 +132,12 @@ function upsertCachedImageInternal(db: InternalDb, row: CachedImageRow): void {
  * Record a variant as cached on disk. Must be called AFTER the file has
  * been renamed from its `.tmp` to its final name.
  */
-export function upsertCachedImage(row: CachedImageRow): void {
+export async function upsertCachedImage(row: CachedImageRow): Promise<void> {
   const db = getDb();
   if (db === null) return;
   if (!row.coverArtId || !row.size) return;
   try {
-    upsertCachedImageInternal(db, row);
+    await serializeDbWrite(() => upsertCachedImageInternal(db, row));
   } catch {
     /* dropped */
   }
@@ -189,13 +151,13 @@ export function upsertCachedImage(row: CachedImageRow): void {
  * Delete every row for a cover_art_id. Returns the freed bytes/count so
  * the in-memory aggregates can be updated incrementally.
  */
-export function deleteCachedImagesForCoverArt(
+export async function deleteCachedImagesForCoverArt(
   coverArtId: string,
-): { bytes: number; count: number } {
+): Promise<{ bytes: number; count: number }> {
   const db = getDb();
   if (db === null || !coverArtId) return { bytes: 0, count: 0 };
   try {
-    const totals = db.getFirstSync<{
+    const totals = await db.getFirstAsync<{
       total_bytes: number | null;
       file_count: number;
     }>(
@@ -203,9 +165,9 @@ export function deleteCachedImagesForCoverArt(
          FROM cached_images WHERE cover_art_id = ?;`,
       [coverArtId],
     );
-    db.runSync('DELETE FROM cached_images WHERE cover_art_id = ?;', [
-      coverArtId,
-    ]);
+    await serializeDbWrite(() =>
+      db.runAsync('DELETE FROM cached_images WHERE cover_art_id = ?;', [coverArtId]),
+    );
     return {
       bytes: totals?.total_bytes ?? 0,
       count: totals?.file_count ?? 0,
@@ -219,16 +181,18 @@ export function deleteCachedImagesForCoverArt(
  * Delete a single variant row. Used by the SQL-side of reconciliation when
  * a DB row's file has vanished from disk.
  */
-export function deleteCachedImageVariant(
+export async function deleteCachedImageVariant(
   coverArtId: string,
   size: number,
-): void {
+): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    db.runSync(
-      'DELETE FROM cached_images WHERE cover_art_id = ? AND size = ?;',
-      [coverArtId, size],
+    await serializeDbWrite(() =>
+      db.runAsync('DELETE FROM cached_images WHERE cover_art_id = ? AND size = ?;', [
+        coverArtId,
+        size,
+      ]),
     );
   } catch {
     /* dropped */
@@ -236,11 +200,11 @@ export function deleteCachedImageVariant(
 }
 
 /** Remove every row. Used on logout / clearImageCache via resetAllStores. */
-export function clearAllCachedImages(): void {
+export async function clearAllCachedImages(): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    db.runSync('DELETE FROM cached_images;');
+    await serializeDbWrite(() => db.runAsync('DELETE FROM cached_images;'));
   } catch {
     /* dropped */
   }
@@ -250,11 +214,11 @@ export function clearAllCachedImages(): void {
 /*  Point reads                                                        */
 /* ------------------------------------------------------------------ */
 
-export function hasCachedImage(coverArtId: string, size: number): boolean {
+export async function hasCachedImage(coverArtId: string, size: number): Promise<boolean> {
   const db = getDb();
   if (db === null) return false;
   try {
-    const row = db.getFirstSync<{ c: number }>(
+    const row = await db.getFirstAsync<{ c: number }>(
       'SELECT 1 AS c FROM cached_images WHERE cover_art_id = ? AND size = ? LIMIT 1;',
       [coverArtId, size],
     );
@@ -264,29 +228,11 @@ export function hasCachedImage(coverArtId: string, size: number): boolean {
   }
 }
 
-/** All variants for a single cover-art id, ordered by size ascending. */
-export function getCachedImagesForCoverArt(
-  coverArtId: string,
-): CachedImageRow[] {
-  const db = getDb();
-  if (db === null) return [];
-  try {
-    const rows = db.getAllSync<RawRow>(
-      `SELECT cover_art_id, size, ext, bytes, cached_at
-         FROM cached_images WHERE cover_art_id = ? ORDER BY size ASC;`,
-      [coverArtId],
-    );
-    return rows.map(mapRow);
-  } catch {
-    return [];
-  }
-}
-
 /**
- * Async twin of {@link getCachedImagesForCoverArt}. The single source of truth
- * for "which variants does this cover have?" on the render + decision paths —
- * `getAllAsync` keeps the SQLite work off the JS thread. A cover has ≤4 rows,
- * so callers filter the small result in memory.
+ * All variants for a single cover-art id, ordered by size ascending. The single
+ * source of truth for "which variants does this cover have?" on the render +
+ * decision paths — `getAllAsync` keeps the SQLite work off the JS thread. A
+ * cover has ≤4 rows, so callers filter the small result in memory.
  */
 export async function getCachedImagesForCoverArtAsync(
   coverArtId: string,
@@ -314,11 +260,11 @@ export async function getCachedImagesForCoverArtAsync(
  * disk. Used by the image-download-queue's "refresh all cached covers"
  * cycle to enumerate everything currently in the cache for re-download.
  */
-export function getAllCachedCoverArtIds(): string[] {
+export async function getAllCachedCoverArtIds(): Promise<string[]> {
   const db = getDb();
   if (db === null) return [];
   try {
-    const rows = db.getAllSync<{ cover_art_id: string }>(
+    const rows = await db.getAllAsync<{ cover_art_id: string }>(
       `SELECT DISTINCT cover_art_id FROM cached_images
          ORDER BY cover_art_id ASC;`,
     );
@@ -333,11 +279,11 @@ export function getAllCachedCoverArtIds(): string[] {
  * in the image-download queue. Excluding in-flight covers keeps the
  * Repair button from racing the refresh worker for the same rows.
  */
-export function findIncompleteCovers(): string[] {
+export async function findIncompleteCovers(): Promise<string[]> {
   const db = getDb();
   if (db === null) return [];
   try {
-    const rows = db.getAllSync<{ cover_art_id: string }>(
+    const rows = await db.getAllAsync<{ cover_art_id: string }>(
       `SELECT cover_art_id FROM cached_images
          WHERE cover_art_id NOT IN (
            SELECT cover_art_id FROM image_download_queue
@@ -351,11 +297,11 @@ export function findIncompleteCovers(): string[] {
   }
 }
 
-export function countIncompleteCovers(): number {
+export async function countIncompleteCovers(): Promise<number> {
   const db = getDb();
   if (db === null) return 0;
   try {
-    const row = db.getFirstSync<{ c: number }>(
+    const row = await db.getFirstAsync<{ c: number }>(
       `SELECT COUNT(*) AS c FROM (
          SELECT cover_art_id FROM cached_images
            WHERE cover_art_id NOT IN (
@@ -404,13 +350,13 @@ const SENTINEL_COVER_ART_IDS: ReadonlySet<string> = new Set([
  * replaces the whole-tree `listCachedImagesAsync()` disk walk with a
  * single indexed SQL scan.
  */
-export function listCachedImagesForBrowser(
+export async function listCachedImagesForBrowser(
   filter: CacheBrowserFilter = 'all',
-): CachedImageEntry[] {
+): Promise<CachedImageEntry[]> {
   const db = getDb();
   if (db === null) return [];
   try {
-    const rows = db.getAllSync<RawRow>(
+    const rows = await db.getAllAsync<RawRow>(
       `SELECT cover_art_id, size, ext, bytes, cached_at
          FROM cached_images ORDER BY cover_art_id ASC, size ASC;`,
     );
@@ -453,17 +399,20 @@ export function listCachedImagesForBrowser(
 /*  Bulk insert — used by the migration and by reconciliation          */
 /* ------------------------------------------------------------------ */
 
-export function bulkInsertCachedImages(rows: readonly CachedImageRow[]): void {
+export async function bulkInsertCachedImages(rows: readonly CachedImageRow[]): Promise<void> {
   const db = getDb();
   if (db === null) return;
   if (rows.length === 0) return;
   try {
-    db.withTransactionSync(() => {
-      for (const row of rows) {
-        if (!row.coverArtId || !row.size) continue;
-        upsertCachedImageInternal(db, row);
-      }
-    });
+    await serializeDbWrite(() =>
+      db.withTransactionAsync(async () => {
+        for (const row of rows) {
+          if (!row.coverArtId || !row.size) continue;
+          // eslint-disable-next-line no-await-in-loop
+          await upsertCachedImageInternal(db, row);
+        }
+      }),
+    );
   } catch {
     /* dropped */
   }
@@ -473,11 +422,11 @@ export function bulkInsertCachedImages(rows: readonly CachedImageRow[]): void {
 /*  Diagnostic                                                         */
 /* ------------------------------------------------------------------ */
 
-export function countCachedImages(): number {
+export async function countCachedImages(): Promise<number> {
   const db = getDb();
   if (db === null) return 0;
   try {
-    const row = db.getFirstSync<{ c: number }>(
+    const row = await db.getFirstAsync<{ c: number }>(
       'SELECT COUNT(*) AS c FROM cached_images;',
     );
     return row?.c ?? 0;

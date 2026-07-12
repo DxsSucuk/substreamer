@@ -32,7 +32,7 @@ jest.mock('../persistence/detailTables', () => ({
   deleteAlbumDetail: jest.fn(),
   upsertSongsForAlbum: jest.fn(),
   deleteSongsForAlbums: jest.fn(),
-  countAlbumDetails: jest.fn(() => 0),
+  countAlbumDetailsAsync: jest.fn(async () => 0),
   countSongIndex: jest.fn(() => 0),
 }));
 jest.mock('../persistence/scrobbleTable', () => ({
@@ -92,37 +92,37 @@ beforeEach(() => {
 });
 
 describe('resetAllStores', () => {
-  it('clears SQLite storage', () => {
-    resetAllStores();
+  it('clears SQLite storage', async () => {
+    await resetAllStores();
     expect(clearKvStorage).toHaveBeenCalledTimes(1);
   });
 
-  it('truncates the per-row detail tables (album_details + song_index)', () => {
-    resetAllStores();
+  it('truncates the per-row detail tables (album_details + song_index)', async () => {
+    await resetAllStores();
     expect(clearDetailTables).toHaveBeenCalledTimes(1);
   });
 
-  it('truncates the scrobble_events table', () => {
-    resetAllStores();
+  it('truncates the scrobble_events table', async () => {
+    await resetAllStores();
     expect(clearScrobbles).toHaveBeenCalledTimes(1);
   });
 
-  it('truncates the pending_scrobble_events table', () => {
-    resetAllStores();
+  it('truncates the pending_scrobble_events table', async () => {
+    await resetAllStores();
     expect(clearPendingScrobbles).toHaveBeenCalledTimes(1);
   });
 
-  it('truncates the music cache tables (cached_songs + cached_items + cached_item_songs + download_queue)', () => {
-    resetAllStores();
+  it('truncates the music cache tables (cached_songs + cached_items + cached_item_songs + download_queue)', async () => {
+    await resetAllStores();
     expect(clearAllMusicCacheRows).toHaveBeenCalledTimes(1);
   });
 
-  it('removes the music cache settings blob', () => {
-    resetAllStores();
+  it('removes the music cache settings blob', async () => {
+    await resetAllStores();
     expect(kvStorage.removeItem).toHaveBeenCalledWith('substreamer-music-cache-settings');
   });
 
-  it('resets persisted stores to initial state', () => {
+  it('resets persisted stores to initial state', async () => {
     // Populate stores with non-default data
     authStore.getState().setSession('https://example.com', 'user', 'pass', '1.16');
     albumLibraryStore.setState({ albums: [{ id: 'a1' }] as any });
@@ -136,7 +136,7 @@ describe('resetAllStores', () => {
       excludedAlbums: { 'alb-1': { id: 'alb-1', name: 'X' } },
     });
 
-    resetAllStores();
+    await resetAllStores();
 
     expect(authStore.getState().isLoggedIn).toBe(false);
     expect(authStore.getState().serverUrl).toBeNull();
@@ -146,11 +146,11 @@ describe('resetAllStores', () => {
     expect(scrobbleExclusionStore.getState().excludedAlbums).toEqual({});
   });
 
-  it('resets non-persisted stores to initial state', () => {
+  it('resets non-persisted stores to initial state', async () => {
     playerStore.setState({ currentTrack: { id: 'track-1' } as any });
     searchStore.setState({ query: 'hello' });
 
-    resetAllStores();
+    await resetAllStores();
 
     expect(playerStore.getState().currentTrack).toBeNull();
     expect(searchStore.getState().query).toBe('');

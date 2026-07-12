@@ -422,14 +422,14 @@ export async function restoreBackup(
       // mergeAll uses INSERT OR IGNORE per-row inside one transaction,
       // returning the actual added/skipped counts; existing scrobbles are
       // preserved on id collision (random suffix makes collisions noise).
-      const result = completedScrobbleStore.getState().mergeAll(scrobbles);
+      const result = await completedScrobbleStore.getState().mergeAll(scrobbles);
       scrobbleCount = result.added;
       scrobbleSkipped = result.skipped;
     } else {
       // replaceAll writes the scrobble_events table in one transaction and then
       // rebuilds stats/aggregates from the validated set, keeping SQL + memory
       // coherent for any follow-up reads (home stats, my-listening, etc.).
-      completedScrobbleStore.getState().replaceAll(scrobbles);
+      await completedScrobbleStore.getState().replaceAll(scrobbles);
       scrobbleCount = completedScrobbleStore.getState().completedScrobbles.length;
     }
   }

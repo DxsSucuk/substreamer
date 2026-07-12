@@ -244,7 +244,7 @@ export async function onOnlineResume(): Promise<void> {
  *
  * Called at the top of `startupOrResumeFlow`.
  */
-function handleServerSwitchIfNeeded(): void {
+async function handleServerSwitchIfNeeded(): Promise<void> {
   const { serverUrl, username } = authStore.getState();
   if (!serverUrl || !username) return;
   const currentIdentity = `${serverUrl}::${username}`;
@@ -261,8 +261,8 @@ function handleServerSwitchIfNeeded(): void {
   // ingestion runs. Same store-clearing steps as `forceFullResync` minus the
   // re-fetch (onStartup handles that).
   cancelAllSyncs('server-switch');
-  albumDetailStore.getState().clearAlbums();
-  albumLibraryStore.getState().clearAlbums();
+  await albumDetailStore.getState().clearAlbums();
+  await albumLibraryStore.getState().clearAlbums();
   // Reset the song sync + re-probe capability for the new server.
   syncStatusStore.getState().resetSongSync();
   syncStatusStore.getState().setSyncStrategy(null);
@@ -281,7 +281,7 @@ function handleServerSwitchIfNeeded(): void {
 async function startupOrResumeFlow(): Promise<void> {
   // Detect server/user switch first so any stale cache is cleared before
   // the ingestion chain runs against the new identity.
-  handleServerSwitchIfNeeded();
+  await handleServerSwitchIfNeeded();
   // Immediate chain — mirrors _layout.tsx:321-326.
   fetchServerInfo().then((info) => {
     if (info) serverInfoStore.getState().setServerInfo(info);
@@ -625,8 +625,8 @@ export async function forceFullResync(): Promise<void> {
   // Clear all cached data. `albumDetailStore.clearAlbums` cascades to
   // `songIndexStore` via the `clearDetailTables` helper. `albumLibraryStore.
   // clearAlbums` resets the album-list markers (cursor/complete).
-  albumDetailStore.getState().clearAlbums();
-  albumLibraryStore.getState().clearAlbums();
+  await albumDetailStore.getState().clearAlbums();
+  await albumLibraryStore.getState().clearAlbums();
 
   if (offlineModeStore.getState().offlineMode) {
     // Offline: we've cleared local caches. On reconnect, `onOnlineResume`

@@ -293,7 +293,7 @@ jest.mock('../../store/persistence/imageCacheTable', () => ({
   clearAllCachedImages: () => mockClearAllCachedImages(),
   hasCachedImage: (id: string, size: number) => mockHasCachedImage(id, size),
   findIncompleteCovers: () => mockFindIncompleteCovers(),
-  hydrateImageCacheAggregates: () => mockHydrateImageCacheAggregates(),
+  hydrateImageCacheAggregatesAsync: () => mockHydrateImageCacheAggregates(),
   listCachedImagesForBrowser: (filter?: 'all' | 'complete' | 'incomplete') => mockListCachedImagesForBrowser(filter),
   bulkInsertCachedImages: (rows: readonly CacheDbRow[]) => mockBulkInsertCachedImages(rows),
   getCachedImagesForCoverArt: (id: string) =>
@@ -1189,25 +1189,25 @@ describe('deleteCachedVariant', () => {
     return fileMockName(coverArtId, `${size}.${ext}`);
   }
 
-  it('deletes the on-disk file for the requested size and evicts the DB row', () => {
+  it('deletes the on-disk file for the requested size and evicts the DB row', async () => {
     seedDbRow({ coverArtId: 'album1', size: 600, ext: 'jpg' });
     mockFileExistsMap.set(fileName('album1', 600), true);
     mockFileSizeMap.set(fileName('album1', 600), 1000);
 
-    deleteCachedVariant('album1', 600);
+    await deleteCachedVariant('album1', 600);
 
     expect(mockFileDeleteCalls.has(fileName('album1', 600))).toBe(true);
     expect(mockDeleteCachedImageVariant).toHaveBeenCalledWith('album1', 600);
     expect(mockRecalculateFromDb).toHaveBeenCalled();
   });
 
-  it('leaves sibling variants untouched', () => {
+  it('leaves sibling variants untouched', async () => {
     seedDbRow({ coverArtId: 'album1', size: 300, ext: 'jpg' });
     seedDbRow({ coverArtId: 'album1', size: 600, ext: 'jpg' });
     mockFileExistsMap.set(fileName('album1', 300), true);
     mockFileExistsMap.set(fileName('album1', 600), true);
 
-    deleteCachedVariant('album1', 600);
+    await deleteCachedVariant('album1', 600);
 
     // Only the 600 file was deleted.
     expect(mockFileDeleteCalls.has(fileName('album1', 600))).toBe(true);
@@ -1218,8 +1218,8 @@ describe('deleteCachedVariant', () => {
     expect(mockDbRows.has('album1::300')).toBe(true);
   });
 
-  it('is a no-op for empty coverArtId', () => {
-    deleteCachedVariant('', 600);
+  it('is a no-op for empty coverArtId', async () => {
+    await deleteCachedVariant('', 600);
     expect(mockDeleteCachedImageVariant).not.toHaveBeenCalled();
     expect(mockFileDeleteCalls.size).toBe(0);
   });

@@ -6,7 +6,7 @@
  * Writes become silent no-ops when `getDb()` returns null (DB init failed)
  * — callers don't need to handle exceptions.
  */
-import { getDb } from './db';
+import { getDb, serializeDbWrite } from './db';
 import { type CompletedScrobble } from '../completedScrobbleStore';
 
 /* ------------------------------------------------------------------ */
@@ -103,11 +103,11 @@ export async function hydrateScrobblesAsync(): Promise<CompletedScrobble[]> {
 }
 
 /** Return the total scrobble row count. Used by diagnostics. */
-export function countScrobbles(): number {
+export async function countScrobbles(): Promise<number> {
   const db = getDb();
   if (db === null) return 0;
   try {
-    const row = db.getFirstSync<{ c: number }>('SELECT COUNT(*) AS c FROM scrobble_events;');
+    const row = await db.getFirstAsync<{ c: number }>('SELECT COUNT(*) AS c FROM scrobble_events;');
     return row?.c ?? 0;
   } catch {
     return 0;
@@ -123,14 +123,16 @@ export function countScrobbles(): number {
  * silent no-op (the store already dedupes in memory but this protects against
  * concurrent-call edge cases without throwing).
  */
-export function insertScrobble(scrobble: CompletedScrobble): void {
+export async function insertScrobble(scrobble: CompletedScrobble): Promise<void> {
   const db = getDb();
   if (db === null) return;
   if (!scrobble.id || !scrobble.song?.id || !scrobble.song.title) return;
   try {
-    db.runSync(
-      'INSERT OR IGNORE INTO scrobble_events (id, song_json, time) VALUES (?, ?, ?);',
-      [scrobble.id, JSON.stringify(scrobble.song), scrobble.time],
+    await serializeDbWrite(() =>
+      db.runAsync(
+        'INSERT OR IGNORE INTO scrobble_events (id, song_json, time) VALUES (?, ?, ?);',
+        [scrobble.id, JSON.stringify(scrobble.song), scrobble.time],
+      ),
     );
   } catch {
     /* dropped */
@@ -146,26 +148,29 @@ export function insertScrobble(scrobble: CompletedScrobble): void {
  * where `added` is the number of rows actually inserted (not already present)
  * and `skipped` is the number of inputs ignored (duplicates or invalid).
  */
-export function mergeScrobbles(
+export async function mergeScrobbles(
   scrobbles: readonly CompletedScrobble[],
-): { added: number; skipped: number } {
+): Promise<{ added: number; skipped: number }> {
   const db = getDb();
   if (db === null) return { added: 0, skipped: scrobbles.length };
   try {
-    const before = countScrobbles();
-    db.withTransactionSync(() => {
-      const seen = new Set<string>();
-      for (const s of scrobbles) {
-        if (!s?.id || !s.song?.id || !s.song.title) continue;
-        if (seen.has(s.id)) continue;
-        seen.add(s.id);
-        db.runSync(
-          'INSERT OR IGNORE INTO scrobble_events (id, song_json, time) VALUES (?, ?, ?);',
-          [s.id, JSON.stringify(s.song), s.time],
-        );
-      }
-    });
-    const after = countScrobbles();
+    const before = await countScrobbles();
+    await serializeDbWrite(() =>
+      db.withTransactionAsync(async () => {
+        const seen = new Set<string>();
+        for (const s of scrobbles) {
+          if (!s?.id || !s.song?.id || !s.song.title) continue;
+          if (seen.has(s.id)) continue;
+          seen.add(s.id);
+          // eslint-disable-next-line no-await-in-loop
+          await db.runAsync(
+            'INSERT OR IGNORE INTO scrobble_events (id, song_json, time) VALUES (?, ?, ?);',
+            [s.id, JSON.stringify(s.song), s.time],
+          );
+        }
+      }),
+    );
+    const after = await countScrobbles();
     const added = Math.max(0, after - before);
     return { added, skipped: scrobbles.length - added };
   } catch {
@@ -178,34 +183,37 @@ export function mergeScrobbles(
  * Used by backup restore and the one-shot blob → per-row migration (task #13).
  * Invalid/duplicate records are filtered before insertion.
  */
-export function replaceAllScrobbles(scrobbles: readonly CompletedScrobble[]): void {
+export async function replaceAllScrobbles(scrobbles: readonly CompletedScrobble[]): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    db.withTransactionSync(() => {
-      db.runSync('DELETE FROM scrobble_events;');
-      const seen = new Set<string>();
-      for (const s of scrobbles) {
-        if (!s?.id || !s.song?.id || !s.song.title) continue;
-        if (seen.has(s.id)) continue;
-        seen.add(s.id);
-        db.runSync(
-          'INSERT OR IGNORE INTO scrobble_events (id, song_json, time) VALUES (?, ?, ?);',
-          [s.id, JSON.stringify(s.song), s.time],
-        );
-      }
-    });
+    await serializeDbWrite(() =>
+      db.withTransactionAsync(async () => {
+        await db.runAsync('DELETE FROM scrobble_events;');
+        const seen = new Set<string>();
+        for (const s of scrobbles) {
+          if (!s?.id || !s.song?.id || !s.song.title) continue;
+          if (seen.has(s.id)) continue;
+          seen.add(s.id);
+          // eslint-disable-next-line no-await-in-loop
+          await db.runAsync(
+            'INSERT OR IGNORE INTO scrobble_events (id, song_json, time) VALUES (?, ?, ?);',
+            [s.id, JSON.stringify(s.song), s.time],
+          );
+        }
+      }),
+    );
   } catch {
     /* dropped */
   }
 }
 
 /** Remove every row. Used on logout / server switch via resetAllStores. */
-export function clearScrobbles(): void {
+export async function clearScrobbles(): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    db.runSync('DELETE FROM scrobble_events;');
+    await serializeDbWrite(() => db.runAsync('DELETE FROM scrobble_events;'));
   } catch {
     /* dropped */
   }

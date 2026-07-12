@@ -45,6 +45,8 @@ function createdToEpoch(created: AlbumID3['created'] | undefined): number | null
  * expo-sqlite's background thread (via the serialization mutex). Written per
  * page by the pager so an interrupted list has no partial rows — the whole
  * page commits atomically or not at all, and resume continues from `COUNT(*)`.
+ * Uses chunked multi-row INSERT (mirrors `bulkUpsertSongs`) so a full album
+ * page is a handful of statement executions instead of one per album.
  * `getDb()===null` → no-op (row tables refuse writes when the DB is down).
  */
 export async function upsertLibraryAlbumsAsync(
@@ -53,24 +55,34 @@ export async function upsertLibraryAlbumsAsync(
 ): Promise<void> {
   const db = getDb();
   if (db === null || albums.length === 0) return;
+  const valid = albums.filter((a) => a.id);
+  if (valid.length === 0) return;
+  const COLS = 6;
+  const CHUNK = 500;
   try {
     await serializeLibraryAlbumWrite(() =>
       db.withTransactionAsync(async () => {
-        for (const album of albums) {
-          if (!album.id) continue;
-          // eslint-disable-next-line no-await-in-loop
-          await db.runAsync(
-            `INSERT OR REPLACE INTO library_albums
-               (id, sortKey, starred, userRating, created, raw_json)
-               VALUES (?, ?, ?, ?, ?, ?);`,
-            [
+        for (let i = 0; i < valid.length; i += CHUNK) {
+          const batch = valid.slice(i, i + CHUNK);
+          const rowPlaceholder = `(${Array(COLS).fill('?').join(', ')})`;
+          const placeholders = batch.map(() => rowPlaceholder).join(', ');
+          const params: unknown[] = [];
+          for (const album of batch) {
+            params.push(
               album.id,
               sortKeyFor(album),
               album.starred ? 1 : 0,
               album.userRating ?? null,
               createdToEpoch(album.created),
               JSON.stringify(album),
-            ],
+            );
+          }
+          // eslint-disable-next-line no-await-in-loop
+          await db.runAsync(
+            `INSERT OR REPLACE INTO library_albums
+               (id, sortKey, starred, userRating, created, raw_json)
+               VALUES ${placeholders};`,
+            params,
           );
         }
       }),
@@ -125,18 +137,6 @@ export async function countLibraryAlbumsAsync(): Promise<number> {
     const row = await db.getFirstAsync<{ c: number }>(
       'SELECT COUNT(*) AS c FROM library_albums;',
     );
-    return row?.c ?? 0;
-  } catch {
-    return 0;
-  }
-}
-
-/** Sync counter — for boot-critical ordering / diagnostics only. */
-export function countLibraryAlbums(): number {
-  const db = getDb();
-  if (db === null) return 0;
-  try {
-    const row = db.getFirstSync<{ c: number }>('SELECT COUNT(*) AS c FROM library_albums;');
     return row?.c ?? 0;
   } catch {
     return 0;

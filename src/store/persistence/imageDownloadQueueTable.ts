@@ -9,13 +9,18 @@
  * reset-on-restart policy (no exponential backoff), same idempotent
  * INSERT OR IGNORE semantics on the primary key.
  *
+ * All DB access is async so the image-refresh worker never blocks the JS
+ * thread. Writes funnel through `serializeDbWrite` (the connection-wide mutex)
+ * so they never interleave with another module's transaction on the shared
+ * connection.
+ *
  * Error-swallowing: every read returns a safe default ([], null, 0) and
  * every write is a silent no-op on failure. Consumers never need to
  * handle exceptions from this module.
  *
  * See plans/2026-05-23-image-cache-queue-rework.md for the design.
  */
-import { getDb } from './db';
+import { getDb, serializeDbWrite } from './db';
 
 export type ImageDownloadQueueScope = 'refresh-downloads' | 'refresh-all';
 export type ImageDownloadQueueStatus = 'queued' | 'downloading' | 'error';
@@ -57,16 +62,12 @@ function mapRow(row: RawImageQueueRow): ImageDownloadQueueRow {
 /*  Reads                                                              */
 /* ------------------------------------------------------------------ */
 
-/**
- * Read the full queue in oldest-first order. Synchronous read primitive used
- * by table tests; the boot/refresh path uses
- * {@link hydrateImageDownloadQueueAsync}.
- */
-export function hydrateImageDownloadQueue(): ImageDownloadQueueRow[] {
+/** Read the full queue in oldest-first order (diagnostics / tests). */
+export async function hydrateImageDownloadQueue(): Promise<ImageDownloadQueueRow[]> {
   const db = getDb();
   if (db === null) return [];
   try {
-    const rows = db.getAllSync<RawImageQueueRow>(
+    const rows = await db.getAllAsync<RawImageQueueRow>(
       `SELECT cover_art_id, scope, status, error, attempts, added_at, cycle_id
          FROM image_download_queue
          ORDER BY added_at ASC;`,
@@ -82,11 +83,11 @@ export function hydrateImageDownloadQueue(): ImageDownloadQueueRow[] {
  * makes the read+update sequence in the worker effectively atomic; we
  * don't need SELECT … FOR UPDATE.
  */
-export function pickNextQueuedImageRow(): ImageDownloadQueueRow | null {
+export async function pickNextQueuedImageRow(): Promise<ImageDownloadQueueRow | null> {
   const db = getDb();
   if (db === null) return null;
   try {
-    const row = db.getFirstSync<RawImageQueueRow>(
+    const row = await db.getFirstAsync<RawImageQueueRow>(
       `SELECT cover_art_id, scope, status, error, attempts, added_at, cycle_id
          FROM image_download_queue
          WHERE status = 'queued'
@@ -99,13 +100,13 @@ export function pickNextQueuedImageRow(): ImageDownloadQueueRow | null {
   }
 }
 
-export function countImageQueueRowsByStatus(
+export async function countImageQueueRowsByStatus(
   status: ImageDownloadQueueStatus,
-): number {
+): Promise<number> {
   const db = getDb();
   if (db === null) return 0;
   try {
-    const row = db.getFirstSync<{ c: number }>(
+    const row = await db.getFirstAsync<{ c: number }>(
       `SELECT COUNT(*) AS c FROM image_download_queue WHERE status = ?;`,
       [status],
     );
@@ -115,11 +116,11 @@ export function countImageQueueRowsByStatus(
   }
 }
 
-export function countImageQueueRowsByCycle(cycleId: string): number {
+export async function countImageQueueRowsByCycle(cycleId: string): Promise<number> {
   const db = getDb();
   if (db === null) return 0;
   try {
-    const row = db.getFirstSync<{ c: number }>(
+    const row = await db.getFirstAsync<{ c: number }>(
       `SELECT COUNT(*) AS c FROM image_download_queue WHERE cycle_id = ?;`,
       [cycleId],
     );
@@ -139,20 +140,22 @@ export function countImageQueueRowsByCycle(cycleId: string): number {
  * matches the music queue's idempotent enqueue semantics. Returns true
  * if a row was actually inserted.
  */
-export function enqueueImage(
+export async function enqueueImage(
   coverArtId: string,
   scope: ImageDownloadQueueScope,
   cycleId: string,
   now: number = Date.now(),
-): boolean {
+): Promise<boolean> {
   const db = getDb();
   if (db === null) return false;
   try {
-    const result = db.runSync(
-      `INSERT OR IGNORE INTO image_download_queue
-         (cover_art_id, scope, status, error, attempts, added_at, cycle_id)
-         VALUES (?, ?, 'queued', NULL, 0, ?, ?);`,
-      [coverArtId, scope, now, cycleId],
+    const result = await serializeDbWrite(() =>
+      db.runAsync(
+        `INSERT OR IGNORE INTO image_download_queue
+           (cover_art_id, scope, status, error, attempts, added_at, cycle_id)
+           VALUES (?, ?, 'queued', NULL, 0, ?, ?);`,
+        [coverArtId, scope, now, cycleId],
+      ),
     );
     return result.changes > 0;
   } catch {
@@ -165,43 +168,48 @@ export function enqueueImage(
  * refresh cycle enumerates hundreds of IDs at once. Returns the count of
  * rows actually inserted (PK conflicts are silently skipped).
  */
-export function enqueueImagesBulk(
+export async function enqueueImagesBulk(
   coverArtIds: readonly string[],
   scope: ImageDownloadQueueScope,
   cycleId: string,
   now: number = Date.now(),
-): number {
+): Promise<number> {
   const db = getDb();
   if (db === null) return 0;
   if (coverArtIds.length === 0) return 0;
   let inserted = 0;
   try {
-    db.withTransactionSync(() => {
-      for (const id of coverArtIds) {
-        const result = db.runSync(
-          `INSERT OR IGNORE INTO image_download_queue
-             (cover_art_id, scope, status, error, attempts, added_at, cycle_id)
-             VALUES (?, ?, 'queued', NULL, 0, ?, ?);`,
-          [id, scope, now, cycleId],
-        );
-        if (result.changes > 0) inserted++;
-      }
-    });
+    await serializeDbWrite(() =>
+      db.withTransactionAsync(async () => {
+        for (const id of coverArtIds) {
+          // eslint-disable-next-line no-await-in-loop
+          const result = await db.runAsync(
+            `INSERT OR IGNORE INTO image_download_queue
+               (cover_art_id, scope, status, error, attempts, added_at, cycle_id)
+               VALUES (?, ?, 'queued', NULL, 0, ?, ?);`,
+            [id, scope, now, cycleId],
+          );
+          if (result.changes > 0) inserted++;
+        }
+      }),
+    );
   } catch {
     /* swallow — partial inserts roll back via the transaction wrapper */
   }
   return inserted;
 }
 
-export function markImageDownloading(coverArtId: string): void {
+export async function markImageDownloading(coverArtId: string): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    db.runSync(
-      `UPDATE image_download_queue
-         SET status = 'downloading', error = NULL
-         WHERE cover_art_id = ?;`,
-      [coverArtId],
+    await serializeDbWrite(() =>
+      db.runAsync(
+        `UPDATE image_download_queue
+           SET status = 'downloading', error = NULL
+           WHERE cover_art_id = ?;`,
+        [coverArtId],
+      ),
     );
   } catch {
     /* no-op */
@@ -214,15 +222,17 @@ export function markImageDownloading(coverArtId: string): void {
  * pass (e.g. at app restart) will move this back to `'queued'` for a
  * fresh attempt — matches music's policy of "retry every session".
  */
-export function markImageError(coverArtId: string, error: string): void {
+export async function markImageError(coverArtId: string, error: string): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    db.runSync(
-      `UPDATE image_download_queue
-         SET status = 'error', error = ?, attempts = attempts + 1
-         WHERE cover_art_id = ?;`,
-      [error, coverArtId],
+    await serializeDbWrite(() =>
+      db.runAsync(
+        `UPDATE image_download_queue
+           SET status = 'error', error = ?, attempts = attempts + 1
+           WHERE cover_art_id = ?;`,
+        [error, coverArtId],
+      ),
     );
   } catch {
     /* no-op */
@@ -234,13 +244,15 @@ export function markImageError(coverArtId: string, error: string): void {
  * the presence of rows in `cached_images`, so we don't keep a 'complete'
  * status — the absence of a queue row IS completion.
  */
-export function removeImageFromQueue(coverArtId: string): void {
+export async function removeImageFromQueue(coverArtId: string): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    db.runSync(
-      `DELETE FROM image_download_queue WHERE cover_art_id = ?;`,
-      [coverArtId],
+    await serializeDbWrite(() =>
+      db.runAsync(
+        `DELETE FROM image_download_queue WHERE cover_art_id = ?;`,
+        [coverArtId],
+      ),
     );
   } catch {
     /* no-op */
@@ -253,13 +265,15 @@ export function removeImageFromQueue(coverArtId: string): void {
  * music's `cancelDownload` semantics) — but their post-fetch update
  * becomes a no-op because the row is gone.
  */
-export function clearImageQueueByCycle(cycleId: string): number {
+export async function clearImageQueueByCycle(cycleId: string): Promise<number> {
   const db = getDb();
   if (db === null) return 0;
   try {
-    const result = db.runSync(
-      `DELETE FROM image_download_queue WHERE cycle_id = ?;`,
-      [cycleId],
+    const result = await serializeDbWrite(() =>
+      db.runAsync(
+        `DELETE FROM image_download_queue WHERE cycle_id = ?;`,
+        [cycleId],
+      ),
     );
     return result.changes;
   } catch {
@@ -276,19 +290,23 @@ export function clearImageQueueByCycle(cycleId: string): number {
  *   - Any row in `'error'` gets a fresh shot per session. Reset; do not
  *     touch attempts (transient failures shouldn't keep climbing forever).
  */
-export function resetStalledImageRows(): number {
+export async function resetStalledImageRows(): Promise<number> {
   const db = getDb();
   if (db === null) return 0;
   try {
-    const downloading = db.runSync(
-      `UPDATE image_download_queue
-         SET status = 'queued', attempts = attempts + 1
-         WHERE status = 'downloading';`,
+    const downloading = await serializeDbWrite(() =>
+      db.runAsync(
+        `UPDATE image_download_queue
+           SET status = 'queued', attempts = attempts + 1
+           WHERE status = 'downloading';`,
+      ),
     );
-    const errored = db.runSync(
-      `UPDATE image_download_queue
-         SET status = 'queued', error = NULL
-         WHERE status = 'error';`,
+    const errored = await serializeDbWrite(() =>
+      db.runAsync(
+        `UPDATE image_download_queue
+           SET status = 'queued', error = NULL
+           WHERE status = 'error';`,
+      ),
     );
     return downloading.changes + errored.changes;
   } catch {
@@ -300,15 +318,17 @@ export function resetStalledImageRows(): number {
  * Reset error rows belonging to a specific cycle. Used by the
  * "Retry failed (N)" button in Settings.
  */
-export function resetErrorRowsForCycle(cycleId: string): number {
+export async function resetErrorRowsForCycle(cycleId: string): Promise<number> {
   const db = getDb();
   if (db === null) return 0;
   try {
-    const result = db.runSync(
-      `UPDATE image_download_queue
-         SET status = 'queued', error = NULL, attempts = 0
-         WHERE status = 'error' AND cycle_id = ?;`,
-      [cycleId],
+    const result = await serializeDbWrite(() =>
+      db.runAsync(
+        `UPDATE image_download_queue
+           SET status = 'queued', error = NULL, attempts = 0
+           WHERE status = 'error' AND cycle_id = ?;`,
+        [cycleId],
+      ),
     );
     return result.changes;
   } catch {
@@ -317,11 +337,11 @@ export function resetErrorRowsForCycle(cycleId: string): number {
 }
 
 /** Test-only / diagnostic: clear the entire table. */
-export function clearImageDownloadQueue(): void {
+export async function clearImageDownloadQueue(): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    db.runSync(`DELETE FROM image_download_queue;`);
+    await serializeDbWrite(() => db.runAsync(`DELETE FROM image_download_queue;`));
   } catch {
     /* no-op */
   }

@@ -1056,7 +1056,7 @@ describe('migrateV4BackupMetas', () => {
 describe('restoreBackup — merge mode', () => {
   it('routes scrobbles through mergeAll instead of replaceAll', async () => {
     const mergeAllSpy = jest.spyOn(completedScrobbleStore.getState(), 'mergeAll')
-      .mockReturnValue({ added: 3, skipped: 1 });
+      .mockResolvedValue({ added: 3, skipped: 1 });
 
     mockFileInstances.set('backup-x.scrobbles.gz', {
       exists: true, content: '', deleted: false,

@@ -67,7 +67,7 @@ export interface CompletedScrobbleState {
    * Used by backup restore. Rebuilds derived stats + aggregates from the
    * provided list.
    */
-  replaceAll: (scrobbles: CompletedScrobble[]) => void;
+  replaceAll: (scrobbles: CompletedScrobble[]) => Promise<void>;
   /**
    * Merge the given scrobbles into the existing set (INSERT OR IGNORE per
    * row). Used by merge-mode backup restore so a backup from another device
@@ -76,7 +76,7 @@ export interface CompletedScrobbleState {
    * union. Returns `{ added, skipped }` where `added` is rows actually
    * inserted and `skipped` covers duplicates + invalid inputs.
    */
-  mergeAll: (scrobbles: CompletedScrobble[]) => { added: number; skipped: number };
+  mergeAll: (scrobbles: CompletedScrobble[]) => Promise<{ added: number; skipped: number }>;
   /** Called once at app start to load persisted rows into memory — background
    * read + chunked JSON.parse. Aggregates/stats are still built synchronously
    * afterwards (single pass, needed before My Listening renders). */
@@ -171,10 +171,11 @@ export const completedScrobbleStore = create<CompletedScrobbleState>()((set, get
       return;
     }
 
-    // Persist first so the row is on disk before any subscriber acts on the
-    // new in-memory state. insertScrobble is INSERT OR IGNORE so a collision
-    // with a concurrently-added row can't throw.
-    insertScrobble(scrobble);
+    // Persist optimistically (fire-and-forget) so the in-memory update below
+    // isn't blocked on disk IO. insertScrobble is async + INSERT OR IGNORE, so
+    // a collision with a concurrently-added row can't throw; a late write
+    // self-heals on the next hydrate.
+    void insertScrobble(scrobble);
 
     const artist = scrobble.song.artist;
     const newArtists =
@@ -262,7 +263,7 @@ export const completedScrobbleStore = create<CompletedScrobbleState>()((set, get
     set({ aggregates: buildAggregates(completedScrobbles) });
   },
 
-  replaceAll: (scrobbles) => {
+  replaceAll: async (scrobbles) => {
     // Dedupe + validate mirror what `hydrateScrobbles` / `insertScrobble`
     // already enforce, so the in-memory array matches what lands on disk.
     const seen = new Set<string>();
@@ -272,7 +273,7 @@ export const completedScrobbleStore = create<CompletedScrobbleState>()((set, get
       seen.add(s.id);
       valid.push(s);
     }
-    replaceAllScrobbles(valid);
+    await replaceAllScrobbles(valid);
     set({
       completedScrobbles: valid,
       stats: buildStats(valid),
@@ -280,12 +281,12 @@ export const completedScrobbleStore = create<CompletedScrobbleState>()((set, get
     });
   },
 
-  mergeAll: (scrobbles) => {
-    const result = mergeScrobbles(scrobbles);
+  mergeAll: async (scrobbles) => {
+    const result = await mergeScrobbles(scrobbles);
     // Re-hydrate from SQL so the in-memory array matches the unioned table
     // exactly. Cheaper than reconciling incrementally and avoids drift if
     // any rows were silently rejected by the table-level validation.
-    const restored = hydrateScrobbles();
+    const restored = await hydrateScrobblesAsync();
     set({
       completedScrobbles: restored,
       stats: buildStats(restored),

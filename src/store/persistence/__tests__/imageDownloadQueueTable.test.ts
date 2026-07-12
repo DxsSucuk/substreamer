@@ -196,12 +196,22 @@ function makeFakeDb() {
   const withTransactionSync = (fn: () => void): void => fn();
   const execSync = (): void => {};
 
+  // Async delegates — the production module now uses the async DB API. Each
+  // delegates to the sync in-memory impl so the fake stays a single source of
+  // truth. withTransactionAsync awaits the (async) callback.
   return {
     runSync,
     getFirstSync,
     getAllSync,
     withTransactionSync,
     execSync,
+    runAsync: (sql: string, params?: readonly unknown[]) => Promise.resolve(runSync(sql, params)),
+    getFirstAsync: (sql: string, params?: readonly unknown[]) =>
+      Promise.resolve(getFirstSync(sql, params)),
+    getAllAsync: (sql: string) => Promise.resolve(getAllSync(sql)),
+    withTransactionAsync: async (fn: () => Promise<void>): Promise<void> => {
+      await fn();
+    },
     _rows: rows,
   };
 }
@@ -219,8 +229,8 @@ afterEach(() => {
 
 describe('imageDownloadQueueTable', () => {
   describe('enqueueImage', () => {
-    it('inserts a new row and returns true', () => {
-      const inserted = enqueueImage('cov-1', 'refresh-downloads', 'cycle-A', 1000);
+    it('inserts a new row and returns true', async () => {
+      const inserted = await enqueueImage('cov-1', 'refresh-downloads', 'cycle-A', 1000);
       expect(inserted).toBe(true);
       expect(fake._rows.get('cov-1')).toEqual({
         cover_art_id: 'cov-1',
@@ -233,9 +243,9 @@ describe('imageDownloadQueueTable', () => {
       });
     });
 
-    it('returns false on PK conflict (dedup)', () => {
-      enqueueImage('cov-1', 'refresh-downloads', 'cycle-A', 1000);
-      const second = enqueueImage('cov-1', 'refresh-all', 'cycle-B', 2000);
+    it('returns false on PK conflict (dedup)', async () => {
+      await enqueueImage('cov-1', 'refresh-downloads', 'cycle-A', 1000);
+      const second = await enqueueImage('cov-1', 'refresh-all', 'cycle-B', 2000);
       expect(second).toBe(false);
       // Original row preserved
       expect(fake._rows.get('cov-1')?.scope).toBe('refresh-downloads');
@@ -244,9 +254,9 @@ describe('imageDownloadQueueTable', () => {
   });
 
   describe('enqueueImagesBulk', () => {
-    it('inserts every new id and dedups duplicates', () => {
-      enqueueImage('cov-1', 'refresh-downloads', 'cycle-A', 100);
-      const inserted = enqueueImagesBulk(
+    it('inserts every new id and dedups duplicates', async () => {
+      await enqueueImage('cov-1', 'refresh-downloads', 'cycle-A', 100);
+      const inserted = await enqueueImagesBulk(
         ['cov-1', 'cov-2', 'cov-3'],
         'refresh-all',
         'cycle-B',
@@ -256,62 +266,62 @@ describe('imageDownloadQueueTable', () => {
       expect(fake._rows.size).toBe(3);
     });
 
-    it('is a no-op on empty input', () => {
-      expect(enqueueImagesBulk([], 'refresh-all', 'cycle-X')).toBe(0);
+    it('is a no-op on empty input', async () => {
+      expect(await enqueueImagesBulk([], 'refresh-all', 'cycle-X')).toBe(0);
     });
   });
 
   describe('hydrateImageDownloadQueue', () => {
-    it('returns rows ordered by added_at ascending', () => {
-      enqueueImage('cov-c', 'refresh-all', 'cycle-A', 300);
-      enqueueImage('cov-a', 'refresh-all', 'cycle-A', 100);
-      enqueueImage('cov-b', 'refresh-all', 'cycle-A', 200);
-      const rows = hydrateImageDownloadQueue();
+    it('returns rows ordered by added_at ascending', async () => {
+      await enqueueImage('cov-c', 'refresh-all', 'cycle-A', 300);
+      await enqueueImage('cov-a', 'refresh-all', 'cycle-A', 100);
+      await enqueueImage('cov-b', 'refresh-all', 'cycle-A', 200);
+      const rows = await hydrateImageDownloadQueue();
       expect(rows.map((r) => r.coverArtId)).toEqual(['cov-a', 'cov-b', 'cov-c']);
     });
 
-    it('maps optional error to undefined when null', () => {
-      enqueueImage('cov-1', 'refresh-all', 'cycle-A', 100);
-      const [row] = hydrateImageDownloadQueue();
+    it('maps optional error to undefined when null', async () => {
+      await enqueueImage('cov-1', 'refresh-all', 'cycle-A', 100);
+      const [row] = await hydrateImageDownloadQueue();
       expect(row.error).toBeUndefined();
     });
   });
 
   describe('pickNextQueuedImageRow', () => {
-    it('returns the oldest queued row', () => {
-      enqueueImage('cov-a', 'refresh-all', 'cycle-A', 100);
-      enqueueImage('cov-b', 'refresh-all', 'cycle-A', 200);
+    it('returns the oldest queued row', async () => {
+      await enqueueImage('cov-a', 'refresh-all', 'cycle-A', 100);
+      await enqueueImage('cov-b', 'refresh-all', 'cycle-A', 200);
       // Mark first as downloading so it's no longer 'queued'
-      markImageDownloading('cov-a');
-      const next = pickNextQueuedImageRow();
+      await markImageDownloading('cov-a');
+      const next = await pickNextQueuedImageRow();
       expect(next?.coverArtId).toBe('cov-b');
     });
 
-    it('returns null when queue is empty', () => {
-      expect(pickNextQueuedImageRow()).toBeNull();
+    it('returns null when queue is empty', async () => {
+      expect(await pickNextQueuedImageRow()).toBeNull();
     });
   });
 
   describe('markImageDownloading / markImageError', () => {
-    it('flips status from queued to downloading', () => {
-      enqueueImage('cov-1', 'refresh-all', 'cycle-A', 100);
-      markImageDownloading('cov-1');
+    it('flips status from queued to downloading', async () => {
+      await enqueueImage('cov-1', 'refresh-all', 'cycle-A', 100);
+      await markImageDownloading('cov-1');
       expect(fake._rows.get('cov-1')?.status).toBe('downloading');
     });
 
-    it('flips status to error, sets error string, increments attempts', () => {
-      enqueueImage('cov-1', 'refresh-all', 'cycle-A', 100);
-      markImageError('cov-1', 'boom');
+    it('flips status to error, sets error string, increments attempts', async () => {
+      await enqueueImage('cov-1', 'refresh-all', 'cycle-A', 100);
+      await markImageError('cov-1', 'boom');
       const row = fake._rows.get('cov-1')!;
       expect(row.status).toBe('error');
       expect(row.error).toBe('boom');
       expect(row.attempts).toBe(1);
     });
 
-    it('error -> downloading clears the error string (re-attempt path)', () => {
-      enqueueImage('cov-1', 'refresh-all', 'cycle-A', 100);
-      markImageError('cov-1', 'first try');
-      markImageDownloading('cov-1');
+    it('error -> downloading clears the error string (re-attempt path)', async () => {
+      await enqueueImage('cov-1', 'refresh-all', 'cycle-A', 100);
+      await markImageError('cov-1', 'first try');
+      await markImageDownloading('cov-1');
       const row = fake._rows.get('cov-1')!;
       expect(row.status).toBe('downloading');
       expect(row.error).toBeNull();
@@ -319,19 +329,19 @@ describe('imageDownloadQueueTable', () => {
   });
 
   describe('removeImageFromQueue', () => {
-    it('deletes the row on success', () => {
-      enqueueImage('cov-1', 'refresh-all', 'cycle-A', 100);
-      removeImageFromQueue('cov-1');
+    it('deletes the row on success', async () => {
+      await enqueueImage('cov-1', 'refresh-all', 'cycle-A', 100);
+      await removeImageFromQueue('cov-1');
       expect(fake._rows.has('cov-1')).toBe(false);
     });
   });
 
   describe('clearImageQueueByCycle (Cancel)', () => {
-    it('drops only the named cycle\'s rows', () => {
-      enqueueImage('cov-1', 'refresh-all', 'cycle-A', 100);
-      enqueueImage('cov-2', 'refresh-all', 'cycle-A', 200);
-      enqueueImage('cov-3', 'refresh-downloads', 'cycle-B', 300);
-      const removed = clearImageQueueByCycle('cycle-A');
+    it('drops only the named cycle\'s rows', async () => {
+      await enqueueImage('cov-1', 'refresh-all', 'cycle-A', 100);
+      await enqueueImage('cov-2', 'refresh-all', 'cycle-A', 200);
+      await enqueueImage('cov-3', 'refresh-downloads', 'cycle-B', 300);
+      const removed = await clearImageQueueByCycle('cycle-A');
       expect(removed).toBe(2);
       expect(fake._rows.has('cov-1')).toBe(false);
       expect(fake._rows.has('cov-2')).toBe(false);
@@ -340,13 +350,13 @@ describe('imageDownloadQueueTable', () => {
   });
 
   describe('resetStalledImageRows (boot recovery)', () => {
-    it('resets both downloading and error rows back to queued', () => {
-      enqueueImage('cov-1', 'refresh-all', 'cycle-A', 100);
-      enqueueImage('cov-2', 'refresh-all', 'cycle-A', 200);
-      enqueueImage('cov-3', 'refresh-all', 'cycle-A', 300);
-      markImageDownloading('cov-1');
-      markImageError('cov-2', 'stale');
-      const reset = resetStalledImageRows();
+    it('resets both downloading and error rows back to queued', async () => {
+      await enqueueImage('cov-1', 'refresh-all', 'cycle-A', 100);
+      await enqueueImage('cov-2', 'refresh-all', 'cycle-A', 200);
+      await enqueueImage('cov-3', 'refresh-all', 'cycle-A', 300);
+      await markImageDownloading('cov-1');
+      await markImageError('cov-2', 'stale');
+      const reset = await resetStalledImageRows();
       expect(reset).toBe(2);
       expect(fake._rows.get('cov-1')?.status).toBe('queued');
       expect(fake._rows.get('cov-1')?.attempts).toBe(1); // downloading-attempt counts
@@ -356,20 +366,20 @@ describe('imageDownloadQueueTable', () => {
       expect(fake._rows.get('cov-3')?.status).toBe('queued');
     });
 
-    it('is idempotent — running again on a quiet queue is a no-op', () => {
-      enqueueImage('cov-1', 'refresh-all', 'cycle-A', 100);
-      expect(resetStalledImageRows()).toBe(0);
+    it('is idempotent — running again on a quiet queue is a no-op', async () => {
+      await enqueueImage('cov-1', 'refresh-all', 'cycle-A', 100);
+      expect(await resetStalledImageRows()).toBe(0);
       expect(fake._rows.get('cov-1')?.attempts).toBe(0);
     });
   });
 
   describe('resetErrorRowsForCycle (Retry failed)', () => {
-    it('only resets the cycle\'s error rows', () => {
-      enqueueImage('cov-1', 'refresh-all', 'cycle-A', 100);
-      enqueueImage('cov-2', 'refresh-all', 'cycle-B', 200);
-      markImageError('cov-1', 'fail-A');
-      markImageError('cov-2', 'fail-B');
-      const reset = resetErrorRowsForCycle('cycle-A');
+    it('only resets the cycle\'s error rows', async () => {
+      await enqueueImage('cov-1', 'refresh-all', 'cycle-A', 100);
+      await enqueueImage('cov-2', 'refresh-all', 'cycle-B', 200);
+      await markImageError('cov-1', 'fail-A');
+      await markImageError('cov-2', 'fail-B');
+      const reset = await resetErrorRowsForCycle('cycle-A');
       expect(reset).toBe(1);
       expect(fake._rows.get('cov-1')?.status).toBe('queued');
       expect(fake._rows.get('cov-1')?.attempts).toBe(0); // reset
@@ -378,32 +388,32 @@ describe('imageDownloadQueueTable', () => {
   });
 
   describe('counts', () => {
-    it('counts by status', () => {
-      enqueueImage('cov-1', 'refresh-all', 'cycle-A', 100);
-      enqueueImage('cov-2', 'refresh-all', 'cycle-A', 200);
-      enqueueImage('cov-3', 'refresh-all', 'cycle-A', 300);
-      markImageDownloading('cov-1');
-      markImageError('cov-2', 'oops');
-      expect(countImageQueueRowsByStatus('queued')).toBe(1);
-      expect(countImageQueueRowsByStatus('downloading')).toBe(1);
-      expect(countImageQueueRowsByStatus('error')).toBe(1);
+    it('counts by status', async () => {
+      await enqueueImage('cov-1', 'refresh-all', 'cycle-A', 100);
+      await enqueueImage('cov-2', 'refresh-all', 'cycle-A', 200);
+      await enqueueImage('cov-3', 'refresh-all', 'cycle-A', 300);
+      await markImageDownloading('cov-1');
+      await markImageError('cov-2', 'oops');
+      expect(await countImageQueueRowsByStatus('queued')).toBe(1);
+      expect(await countImageQueueRowsByStatus('downloading')).toBe(1);
+      expect(await countImageQueueRowsByStatus('error')).toBe(1);
     });
 
-    it('counts by cycle', () => {
-      enqueueImage('cov-1', 'refresh-all', 'cycle-A', 100);
-      enqueueImage('cov-2', 'refresh-all', 'cycle-A', 200);
-      enqueueImage('cov-3', 'refresh-downloads', 'cycle-B', 300);
-      expect(countImageQueueRowsByCycle('cycle-A')).toBe(2);
-      expect(countImageQueueRowsByCycle('cycle-B')).toBe(1);
-      expect(countImageQueueRowsByCycle('cycle-X')).toBe(0);
+    it('counts by cycle', async () => {
+      await enqueueImage('cov-1', 'refresh-all', 'cycle-A', 100);
+      await enqueueImage('cov-2', 'refresh-all', 'cycle-A', 200);
+      await enqueueImage('cov-3', 'refresh-downloads', 'cycle-B', 300);
+      expect(await countImageQueueRowsByCycle('cycle-A')).toBe(2);
+      expect(await countImageQueueRowsByCycle('cycle-B')).toBe(1);
+      expect(await countImageQueueRowsByCycle('cycle-X')).toBe(0);
     });
   });
 
   describe('clearImageDownloadQueue (diagnostic)', () => {
-    it('empties the table', () => {
-      enqueueImage('cov-1', 'refresh-all', 'cycle-A', 100);
-      enqueueImage('cov-2', 'refresh-all', 'cycle-A', 200);
-      clearImageDownloadQueue();
+    it('empties the table', async () => {
+      await enqueueImage('cov-1', 'refresh-all', 'cycle-A', 100);
+      await enqueueImage('cov-2', 'refresh-all', 'cycle-A', 200);
+      await clearImageDownloadQueue();
       expect(fake._rows.size).toBe(0);
     });
   });
@@ -413,25 +423,25 @@ describe('imageDownloadQueueTable', () => {
       __setDbForTests(null);
     });
 
-    it('reads return safe defaults', () => {
-      expect(hydrateImageDownloadQueue()).toEqual([]);
-      expect(pickNextQueuedImageRow()).toBeNull();
-      expect(countImageQueueRowsByStatus('queued')).toBe(0);
-      expect(countImageQueueRowsByCycle('cycle-A')).toBe(0);
+    it('reads return safe defaults', async () => {
+      expect(await hydrateImageDownloadQueue()).toEqual([]);
+      expect(await pickNextQueuedImageRow()).toBeNull();
+      expect(await countImageQueueRowsByStatus('queued')).toBe(0);
+      expect(await countImageQueueRowsByCycle('cycle-A')).toBe(0);
     });
 
-    it('writes silently no-op', () => {
-      expect(enqueueImage('cov-1', 'refresh-all', 'cycle-A')).toBe(false);
-      expect(enqueueImagesBulk(['cov-1'], 'refresh-all', 'cycle-A')).toBe(0);
-      expect(clearImageQueueByCycle('cycle-A')).toBe(0);
-      expect(resetStalledImageRows()).toBe(0);
-      expect(resetErrorRowsForCycle('cycle-A')).toBe(0);
+    it('writes silently no-op', async () => {
+      expect(await enqueueImage('cov-1', 'refresh-all', 'cycle-A')).toBe(false);
+      expect(await enqueueImagesBulk(['cov-1'], 'refresh-all', 'cycle-A')).toBe(0);
+      expect(await clearImageQueueByCycle('cycle-A')).toBe(0);
+      expect(await resetStalledImageRows()).toBe(0);
+      expect(await resetErrorRowsForCycle('cycle-A')).toBe(0);
       // No throws; markImageDownloading/Error and removeImageFromQueue/clearImageDownloadQueue
-      // return void but must not throw either.
-      expect(() => markImageDownloading('x')).not.toThrow();
-      expect(() => markImageError('x', 'e')).not.toThrow();
-      expect(() => removeImageFromQueue('x')).not.toThrow();
-      expect(() => clearImageDownloadQueue()).not.toThrow();
+      // resolve to void but must not reject either.
+      await expect(markImageDownloading('x')).resolves.toBeUndefined();
+      await expect(markImageError('x', 'e')).resolves.toBeUndefined();
+      await expect(removeImageFromQueue('x')).resolves.toBeUndefined();
+      await expect(clearImageDownloadQueue()).resolves.toBeUndefined();
     });
   });
 });

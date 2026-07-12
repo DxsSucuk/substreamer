@@ -117,28 +117,32 @@ export async function upsertAlbumDetailAsync(
 }
 
 /** Remove a single album detail row AND the associated song_index rows. */
-export function deleteAlbumDetail(id: string): void {
+export async function deleteAlbumDetail(id: string): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    db.withTransactionSync(() => {
-      db.runSync('DELETE FROM album_details WHERE id = ?;', [id]);
-      db.runSync('DELETE FROM song_index WHERE albumId = ?;', [id]);
-    });
+    await serializeSongIndexWrite(() =>
+      db.withTransactionAsync(async () => {
+        await db.runAsync('DELETE FROM album_details WHERE id = ?;', [id]);
+        await db.runAsync('DELETE FROM song_index WHERE albumId = ?;', [id]);
+      }),
+    );
   } catch {
     /* dropped */
   }
 }
 
 /** Remove every row from both tables. Used on logout / force-resync. */
-export function clearDetailTables(): void {
+export async function clearDetailTables(): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    db.withTransactionSync(() => {
-      db.runSync('DELETE FROM album_details;');
-      db.runSync('DELETE FROM song_index;');
-    });
+    await serializeSongIndexWrite(() =>
+      db.withTransactionAsync(async () => {
+        await db.runAsync('DELETE FROM album_details;');
+        await db.runAsync('DELETE FROM song_index;');
+      }),
+    );
   } catch {
     /* dropped */
   }
@@ -565,19 +569,7 @@ export function getAllSongAlbumIds(): Map<string, string> {
   return out;
 }
 
-/** Return the total album_details row count. */
-export function countAlbumDetails(): number {
-  const db = getDb();
-  if (db === null) return 0;
-  try {
-    const row = db.getFirstSync<{ c: number }>('SELECT COUNT(*) AS c FROM album_details;');
-    return row?.c ?? 0;
-  } catch {
-    return 0;
-  }
-}
-
-/** Async counterpart of {@link countAlbumDetails} — runs off the JS thread. */
+/** Return the total album_details row count (async — runs off the JS thread). */
 export async function countAlbumDetailsAsync(): Promise<number> {
   const db = getDb();
   if (db === null) return 0;

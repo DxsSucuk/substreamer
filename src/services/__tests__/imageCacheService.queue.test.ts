@@ -253,8 +253,8 @@ beforeEach(() => {
 });
 
 describe('image-queue meta accessors', () => {
-  it('getImageQueueState returns the empty shape when no cycle is active', () => {
-    expect(getImageQueueState()).toEqual({
+  it('getImageQueueState returns the empty shape when no cycle is active', async () => {
+    expect(await getImageQueueState()).toEqual({
       cycleId: null,
       cycleScope: null,
       cycleTotal: 0,
@@ -287,7 +287,7 @@ describe('enqueueImageRefreshCycle', () => {
     const [ids, scope] = mockEnqueueBulk.mock.calls[0];
     expect(ids).toEqual(['cov-a1', 'cov-pl1', 'cov-a2']);
     expect(scope).toBe('refresh-downloads');
-    const meta = getImageQueueState();
+    const meta = await getImageQueueState();
     expect(meta.cycleId).toBe(cycleId);
     expect(meta.cycleScope).toBe('refresh-downloads');
     expect(meta.cycleTotal).toBe(3);
@@ -333,7 +333,7 @@ describe('processImageQueue worker', () => {
 
     // Every row consumed; cycle metadata cleared.
     expect(mockQueueState.rows).toEqual([]);
-    expect(getImageQueueState().cycleId).toBeNull();
+    expect((await getImageQueueState()).cycleId).toBeNull();
     expect(mockMarkDownloading).toHaveBeenCalledTimes(2);
     expect(mockRemoveFromQueue).toHaveBeenCalledTimes(2);
   });
@@ -348,7 +348,7 @@ describe('processImageQueue worker', () => {
     expect(mockQueueState.rows).toHaveLength(1);
     expect(mockQueueState.rows[0].status).toBe('error');
     expect(mockMarkError).toHaveBeenCalledWith('cov-a', expect.stringContaining('Failed after retry'));
-    expect(getImageQueueState().cycleId).not.toBeNull();
+    expect((await getImageQueueState()).cycleId).not.toBeNull();
     // Retry-once-inline: 2 attempts per row
     expect(mockDownloader).toHaveBeenCalledTimes(2);
   });
@@ -360,7 +360,7 @@ describe('processImageQueue worker', () => {
 
     await processImageQueue();
 
-    const s = getImageQueueState();
+    const s = await getImageQueueState();
     expect(s.phase).toBe('error');
     // cycleId is KEPT (banner shows the error variant; cycle-scoped retry still works).
     expect(s.cycleId).not.toBeNull();
@@ -372,11 +372,11 @@ describe('processImageQueue worker', () => {
     mockDownloaderShouldFail = true;
     await enqueueImageRefreshCycle('refresh-all');
     await processImageQueue();
-    expect(getImageQueueState().phase).toBe('error');
+    expect((await getImageQueueState()).phase).toBe('error');
 
     dismissImageCacheErrorBanner();
 
-    const s = getImageQueueState();
+    const s = await getImageQueueState();
     expect(s.phase).toBe('dismissed');
     expect(s.cycleId).not.toBeNull();
   });
@@ -438,18 +438,18 @@ describe('processImageQueue worker', () => {
 });
 
 describe('pause / resume', () => {
-  it('pauseImageQueue persists isPaused=true and resumeImageQueue clears it', () => {
+  it('pauseImageQueue persists isPaused=true and resumeImageQueue clears it', async () => {
     pauseImageQueue();
-    expect(getImageQueueState().isPaused).toBe(true);
+    expect((await getImageQueueState()).isPaused).toBe(true);
     resumeImageQueue();
-    expect(getImageQueueState().isPaused).toBe(false);
+    expect((await getImageQueueState()).isPaused).toBe(false);
   });
 
-  it('pause survives a meta re-read (i.e., simulated app restart)', () => {
+  it('pause survives a meta re-read (i.e., simulated app restart)', async () => {
     pauseImageQueue();
     // Trigger a fresh read by clearing the in-process memo (the function
     // reads kvStorage every time, so this is implicit). Just call again.
-    expect(getImageQueueState().isPaused).toBe(true);
+    expect((await getImageQueueState()).isPaused).toBe(true);
   });
 });
 
@@ -459,14 +459,14 @@ describe('cancel', () => {
     await enqueueImageRefreshCycle('refresh-all');
     expect(mockQueueState.rows).toHaveLength(2);
 
-    cancelImageRefreshCycle();
+    await cancelImageRefreshCycle();
 
     expect(mockQueueState.rows).toHaveLength(0);
-    expect(getImageQueueState().cycleId).toBeNull();
+    expect((await getImageQueueState()).cycleId).toBeNull();
   });
 
-  it('is a no-op when no cycle is active', () => {
-    expect(() => cancelImageRefreshCycle()).not.toThrow();
+  it('is a no-op when no cycle is active', async () => {
+    await cancelImageRefreshCycle();
     expect(mockClearByCycle).not.toHaveBeenCalled();
   });
 });
@@ -481,15 +481,15 @@ describe('retryFailedImages', () => {
 
     // Now retry — but make the next pass succeed.
     mockDownloaderShouldFail = false;
-    retryFailedImages();
+    await retryFailedImages();
     // retryFailedImages kicks the worker via void; flush the event loop.
     await new Promise((r) => setTimeout(r, 0));
 
     expect(mockResetErrorForCycle).toHaveBeenCalled();
   });
 
-  it('is a no-op when no cycle is active', () => {
-    expect(() => retryFailedImages()).not.toThrow();
+  it('is a no-op when no cycle is active', async () => {
+    await retryFailedImages();
     expect(mockResetErrorForCycle).not.toHaveBeenCalled();
   });
 });
@@ -515,8 +515,8 @@ describe('recoverStalledImageDownloads', () => {
 });
 
 describe('getImageQueueState — progress derivation', () => {
-  it('returns zeros when no cycle', () => {
-    const s = getImageQueueState();
+  it('returns zeros when no cycle', async () => {
+    const s = await getImageQueueState();
     expect(s.processed).toBe(0);
     expect(s.cycleTotal).toBe(0);
     expect(s.failed).toBe(0);
@@ -532,7 +532,7 @@ describe('getImageQueueState — progress derivation', () => {
     // Remove the "completed" rows
     mockQueueState.rows = mockQueueState.rows.slice(0, 2);
 
-    const s = getImageQueueState();
+    const s = await getImageQueueState();
     expect(s.cycleTotal).toBe(4);
     expect(s.processed).toBe(3); // total 4 minus 1 still-queued = 3 attempted
     expect(s.failed).toBe(1);

@@ -76,9 +76,9 @@ export function AccountCard() {
     // OkHttp actually enforce; awaiting here (rather than fire-and-forget) means
     // a self-signed re-login re-prompts instead of racing a still-trusted cert.
     await clearAllNativeTrust();
-    resetAllStores();
-    clearImageCache();
-    clearMusicCache();
+    await resetAllStores();
+    await clearImageCache();
+    await clearMusicCache();
     router.replace('/login');
   }, [router]);
 

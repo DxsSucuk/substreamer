@@ -1,6 +1,6 @@
 import { type StateStorage } from 'zustand/middleware';
 
-import { getDb, kvFallback } from './db';
+import { getDb, kvFallback, serializeDbWrite } from './db';
 
 // Fires once per process the first time any kvStorage operation falls back
 // to the in-memory Map. `db.ts` already logs at init time, but that warn is
@@ -150,14 +150,14 @@ export const kvStorage: StateStorage = {
 };
 
 /** Delete every row from the `storage` table — used by logout. */
-export function clearKvStorage(): void {
+export async function clearKvStorage(): Promise<void> {
   const db = getDb();
   if (db === null) {
     kvFallback.clear();
     return;
   }
   try {
-    db.runSync('DELETE FROM storage;');
+    await serializeDbWrite(() => db.runAsync('DELETE FROM storage;'));
   } catch {
     /* dropped */
   }

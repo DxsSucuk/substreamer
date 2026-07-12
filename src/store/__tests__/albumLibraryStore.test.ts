@@ -13,7 +13,7 @@ import {
   searchAlbumsPage,
 } from '../../services/subsonicService';
 import {
-  clearLibraryAlbums,
+  clearLibraryAlbumsAsync,
   countLibraryAlbumsAsync,
   deleteLibraryAlbumsAsync,
   hydrateLibraryAlbumsAsync,
@@ -74,7 +74,7 @@ beforeEach(() => {
   mockProbe.mockResolvedValue(true);
   mockSearchPage.mockResolvedValue([]);
   mockGetAlbumsPageByName.mockResolvedValue([]);
-  (clearLibraryAlbums as jest.Mock).mockReturnValue(undefined);
+  (clearLibraryAlbumsAsync as jest.Mock).mockReturnValue(undefined);
   (deleteLibraryAlbumsAsync as jest.Mock).mockResolvedValue(undefined);
   (ensureCoverArtAuth as jest.Mock).mockResolvedValue(undefined);
 });
@@ -148,7 +148,7 @@ describe('albumLibraryStore — fast path (paged search3)', () => {
     await albumLibraryStore.getState().fetchAllAlbums();
 
     // Detected non-paging → cleared + restarted on basic getAlbumList2.
-    expect(clearLibraryAlbums).toHaveBeenCalled();
+    expect(clearLibraryAlbumsAsync).toHaveBeenCalled();
     expect(syncStatusStore.getState().syncStrategy).toBe('basic');
     expect(albumLibraryStore.getState().albums).toHaveLength(3);
     expect(syncStatusStore.getState().librarySyncComplete).toBe(true);
@@ -323,13 +323,13 @@ describe('albumLibraryStore — write-through + clear', () => {
     expect(mockUpsert).not.toHaveBeenCalled();
   });
 
-  it('clearAlbums wipes memory + rows + sync markers', () => {
+  it('clearAlbums wipes memory + rows + sync markers', async () => {
     albumLibraryStore.setState({ albums: [makeAlbum('a1', 'Test', 'Artist')], error: 'old' });
     syncStatusStore.setState({ librarySyncComplete: true } as any);
-    albumLibraryStore.getState().clearAlbums();
+    await albumLibraryStore.getState().clearAlbums();
     const state = albumLibraryStore.getState();
     expect(state.albums).toEqual([]);
-    expect(clearLibraryAlbums).toHaveBeenCalledTimes(1);
+    expect(clearLibraryAlbumsAsync).toHaveBeenCalledTimes(1);
     expect(syncStatusStore.getState().librarySyncComplete).toBe(false);
   });
 });

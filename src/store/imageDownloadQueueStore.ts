@@ -35,7 +35,7 @@ export interface ImageDownloadQueueState {
   /** Re-read cycle meta into the store. Safe to call repeatedly. */
   hydrateFromDbAsync: () => Promise<void>;
   /** Update only the derived progress fields without re-querying the queue array. */
-  refreshProgress: () => void;
+  refreshProgress: () => Promise<void>;
 }
 
 export const imageDownloadQueueStore = create<ImageDownloadQueueState>()((set) => ({
@@ -48,7 +48,7 @@ export const imageDownloadQueueStore = create<ImageDownloadQueueState>()((set) =
   phase: 'active',
 
   hydrateFromDbAsync: async () => {
-    const s = getImageQueueState();
+    const s = await getImageQueueState();
     set({
       cycleId: s.cycleId,
       cycleScope: s.cycleScope,
@@ -60,8 +60,8 @@ export const imageDownloadQueueStore = create<ImageDownloadQueueState>()((set) =
     });
   },
 
-  refreshProgress: () => {
-    const s = getImageQueueState();
+  refreshProgress: async () => {
+    const s = await getImageQueueState();
     set({
       cycleId: s.cycleId,
       cycleScope: s.cycleScope,
@@ -78,5 +78,5 @@ export const imageDownloadQueueStore = create<ImageDownloadQueueState>()((set) =
 // into the store. Service is the source of truth; this is a one-way
 // subscription so the store reactively mirrors the SQL/meta state.
 subscribeImageQueueChanges(() => {
-  imageDownloadQueueStore.getState().refreshProgress();
+  void imageDownloadQueueStore.getState().refreshProgress();
 });

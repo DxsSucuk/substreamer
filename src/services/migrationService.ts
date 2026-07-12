@@ -1535,7 +1535,7 @@ const MIGRATION_TASKS: MigrationTask[] = [
       // Transactional bulk insert — blob removal only runs if the transaction
       // commits, so a mid-migration crash preserves the original blob for the
       // next launch to retry.
-      replaceAllScrobbles(valid);
+      await replaceAllScrobbles(valid);
       await kvStorage.removeItem('substreamer-completed-scrobbles');
       const dropped = raws.length - valid.length;
       log(
@@ -1612,7 +1612,7 @@ const MIGRATION_TASKS: MigrationTask[] = [
         seen.add(s.id);
         valid.push(s as PendingScrobble);
       }
-      replaceAllPendingScrobbles(valid);
+      await replaceAllPendingScrobbles(valid);
       await kvStorage.removeItem('substreamer-scrobbles');
       const dropped = raws.length - valid.length;
       log(
@@ -1699,7 +1699,7 @@ const MIGRATION_TASKS: MigrationTask[] = [
       }
 
       if (rows.length > 0) {
-        bulkInsertCachedImages(rows);
+        await bulkInsertCachedImages(rows);
       }
       const persisted = countCachedImagesRow();
       const uniqueCovers = new Set(rows.map((r) => r.coverArtId)).size;

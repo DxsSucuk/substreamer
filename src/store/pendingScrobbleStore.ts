@@ -23,7 +23,7 @@ export interface PendingScrobbleState {
 
   addScrobble: (song: Child, time: number) => void;
   removeScrobble: (id: string) => void;
-  clearAll: () => void;
+  clearAll: () => Promise<void>;
   /** Called once at app start to load persisted rows into memory. */
   hydrateFromDbAsync: () => Promise<void>;
 }
@@ -38,20 +38,21 @@ export const pendingScrobbleStore = create<PendingScrobbleState>()((set, get) =>
       song,
       time,
     };
-    // Persist first so the row is on disk before any subscriber acts on
-    // the new in-memory state.
-    insertPendingScrobble(row);
+    // Persist optimistically (fire-and-forget) so the in-memory update isn't
+    // blocked on disk IO; INSERT OR IGNORE + in-memory dedup make a late write
+    // safe, and it self-heals on the next hydrate.
+    void insertPendingScrobble(row);
     set({ pendingScrobbles: [...get().pendingScrobbles, row] });
   },
 
   removeScrobble: (id) => {
     if (!id) return;
-    deletePendingScrobble(id);
+    void deletePendingScrobble(id);
     set({ pendingScrobbles: get().pendingScrobbles.filter((s) => s.id !== id) });
   },
 
-  clearAll: () => {
-    clearPendingScrobbles();
+  clearAll: async () => {
+    await clearPendingScrobbles();
     set({ pendingScrobbles: [] });
   },
 

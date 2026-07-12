@@ -5,7 +5,7 @@
 jest.mock('../persistence/scrobbleTable', () => ({
   insertScrobble: jest.fn(),
   replaceAllScrobbles: jest.fn(),
-  mergeScrobbles: jest.fn(() => ({ added: 0, skipped: 0 })),
+  mergeScrobbles: jest.fn(async () => ({ added: 0, skipped: 0 })),
   clearScrobbles: jest.fn(),
   hydrateScrobbles: jest.fn(() => []),
   hydrateScrobblesAsync: jest.fn(async () => []),
@@ -463,13 +463,13 @@ describe('hydrateFromDbAsync', () => {
 });
 
 describe('replaceAll', () => {
-  it('writes to SQL and updates in-memory state with rebuilt stats/aggregates', () => {
+  it('writes to SQL and updates in-memory state with rebuilt stats/aggregates', async () => {
     const scrobbles: CompletedScrobble[] = [
       validScrobble({ id: '1', song: { id: 's1', title: 'A', artist: 'Art', duration: 100 } as any, time: new Date(2025, 0, 15, 10).getTime() }),
       validScrobble({ id: '2', song: { id: 's2', title: 'B', artist: 'Art', duration: 200 } as any, time: new Date(2025, 0, 15, 14).getTime() }),
     ];
 
-    completedScrobbleStore.getState().replaceAll(scrobbles);
+    await completedScrobbleStore.getState().replaceAll(scrobbles);
 
     expect(mockReplaceAllScrobbles).toHaveBeenCalledTimes(1);
     expect(mockReplaceAllScrobbles).toHaveBeenCalledWith(scrobbles);
@@ -481,7 +481,7 @@ describe('replaceAll', () => {
     expect(state.aggregates.artistCounts['Art'].count).toBe(2);
   });
 
-  it('drops invalid records and dedupes before writing to SQL', () => {
+  it('drops invalid records and dedupes before writing to SQL', async () => {
     const dirty = [
       validScrobble({ id: 'ok', song: { id: 's1', title: 'A', artist: 'Art', duration: 100 } as any }),
       validScrobble({ id: 'ok', song: { id: 's1', title: 'A', artist: 'Art', duration: 100 } as any }), // dup
@@ -491,7 +491,7 @@ describe('replaceAll', () => {
       { id: 'null', song: null as any, time: Date.now() } as CompletedScrobble,
     ];
 
-    completedScrobbleStore.getState().replaceAll(dirty);
+    await completedScrobbleStore.getState().replaceAll(dirty);
 
     expect(mockReplaceAllScrobbles).toHaveBeenCalledTimes(1);
     const [cleaned] = mockReplaceAllScrobbles.mock.calls[0];
@@ -501,9 +501,9 @@ describe('replaceAll', () => {
     expect(completedScrobbleStore.getState().completedScrobbles).toHaveLength(1);
   });
 
-  it('replaceAll with empty array resets the store to empty', () => {
+  it('replaceAll with empty array resets the store to empty', async () => {
     completedScrobbleStore.getState().addCompleted(validScrobble({ id: '1' }));
-    completedScrobbleStore.getState().replaceAll([]);
+    await completedScrobbleStore.getState().replaceAll([]);
 
     expect(mockReplaceAllScrobbles).toHaveBeenCalledWith([]);
     const state = completedScrobbleStore.getState();
@@ -516,32 +516,32 @@ describe('replaceAll', () => {
 describe('mergeAll', () => {
   beforeEach(() => {
     mockMergeScrobbles.mockClear();
-    mockHydrateScrobbles.mockClear();
+    mockHydrateScrobblesAsync.mockClear();
   });
 
-  it('delegates to mergeScrobbles and re-hydrates from SQL', () => {
+  it('delegates to mergeScrobbles and re-hydrates from SQL', async () => {
     const incoming: CompletedScrobble[] = [
       validScrobble({ id: 'b1', time: 100 }),
       validScrobble({ id: 'b2', time: 200 }),
     ];
-    mockMergeScrobbles.mockReturnValueOnce({ added: 2, skipped: 0 });
-    mockHydrateScrobbles.mockReturnValueOnce(incoming);
+    mockMergeScrobbles.mockResolvedValueOnce({ added: 2, skipped: 0 });
+    mockHydrateScrobblesAsync.mockResolvedValueOnce(incoming);
 
-    const result = completedScrobbleStore.getState().mergeAll(incoming);
+    const result = await completedScrobbleStore.getState().mergeAll(incoming);
 
     expect(mockMergeScrobbles).toHaveBeenCalledWith(incoming);
-    expect(mockHydrateScrobbles).toHaveBeenCalledTimes(1);
+    expect(mockHydrateScrobblesAsync).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ added: 2, skipped: 0 });
     const state = completedScrobbleStore.getState();
     expect(state.completedScrobbles).toEqual(incoming);
     expect(state.stats.totalPlays).toBe(2);
   });
 
-  it('reports added/skipped counts from the SQL layer', () => {
-    mockMergeScrobbles.mockReturnValueOnce({ added: 1, skipped: 1 });
-    mockHydrateScrobbles.mockReturnValueOnce([]);
+  it('reports added/skipped counts from the SQL layer', async () => {
+    mockMergeScrobbles.mockResolvedValueOnce({ added: 1, skipped: 1 });
+    mockHydrateScrobblesAsync.mockResolvedValueOnce([]);
 
-    const result = completedScrobbleStore.getState().mergeAll([
+    const result = await completedScrobbleStore.getState().mergeAll([
       validScrobble({ id: 'a1' }),
       validScrobble({ id: 'a2' }),
     ]);
@@ -549,16 +549,16 @@ describe('mergeAll', () => {
     expect(result).toEqual({ added: 1, skipped: 1 });
   });
 
-  it('keeps in-memory state in sync with what SQL actually has after merge', () => {
+  it('keeps in-memory state in sync with what SQL actually has after merge', async () => {
     completedScrobbleStore.getState().addCompleted(validScrobble({ id: 'local-1', time: 50 }));
     const merged: CompletedScrobble[] = [
       validScrobble({ id: 'local-1', time: 50 }),
       validScrobble({ id: 'remote-1', time: 100 }),
     ];
-    mockMergeScrobbles.mockReturnValueOnce({ added: 1, skipped: 1 });
-    mockHydrateScrobbles.mockReturnValueOnce(merged);
+    mockMergeScrobbles.mockResolvedValueOnce({ added: 1, skipped: 1 });
+    mockHydrateScrobblesAsync.mockResolvedValueOnce(merged);
 
-    completedScrobbleStore.getState().mergeAll([validScrobble({ id: 'remote-1', time: 100 })]);
+    await completedScrobbleStore.getState().mergeAll([validScrobble({ id: 'remote-1', time: 100 })]);
 
     const state = completedScrobbleStore.getState();
     expect(state.completedScrobbles).toEqual(merged);

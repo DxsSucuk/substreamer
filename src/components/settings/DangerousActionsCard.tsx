@@ -76,8 +76,8 @@ export function DangerousActionsCard() {
       message: t('clearMetadataCacheMessage', { count: totalMetadataCount }),
       confirmLabel: t('clear'),
       destructive: true,
-      onConfirm: () => {
-        albumDetailStore.getState().clearAlbums();
+      onConfirm: async () => {
+        await albumDetailStore.getState().clearAlbums();
         artistDetailStore.getState().clearArtists();
         playlistDetailStore.getState().clearPlaylists();
       },
@@ -94,7 +94,7 @@ export function DangerousActionsCard() {
         await clearQueue();
         await clearMusicCache();
         await clearImageCache();
-        albumDetailStore.getState().clearAlbums();
+        await albumDetailStore.getState().clearAlbums();
         artistDetailStore.getState().clearArtists();
         playlistDetailStore.getState().clearPlaylists();
         checkStorageLimit();

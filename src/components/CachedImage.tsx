@@ -209,7 +209,7 @@ export const CachedImage = memo(function CachedImage({
     const hadCached = resolved != null && !resolved.isRemote; // was showing a file:// cache hit
     if (hadCached) {
       localErroredRef.current = true;
-      reportBadCache(coverArtId, size);
+      void reportBadCache(coverArtId, size);
     } else if (resolved?.isRemote) {
       void reportBadRemote(coverArtId);
     }

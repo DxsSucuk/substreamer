@@ -12,17 +12,19 @@ import { kvStorage, kvStorageSync, clearKvStorage } from '../kvStorage';
 describe('kvStorageSync (happy path)', () => {
   let mockGetFirstSync: jest.Mock;
   let mockRunSync: jest.Mock;
+  let mockRunAsync: jest.Mock;
 
   beforeEach(() => {
     mockGetFirstSync = jest.fn();
     mockRunSync = jest.fn();
+    mockRunAsync = jest.fn();
     __setDbForTests({
       getFirstSync: mockGetFirstSync,
       getAllSync: jest.fn(),
       getAllAsync: jest.fn(),
       getFirstAsync: jest.fn(),
       runSync: mockRunSync,
-      runAsync: jest.fn(),
+      runAsync: mockRunAsync,
       execSync: jest.fn(),
       withTransactionSync: jest.fn(),
       withTransactionAsync: jest.fn(),
@@ -91,16 +93,14 @@ describe('kvStorageSync (happy path)', () => {
   });
 
   describe('clearKvStorage', () => {
-    it('deletes every row from the storage table', () => {
-      clearKvStorage();
-      expect(mockRunSync).toHaveBeenCalledWith('DELETE FROM storage;');
+    it('deletes every row from the storage table', async () => {
+      await clearKvStorage();
+      expect(mockRunAsync).toHaveBeenCalledWith('DELETE FROM storage;');
     });
 
-    it('swallows runSync failures', () => {
-      mockRunSync.mockImplementation(() => {
-        throw new Error('disk i/o');
-      });
-      expect(() => clearKvStorage()).not.toThrow();
+    it('swallows runAsync failures', async () => {
+      mockRunAsync.mockRejectedValue(new Error('disk i/o'));
+      await expect(clearKvStorage()).resolves.toBeUndefined();
     });
   });
 });
@@ -212,10 +212,10 @@ describe('kvStorage adapters (db unavailable → in-memory fallback)', () => {
     await expect(kvStorage.getItem('gamma')).resolves.toBeNull();
   });
 
-  it('clearKvStorage empties the fallback Map', () => {
+  it('clearKvStorage empties the fallback Map', async () => {
     kvStorageSync.setItem('delta', 'four');
     kvStorageSync.setItem('epsilon', 'five');
-    clearKvStorage();
+    await clearKvStorage();
     expect(kvStorageSync.getItem('delta')).toBeNull();
     expect(kvStorageSync.getItem('epsilon')).toBeNull();
   });

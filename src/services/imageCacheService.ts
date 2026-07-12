@@ -49,7 +49,7 @@ import {
   getAllCachedCoverArtIds,
   getCachedImagesForCoverArtAsync,
   hasCachedImage as dbHasCachedImage,
-  hydrateImageCacheAggregates,
+  hydrateImageCacheAggregatesAsync,
   listCachedImagesForBrowser,
   upsertCachedImage,
   type CacheBrowserFilter,
@@ -375,8 +375,8 @@ function isPurgeAllowedNow(): boolean {
  * circuit, the source-download connectivity-gated purge, and the
  * variant-resize threshold purge.
  */
-function purgeCoverArtRows(coverArtId: string): { files: number } {
-  const result = deleteCachedImagesForCoverArt(coverArtId);
+async function purgeCoverArtRows(coverArtId: string): Promise<{ files: number }> {
+  const result = await deleteCachedImagesForCoverArt(coverArtId);
   try {
     const subDir = new Directory(ensureCacheDir(), coverArtPathKey(coverArtId));
     if (subDir.exists) {
@@ -407,11 +407,12 @@ function purgeCoverArtRows(coverArtId: string): { files: number } {
  * Returns the number of sentinel coverArtIds that had rows (0–2). Safe
  * to call multiple times — idempotent after the first run.
  */
-function sweepSentinelRows(): number {
+async function sweepSentinelRows(): Promise<number> {
   let cleared = 0;
   let totalFiles = 0;
   for (const id of SENTINEL_COVER_ART_IDS) {
-    const { files } = purgeCoverArtRows(id);
+    // eslint-disable-next-line no-await-in-loop
+    const { files } = await purgeCoverArtRows(id);
     if (files > 0) cleared++;
     totalFiles += files;
   }
@@ -649,7 +650,7 @@ export async function reconcileImageCache(source: string = 'auto'): Promise<void
   }
   logImageCache(`reconcile start source=${source} top-level-dirs=${topLevelNames.length}`);
 
-  const preAggregate = hydrateImageCacheAggregates();
+  const preAggregate = (await hydrateImageCacheAggregatesAsync());
   const newRows: Array<{
     coverArtId: string;
     size: number;
@@ -704,7 +705,8 @@ export async function reconcileImageCache(source: string = 'auto'): Promise<void
         continue;
       }
       seenOnDisk.add(diskKey(coverArtId, size));
-      if (dbHasCachedImage(coverArtId, size)) continue;
+      // eslint-disable-next-line no-await-in-loop
+      if (await dbHasCachedImage(coverArtId, size)) continue;
       newRows.push({
         coverArtId,
         size,
@@ -720,7 +722,7 @@ export async function reconcileImageCache(source: string = 'auto'): Promise<void
   // table and the FS disagree wildly — treat as suspicious and skip.
   const isMassInsert = newRows.length > 100 && preAggregate.fileCount > 50;
   if (!isMassInsert && newRows.length > 0) {
-    bulkInsertCachedImages(newRows);
+    await bulkInsertCachedImages(newRows);
     logImageCache(`reconcile pass1 inserted=${newRows.length}`);
   } else if (isMassInsert) {
     // eslint-disable-next-line no-console
@@ -741,7 +743,7 @@ export async function reconcileImageCache(source: string = 'auto'): Promise<void
   // the same mass-missing heuristic — a temporarily-missing cache
   // directory shouldn't wipe the table.
   if (!isMassInsert) {
-    const post = listCachedImagesForBrowser('all');
+    const post = await listCachedImagesForBrowser('all');
     let droppedCount = 0;
     for (const entry of post) {
       // Disk paths are sanitised; SQL rows keep the original coverArtId.
@@ -757,7 +759,8 @@ export async function reconcileImageCache(source: string = 'auto'): Promise<void
         // would already be in seenOnDisk; guards the sanitised-id keying.)
         if (onDiskSize !== undefined && onDiskSize > 0) continue;
         // File gone, or zero-byte (Pass 1 already deleted it): drop the row.
-        deleteCachedImageVariant(entry.coverArtId, file.size);
+        // eslint-disable-next-line no-await-in-loop
+        await deleteCachedImageVariant(entry.coverArtId, file.size);
         droppedCount++;
       }
     }
@@ -827,7 +830,7 @@ export async function repairIncompleteImages(
   //    does NOT enter `queued` (which only covers the user-actionable
   //    incomplete set) but it does add to `removed` so the toast can
   //    report "2 sentinels removed".
-  const sentinelCoversCleared = sweepSentinelRows();
+  const sentinelCoversCleared = await sweepSentinelRows();
   logImageCache(`repair sentinel-sweep cleared=${sentinelCoversCleared}`);
 
   // 2. .tmp sweep — clean up abandoned half-writes from previous sessions
@@ -866,7 +869,7 @@ export async function repairIncompleteImages(
   //    resolves in processNext's finally block via resolveWaiters(), so
   //    Promise.all below gives us a real "repair-done" signal that the
   //    Settings overlay can hook into.
-  const snapshot = findIncompleteCovers().filter(
+  const snapshot = (await findIncompleteCovers()).filter(
     (id) => !isSentinelCoverArtId(id),  // sentinels already handled in step 1
   );
   const queued = snapshot.length;
@@ -890,7 +893,7 @@ export async function repairIncompleteImages(
   );
 
   // 4. Classify each original coverArtId by its post-pass state in SQL.
-  const afterIncomplete = new Set(findIncompleteCovers());
+  const afterIncomplete = new Set(await findIncompleteCovers());
   let repaired = 0;
   let failed = 0;
   let removedDuringRepair = 0;
@@ -904,7 +907,8 @@ export async function repairIncompleteImages(
       // server blip never nukes a cover: those fall through to `failed` and
       // retry on the next scan/launch.
       if (opts.removeUnrepairable && isPurgeAllowedNow()) {
-        purgeCoverArtRows(id);
+        // eslint-disable-next-line no-await-in-loop
+        await purgeCoverArtRows(id);
         removedDuringRepair++;
         logImageCache(`repair classify id=${id} unrepairable-purged`);
       } else {
@@ -914,7 +918,8 @@ export async function repairIncompleteImages(
     } else {
       // Either all 4 variants present → repaired, or all rows gone →
       // purged by the 404/3×-failure circuit breaker.
-      const has600 = dbHasCachedImage(id, SOURCE_SIZE);
+      // eslint-disable-next-line no-await-in-loop
+      const has600 = await dbHasCachedImage(id, SOURCE_SIZE);
       if (has600) {
         repaired++;
         logImageCache(`repair classify id=${id} repaired`);
@@ -962,7 +967,7 @@ export async function scanImageCache(source: string = 'settings'): Promise<Repai
  * file is broken and a re-download is needed. Scoped to one size —
  * sibling variants for the same coverArt may still be healthy.
  */
-export function deleteCachedVariant(coverArtId: string, size: number): void {
+export async function deleteCachedVariant(coverArtId: string, size: number): Promise<void> {
   if (!coverArtId) return;
   const subDir = new Directory(ensureCacheDir(), coverArtPathKey(coverArtId));
   if (subDir.exists) {
@@ -973,7 +978,7 @@ export function deleteCachedVariant(coverArtId: string, size: number): void {
       }
     }
   }
-  deleteCachedImageVariant(coverArtId, size);
+  await deleteCachedImageVariant(coverArtId, size);
   imageCacheStore.getState().recalculateFromDb();
 }
 
@@ -1062,10 +1067,10 @@ export function ensureCached(coverArtId: string): Promise<void> {
  * URI map) and re-enqueues a download. The component will re-render on
  * the next `notifyImageCacheUpdate` when a fresh file lands.
  */
-export function reportBadCache(coverArtId: string, size: number): void {
+export async function reportBadCache(coverArtId: string, size: number): Promise<void> {
   if (!coverArtId) return;
   logImageCache(`reportBadCache id=${coverArtId} size=${size}`);
-  deleteCachedVariant(coverArtId, size);
+  await deleteCachedVariant(coverArtId, size);
   if (!offlineModeStore.getState().offlineMode) {
     void cacheAllSizes(coverArtId);
   }
@@ -1380,7 +1385,7 @@ async function downloadSourceImage(
         `[imageCacheService] 404 for coverArt=${coverArtId} — purging cache rows`,
       );
       logImageCache(`download id=${coverArtId} 404 purge`);
-      purgeCoverArtRows(coverArtId);
+      await purgeCoverArtRows(coverArtId);
       return null;
     }
     if (isPurgeAllowedNow()) {
@@ -1391,7 +1396,7 @@ async function downloadSourceImage(
       logImageCache(
         `download id=${coverArtId} status=${response.status} purge connectivity=ok`,
       );
-      purgeCoverArtRows(coverArtId);
+      await purgeCoverArtRows(coverArtId);
     } else {
       logImageCache(
         `download id=${coverArtId} status=${response.status} preserved connectivity=down`,
@@ -1423,7 +1428,7 @@ async function downloadSourceImage(
     // DB row is written strictly after the successful rename. Any failure
     // before this point leaves the disk clean of the finalised file and
     // the DB row absent — the two stay consistent.
-    upsertCachedImage({
+    await upsertCachedImage({
       coverArtId,
       size: SOURCE_SIZE,
       ext: ext.slice(1), // strip leading '.'
@@ -1443,7 +1448,7 @@ async function downloadSourceImage(
       logImageCache(
         `download id=${coverArtId} io-error purge connectivity=ok err=${errMessage(e)}`,
       );
-      purgeCoverArtRows(coverArtId);
+      await purgeCoverArtRows(coverArtId);
     } else {
       logImageCache(
         `download id=${coverArtId} io-error preserved connectivity=down err=${errMessage(e)}`,
@@ -1503,7 +1508,7 @@ async function generateResizedVariant(
     // DB row after rename — mirrors the source-download pattern. A crash
     // between two variants leaves the DB missing the unfinished ones so
     // `findIncompleteCovers()` surfaces them for re-generation.
-    upsertCachedImage({
+    await upsertCachedImage({
       coverArtId,
       size,
       ext: 'jpg', // every derived variant is JPEG
@@ -1553,7 +1558,7 @@ async function generateResizedVariant(
         `[imageCacheService] ${next} consecutive resize failures for coverArt=${coverArtId} — purging cache rows`,
       );
       logImageCache(`resize id=${coverArtId} threshold-purge`);
-      purgeCoverArtRows(coverArtId);
+      await purgeCoverArtRows(coverArtId);
       // No further server-side recovery is attempted. The Subsonic spec
       // for `getCoverArt` accepts only `id` and `size`; the previously-
       // used `format=jpg` query was a no-op (the server returned the
@@ -1587,7 +1592,7 @@ export interface ImageCacheStats {
  * contract for callers.
  */
 export async function getImageCacheStats(): Promise<ImageCacheStats> {
-  const agg = hydrateImageCacheAggregates();
+  const agg = (await hydrateImageCacheAggregatesAsync());
   return {
     totalBytes: agg.totalBytes,
     imageCount: agg.imageCount,
@@ -1632,7 +1637,7 @@ export async function listCachedImages(
   // every row crosses the native bridge and at 21k+ rows becomes the dominant
   // cost of opening the browser.
   const dirUri = ensureCacheDir().uri;
-  const dbEntries: DbCachedImageEntry[] = listCachedImagesForBrowser(filter);
+  const dbEntries: DbCachedImageEntry[] = await listCachedImagesForBrowser(filter);
   return dbEntries.map((entry) => ({
     coverArtId: entry.coverArtId,
     complete: entry.complete,
@@ -1660,7 +1665,7 @@ export async function deleteCachedImage(coverArtId: string): Promise<void> {
   if (!dirExists) {
     // Clean up any orphan DB rows for this cover (e.g. directory was
     // already removed externally), then stop.
-    const rows = deleteCachedImagesForCoverArt(coverArtId);
+    const rows = await deleteCachedImagesForCoverArt(coverArtId);
     logImageCache(`deleteCachedImage id=${coverArtId} dir-missing rows-removed=${rows.count}`);
     imageCacheStore.getState().recalculateFromDb();
     return;
@@ -1678,7 +1683,7 @@ export async function deleteCachedImage(coverArtId: string): Promise<void> {
     );
   }
 
-  const rows = deleteCachedImagesForCoverArt(coverArtId);
+  const rows = await deleteCachedImagesForCoverArt(coverArtId);
   logImageCache(
     `deleteCachedImage id=${coverArtId} dir-deleted=${dirDeleted} rows-removed=${rows.count}`,
   );
@@ -1768,7 +1773,7 @@ export async function clearImageCache(
   opts: { reinit?: boolean } = {},
 ): Promise<number> {
   const reinit = opts.reinit ?? true;
-  const freedBytes = hydrateImageCacheAggregates().totalBytes;
+  const freedBytes = (await hydrateImageCacheAggregatesAsync()).totalBytes;
   await teardownImageCacheState({ reinit });
   logImageCache(`clearImageCache reinit=${reinit} freed-bytes=${freedBytes}`);
   return freedBytes;
@@ -1922,7 +1927,7 @@ export interface ImageQueueState {
  * is: anything not 'queued' OR 'downloading' counts as attempted; errored
  * rows are attempted-and-failed, not still-in-queue.
  */
-export function getImageQueueState(): ImageQueueState {
+export async function getImageQueueState(): Promise<ImageQueueState> {
   const meta = readImageQueueMeta();
   if (meta.cycleId === null || meta.cycleTotal === 0) {
     return {
@@ -1935,8 +1940,8 @@ export function getImageQueueState(): ImageQueueState {
       phase: meta.phase,
     };
   }
-  const remainingInQueue = countImageQueueRowsByCycle(meta.cycleId);
-  const errored = countImageQueueRowsByStatus('error');
+  const remainingInQueue = await countImageQueueRowsByCycle(meta.cycleId);
+  const errored = await countImageQueueRowsByStatus('error');
   const queuedOrDownloading = remainingInQueue - errored;
   const processed = Math.max(0, meta.cycleTotal - Math.max(0, queuedOrDownloading));
   return {
@@ -2052,7 +2057,7 @@ async function tryDownloadCover(coverArtId: string): Promise<boolean> {
 }
 
 async function processOneImage(row: ImageDownloadQueueRow): Promise<void> {
-  markImageDownloading(row.coverArtId);
+  await markImageDownloading(row.coverArtId);
   // Both scopes are 'refresh-*' so they delete-then-redownload (the
   // existing refresh semantic). No skip-if-cached pre-check here —
   // refresh-all WANTS to replace; refresh-downloads WANTS to pick up
@@ -2068,23 +2073,23 @@ async function processOneImage(row: ImageDownloadQueueRow): Promise<void> {
   if (!ok) ok = await tryDownloadCover(row.coverArtId);
 
   if (ok) {
-    removeImageFromQueue(row.coverArtId);
+    await removeImageFromQueue(row.coverArtId);
     scheduleAggregateRecalc();
-    maybeCompleteCycle();
+    await maybeCompleteCycle();
   } else {
-    markImageError(row.coverArtId, 'Failed after retry');
+    await markImageError(row.coverArtId, 'Failed after retry');
     logImageCache(`image-queue: persisted error for id=${row.coverArtId}`);
     // Completion check on failure too — otherwise an all-failed cycle would
     // never re-evaluate and transition to its (dismissible) error phase.
-    maybeCompleteCycle();
+    await maybeCompleteCycle();
   }
   notifyImageQueueChange();
 }
 
-function maybeCompleteCycle(): void {
+async function maybeCompleteCycle(): Promise<void> {
   const meta = readImageQueueMeta();
   if (meta.cycleId === null) return;
-  const remaining = countImageQueueRowsByCycle(meta.cycleId);
+  const remaining = await countImageQueueRowsByCycle(meta.cycleId);
   if (remaining === 0) {
     // Every row succeeded → clean complete; banner clears.
     writeImageQueueMeta({ cycleId: null, cycleScope: null, cycleTotal: 0, isPaused: false, phase: 'active' });
@@ -2096,7 +2101,7 @@ function maybeCompleteCycle(): void {
   // errors. Transition to the dismissible error phase instead of pinning the
   // progress banner at N/N forever. cycleId + the error rows are kept so the
   // cycle-scoped retry and next-boot recovery still work.
-  const errored = countImageQueueRowsByStatus('error');
+  const errored = await countImageQueueRowsByStatus('error');
   const stillActive = remaining - errored;
   if (stillActive <= 0 && meta.phase === 'active') {
     writeImageQueueMeta({ ...meta, phase: 'error' });
@@ -2109,7 +2114,7 @@ async function imageWorkerLoop(): Promise<void> {
   while (true) {
     if (readImageQueueMeta().isPaused) return;
     if (!connectivityAllowsImageWork()) return;
-    const next = pickNextQueuedImageRow();
+    const next = await pickNextQueuedImageRow();
     if (!next) return;
     await processOneImage(next);
   }
@@ -2155,7 +2160,7 @@ export async function processImageQueue(): Promise<void> {
  * fresh shot per session.
  */
 export async function recoverStalledImageDownloads(): Promise<void> {
-  const reset = resetStalledImageRows();
+  const reset = await resetStalledImageRows();
   if (reset > 0) {
     // Rows are queued again → re-activate the cycle so the progress banner
     // (not a stale error banner) reflects the fresh attempt.
@@ -2197,13 +2202,13 @@ export function resumeImageQueue(): void {
  * don't kill mid-fetch — matches music's `cancelDownload`). The worker
  * exits naturally when there's nothing left.
  */
-export function cancelImageRefreshCycle(): void {
+export async function cancelImageRefreshCycle(): Promise<void> {
   const meta = readImageQueueMeta();
   if (meta.cycleId === null) {
     logImageCache('image-queue: cancel with no active cycle (no-op)');
     return;
   }
-  const removed = clearImageQueueByCycle(meta.cycleId);
+  const removed = await clearImageQueueByCycle(meta.cycleId);
   writeImageQueueMeta({ cycleId: null, cycleScope: null, cycleTotal: 0, isPaused: false, phase: 'active' });
   flushAggregateRecalc();
   logImageCache(`image-queue: cancelled cycle ${meta.cycleId}, removed ${removed} row(s)`);
@@ -2214,13 +2219,13 @@ export function cancelImageRefreshCycle(): void {
  * Move all 'error' rows in the active cycle back to 'queued' so the
  * worker re-tries them. Mirrors music's `retryDownload`.
  */
-export function retryFailedImages(): void {
+export async function retryFailedImages(): Promise<void> {
   const meta = readImageQueueMeta();
   if (meta.cycleId === null) {
     logImageCache('image-queue: retryFailed with no active cycle (no-op)');
     return;
   }
-  const reset = resetErrorRowsForCycle(meta.cycleId);
+  const reset = await resetErrorRowsForCycle(meta.cycleId);
   logImageCache(`image-queue: retryFailed reset ${reset} row(s)`);
   if (reset > 0) {
     // Back to draining → progress banner, not the error banner.
@@ -2276,7 +2281,7 @@ function snapshotDownloadedCoverArtIds(): string[] {
   return out;
 }
 
-function snapshotAllCachedCoverArtIds(): string[] {
+async function snapshotAllCachedCoverArtIds(): Promise<string[]> {
   // Distinct cover_art_ids across cached_images (every cover that has at
   // least one variant on disk). Already returned distinct + sorted.
   return getAllCachedCoverArtIds();
@@ -2299,13 +2304,13 @@ export async function enqueueImageRefreshCycle(
   }
   const ids = scope === 'refresh-downloads'
     ? snapshotDownloadedCoverArtIds()
-    : snapshotAllCachedCoverArtIds();
+    : await snapshotAllCachedCoverArtIds();
   if (ids.length === 0) {
     logImageCache(`image-queue: ${scope} produced 0 ids, nothing to do`);
     return null;
   }
   const cycleId = generateCycleId();
-  const inserted = enqueueImagesBulk(ids, scope, cycleId);
+  const inserted = await enqueueImagesBulk(ids, scope, cycleId);
   writeImageQueueMeta({
     cycleId,
     cycleScope: scope,

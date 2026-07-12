@@ -123,10 +123,10 @@ describe('removeScrobble', () => {
 });
 
 describe('clearAll', () => {
-  it('wipes in-memory state and the SQL table', () => {
+  it('wipes in-memory state and the SQL table', async () => {
     pendingScrobbleStore.getState().addScrobble({ id: 's1', title: 'A' } as any, 1000);
     pendingScrobbleStore.getState().addScrobble({ id: 's2', title: 'B' } as any, 2000);
-    pendingScrobbleStore.getState().clearAll();
+    await pendingScrobbleStore.getState().clearAll();
     expect(pendingScrobbleStore.getState().pendingScrobbles).toEqual([]);
     expect(mockClear).toHaveBeenCalledTimes(1);
   });

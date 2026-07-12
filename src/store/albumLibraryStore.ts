@@ -4,7 +4,7 @@ import { bumpPlayStats } from './playStats';
 import i18n from '../i18n/i18n';
 
 import {
-  clearLibraryAlbums,
+  clearLibraryAlbumsAsync,
   countLibraryAlbumsAsync,
   hydrateLibraryAlbumsAsync,
   kvStorage,
@@ -159,7 +159,7 @@ export interface AlbumLibraryState {
    *  bumped album so the play stats survive restart. */
   applyLocalPlay: (albumId: string | undefined, now: string) => void;
   /** Clear all album data (in-memory + the `library_albums` rows + sync markers). */
-  clearAlbums: () => void;
+  clearAlbums: () => Promise<void>;
 }
 
 export const albumLibraryStore = create<AlbumLibraryState>()((set, get) => ({
@@ -293,7 +293,7 @@ export const albumLibraryStore = create<AlbumLibraryState>()((set, get) => ({
         if (r === 'bailed') return bail();
         if (r === 'switch-basic') {
           // Server claimed empty-query support but doesn't page — restart basic.
-          clearLibraryAlbums();
+          await clearLibraryAlbumsAsync();
           set({ albums: [] });
           seen.clear();
           syncStatusStore.getState().setSyncStrategy('basic');
@@ -374,11 +374,11 @@ export const albumLibraryStore = create<AlbumLibraryState>()((set, get) => ({
     void upsertLibraryAlbumsAsync([nextAlbum], titleSortKeyFor);
   },
 
-  clearAlbums: () => {
+  clearAlbums: async () => {
     set({ albums: [], loading: false, error: null });
-    // Wipe the rows synchronously so they're gone before any subsequent fetch
-    // (server-switch / force-resync run this on the sync path).
-    clearLibraryAlbums();
+    // Wipe the rows (awaited) so they're gone before any subsequent fetch
+    // (server-switch / force-resync await this before refetching).
+    await clearLibraryAlbumsAsync();
     syncStatusStore.getState().resetLibrarySync();
   },
 }));

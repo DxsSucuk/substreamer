@@ -13,7 +13,7 @@ import {
   dropAllPendingPersistWrites,
 } from './persistence';
 import { clearDetailTables } from './persistence/detailTables';
-import { clearLibraryAlbums } from './persistence/libraryAlbumsTable';
+import { clearLibraryAlbumsAsync } from './persistence/libraryAlbumsTable';
 import { clearPendingScrobbles } from './persistence/pendingScrobbleTable';
 import { clearScrobbles } from './persistence/scrobbleTable';
 import { clearMusicCacheTables } from './musicCacheStore';
@@ -129,7 +129,7 @@ const allStores = [
   setRatingStore,
 ];
 
-export function resetAllStores(): void {
+export async function resetAllStores(): Promise<void> {
   // (Native SSL trust + proxy teardown happens in the logout handler, awaited
   // before this runs — see AccountCard.handleLogout.)
 
@@ -138,21 +138,21 @@ export function resetAllStores(): void {
   // download recovery against a reset store. The next login re-arms them.
   teardownMusicCache();
   teardownImageCache();
-  clearKvStorage();
+  await clearKvStorage();
   // Clear the per-row SQLite tables used by albumDetailStore + songIndexStore.
   // These live in a separate connection (`detailTables.ts`) from the generic
   // `storage` key-value table that `clearKvStorage()` wipes, so they would
   // otherwise persist stale rows across logout.
-  clearDetailTables();
+  await clearDetailTables();
   // albumLibraryStore is row-based now (`library_albums`), in its own table;
   // wipe it here so the browse list doesn't survive logout.
-  clearLibraryAlbums();
+  await clearLibraryAlbumsAsync();
   // completedScrobbleStore also persists to a per-row table (`scrobble_events`)
   // in its own connection; truncate it here so logged-out state is clean.
-  clearScrobbles();
+  await clearScrobbles();
   // pendingScrobbleStore persists to `pending_scrobble_events`; truncate
   // here so the offline transmit queue doesn't survive logout.
-  clearPendingScrobbles();
+  await clearPendingScrobbles();
   // musicCacheStore persists its four v2 tables (cached_songs, cached_items,
   // cached_item_songs, download_queue) in yet another connection; truncate
   // them here and drop the settings blob too.
