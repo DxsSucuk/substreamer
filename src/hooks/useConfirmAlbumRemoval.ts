@@ -31,16 +31,16 @@ export function useConfirmAlbumRemoval() {
       if (!itemId) return;
       const cached = musicCacheStore.getState().cachedItems[itemId];
       if (!cached) {
-        deleteCachedItem(itemId);
+        void deleteCachedItem(itemId);
         return;
       }
       if (cached.type !== 'album') {
-        deleteCachedItem(itemId);
+        void deleteCachedItem(itemId);
         return;
       }
       const { survivorCount } = computeAlbumRemovalOutcome(itemId);
       if (survivorCount === 0) {
-        deleteCachedItem(itemId);
+        void deleteCachedItem(itemId);
         return;
       }
       confirm({
@@ -51,7 +51,7 @@ export function useConfirmAlbumRemoval() {
         }),
         confirmLabel: t('removeAnyway'),
         destructive: true,
-        onConfirm: () => demoteAlbumToPartial(itemId),
+        onConfirm: () => void demoteAlbumToPartial(itemId),
       });
     },
     [confirm, t],

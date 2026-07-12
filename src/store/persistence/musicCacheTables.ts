@@ -13,7 +13,7 @@
  * write is a silent no-op on failure. Consumers never need to handle
  * exceptions from this module.
  */
-import { getDb, type InternalDb } from './db';
+import { getDb, serializeDbWrite, type InternalDb } from './db';
 
 export interface CachedSongRow {
   id: string;
@@ -579,6 +579,92 @@ export function orphanSongEverywhere(
   return { affectedItems, prunedItems };
 }
 
+/**
+ * Atomic "orphan this song iff no REAL holder remains". Runs the real-ref
+ * COUNT and the conditional orphan (edge deletes → song delete → derived-holder
+ * prune) inside ONE transaction, so no concurrent insert can add a holder
+ * between the count and the delete — the TOCTOU race a two-call
+ * count-then-orphan would introduce now that these paths are async. Fuses
+ * `countRealSongRefs` + `orphanSongEverywhere`; returns whether it orphaned
+ * plus the touched/pruned holders so the store can mirror the change in memory.
+ */
+export async function orphanSongIfUnreferencedAsync(
+  songId: string,
+): Promise<{ orphaned: boolean; affectedItems: string[]; prunedItems: string[] }> {
+  const db = getDb();
+  const affectedItems: string[] = [];
+  const prunedItems: string[] = [];
+  if (db === null) return { orphaned: false, affectedItems, prunedItems };
+  let orphaned = false;
+  try {
+    await serializeDbWrite(() =>
+      db.withTransactionAsync(async () => {
+        // Count REAL holders (derived = 0) inside the txn. Fail SAFE to the raw
+        // all-edges count if the `derived` column is missing (migration 31 not
+        // yet run) so we degrade to the OLD non-destructive behaviour.
+        let realRefs: number;
+        try {
+          const row = await db.getFirstAsync<{ c: number }>(
+            `SELECT COUNT(*) AS c FROM cached_item_songs e
+               JOIN cached_items i ON e.item_id = i.item_id
+              WHERE e.song_id = ? AND COALESCE(i.derived, 0) = 0;`,
+            [songId],
+          );
+          realRefs = row?.c ?? 0;
+        } catch {
+          const row = await db.getFirstAsync<{ c: number }>(
+            'SELECT COUNT(*) AS c FROM cached_item_songs WHERE song_id = ?;',
+            [songId],
+          );
+          realRefs = row?.c ?? 0;
+        }
+        if (realRefs !== 0) return; // still held by a real holder — keep it
+        orphaned = true;
+        const edges = await db.getAllAsync<{ item_id: string; position: number }>(
+          'SELECT item_id, position FROM cached_item_songs WHERE song_id = ?;',
+          [songId],
+        );
+        const holders = [...new Set(edges.map((e) => e.item_id))];
+        for (const e of edges) {
+          // eslint-disable-next-line no-await-in-loop
+          await db.runAsync(
+            'DELETE FROM cached_item_songs WHERE item_id = ? AND position = ?;',
+            [e.item_id, e.position],
+          );
+          // eslint-disable-next-line no-await-in-loop
+          await db.runAsync(
+            'UPDATE cached_item_songs SET position = position - 1 WHERE item_id = ? AND position > ?;',
+            [e.item_id, e.position],
+          );
+        }
+        await db.runAsync('DELETE FROM cached_songs WHERE song_id = ?;', [songId]);
+        for (const itemId of holders) {
+          affectedItems.push(itemId);
+          // eslint-disable-next-line no-await-in-loop
+          const cnt = await db.getFirstAsync<{ c: number }>(
+            'SELECT COUNT(*) AS c FROM cached_item_songs WHERE item_id = ?;',
+            [itemId],
+          );
+          if ((cnt?.c ?? 0) > 0) continue;
+          // eslint-disable-next-line no-await-in-loop
+          const der = await db.getFirstAsync<{ d: number }>(
+            'SELECT COALESCE(derived, 0) AS d FROM cached_items WHERE item_id = ?;',
+            [itemId],
+          );
+          if ((der?.d ?? 0) === 1) {
+            // eslint-disable-next-line no-await-in-loop
+            await db.runAsync('DELETE FROM cached_items WHERE item_id = ?;', [itemId]);
+            prunedItems.push(itemId);
+          }
+        }
+      }),
+    );
+  } catch {
+    /* dropped */
+  }
+  return { orphaned, affectedItems, prunedItems };
+}
+
 /* ------------------------------------------------------------------ */
 /*  cached_songs writes                                                */
 /* ------------------------------------------------------------------ */
@@ -586,7 +672,7 @@ export function orphanSongEverywhere(
 // Internal helpers take an already-validated non-null `db` — they're only
 // called from public functions that have done the null check, or from
 // inside `withTransactionSync` callbacks.
-function upsertCachedSongInternal(db: InternalDb, song: CachedSongRow): void {
+async function upsertCachedSongInternal(db: InternalDb, song: CachedSongRow): Promise<void> {
   // UPSERT rather than `INSERT OR REPLACE` — see `upsertCachedItemInternal`
   // for the rationale. Applies the same pattern here for consistency so
   // nobody can accidentally reintroduce the cascade-delete footgun.
@@ -597,7 +683,7 @@ function upsertCachedSongInternal(db: InternalDb, song: CachedSongRow): void {
   // a runtime top-up that fails to include the envelope cannot clobber a
   // row that has one — the `COALESCE(excluded.raw_json, raw_json)` pattern
   // keeps the richer version.
-  db.runSync(
+  await db.runAsync(
     `INSERT INTO cached_songs
        (song_id, title, artist, album, album_id, cover_art, bytes, duration,
         suffix, bit_rate, bit_depth, sampling_rate, format_captured_at,
@@ -638,22 +724,22 @@ function upsertCachedSongInternal(db: InternalDb, song: CachedSongRow): void {
   );
 }
 
-export function upsertCachedSong(song: CachedSongRow): void {
+export async function upsertCachedSong(song: CachedSongRow): Promise<void> {
   const db = getDb();
   if (db === null) return;
   if (!song.id || !song.albumId) return;
   try {
-    upsertCachedSongInternal(db, song);
+    await serializeDbWrite(() => upsertCachedSongInternal(db, song));
   } catch {
     /* dropped */
   }
 }
 
-export function deleteCachedSong(songId: string): void {
+export async function deleteCachedSong(songId: string): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    db.runSync('DELETE FROM cached_songs WHERE song_id = ?;', [songId]);
+    await serializeDbWrite(() => db.runAsync('DELETE FROM cached_songs WHERE song_id = ?;', [songId]));
   } catch {
     /* dropped */
   }
@@ -676,32 +762,34 @@ export function deleteCachedSong(songId: string): void {
  * already referenced for the same item — that row already won, the old
  * junction edge is redundant), then deletes the stale row.
  */
-export function remapCachedSongId(
+export async function remapCachedSongId(
   oldId: string,
   newSong: CachedSongRow,
-): boolean {
+): Promise<boolean> {
   const db = getDb();
   if (db === null) return false;
   if (oldId === newSong.id) return false;
   try {
     let didRemap = false;
-    db.withTransactionSync(() => {
-      const exists = db.getFirstSync(
-        'SELECT 1 FROM cached_songs WHERE song_id = ? LIMIT 1;',
-        [oldId],
-      );
-      if (!exists) return;
-      upsertCachedSongInternal(db, newSong);
-      db.runSync(
-        'UPDATE OR IGNORE cached_item_songs SET song_id = ? WHERE song_id = ?;',
-        [newSong.id, oldId],
-      );
-      // Clear any junction rows that survived UPDATE OR IGNORE (i.e.
-      // ones that conflicted because the new id was already wired up).
-      db.runSync('DELETE FROM cached_item_songs WHERE song_id = ?;', [oldId]);
-      db.runSync('DELETE FROM cached_songs WHERE song_id = ?;', [oldId]);
-      didRemap = true;
-    });
+    await serializeDbWrite(() =>
+      db.withTransactionAsync(async () => {
+        const exists = await db.getFirstAsync(
+          'SELECT 1 FROM cached_songs WHERE song_id = ? LIMIT 1;',
+          [oldId],
+        );
+        if (!exists) return;
+        await upsertCachedSongInternal(db, newSong);
+        await db.runAsync(
+          'UPDATE OR IGNORE cached_item_songs SET song_id = ? WHERE song_id = ?;',
+          [newSong.id, oldId],
+        );
+        // Clear any junction rows that survived UPDATE OR IGNORE (i.e.
+        // ones that conflicted because the new id was already wired up).
+        await db.runAsync('DELETE FROM cached_item_songs WHERE song_id = ?;', [oldId]);
+        await db.runAsync('DELETE FROM cached_songs WHERE song_id = ?;', [oldId]);
+        didRemap = true;
+      }),
+    );
     return didRemap;
   } catch {
     return false;
@@ -730,7 +818,7 @@ export function findOrphanSongs(): string[] {
 /*  cached_items writes                                                */
 /* ------------------------------------------------------------------ */
 
-function upsertCachedItemInternal(db: InternalDb, item: Omit<CachedItemRow, 'songIds'>): void {
+async function upsertCachedItemInternal(db: InternalDb, item: Omit<CachedItemRow, 'songIds'>): Promise<void> {
   // UPSERT (not `INSERT OR REPLACE`): SQLite implements `OR REPLACE` as
   // DELETE-then-INSERT, which would fire `ON DELETE CASCADE` on the
   // `cached_item_songs` edges table and silently wipe every edge for this
@@ -741,7 +829,7 @@ function upsertCachedItemInternal(db: InternalDb, item: Omit<CachedItemRow, 'son
   //
   // `raw_json` uses the same COALESCE-on-conflict shape as cached_songs —
   // see that helper for the rationale.
-  db.runSync(
+  await db.runAsync(
     `INSERT INTO cached_items
        (item_id, type, name, artist, cover_art_id, expected_song_count,
         parent_album_id, last_sync_at, downloaded_at, raw_json, derived)
@@ -773,12 +861,12 @@ function upsertCachedItemInternal(db: InternalDb, item: Omit<CachedItemRow, 'son
   );
 }
 
-export function upsertCachedItem(item: Omit<CachedItemRow, 'songIds'>): void {
+export async function upsertCachedItem(item: Omit<CachedItemRow, 'songIds'>): Promise<void> {
   const db = getDb();
   if (db === null) return;
   if (!item.itemId) return;
   try {
-    upsertCachedItemInternal(db, item);
+    await serializeDbWrite(() => upsertCachedItemInternal(db, item));
   } catch {
     /* dropped */
   }
@@ -788,11 +876,11 @@ export function upsertCachedItem(item: Omit<CachedItemRow, 'songIds'>): void {
  * Delete an item row. FOREIGN KEY ON DELETE CASCADE removes the associated
  * cached_item_songs edges in the same SQLite statement.
  */
-export function deleteCachedItem(itemId: string): void {
+export async function deleteCachedItem(itemId: string): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    db.runSync('DELETE FROM cached_items WHERE item_id = ?;', [itemId]);
+    await serializeDbWrite(() => db.runAsync('DELETE FROM cached_items WHERE item_id = ?;', [itemId]));
   } catch {
     /* dropped */
   }
@@ -802,14 +890,16 @@ export function deleteCachedItem(itemId: string): void {
 /*  cached_item_songs (edge) writes                                    */
 /* ------------------------------------------------------------------ */
 
-export function insertCachedItemSong(itemId: string, position: number, songId: string): void {
+export async function insertCachedItemSong(itemId: string, position: number, songId: string): Promise<void> {
   const db = getDb();
   if (db === null) return;
   if (!itemId || !songId) return;
   try {
-    db.runSync(
-      'INSERT OR IGNORE INTO cached_item_songs (item_id, position, song_id) VALUES (?, ?, ?);',
-      [itemId, position, songId],
+    await serializeDbWrite(() =>
+      db.runAsync(
+        'INSERT OR IGNORE INTO cached_item_songs (item_id, position, song_id) VALUES (?, ?, ?);',
+        [itemId, position, songId],
+      ),
     );
   } catch {
     /* dropped */
@@ -820,20 +910,22 @@ export function insertCachedItemSong(itemId: string, position: number, songId: s
  * Remove an edge at a specific position and shift higher positions down by 1
  * so positions remain contiguous within the item.
  */
-export function removeCachedItemSong(itemId: string, position: number): void {
+export async function removeCachedItemSong(itemId: string, position: number): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    db.withTransactionSync(() => {
-      db.runSync(
-        'DELETE FROM cached_item_songs WHERE item_id = ? AND position = ?;',
-        [itemId, position],
-      );
-      db.runSync(
-        'UPDATE cached_item_songs SET position = position - 1 WHERE item_id = ? AND position > ?;',
-        [itemId, position],
-      );
-    });
+    await serializeDbWrite(() =>
+      db.withTransactionAsync(async () => {
+        await db.runAsync(
+          'DELETE FROM cached_item_songs WHERE item_id = ? AND position = ?;',
+          [itemId, position],
+        );
+        await db.runAsync(
+          'UPDATE cached_item_songs SET position = position - 1 WHERE item_id = ? AND position > ?;',
+          [itemId, position],
+        );
+      }),
+    );
   } catch {
     /* dropped */
   }
@@ -843,44 +935,46 @@ export function removeCachedItemSong(itemId: string, position: number): void {
  * Reorder one edge within an item from `fromPosition` to `toPosition`. Uses a
  * sentinel position (-1) to avoid primary-key collisions during the shift.
  */
-export function reorderCachedItemSongs(
+export async function reorderCachedItemSongs(
   itemId: string,
   fromPosition: number,
   toPosition: number,
-): void {
+): Promise<void> {
   const db = getDb();
   if (db === null) return;
   if (fromPosition === toPosition) return;
   try {
-    db.withTransactionSync(() => {
-      // Stash the moving row at a sentinel position that can't collide.
-      db.runSync(
-        'UPDATE cached_item_songs SET position = -1 WHERE item_id = ? AND position = ?;',
-        [itemId, fromPosition],
-      );
-      if (fromPosition < toPosition) {
-        // Shift (fromPosition, toPosition] down by 1.
-        db.runSync(
-          `UPDATE cached_item_songs
-             SET position = position - 1
-             WHERE item_id = ? AND position > ? AND position <= ?;`,
-          [itemId, fromPosition, toPosition],
+    await serializeDbWrite(() =>
+      db.withTransactionAsync(async () => {
+        // Stash the moving row at a sentinel position that can't collide.
+        await db.runAsync(
+          'UPDATE cached_item_songs SET position = -1 WHERE item_id = ? AND position = ?;',
+          [itemId, fromPosition],
         );
-      } else {
-        // Shift [toPosition, fromPosition) up by 1.
-        db.runSync(
-          `UPDATE cached_item_songs
-             SET position = position + 1
-             WHERE item_id = ? AND position >= ? AND position < ?;`,
-          [itemId, toPosition, fromPosition],
+        if (fromPosition < toPosition) {
+          // Shift (fromPosition, toPosition] down by 1.
+          await db.runAsync(
+            `UPDATE cached_item_songs
+               SET position = position - 1
+               WHERE item_id = ? AND position > ? AND position <= ?;`,
+            [itemId, fromPosition, toPosition],
+          );
+        } else {
+          // Shift [toPosition, fromPosition) up by 1.
+          await db.runAsync(
+            `UPDATE cached_item_songs
+               SET position = position + 1
+               WHERE item_id = ? AND position >= ? AND position < ?;`,
+            [itemId, toPosition, fromPosition],
+          );
+        }
+        // Drop the moving row into its final slot.
+        await db.runAsync(
+          'UPDATE cached_item_songs SET position = ? WHERE item_id = ? AND position = -1;',
+          [toPosition, itemId],
         );
-      }
-      // Drop the moving row into its final slot.
-      db.runSync(
-        'UPDATE cached_item_songs SET position = ? WHERE item_id = ? AND position = -1;',
-        [toPosition, itemId],
-      );
-    });
+      }),
+    );
   } catch {
     /* dropped */
   }
@@ -920,12 +1014,12 @@ export function getItemIdsForSong(songId: string): string[] {
 /*  download_queue writes                                              */
 /* ------------------------------------------------------------------ */
 
-function insertDownloadQueueItemInternal(db: InternalDb, item: DownloadQueueRow): void {
+async function insertDownloadQueueItemInternal(db: InternalDb, item: DownloadQueueRow): Promise<void> {
   // `download_queue` has no FK children so `INSERT OR REPLACE` is safe here,
   // but we use UPSERT anyway for consistency with the other tables — one
   // pattern everywhere means nobody introduces a regression by copying the
   // wrong line later.
-  db.runSync(
+  await db.runAsync(
     `INSERT INTO download_queue
        (queue_id, item_id, type, name, artist, cover_art_id, status,
         total_songs, completed_songs, error, added_at, queue_position,
@@ -962,22 +1056,22 @@ function insertDownloadQueueItemInternal(db: InternalDb, item: DownloadQueueRow)
   );
 }
 
-export function insertDownloadQueueItem(item: DownloadQueueRow): void {
+export async function insertDownloadQueueItem(item: DownloadQueueRow): Promise<void> {
   const db = getDb();
   if (db === null) return;
   if (!item.queueId) return;
   try {
-    insertDownloadQueueItemInternal(db, item);
+    await serializeDbWrite(() => insertDownloadQueueItemInternal(db, item));
   } catch {
     /* dropped */
   }
 }
 
-export function removeDownloadQueueItem(queueId: string): void {
+export async function removeDownloadQueueItem(queueId: string): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    db.runSync('DELETE FROM download_queue WHERE queue_id = ?;', [queueId]);
+    await serializeDbWrite(() => db.runAsync('DELETE FROM download_queue WHERE queue_id = ?;', [queueId]));
   } catch {
     /* dropped */
   }
@@ -987,10 +1081,10 @@ export function removeDownloadQueueItem(queueId: string): void {
  * Partial update of a queue row. Only status / completedSongs / error can be
  * updated via this path; other fields are immutable once the item is queued.
  */
-export function updateDownloadQueueItem(
+export async function updateDownloadQueueItem(
   queueId: string,
   update: Partial<Pick<DownloadQueueRow, 'status' | 'completedSongs' | 'error'>>,
-): void {
+): Promise<void> {
   const db = getDb();
   if (db === null) return;
   const clauses: string[] = [];
@@ -1010,9 +1104,11 @@ export function updateDownloadQueueItem(
   if (clauses.length === 0) return;
   params.push(queueId);
   try {
-    db.runSync(
-      `UPDATE download_queue SET ${clauses.join(', ')} WHERE queue_id = ?;`,
-      params,
+    await serializeDbWrite(() =>
+      db.runAsync(
+        `UPDATE download_queue SET ${clauses.join(', ')} WHERE queue_id = ?;`,
+        params,
+      ),
     );
   } catch {
     /* dropped */
@@ -1024,37 +1120,39 @@ export function updateDownloadQueueItem(
  * positions inside a single transaction so the contiguous ordering is
  * preserved.
  */
-export function reorderDownloadQueue(fromPosition: number, toPosition: number): void {
+export async function reorderDownloadQueue(fromPosition: number, toPosition: number): Promise<void> {
   const db = getDb();
   if (db === null) return;
   if (fromPosition === toPosition) return;
   try {
-    db.withTransactionSync(() => {
-      // Stash the moving row at a sentinel position.
-      db.runSync(
-        'UPDATE download_queue SET queue_position = -1 WHERE queue_position = ?;',
-        [fromPosition],
-      );
-      if (fromPosition < toPosition) {
-        db.runSync(
-          `UPDATE download_queue
-             SET queue_position = queue_position - 1
-             WHERE queue_position > ? AND queue_position <= ?;`,
-          [fromPosition, toPosition],
+    await serializeDbWrite(() =>
+      db.withTransactionAsync(async () => {
+        // Stash the moving row at a sentinel position.
+        await db.runAsync(
+          'UPDATE download_queue SET queue_position = -1 WHERE queue_position = ?;',
+          [fromPosition],
         );
-      } else {
-        db.runSync(
-          `UPDATE download_queue
-             SET queue_position = queue_position + 1
-             WHERE queue_position >= ? AND queue_position < ?;`,
-          [toPosition, fromPosition],
+        if (fromPosition < toPosition) {
+          await db.runAsync(
+            `UPDATE download_queue
+               SET queue_position = queue_position - 1
+               WHERE queue_position > ? AND queue_position <= ?;`,
+            [fromPosition, toPosition],
+          );
+        } else {
+          await db.runAsync(
+            `UPDATE download_queue
+               SET queue_position = queue_position + 1
+               WHERE queue_position >= ? AND queue_position < ?;`,
+            [toPosition, fromPosition],
+          );
+        }
+        await db.runAsync(
+          'UPDATE download_queue SET queue_position = ? WHERE queue_position = -1;',
+          [toPosition],
         );
-      }
-      db.runSync(
-        'UPDATE download_queue SET queue_position = ? WHERE queue_position = -1;',
-        [toPosition],
-      );
-    });
+      }),
+    );
   } catch {
     /* dropped */
   }
@@ -1069,41 +1167,45 @@ export function reorderDownloadQueue(fromPosition: number, toPosition: number): 
  * upsert all songs, and insert every edge — all in a single transaction so
  * consumers never observe a half-committed state.
  */
-export function markDownloadComplete(
+export async function markDownloadComplete(
   queueId: string,
   item: Omit<CachedItemRow, 'songIds'>,
   songs: CachedSongRow[],
   edges: Array<{ songId: string; position: number }>,
-): void {
+): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    db.withTransactionSync(() => {
-      db.runSync('DELETE FROM download_queue WHERE queue_id = ?;', [queueId]);
-      upsertCachedItemInternal(db, item);
-      for (const song of songs) {
-        if (!song.id || !song.albumId) continue;
-        upsertCachedSongInternal(db, song);
-      }
-      // Reassign edge positions starting from MAX(position)+1 for this item
-      // so a top-up merging into an existing row doesn't collide with the
-      // existing 1..K edges (the caller's positions are 1-based within the
-      // queue item's `songsJson`, not the cached row).
-      const maxRow = db.getFirstSync<{ max_pos: number | null }>(
-        'SELECT MAX(position) AS max_pos FROM cached_item_songs WHERE item_id = ?;',
-        [item.itemId],
-      );
-      let nextPosition = (maxRow?.max_pos ?? 0) + 1;
-      const sortedEdges = [...edges].sort((a, b) => a.position - b.position);
-      for (const edge of sortedEdges) {
-        if (!edge.songId) continue;
-        db.runSync(
-          'INSERT OR IGNORE INTO cached_item_songs (item_id, position, song_id) VALUES (?, ?, ?);',
-          [item.itemId, nextPosition, edge.songId],
+    await serializeDbWrite(() =>
+      db.withTransactionAsync(async () => {
+        await db.runAsync('DELETE FROM download_queue WHERE queue_id = ?;', [queueId]);
+        await upsertCachedItemInternal(db, item);
+        for (const song of songs) {
+          if (!song.id || !song.albumId) continue;
+          // eslint-disable-next-line no-await-in-loop
+          await upsertCachedSongInternal(db, song);
+        }
+        // Reassign edge positions starting from MAX(position)+1 for this item
+        // so a top-up merging into an existing row doesn't collide with the
+        // existing 1..K edges (the caller's positions are 1-based within the
+        // queue item's `songsJson`, not the cached row).
+        const maxRow = await db.getFirstAsync<{ max_pos: number | null }>(
+          'SELECT MAX(position) AS max_pos FROM cached_item_songs WHERE item_id = ?;',
+          [item.itemId],
         );
-        nextPosition++;
-      }
-    });
+        let nextPosition = (maxRow?.max_pos ?? 0) + 1;
+        const sortedEdges = [...edges].sort((a, b) => a.position - b.position);
+        for (const edge of sortedEdges) {
+          if (!edge.songId) continue;
+          // eslint-disable-next-line no-await-in-loop
+          await db.runAsync(
+            'INSERT OR IGNORE INTO cached_item_songs (item_id, position, song_id) VALUES (?, ?, ?);',
+            [item.itemId, nextPosition, edge.songId],
+          );
+          nextPosition++;
+        }
+      }),
+    );
   } catch {
     /* dropped */
   }
@@ -1113,44 +1215,50 @@ export function markDownloadComplete(
  * Wipe all four tables and replace their contents in a single transaction.
  * Used by migration task #14 after parsing the v1 blob.
  */
-export function bulkReplace(params: {
+export async function bulkReplace(params: {
   items: Array<Omit<CachedItemRow, 'songIds'>>;
   songs: CachedSongRow[];
   edges: Array<{ itemId: string; position: number; songId: string }>;
   queue: DownloadQueueRow[];
-}): void {
+}): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    db.withTransactionSync(() => {
-      db.runSync('DELETE FROM cached_item_songs;');
-      db.runSync('DELETE FROM download_queue;');
-      db.runSync('DELETE FROM cached_items;');
-      db.runSync('DELETE FROM cached_songs;');
+    await serializeDbWrite(() =>
+      db.withTransactionAsync(async () => {
+        await db.runAsync('DELETE FROM cached_item_songs;');
+        await db.runAsync('DELETE FROM download_queue;');
+        await db.runAsync('DELETE FROM cached_items;');
+        await db.runAsync('DELETE FROM cached_songs;');
 
-      for (const song of params.songs) {
-        if (!song.id || !song.albumId) continue;
-        upsertCachedSongInternal(db, song);
-      }
+        for (const song of params.songs) {
+          if (!song.id || !song.albumId) continue;
+          // eslint-disable-next-line no-await-in-loop
+          await upsertCachedSongInternal(db, song);
+        }
 
-      for (const item of params.items) {
-        if (!item.itemId) continue;
-        upsertCachedItemInternal(db, item);
-      }
+        for (const item of params.items) {
+          if (!item.itemId) continue;
+          // eslint-disable-next-line no-await-in-loop
+          await upsertCachedItemInternal(db, item);
+        }
 
-      for (const edge of params.edges) {
-        if (!edge.itemId || !edge.songId) continue;
-        db.runSync(
-          'INSERT OR IGNORE INTO cached_item_songs (item_id, position, song_id) VALUES (?, ?, ?);',
-          [edge.itemId, edge.position, edge.songId],
-        );
-      }
+        for (const edge of params.edges) {
+          if (!edge.itemId || !edge.songId) continue;
+          // eslint-disable-next-line no-await-in-loop
+          await db.runAsync(
+            'INSERT OR IGNORE INTO cached_item_songs (item_id, position, song_id) VALUES (?, ?, ?);',
+            [edge.itemId, edge.position, edge.songId],
+          );
+        }
 
-      for (const q of params.queue) {
-        if (!q.queueId) continue;
-        insertDownloadQueueItemInternal(db, q);
-      }
-    });
+        for (const q of params.queue) {
+          if (!q.queueId) continue;
+          // eslint-disable-next-line no-await-in-loop
+          await insertDownloadQueueItemInternal(db, q);
+        }
+      }),
+    );
   } catch {
     /* dropped */
   }
@@ -1161,16 +1269,18 @@ export function bulkReplace(params: {
  * switch. Edges are deleted first to sidestep the FK constraint regardless of
  * PRAGMA state.
  */
-export function clearAllMusicCacheRows(): void {
+export async function clearAllMusicCacheRows(): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    db.withTransactionSync(() => {
-      db.runSync('DELETE FROM cached_item_songs;');
-      db.runSync('DELETE FROM download_queue;');
-      db.runSync('DELETE FROM cached_items;');
-      db.runSync('DELETE FROM cached_songs;');
-    });
+    await serializeDbWrite(() =>
+      db.withTransactionAsync(async () => {
+        await db.runAsync('DELETE FROM cached_item_songs;');
+        await db.runAsync('DELETE FROM download_queue;');
+        await db.runAsync('DELETE FROM cached_items;');
+        await db.runAsync('DELETE FROM cached_songs;');
+      }),
+    );
   } catch {
     /* dropped */
   }

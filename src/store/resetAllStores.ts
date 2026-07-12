@@ -156,7 +156,7 @@ export async function resetAllStores(): Promise<void> {
   // musicCacheStore persists its four v2 tables (cached_songs, cached_items,
   // cached_item_songs, download_queue) in yet another connection; truncate
   // them here and drop the settings blob too.
-  clearMusicCacheTables();
+  await clearMusicCacheTables();
   kvStorage.removeItem('substreamer-music-cache-settings');
   // imageCacheStore persists the `cached_images` table; the service-owned
   // wipe also drops in-memory queue/uriCache state and the on-disk dir.

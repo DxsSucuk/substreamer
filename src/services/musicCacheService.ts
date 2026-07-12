@@ -417,8 +417,8 @@ export async function reconcileMusicCacheAsync(): Promise<void> {
     topLevelNames,
     validAlbumIds,
   );
-  const missingSongIds = reconcileRowsToFiles();
-  const orphanItemIds = removeOrphanItemRows();
+  const missingSongIds = await reconcileRowsToFiles();
+  const orphanItemIds = await removeOrphanItemRows();
   const staleDirsDeleted = sweepStaleTopLevelDirs(dir, topLevelNames, validAlbumIds);
 
   if (
@@ -516,7 +516,7 @@ async function reconcileFilesToRows(
  * unwind its edges from every item that references it and drop its in-memory
  * map entries. The store purges orphaned song rows by refcount.
  */
-function reconcileRowsToFiles(): number {
+async function reconcileRowsToFiles(): Promise<number> {
   // Snapshot cachedSongs before mutation — iterating while removing edges
   // is unsafe.
   const songsSnapshot = Object.values(musicCacheStore.getState().cachedSongs);
@@ -551,7 +551,8 @@ function reconcileRowsToFiles(): number {
         if (!current) break;
         const idx = current.songIds.indexOf(song.id);
         if (idx < 0) break;
-        musicCacheStore.getState().removeCachedItemSong(itemId, idx + 1);
+        // eslint-disable-next-line no-await-in-loop
+        await musicCacheStore.getState().removeCachedItemSong(itemId, idx + 1);
       }
     }
 
@@ -566,14 +567,15 @@ function reconcileRowsToFiles(): number {
 }
 
 /** Pass 3: remove item rows left with no songs after pass 2. */
-function removeOrphanItemRows(): number {
+async function removeOrphanItemRows(): Promise<number> {
   const orphanItems: string[] = [];
   for (const item of Object.values(musicCacheStore.getState().cachedItems)) {
     if (item.songIds.length === 0) orphanItems.push(item.itemId);
   }
   let orphanItemIds = 0;
   for (const itemId of orphanItems) {
-    musicCacheStore.getState().removeCachedItem(itemId);
+    // eslint-disable-next-line no-await-in-loop
+    await musicCacheStore.getState().removeCachedItem(itemId);
     orphanItemIds++;
   }
   return orphanItemIds;
@@ -1549,7 +1551,7 @@ export async function redownloadTrack(
 /* ------------------------------------------------------------------ */
 
 /** Delete a cached item + any songs whose refcount drops to zero. */
-export function deleteCachedItem(itemId: string): void {
+export async function deleteCachedItem(itemId: string): Promise<void> {
   if (!itemId) return;
 
   const state = musicCacheStore.getState();
@@ -1567,7 +1569,7 @@ export function deleteCachedItem(itemId: string): void {
   }
 
   // Store action deletes edges (via FK cascade) + orphaned song rows.
-  const orphanedIds = musicCacheStore.getState().removeCachedItem(itemId);
+  const orphanedIds = await musicCacheStore.getState().removeCachedItem(itemId);
   const orphanSet = new Set(orphanedIds);
 
   // Clean up trackToItems for every song that was referenced by this item.
@@ -1658,9 +1660,9 @@ export function computeAlbumRemovalOutcome(
  * shows as partially downloaded afterward — with its original `downloadedAt`
  * intact. If no songs survive, falls through to `deleteCachedItem`.
  */
-export function demoteAlbumToPartial(
+export async function demoteAlbumToPartial(
   itemId: string,
-): { demoted: boolean; removed: boolean } {
+): Promise<{ demoted: boolean; removed: boolean }> {
   const initial = musicCacheStore.getState().cachedItems[itemId];
   if (!initial || initial.type !== 'album') {
     return { demoted: false, removed: false };
@@ -1670,7 +1672,7 @@ export function demoteAlbumToPartial(
 
   if (orphanSongIds.length === initial.songIds.length) {
     // No survivors — full delete is the right outcome.
-    deleteCachedItem(itemId);
+    await deleteCachedItem(itemId);
     return { demoted: false, removed: true };
   }
   if (orphanSongIds.length === 0) {
@@ -1693,7 +1695,8 @@ export function demoteAlbumToPartial(
     if (!current) break;
     const idx = current.songIds.indexOf(songId);
     if (idx < 0) continue;
-    musicCacheStore.getState().removeCachedItemSong(itemId, idx + 1);
+    // eslint-disable-next-line no-await-in-loop
+    await musicCacheStore.getState().removeCachedItemSong(itemId, idx + 1);
     // `removeCachedItemSong` has already deleted the cached_songs row and
     // decremented refcount-via-COUNT. Update the in-memory mirrors.
     trackToItems.delete(songId);
@@ -1726,7 +1729,7 @@ export function demoteAlbumToPartial(
  * Remove a single song from a cached playlist/favorites/song item. Deletes
  * the underlying file iff the song's refcount hits zero.
  */
-export function removeCachedPlaylistTrack(itemId: string, trackIndex: number): void {
+export async function removeCachedPlaylistTrack(itemId: string, trackIndex: number): Promise<void> {
   const cached = musicCacheStore.getState().cachedItems[itemId];
   if (!cached) return;
   // Preserve v1 guard: only operate on playlist-ish items.
@@ -1736,7 +1739,7 @@ export function removeCachedPlaylistTrack(itemId: string, trackIndex: number): v
   const songId = cached.songIds[trackIndex];
   const song = musicCacheStore.getState().cachedSongs[songId];
 
-  const { orphanedSongId } = musicCacheStore.getState().removeCachedItemSong(
+  const { orphanedSongId } = await musicCacheStore.getState().removeCachedItemSong(
     itemId,
     trackIndex + 1, // SQL positions are 1-indexed
   );
@@ -1757,7 +1760,7 @@ export function removeCachedPlaylistTrack(itemId: string, trackIndex: number): v
  * download). If the song was the album's last remaining track, the whole
  * `cached_items` row is removed instead. Returns true when something changed.
  */
-export function removeCachedAlbumSong(albumItemId: string, songId: string): boolean {
+export async function removeCachedAlbumSong(albumItemId: string, songId: string): Promise<boolean> {
   const cached = musicCacheStore.getState().cachedItems[albumItemId];
   if (!cached || cached.type !== 'album') return false;
   const idx = cached.songIds.indexOf(songId);
@@ -1765,12 +1768,12 @@ export function removeCachedAlbumSong(albumItemId: string, songId: string): bool
 
   // Removing the album's last remaining track → drop the album entirely.
   if (cached.songIds.length === 1) {
-    deleteCachedItem(albumItemId);
+    await deleteCachedItem(albumItemId);
     return true;
   }
 
   const song = musicCacheStore.getState().cachedSongs[songId];
-  const { orphanedSongId } = musicCacheStore.getState().removeCachedItemSong(
+  const { orphanedSongId } = await musicCacheStore.getState().removeCachedItemSong(
     albumItemId,
     idx + 1, // SQL positions are 1-indexed
   );
@@ -1803,10 +1806,10 @@ export function reorderCachedPlaylistTracks(
  * Removes songs that are no longer present; reorders remaining songs to
  * match `newTrackIds` order. Orphan files are deleted.
  */
-export function syncCachedPlaylistTracks(
+export async function syncCachedPlaylistTracks(
   playlistId: string,
   newTrackIds: string[],
-): void {
+): Promise<void> {
   const cached = musicCacheStore.getState().cachedItems[playlistId];
   if (!cached) return;
   if (cached.type !== 'playlist' && cached.type !== 'favorites') return;
@@ -1821,7 +1824,7 @@ export function syncCachedPlaylistTracks(
     const sid = originalSongIds[idx];
     if (keepSet.has(sid)) continue;
     const song = musicCacheStore.getState().cachedSongs[sid];
-    const { orphanedSongId } = musicCacheStore.getState().removeCachedItemSong(
+    const { orphanedSongId } = await musicCacheStore.getState().removeCachedItemSong(
       playlistId,
       idx + 1,
     );

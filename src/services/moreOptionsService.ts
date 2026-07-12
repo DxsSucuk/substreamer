@@ -500,19 +500,19 @@ export async function handleDownloadSong(song: Child): Promise<void> {
  * The service layer refcounts the underlying song and only deletes the file
  * once nothing else references it.
  */
-export function handleRemoveSongDownload(song: Child): void {
+export async function handleRemoveSongDownload(song: Child): Promise<void> {
   if (!song?.id) return;
   try {
     let removed = false;
 
     // Explicit single-song download edge, if any.
     if (musicCacheStore.getState().cachedItems[songItemId(song.id)]) {
-      deleteCachedItemService(songItemId(song.id));
+      await deleteCachedItemService(songItemId(song.id));
       removed = true;
     }
 
     // Pooled via its parent album → drop the album edge (album becomes partial).
-    if (song.albumId && removeCachedAlbumSongService(song.albumId, song.id)) {
+    if (song.albumId && (await removeCachedAlbumSongService(song.albumId, song.id))) {
       removed = true;
     }
 

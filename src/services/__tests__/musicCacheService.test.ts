@@ -236,6 +236,35 @@ jest.mock('../../store/persistence/musicCacheTables', () => {
       }
       return { affectedItems: [...affected], prunedItems };
     }),
+    // Atomic count+orphan: the fused helper the store now calls. Returns
+    // orphaned:false (unchanged) when a REAL holder still remains; else orphans
+    // (same logic as orphanSongEverywhere) and returns orphaned:true.
+    orphanSongIfUnreferencedAsync: jest.fn(async (songId: string) => {
+      const realRefs = edges.filter((e) => e.songId === songId && !isDerived(e.itemId)).length;
+      if (realRefs !== 0) return { orphaned: false, affectedItems: [], prunedItems: [] };
+      const affected = new Set<string>();
+      const removed = edges.filter((e) => e.songId === songId);
+      for (const e of removed) affected.add(e.itemId);
+      const sorted = [...removed].sort((a, b) => b.position - a.position);
+      for (const e of sorted) {
+        const i = edges.findIndex(
+          (x) => x.itemId === e.itemId && x.position === e.position && x.songId === songId,
+        );
+        if (i >= 0) edges.splice(i, 1);
+        for (const x of edges) {
+          if (x.itemId === e.itemId && x.position > e.position) x.position -= 1;
+        }
+      }
+      const prunedItems: string[] = [];
+      for (const itemId of affected) {
+        const remaining = edges.filter((e) => e.itemId === itemId).length;
+        if (remaining === 0 && isDerived(itemId)) {
+          derivedItems.delete(itemId);
+          prunedItems.push(itemId);
+        }
+      }
+      return { orphaned: true, affectedItems: [...affected], prunedItems };
+    }),
     findOrphanSongs: jest.fn(() => []),
     // cached_songs writes
     upsertCachedSong: jest.fn(),
@@ -466,11 +495,11 @@ async function waitForQueueIdle(maxIter = 200): Promise<void> {
 /* ------------------------------------------------------------------ */
 
 describe('constants', () => {
-  it('exports STARRED_SONGS_ITEM_ID', () => {
+  it('exports STARRED_SONGS_ITEM_ID', async () => {
     expect(STARRED_SONGS_ITEM_ID).toBe('__starred__');
   });
 
-  it('exports STARRED_COVER_ART_ID', () => {
+  it('exports STARRED_COVER_ART_ID', async () => {
     expect(STARRED_COVER_ART_ID).toBe('__starred_cover__');
   });
 });
@@ -480,12 +509,12 @@ describe('constants', () => {
 /* ------------------------------------------------------------------ */
 
 describe('initMusicCache', () => {
-  it('is idempotent on repeated calls', () => {
+  it('is idempotent on repeated calls', async () => {
     initMusicCache();
     initMusicCache();
   });
 
-  it('swallows Directory.create() failures so the bundle still boots', () => {
+  it('swallows Directory.create() failures so the bundle still boots', async () => {
     mockDirExists = false;
     mockDirCreateError = new Error('EACCES: permission denied');
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
@@ -534,7 +563,7 @@ describe('deferredMusicCacheInit', () => {
 
     // Confirm both items reference s1 — by deleting pl-1, s1 should remain
     // because a1 still references it.
-    deleteCachedItem('pl-1');
+    await deleteCachedItem('pl-1');
     expect(getLocalTrackUri('s1')).not.toBeNull();
   });
 
@@ -549,15 +578,15 @@ describe('deferredMusicCacheInit', () => {
 /* ------------------------------------------------------------------ */
 
 describe('getLocalTrackUri', () => {
-  it('returns null for empty trackId', () => {
+  it('returns null for empty trackId', async () => {
     expect(getLocalTrackUri('')).toBeNull();
   });
 
-  it('returns null for unknown trackId', () => {
+  it('returns null for unknown trackId', async () => {
     expect(getLocalTrackUri('unknown')).toBeNull();
   });
 
-  it('falls back to cachedSongs when the in-memory map missed a downloaded song', () => {
+  it('falls back to cachedSongs when the in-memory map missed a downloaded song', async () => {
     // Simulate the map being empty/stale while the store still knows the song is
     // downloaded (the reconcile-rebuild window). getLocalTrackUri must still
     // resolve the local file rather than returning null — a null would let the
@@ -574,11 +603,11 @@ describe('getLocalTrackUri', () => {
 /* ------------------------------------------------------------------ */
 
 describe('isItemCached', () => {
-  it('returns false when item is not cached', () => {
+  it('returns false when item is not cached', async () => {
     expect(isItemCached('album-1')).toBe(false);
   });
 
-  it('returns true when item is in cachedItems', () => {
+  it('returns true when item is in cachedItems', async () => {
     seedItem('album-1', { type: 'album', songIds: [] });
     expect(isItemCached('album-1')).toBe(true);
   });
@@ -602,7 +631,7 @@ describe('clearQueuedDownloads', () => {
     songsJson: JSON.stringify([{ id: `track-${queueId}` }]),
   });
 
-  it('removes queued/errored items but leaves the active download running', () => {
+  it('removes queued/errored items but leaves the active download running', async () => {
     musicCacheStore.setState({
       downloadQueue: [
         makeQueueItem('q1', 'downloading'),
@@ -619,7 +648,7 @@ describe('clearQueuedDownloads', () => {
     expect(remaining[0].status).toBe('downloading');
   });
 
-  it('no-ops on an empty queue', () => {
+  it('no-ops on an empty queue', async () => {
     musicCacheStore.setState({ downloadQueue: [] } as any);
     clearQueuedDownloads();
     expect(musicCacheStore.getState().downloadQueue).toEqual([]);
@@ -627,11 +656,11 @@ describe('clearQueuedDownloads', () => {
 });
 
 describe('getTrackQueueStatus', () => {
-  it('returns null when track is not in queue', () => {
+  it('returns null when track is not in queue', async () => {
     expect(getTrackQueueStatus('track-1')).toBeNull();
   });
 
-  it('returns queued status when track is in queued item', () => {
+  it('returns queued status when track is in queued item', async () => {
     musicCacheStore.setState({
       downloadQueue: [
         {
@@ -651,7 +680,7 @@ describe('getTrackQueueStatus', () => {
     expect(getTrackQueueStatus('track-1')).toBe('queued');
   });
 
-  it('returns downloading status', () => {
+  it('returns downloading status', async () => {
     musicCacheStore.setState({
       downloadQueue: [
         {
@@ -671,7 +700,7 @@ describe('getTrackQueueStatus', () => {
     expect(getTrackQueueStatus('track-1')).toBe('downloading');
   });
 
-  it('returns null for completed/error items', () => {
+  it('returns null for completed/error items', async () => {
     musicCacheStore.setState({
       downloadQueue: [
         {
@@ -691,7 +720,7 @@ describe('getTrackQueueStatus', () => {
     expect(getTrackQueueStatus('track-1')).toBeNull();
   });
 
-  it('skips items whose songsJson is invalid', () => {
+  it('skips items whose songsJson is invalid', async () => {
     musicCacheStore.setState({
       downloadQueue: [
         {
@@ -1328,43 +1357,43 @@ describe('retryDownload', () => {
 /* ------------------------------------------------------------------ */
 
 describe('deleteCachedItem', () => {
-  it('is a no-op for empty id', () => {
-    deleteCachedItem('');
+  it('is a no-op for empty id', async () => {
+    await deleteCachedItem('');
   });
 
-  it('is a no-op for missing item', () => {
-    deleteCachedItem('nonexistent');
+  it('is a no-op for missing item', async () => {
+    await deleteCachedItem('nonexistent');
   });
 
-  it('removes item from the store', () => {
+  it('removes item from the store', async () => {
     seedSong(makeCachedSong('s1'));
     seedItem('album-1', { type: 'album', songIds: ['s1'] });
-    deleteCachedItem('album-1');
+    await deleteCachedItem('album-1');
     expect(musicCacheStore.getState().cachedItems['album-1']).toBeUndefined();
   });
 
-  it('deletes orphan song files on disk (off-thread)', () => {
+  it('deletes orphan song files on disk (off-thread)', async () => {
     seedSong(makeCachedSong('s1'));
     seedItem('album-1', { type: 'album', songIds: ['s1'] });
-    deleteCachedItem('album-1');
+    await deleteCachedItem('album-1');
     // Orphan file deletion invoked via the off-thread helper.
     expect(fileDeletesAsync.some((u) => u.includes('s1'))).toBe(true);
   });
 
-  it('removes the album directory when no song still references it', () => {
+  it('removes the album directory when no song still references it', async () => {
     seedSong(makeCachedSong('s1', { albumId: 'distinct-alb' }));
     seedItem('album-1', { type: 'album', songIds: ['s1'] });
-    deleteCachedItem('album-1');
+    await deleteCachedItem('album-1');
     // No surviving reference to 'distinct-alb' → its dir is reaped off-thread.
     expect(dirDeletesAsync.some((u) => u.includes('distinct-alb'))).toBe(true);
   });
 
-  it('preserves files for songs still referenced by other items', () => {
+  it('preserves files for songs still referenced by other items', async () => {
     seedSong(makeCachedSong('s1'));
     seedItem('album-1', { type: 'album', songIds: ['s1'] });
     seedItem('pl-1', { type: 'playlist', songIds: ['s1'] });
 
-    deleteCachedItem('pl-1');
+    await deleteCachedItem('pl-1');
     // Song still referenced by album-1 → file must not be deleted.
     expect(fileDeletesAsync.some((u) => u.includes('s1'))).toBe(false);
     expect(musicCacheStore.getState().cachedSongs['s1']).toBeDefined();
@@ -1381,7 +1410,7 @@ describe('deleteCachedItem', () => {
     expect(getLocalTrackUri('s1')).not.toBeNull();
     expect(getLocalTrackUri('s2')).not.toBeNull();
 
-    deleteCachedItem('album-1');
+    await deleteCachedItem('album-1');
     expect(getLocalTrackUri('s1')).toBeNull();
     expect(getLocalTrackUri('s2')).not.toBeNull();
   });
@@ -1392,21 +1421,21 @@ describe('deleteCachedItem', () => {
 /* ------------------------------------------------------------------ */
 
 describe('computeAlbumRemovalOutcome', () => {
-  it('returns empty outcome for non-album types', () => {
+  it('returns empty outcome for non-album types', async () => {
     seedSong(makeCachedSong('s1'));
     seedItem('pl-1', { type: 'playlist', songIds: ['s1'] });
     const outcome = computeAlbumRemovalOutcome('pl-1');
     expect(outcome).toEqual({ orphanSongIds: [], survivorCount: 0 });
   });
 
-  it('returns empty outcome for unknown itemId', () => {
+  it('returns empty outcome for unknown itemId', async () => {
     expect(computeAlbumRemovalOutcome('nonexistent')).toEqual({
       orphanSongIds: [],
       survivorCount: 0,
     });
   });
 
-  it('all songs are orphans when no other item references them', () => {
+  it('all songs are orphans when no other item references them', async () => {
     seedSong(makeCachedSong('s1'));
     seedSong(makeCachedSong('s2'));
     seedItem('album-1', { type: 'album', songIds: ['s1', 's2'] });
@@ -1415,7 +1444,7 @@ describe('computeAlbumRemovalOutcome', () => {
     expect(outcome.survivorCount).toBe(0);
   });
 
-  it('reports survivors when songs are edged to another item', () => {
+  it('reports survivors when songs are edged to another item', async () => {
     seedSong(makeCachedSong('s1'));
     seedSong(makeCachedSong('s2'));
     seedItem('album-1', { type: 'album', songIds: ['s1', 's2'] });
@@ -1432,22 +1461,22 @@ describe('computeAlbumRemovalOutcome', () => {
 /* ------------------------------------------------------------------ */
 
 describe('demoteAlbumToPartial', () => {
-  it('returns { demoted:false, removed:false } for non-album', () => {
+  it('returns { demoted:false, removed:false } for non-album', async () => {
     seedItem('pl-1', { type: 'playlist', songIds: [] });
-    expect(demoteAlbumToPartial('pl-1')).toEqual({ demoted: false, removed: false });
+    expect(await demoteAlbumToPartial('pl-1')).toEqual({ demoted: false, removed: false });
   });
 
-  it('falls through to full delete when no songs survive', () => {
+  it('falls through to full delete when no songs survive', async () => {
     mockFileExists = true;
     seedSong(makeCachedSong('s1'));
     seedSong(makeCachedSong('s2'));
     seedItem('album-1', { type: 'album', songIds: ['s1', 's2'] });
-    const result = demoteAlbumToPartial('album-1');
+    const result = await demoteAlbumToPartial('album-1');
     expect(result).toEqual({ demoted: false, removed: true });
     expect(musicCacheStore.getState().cachedItems['album-1']).toBeUndefined();
   });
 
-  it('removes only orphan edges when survivors exist; preserves the album row + downloadedAt', () => {
+  it('removes only orphan edges when survivors exist; preserves the album row + downloadedAt', async () => {
     mockFileExists = true;
     seedSong(makeCachedSong('s1'));
     seedSong(makeCachedSong('s2'));
@@ -1461,7 +1490,7 @@ describe('demoteAlbumToPartial', () => {
     // s1 and s2 are also in a playlist → survivors.
     seedItem('pl-1', { type: 'playlist', songIds: ['s1', 's2'] });
 
-    const result = demoteAlbumToPartial('album-1');
+    const result = await demoteAlbumToPartial('album-1');
     expect(result).toEqual({ demoted: true, removed: false });
 
     const album = musicCacheStore.getState().cachedItems['album-1'];
@@ -1476,17 +1505,17 @@ describe('demoteAlbumToPartial', () => {
     expect(fileDeletesAsync.some((u) => u.includes('s2'))).toBe(false);
   });
 
-  it('no-op guard when album item has no orphans (defensive: survivors fully cover it)', () => {
+  it('no-op guard when album item has no orphans (defensive: survivors fully cover it)', async () => {
     seedSong(makeCachedSong('s1'));
     seedItem('album-1', { type: 'album', songIds: ['s1'], expectedSongCount: 1 });
     seedItem('pl-1', { type: 'playlist', songIds: ['s1'] });
     // Every song has >1 ref → no orphans. demoteAlbumToPartial should no-op.
-    const result = demoteAlbumToPartial('album-1');
+    const result = await demoteAlbumToPartial('album-1');
     expect(result).toEqual({ demoted: false, removed: false });
     expect(musicCacheStore.getState().cachedItems['album-1']).toBeDefined();
   });
 
-  it('flips the demoted album to DERIVED so a shared song orphans when the OTHER holder is removed later', () => {
+  it('flips the demoted album to DERIVED so a shared song orphans when the OTHER holder is removed later', async () => {
     // Repro of the reported bug: playlist P (real) holds s1; album A (explicitly
     // downloaded → real) holds s1 + s1a. Removing the album demotes it to partial
     // (keeps s1, drops s1a). The demoted album must become a DERIVED grouping so
@@ -1499,7 +1528,7 @@ describe('demoteAlbumToPartial', () => {
     seedItem('pl-1', { type: 'playlist', songIds: ['s1'] });
 
     // Remove the album download → demote.
-    const result = demoteAlbumToPartial('album-A');
+    const result = await demoteAlbumToPartial('album-A');
     expect(result).toEqual({ demoted: true, removed: false });
     // The album row is now a derived partial (not a real holder of s1).
     expect(persistenceMock.__derivedItems.has('album-A')).toBe(true);
@@ -1512,7 +1541,7 @@ describe('demoteAlbumToPartial', () => {
 
     // Now remove the playlist → s1 loses its last REAL holder → orphaned, and
     // the emptied derived album row is pruned.
-    musicCacheStore.getState().removeCachedItem('pl-1');
+    await musicCacheStore.getState().removeCachedItem('pl-1');
     expect(musicCacheStore.getState().cachedSongs['s1']).toBeUndefined();
     expect(musicCacheStore.getState().cachedItems['album-A']).toBeUndefined();
     expect(musicCacheStore.getState().cachedItems['pl-1']).toBeUndefined();
@@ -1524,48 +1553,48 @@ describe('demoteAlbumToPartial', () => {
 /* ------------------------------------------------------------------ */
 
 describe('removeCachedPlaylistTrack', () => {
-  it('skips album-type items', () => {
+  it('skips album-type items', async () => {
     seedSong(makeCachedSong('s1'));
     seedItem('album-1', { type: 'album', songIds: ['s1'] });
-    removeCachedPlaylistTrack('album-1', 0);
+    await removeCachedPlaylistTrack('album-1', 0);
     expect(musicCacheStore.getState().cachedItems['album-1'].songIds).toHaveLength(1);
   });
 
-  it('out-of-range index', () => {
+  it('out-of-range index', async () => {
     seedSong(makeCachedSong('s1'));
     seedItem('pl-1', { type: 'playlist', songIds: ['s1'] });
-    removeCachedPlaylistTrack('pl-1', 5);
+    await removeCachedPlaylistTrack('pl-1', 5);
     expect(musicCacheStore.getState().cachedItems['pl-1'].songIds).toHaveLength(1);
-    removeCachedPlaylistTrack('pl-1', -1);
+    await removeCachedPlaylistTrack('pl-1', -1);
     expect(musicCacheStore.getState().cachedItems['pl-1'].songIds).toHaveLength(1);
   });
 
-  it('removes song + deletes file when orphan', () => {
+  it('removes song + deletes file when orphan', async () => {
     mockFileExists = true;
     seedSong(makeCachedSong('s1'));
     seedSong(makeCachedSong('s2'));
     seedItem('pl-1', { type: 'playlist', songIds: ['s1', 's2'] });
 
-    removeCachedPlaylistTrack('pl-1', 0);
+    await removeCachedPlaylistTrack('pl-1', 0);
 
     const item = musicCacheStore.getState().cachedItems['pl-1'];
     expect(item.songIds).toEqual(['s2']);
     expect(fileDeletesAsync.some((u) => u.includes('s1'))).toBe(true);
   });
 
-  it('preserves file when song is still referenced elsewhere', () => {
+  it('preserves file when song is still referenced elsewhere', async () => {
     mockFileExists = true;
     seedSong(makeCachedSong('s1'));
     seedItem('album-1', { type: 'album', songIds: ['s1'] });
     seedItem('pl-1', { type: 'playlist', songIds: ['s1'] });
 
-    removeCachedPlaylistTrack('pl-1', 0);
+    await removeCachedPlaylistTrack('pl-1', 0);
     // File NOT deleted since album-1 still references it.
     expect(fileDeletesAsync.some((u) => u.includes('s1'))).toBe(false);
   });
 
-  it('no-op for missing item', () => {
-    removeCachedPlaylistTrack('missing', 0);
+  it('no-op for missing item', async () => {
+    await removeCachedPlaylistTrack('missing', 0);
   });
 });
 
@@ -1574,20 +1603,20 @@ describe('removeCachedPlaylistTrack', () => {
 /* ------------------------------------------------------------------ */
 
 describe('removeCachedAlbumSong', () => {
-  it('returns false for a non-album item', () => {
+  it('returns false for a non-album item', async () => {
     seedSong(makeCachedSong('s1'));
     seedItem('pl-1', { type: 'playlist', songIds: ['s1'] });
-    expect(removeCachedAlbumSong('pl-1', 's1')).toBe(false);
+    expect(await removeCachedAlbumSong('pl-1', 's1')).toBe(false);
     expect(musicCacheStore.getState().cachedItems['pl-1'].songIds).toEqual(['s1']);
   });
 
-  it('returns false when the song is not in the album', () => {
+  it('returns false when the song is not in the album', async () => {
     seedSong(makeCachedSong('s1'));
     seedItem('album-1', { type: 'album', songIds: ['s1'], expectedSongCount: 1 });
-    expect(removeCachedAlbumSong('album-1', 'nope')).toBe(false);
+    expect(await removeCachedAlbumSong('album-1', 'nope')).toBe(false);
   });
 
-  it('removes the edge + file and reverts a complete album to partial', () => {
+  it('removes the edge + file and reverts a complete album to partial', async () => {
     mockFileExists = true;
     seedSong(makeCachedSong('s1'));
     seedSong(makeCachedSong('s2'));
@@ -1599,7 +1628,7 @@ describe('removeCachedAlbumSong', () => {
       downloadedAt: 555,
     });
 
-    expect(removeCachedAlbumSong('album-1', 's2')).toBe(true);
+    expect(await removeCachedAlbumSong('album-1', 's2')).toBe(true);
 
     const album = musicCacheStore.getState().cachedItems['album-1'];
     expect(album).toBeDefined();
@@ -1610,31 +1639,31 @@ describe('removeCachedAlbumSong', () => {
     expect(fileDeletesAsync.some((u) => u.includes('s2'))).toBe(true);
   });
 
-  it('preserves the file when the song is still referenced elsewhere', () => {
+  it('preserves the file when the song is still referenced elsewhere', async () => {
     mockFileExists = true;
     seedSong(makeCachedSong('s1'));
     seedSong(makeCachedSong('s2'));
     seedItem('album-1', { type: 'album', songIds: ['s1', 's2'], expectedSongCount: 2 });
     seedItem('pl-1', { type: 'playlist', songIds: ['s1'] });
 
-    expect(removeCachedAlbumSong('album-1', 's1')).toBe(true);
+    expect(await removeCachedAlbumSong('album-1', 's1')).toBe(true);
     // s1 survives in pl-1 → file kept; album-1 now partial.
     expect(fileDeletesAsync.some((u) => u.includes('s1'))).toBe(false);
     expect(musicCacheStore.getState().cachedItems['album-1'].songIds).toEqual(['s2']);
   });
 
-  it('removing the last remaining track deletes the album row', () => {
+  it('removing the last remaining track deletes the album row', async () => {
     mockFileExists = true;
     seedSong(makeCachedSong('s1'));
     seedItem('album-1', { type: 'album', songIds: ['s1'], expectedSongCount: 1 });
 
-    expect(removeCachedAlbumSong('album-1', 's1')).toBe(true);
+    expect(await removeCachedAlbumSong('album-1', 's1')).toBe(true);
     expect(musicCacheStore.getState().cachedItems['album-1']).toBeUndefined();
     expect(fileDeletesAsync.some((u) => u.includes('s1'))).toBe(true);
   });
 
-  it('returns false for a missing item', () => {
-    expect(removeCachedAlbumSong('missing', 's1')).toBe(false);
+  it('returns false for a missing item', async () => {
+    expect(await removeCachedAlbumSong('missing', 's1')).toBe(false);
   });
 });
 
@@ -1643,7 +1672,7 @@ describe('removeCachedAlbumSong', () => {
 /* ------------------------------------------------------------------ */
 
 describe('reorderCachedPlaylistTracks', () => {
-  it('delegates to store reorder', () => {
+  it('delegates to store reorder', async () => {
     seedSong(makeCachedSong('s1'));
     seedSong(makeCachedSong('s2'));
     seedSong(makeCachedSong('s3'));
@@ -1653,7 +1682,7 @@ describe('reorderCachedPlaylistTracks', () => {
     expect(item.songIds).toEqual(['s2', 's3', 's1']);
   });
 
-  it('no-op for missing item', () => {
+  it('no-op for missing item', async () => {
     reorderCachedPlaylistTracks('missing', 0, 1);
   });
 });
@@ -1663,57 +1692,57 @@ describe('reorderCachedPlaylistTracks', () => {
 /* ------------------------------------------------------------------ */
 
 describe('syncCachedPlaylistTracks', () => {
-  it('no-op for album items', () => {
+  it('no-op for album items', async () => {
     seedSong(makeCachedSong('s1'));
     seedSong(makeCachedSong('s2'));
     seedItem('album-1', { type: 'album', songIds: ['s1', 's2'] });
-    syncCachedPlaylistTracks('album-1', ['s1']);
+    await syncCachedPlaylistTracks('album-1', ['s1']);
     expect(musicCacheStore.getState().cachedItems['album-1'].songIds).toEqual(['s1', 's2']);
   });
 
-  it('no-op for missing item', () => {
-    syncCachedPlaylistTracks('missing', ['s1']);
+  it('no-op for missing item', async () => {
+    await syncCachedPlaylistTracks('missing', ['s1']);
   });
 
-  it('removes tracks not in newTrackIds', () => {
+  it('removes tracks not in newTrackIds', async () => {
     seedSong(makeCachedSong('s1'));
     seedSong(makeCachedSong('s2'));
     seedSong(makeCachedSong('s3'));
     seedItem('pl-1', { type: 'playlist', songIds: ['s1', 's2', 's3'] });
 
-    syncCachedPlaylistTracks('pl-1', ['s1', 's3']);
+    await syncCachedPlaylistTracks('pl-1', ['s1', 's3']);
 
     const item = musicCacheStore.getState().cachedItems['pl-1'];
     expect(item.songIds).toEqual(['s1', 's3']);
   });
 
-  it('reorders to match new order', () => {
+  it('reorders to match new order', async () => {
     seedSong(makeCachedSong('s1'));
     seedSong(makeCachedSong('s2'));
     seedSong(makeCachedSong('s3'));
     seedItem('pl-1', { type: 'playlist', songIds: ['s1', 's2', 's3'] });
 
-    syncCachedPlaylistTracks('pl-1', ['s3', 's1', 's2']);
+    await syncCachedPlaylistTracks('pl-1', ['s3', 's1', 's2']);
 
     const item = musicCacheStore.getState().cachedItems['pl-1'];
     expect(item.songIds).toEqual(['s3', 's1', 's2']);
   });
 
-  it('ignores newTrackIds not in the cached set', () => {
+  it('ignores newTrackIds not in the cached set', async () => {
     seedSong(makeCachedSong('s1'));
     seedItem('pl-1', { type: 'playlist', songIds: ['s1'] });
-    syncCachedPlaylistTracks('pl-1', ['s1', 's99']);
+    await syncCachedPlaylistTracks('pl-1', ['s1', 's99']);
     const item = musicCacheStore.getState().cachedItems['pl-1'];
     expect(item.songIds).toEqual(['s1']);
   });
 
-  it('deletes orphan files when songs are removed', () => {
+  it('deletes orphan files when songs are removed', async () => {
     mockFileExists = true;
     seedSong(makeCachedSong('s1'));
     seedSong(makeCachedSong('s2'));
     seedItem('pl-1', { type: 'playlist', songIds: ['s1', 's2'] });
 
-    syncCachedPlaylistTracks('pl-1', ['s2']);
+    await syncCachedPlaylistTracks('pl-1', ['s2']);
 
     expect(fileDeletesAsync.some((u) => u.includes('s1'))).toBe(true);
   });
@@ -1724,11 +1753,11 @@ describe('syncCachedPlaylistTracks', () => {
 /* ------------------------------------------------------------------ */
 
 describe('syncCachedItemTracks', () => {
-  it('no-op for missing item', () => {
+  it('no-op for missing item', async () => {
     syncCachedItemTracks('missing', [makeChild('t1')]);
   });
 
-  it('no-op when item is already queued', () => {
+  it('no-op when item is already queued', async () => {
     seedSong(makeCachedSong('s1'));
     seedItem('pl-1', { type: 'playlist', songIds: ['s1'] });
     musicCacheStore.setState((prev: any) => ({
@@ -1744,7 +1773,7 @@ describe('syncCachedItemTracks', () => {
     expect(musicCacheStore.getState().downloadQueue).toHaveLength(1);
   });
 
-  it('no-op when no changes', () => {
+  it('no-op when no changes', async () => {
     seedSong(makeCachedSong('s1'));
     seedSong(makeCachedSong('s2'));
     seedItem('pl-1', { type: 'playlist', songIds: ['s1', 's2'] });
@@ -1752,7 +1781,7 @@ describe('syncCachedItemTracks', () => {
     expect(musicCacheStore.getState().downloadQueue).toHaveLength(0);
   });
 
-  it('re-enqueues when new tracks are detected', () => {
+  it('re-enqueues when new tracks are detected', async () => {
     mockCheckStorageLimit.mockReturnValue(true);
     seedSong(makeCachedSong('s1'));
     seedItem('pl-1', { type: 'playlist', songIds: ['s1'] });
@@ -1771,7 +1800,7 @@ describe('syncCachedItemTracks', () => {
       (prefetchCoverArt as jest.Mock).mockClear();
     });
 
-    it('triggers ensureCached for the offline item and prefetchCoverArt for tracks when item exists', () => {
+    it('triggers ensureCached for the offline item and prefetchCoverArt for tracks when item exists', async () => {
       seedSong(makeCachedSong('s1'));
       seedItem('pl-1', { type: 'playlist', songIds: ['s1'], coverArtId: 'pl-cover' });
 
@@ -1784,7 +1813,7 @@ describe('syncCachedItemTracks', () => {
       expect(prefetchCoverArt).toHaveBeenCalledWith(newSongs);
     });
 
-    it('runs even when no track changes are detected (heals missing/zero-byte covers)', () => {
+    it('runs even when no track changes are detected (heals missing/zero-byte covers)', async () => {
       seedSong(makeCachedSong('s1'));
       seedItem('pl-1', { type: 'playlist', songIds: ['s1'], coverArtId: 'pl-cover' });
 
@@ -1797,7 +1826,7 @@ describe('syncCachedItemTracks', () => {
       expect(prefetchCoverArt).toHaveBeenCalledTimes(1);
     });
 
-    it('does NOT trigger any cover reconciliation for a non-offline item', () => {
+    it('does NOT trigger any cover reconciliation for a non-offline item', async () => {
       // No seedItem for 'missing' — this item is not in cachedItems.
       syncCachedItemTracks('missing', [makeChild('t1', { coverArt: 'c1' })]);
 
@@ -1808,7 +1837,7 @@ describe('syncCachedItemTracks', () => {
       expect(prefetchCoverArt).not.toHaveBeenCalled();
     });
 
-    it('skips ensureCached when the item has no coverArtId but still reconciles per-song covers', () => {
+    it('skips ensureCached when the item has no coverArtId but still reconciles per-song covers', async () => {
       seedSong(makeCachedSong('s1'));
       seedItem('pl-2', { type: 'playlist', songIds: ['s1'] /* no coverArtId */ });
 
@@ -1826,7 +1855,7 @@ describe('syncCachedItemTracks', () => {
 /* ------------------------------------------------------------------ */
 
 describe('cancelDownload', () => {
-  it('no-op for missing id', () => {
+  it('no-op for missing id', async () => {
     cancelDownload('missing');
   });
 
@@ -1869,7 +1898,7 @@ describe('cancelDownload', () => {
     expect(musicCacheStore.getState().totalBytes).toBe(1000);
   });
 
-  it('handles invalid songsJson gracefully', () => {
+  it('handles invalid songsJson gracefully', async () => {
     musicCacheStore.setState({
       downloadQueue: [
         {
@@ -1888,7 +1917,7 @@ describe('cancelDownload', () => {
 /* ------------------------------------------------------------------ */
 
 describe('clearDownloadQueue', () => {
-  it('removes all items', () => {
+  it('removes all items', async () => {
     musicCacheStore.setState({
       downloadQueue: [
         {
@@ -2029,11 +2058,11 @@ describe('getMusicCacheStats', () => {
 /* ------------------------------------------------------------------ */
 
 describe('resumeIfSpaceAvailable', () => {
-  it('does not crash when storage is full', () => {
+  it('does not crash when storage is full', async () => {
     mockCheckStorageLimit.mockReturnValue(true);
     resumeIfSpaceAvailable();
   });
-  it('attempts processing when storage available', () => {
+  it('attempts processing when storage available', async () => {
     mockCheckStorageLimit.mockReturnValue(false);
     resumeIfSpaceAvailable();
   });
@@ -2044,7 +2073,7 @@ describe('resumeIfSpaceAvailable', () => {
 /* ------------------------------------------------------------------ */
 
 describe('deleteStarredSongsDownload', () => {
-  it('delegates to deleteCachedItem', () => {
+  it('delegates to deleteCachedItem', async () => {
     seedItem(STARRED_SONGS_ITEM_ID, { type: 'favorites', songIds: [] });
     deleteStarredSongsDownload();
     expect(musicCacheStore.getState().cachedItems[STARRED_SONGS_ITEM_ID]).toBeUndefined();

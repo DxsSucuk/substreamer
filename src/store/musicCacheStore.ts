@@ -24,8 +24,7 @@ import { type Child } from 'subsonic-api';
 
 import {
   clearAllMusicCacheRows,
-  countRealSongRefs,
-  orphanSongEverywhere,
+  orphanSongIfUnreferencedAsync,
   deleteCachedItem as deleteCachedItemRow,
   deleteCachedSong as deleteCachedSongRow,
   hydrateCachedItemsAsync,
@@ -174,7 +173,7 @@ export interface MusicCacheState {
    * to zero as a result (so the service layer can delete the files). The
    * store itself has already removed the orphan songs from `cachedSongs`.
    */
-  removeCachedItem: (itemId: string) => string[];
+  removeCachedItem: (itemId: string) => Promise<string[]>;
   /**
    * Remove a single song at `position` from an item. Returns the song id if
    * that song became orphan (so service can delete its file); `null` if the
@@ -183,7 +182,7 @@ export interface MusicCacheState {
   removeCachedItemSong: (
     itemId: string,
     position: number,
-  ) => { orphanedSongId: string | null };
+  ) => Promise<{ orphanedSongId: string | null }>;
   reorderCachedItemSongs: (
     itemId: string,
     fromPosition: number,
@@ -361,7 +360,9 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
   },
 
   upsertCachedItem: (item, songIds) => {
-    upsertCachedItemRow(item);
+    // Optimistic-persist: fire the async row write; in-memory set() below is the
+    // source of truth for the UI and self-heals on next hydrate.
+    void upsertCachedItemRow(item);
     set((state) => {
       const existing = state.cachedItems[item.itemId];
       const nextSongIds =
@@ -375,30 +376,39 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
     });
   },
 
-  removeCachedItem: (itemId) => {
+  removeCachedItem: async (itemId) => {
     const state = get();
     const item = state.cachedItems[itemId];
     const affectedSongIds = item?.songIds ?? [];
-    // Delete the item row (cascades its own edges) before counting real refs.
-    deleteCachedItemRow(itemId);
+    // Optimistic: drop the item from memory immediately so the UI updates
+    // without waiting on disk IO.
+    set((prev) => {
+      const nextItems = { ...prev.cachedItems };
+      delete nextItems[itemId];
+      return { cachedItems: nextItems };
+    });
+    // Persist: delete the item row (cascades its own edges), then — atomically
+    // per song — orphan any song that lost its last REAL holder. The count +
+    // orphan run in ONE transaction inside `orphanSongIfUnreferencedAsync`, so
+    // no concurrent insert can add a holder between the count and the delete.
+    await deleteCachedItemRow(itemId);
     const orphaned: string[] = [];
     const touchedHolders = new Set<string>();
     const prunedHolders = new Set<string>();
     for (const songId of affectedSongIds) {
-      // Orphan only when no REAL holder remains — a derived partial-album edge
-      // does NOT keep a song alive. `orphanSongEverywhere` removes the remaining
-      // (derived) edges + song row and prunes any derived holder left empty.
-      if (countRealSongRefs(songId) === 0) {
-        const { affectedItems, prunedItems } = orphanSongEverywhere(songId);
+      // eslint-disable-next-line no-await-in-loop
+      const { orphaned: didOrphan, affectedItems, prunedItems } =
+        await orphanSongIfUnreferencedAsync(songId);
+      if (didOrphan) {
         orphaned.push(songId);
         affectedItems.forEach((i) => touchedHolders.add(i));
         prunedItems.forEach((i) => prunedHolders.add(i));
       }
     }
+    // Reconcile in-memory with what actually got orphaned/pruned on disk.
     set((prev) => {
       const orphanSet = new Set(orphaned);
       const nextItems = { ...prev.cachedItems };
-      delete nextItems[itemId];
       for (const pid of prunedHolders) delete nextItems[pid];
       // Surviving derived holders that lost an orphaned song: drop it from songIds.
       for (const hid of touchedHolders) {
@@ -413,7 +423,7 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
     return orphaned;
   },
 
-  removeCachedItemSong: (itemId, position) => {
+  removeCachedItemSong: async (itemId, position) => {
     const state = get();
     const item = state.cachedItems[itemId];
     if (!item) return { orphanedSongId: null };
@@ -423,34 +433,30 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
       return { orphanedSongId: null };
     }
     const songId = item.songIds[index];
-    removeCachedItemSongRow(itemId, position);
-    let orphanedSongId: string | null = null;
-    let touchedHolders: string[] = [];
-    let prunedHolders: string[] = [];
-    // `removeCachedItemSongRow` already dropped this item's edge, so a real-ref
-    // count of 0 means no OTHER real holder remains.
-    if (countRealSongRefs(songId) === 0) {
-      const { affectedItems, prunedItems } = orphanSongEverywhere(songId);
-      orphanedSongId = songId;
-      touchedHolders = affectedItems;
-      prunedHolders = prunedItems;
-    }
+    // Optimistic: drop the edge from the item's in-memory songIds immediately.
     set((prev) => {
       const prevItem = prev.cachedItems[itemId];
+      if (!prevItem) return {};
       const nextItems = { ...prev.cachedItems };
-      if (prevItem) {
-        nextItems[itemId] = {
-          ...prevItem,
-          songIds: prevItem.songIds.filter((_, i) => i !== index),
-        };
-      }
-      if (orphanedSongId === null) {
-        return { cachedItems: nextItems };
-      }
-      const prunedSet = new Set(prunedHolders);
-      for (const pid of prunedHolders) delete nextItems[pid];
+      nextItems[itemId] = {
+        ...prevItem,
+        songIds: prevItem.songIds.filter((_, i) => i !== index),
+      };
+      return { cachedItems: nextItems };
+    });
+    // Persist: remove the edge row (so a real-ref count of 0 means no OTHER real
+    // holder remains), then atomically orphan the song iff unreferenced.
+    await removeCachedItemSongRow(itemId, position);
+    const { orphaned, affectedItems, prunedItems } =
+      await orphanSongIfUnreferencedAsync(songId);
+    if (!orphaned) return { orphanedSongId: null };
+    const orphanedSongId = songId;
+    set((prev) => {
+      const nextItems = { ...prev.cachedItems };
+      const prunedSet = new Set(prunedItems);
+      for (const pid of prunedItems) delete nextItems[pid];
       // Surviving derived holders of the orphaned song lost it too.
-      for (const hid of touchedHolders) {
+      for (const hid of affectedItems) {
         if (prunedSet.has(hid) || hid === itemId) continue;
         const h = nextItems[hid];
         if (h) nextItems[hid] = { ...h, songIds: h.songIds.filter((s) => s !== orphanedSongId) };
@@ -476,7 +482,7 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
     ) {
       return;
     }
-    reorderCachedItemSongsRow(itemId, fromPosition, toPosition);
+    void reorderCachedItemSongsRow(itemId, fromPosition, toPosition);
     const nextSongIds = [...item.songIds];
     const [moved] = nextSongIds.splice(fromIdx, 1);
     nextSongIds.splice(toIdx, 0, moved);
@@ -489,14 +495,14 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
   },
 
   upsertCachedSong: (song) => {
-    upsertCachedSongRow(song);
+    void upsertCachedSongRow(song);
     set((state) => ({
       cachedSongs: { ...state.cachedSongs, [song.id]: song },
     }));
   },
 
   deleteCachedSong: (songId) => {
-    deleteCachedSongRow(songId);
+    void deleteCachedSongRow(songId);
     set((state) => {
       if (!(songId in state.cachedSongs)) return state;
       const { [songId]: _removed, ...rest } = state.cachedSongs;
@@ -519,7 +525,7 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
     set({ totalBytes, totalFiles }),
 
   reset: () => {
-    clearAllMusicCacheRows();
+    void clearAllMusicCacheRows();
     try {
       kvStorage.removeItem(SETTINGS_KEY);
     } catch {
@@ -571,8 +577,8 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
  * Truncate the four music-cache tables. Exposed so `resetAllStores` can wipe
  * disk state without importing the persistence module directly.
  */
-export function clearMusicCacheTables(): void {
-  clearAllMusicCacheRows();
+export async function clearMusicCacheTables(): Promise<void> {
+  await clearAllMusicCacheRows();
 }
 
 /* ------------------------------------------------------------------ */

@@ -1130,44 +1130,44 @@ describe('handleRemoveSongDownload', () => {
     expect(mockRemoveAlbumSong).not.toHaveBeenCalled();
   });
 
-  it('deletes the song: item and shows a success toast', () => {
+  it('deletes the song: item and shows a success toast', async () => {
     withCachedItems('song:s1');
     const song = { id: 's1', title: 'Cool Song' } as any;
-    handleRemoveSongDownload(song);
+    await handleRemoveSongDownload(song);
     expect(mockDelete).toHaveBeenCalledWith('song:s1');
     expect(mockOverlayShowSuccess).toHaveBeenCalledWith('Removed "Cool Song"');
   });
 
-  it('falls back to unknownSong when title is missing', () => {
+  it('falls back to unknownSong when title is missing', async () => {
     withCachedItems('song:s1');
     const song = { id: 's1' } as any;
-    handleRemoveSongDownload(song);
+    await handleRemoveSongDownload(song);
     expect(mockOverlayShowSuccess).toHaveBeenCalledWith('Removed "Unknown Song"');
   });
 
-  it('removes the song from its parent album (reverts album to partial)', () => {
+  it('removes the song from its parent album (reverts album to partial)', async () => {
     mockGetState.mockReturnValue({ cachedItems: {} }); // no explicit song: item
-    mockRemoveAlbumSong.mockReturnValueOnce(true);
+    mockRemoveAlbumSong.mockResolvedValueOnce(true);
     const song = { id: 's1', title: 'Cool Song', albumId: 'alb1' } as any;
-    handleRemoveSongDownload(song);
+    await handleRemoveSongDownload(song);
     expect(mockDelete).not.toHaveBeenCalled();
     expect(mockRemoveAlbumSong).toHaveBeenCalledWith('alb1', 's1');
     expect(mockOverlayShowSuccess).toHaveBeenCalledWith('Removed "Cool Song"');
   });
 
-  it('shows error overlay when nothing was removed', () => {
+  it('shows error overlay when nothing was removed', async () => {
     mockGetState.mockReturnValue({ cachedItems: {} });
-    mockRemoveAlbumSong.mockReturnValueOnce(false);
+    mockRemoveAlbumSong.mockResolvedValueOnce(false);
     const song = { id: 's1', title: 'Cool Song', albumId: 'alb1' } as any;
-    handleRemoveSongDownload(song);
+    await handleRemoveSongDownload(song);
     expect(mockOverlayShowError).toHaveBeenCalledWith('Failed to load');
   });
 
-  it('shows error overlay when delete throws', () => {
+  it('shows error overlay when delete throws', async () => {
     withCachedItems('song:s1');
     mockDelete.mockImplementationOnce(() => { throw new Error('nope'); });
     const song = { id: 's1', title: 'Cool Song' } as any;
-    handleRemoveSongDownload(song);
+    await handleRemoveSongDownload(song);
     expect(mockOverlayShowError).toHaveBeenCalledWith('Failed to load');
   });
 });
