@@ -5,7 +5,6 @@
 jest.mock('../persistence/musicCacheTables', () => ({
   hydrateCachedSongs: jest.fn(() => ({})),
   hydrateCachedItems: jest.fn(() => ({})),
-  hydrateDownloadQueue: jest.fn(() => []),
   hydrateCachedSongsAsync: jest.fn(async () => ({})),
   hydrateCachedItemsAsync: jest.fn(async () => ({})),
   hydrateDownloadQueueAsync: jest.fn(async () => []),
@@ -20,9 +19,6 @@ jest.mock('../persistence/musicCacheTables', () => ({
   deleteCachedSong: jest.fn(),
   removeCachedItemSong: jest.fn(),
   reorderCachedItemSongs: jest.fn(),
-  countSongRefs: jest.fn(() => 0),
-  countRealSongRefs: jest.fn(() => 0),
-  orphanSongEverywhere: jest.fn(() => ({ affectedItems: [], prunedItems: [] })),
   orphanSongIfUnreferencedAsync: jest.fn(async () => ({
     orphaned: false,
     affectedItems: [],
@@ -35,15 +31,12 @@ jest.mock('../persistence/kvStorage', () => require('../persistence/__mocks__/kv
 
 import {
   clearAllMusicCacheRows,
-  countRealSongRefs,
-  countSongRefs,
   deleteCachedItem,
   deleteCachedSong,
   hydrateCachedItems,
   hydrateCachedItemsAsync,
   hydrateCachedSongs,
   hydrateCachedSongsAsync,
-  hydrateDownloadQueue,
   hydrateDownloadQueueAsync,
   insertDownloadQueueItem,
   markDownloadComplete,
@@ -72,7 +65,6 @@ import { kvStorage } from '../persistence';
 // gives us the jest.fn spies.
 const mockHydrateCachedSongs = hydrateCachedSongs as jest.Mock;
 const mockHydrateCachedItems = hydrateCachedItems as jest.Mock;
-const mockHydrateDownloadQueue = hydrateDownloadQueue as jest.Mock;
 const mockHydrateCachedSongsAsync = hydrateCachedSongsAsync as jest.Mock;
 const mockHydrateCachedItemsAsync = hydrateCachedItemsAsync as jest.Mock;
 const mockHydrateDownloadQueueAsync = hydrateDownloadQueueAsync as jest.Mock;
@@ -87,7 +79,6 @@ const mockUpsertCachedSong = upsertCachedSong as jest.Mock;
 const mockDeleteCachedSong = deleteCachedSong as jest.Mock;
 const mockRemoveCachedItemSong = removeCachedItemSong as jest.Mock;
 const mockReorderCachedItemSongs = reorderCachedItemSongs as jest.Mock;
-const mockCountSongRefs = countSongRefs as jest.Mock;
 const mockOrphanSongIfUnreferencedAsync = orphanSongIfUnreferencedAsync as jest.Mock;
 const mockClearAllMusicCacheRows = clearAllMusicCacheRows as jest.Mock;
 
@@ -171,11 +162,9 @@ beforeEach(() => {
   // Default hydrate returns: empty.
   mockHydrateCachedSongs.mockReturnValue({});
   mockHydrateCachedItems.mockReturnValue({});
-  mockHydrateDownloadQueue.mockReturnValue([]);
   mockHydrateCachedSongsAsync.mockResolvedValue({});
   mockHydrateCachedItemsAsync.mockResolvedValue({});
   mockHydrateDownloadQueueAsync.mockResolvedValue([]);
-  mockCountSongRefs.mockReturnValue(0);
   // Orphan-path default: every song orphans, touching/pruning nothing extra.
   // Individual scenarios override this.
   mockOrphanSongIfUnreferencedAsync.mockResolvedValue({
@@ -685,7 +674,7 @@ describe('removeCachedItemSong', () => {
 /* ------------------------------------------------------------------ */
 /*  derived-holder orphan matrix (#derived — removing a real holder)   */
 /*                                                                     */
-/*  These drive the mocked countRealSongRefs / orphanSongEverywhere to */
+/*  These drive the mocked orphanSongIfUnreferencedAsync to            */
 /*  simulate the SQL layer's answers, then assert the store's IN-MEMORY */
 /*  cachedItems/cachedSongs reconciliation. The store mirrors, in one   */
 /*  set(), the pruned holders + the orphaned-song filtering across      */

@@ -17,7 +17,6 @@ import {
   bulkInsertCachedImages,
   clearAllCachedImages,
   countCachedImages,
-  countIncompleteCovers,
   deleteCachedImageVariant,
   deleteCachedImagesForCoverArt,
   findIncompleteCovers,
@@ -263,7 +262,7 @@ describe('imageCacheTable — hydrateImageCacheAggregatesAsync', () => {
   });
 });
 
-describe('imageCacheTable — findIncompleteCovers / countIncompleteCovers', () => {
+describe('imageCacheTable — findIncompleteCovers', () => {
   beforeEach(async () => {
     await upsertCachedImage(seedRow({ coverArtId: 'complete', size: 50 }));
     await upsertCachedImage(seedRow({ coverArtId: 'complete', size: 150 }));
@@ -275,10 +274,6 @@ describe('imageCacheTable — findIncompleteCovers / countIncompleteCovers', () 
 
   it('lists only covers with < 4 variants, sorted', async () => {
     expect(await findIncompleteCovers()).toEqual(['partial', 'source-only']);
-  });
-
-  it('count matches the list length', async () => {
-    expect(await countIncompleteCovers()).toBe(2);
   });
 });
 
@@ -407,7 +402,6 @@ describe('imageCacheTable — null-handle safety', () => {
     expect(await hasCachedImage('x', 300)).toBe(false);
     expect(await getCachedImagesForCoverArtAsync('x')).toEqual([]);
     expect(await findIncompleteCovers()).toEqual([]);
-    expect(await countIncompleteCovers()).toBe(0);
     expect(await listCachedImagesForBrowser('all')).toEqual([]);
     await expect(upsertCachedImage(seedRow())).resolves.toBeUndefined();
     expect(await deleteCachedImagesForCoverArt('x')).toEqual({ bytes: 0, count: 0 });

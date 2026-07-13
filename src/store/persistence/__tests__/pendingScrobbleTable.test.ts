@@ -14,9 +14,8 @@ jest.mock('expo-sqlite', () => ({
 import { __setDbForTests } from '../db';
 import {
   clearPendingScrobbles,
-  countPendingScrobbles,
   deletePendingScrobble,
-  hydratePendingScrobbles,
+  hydratePendingScrobblesAsync,
   insertPendingScrobble,
   replaceAllPendingScrobbles,
 } from '../pendingScrobbleTable';
@@ -101,7 +100,7 @@ describe('pendingScrobbleTable — insert + hydrate', () => {
     const s = makePending();
     await insertPendingScrobble(s);
 
-    const restored = hydratePendingScrobbles();
+    const restored = await hydratePendingScrobblesAsync();
     expect(restored).toHaveLength(1);
     expect(restored[0].id).toBe('p-1');
     expect(restored[0].time).toBe(1_700_000_000_000);
@@ -114,8 +113,8 @@ describe('pendingScrobbleTable — insert + hydrate', () => {
     await insertPendingScrobble(makePending({ id: 'dup', time: 1 }));
     await insertPendingScrobble(makePending({ id: 'dup', time: 999, song: { id: 's2', title: 'Different' } }));
 
-    expect(await countPendingScrobbles()).toBe(1);
-    const restored = hydratePendingScrobbles();
+    expect((await hydratePendingScrobblesAsync()).length).toBe(1);
+    const restored = await hydratePendingScrobblesAsync();
     expect(restored[0].time).toBe(1);
     expect(restored[0].song.id).toBe('s1');
   });
@@ -126,7 +125,7 @@ describe('pendingScrobbleTable — insert + hydrate', () => {
     await insertPendingScrobble(makePending({ id: 'no-title', song: { id: 's1', title: '' } }));
     await insertPendingScrobble(makePending({ id: 'null-song', song: null }));
 
-    expect(await countPendingScrobbles()).toBe(0);
+    expect((await hydratePendingScrobblesAsync()).length).toBe(0);
   });
 
   it('hydratePendingScrobbles returns rows in time-ascending order', async () => {
@@ -134,15 +133,15 @@ describe('pendingScrobbleTable — insert + hydrate', () => {
     await insertPendingScrobble(makePending({ id: 'b', time: 100 }));
     await insertPendingScrobble(makePending({ id: 'c', time: 200 }));
 
-    const restored = hydratePendingScrobbles();
+    const restored = await hydratePendingScrobblesAsync();
     expect(restored.map((s) => s.id)).toEqual(['b', 'c', 'a']);
   });
 
-  it('hydratePendingScrobbles returns empty when table is empty', () => {
-    expect(hydratePendingScrobbles()).toEqual([]);
+  it('hydratePendingScrobbles returns empty when table is empty', async () => {
+    expect(await hydratePendingScrobblesAsync()).toEqual([]);
   });
 
-  it('hydratePendingScrobbles skips unparseable song_json rows', () => {
+  it('hydratePendingScrobbles skips unparseable song_json rows', async () => {
     fakeDb.rows.set('good', {
       id: 'good',
       song_json: JSON.stringify({ id: 's1', title: 'OK' }),
@@ -150,11 +149,11 @@ describe('pendingScrobbleTable — insert + hydrate', () => {
     });
     fakeDb.rows.set('bad', { id: 'bad', song_json: '{not valid', time: 2 });
 
-    const restored = hydratePendingScrobbles();
+    const restored = await hydratePendingScrobblesAsync();
     expect(restored.map((s) => s.id)).toEqual(['good']);
   });
 
-  it('hydratePendingScrobbles filters rows whose decoded song is invalid', () => {
+  it('hydratePendingScrobbles filters rows whose decoded song is invalid', async () => {
     fakeDb.rows.set('missing-song-id', {
       id: 'missing-song-id',
       song_json: JSON.stringify({ title: 'no id' }),
@@ -172,7 +171,7 @@ describe('pendingScrobbleTable — insert + hydrate', () => {
       time: 4,
     });
 
-    const restored = hydratePendingScrobbles();
+    const restored = await hydratePendingScrobblesAsync();
     expect(restored.map((s) => s.id)).toEqual(['ok']);
   });
 });
@@ -182,23 +181,23 @@ describe('pendingScrobbleTable — deletePendingScrobble', () => {
     await insertPendingScrobble(makePending({ id: 'a' }));
     await insertPendingScrobble(makePending({ id: 'b' }));
     await insertPendingScrobble(makePending({ id: 'c' }));
-    expect(await countPendingScrobbles()).toBe(3);
+    expect((await hydratePendingScrobblesAsync()).length).toBe(3);
 
     await deletePendingScrobble('b');
-    const restored = hydratePendingScrobbles();
+    const restored = await hydratePendingScrobblesAsync();
     expect(restored.map((s) => s.id).sort()).toEqual(['a', 'c']);
   });
 
   it('is a no-op for ids that do not exist', async () => {
     await insertPendingScrobble(makePending({ id: 'a' }));
     await deletePendingScrobble('missing');
-    expect(await countPendingScrobbles()).toBe(1);
+    expect((await hydratePendingScrobblesAsync()).length).toBe(1);
   });
 
   it('skips empty-string ids', async () => {
     await insertPendingScrobble(makePending({ id: 'a' }));
     await deletePendingScrobble('');
-    expect(await countPendingScrobbles()).toBe(1);
+    expect((await hydratePendingScrobblesAsync()).length).toBe(1);
   });
 });
 
@@ -206,15 +205,15 @@ describe('pendingScrobbleTable — replaceAllPendingScrobbles', () => {
   it('wipes existing rows and inserts the new set', async () => {
     await insertPendingScrobble(makePending({ id: 'old-1' }));
     await insertPendingScrobble(makePending({ id: 'old-2' }));
-    expect(await countPendingScrobbles()).toBe(2);
+    expect((await hydratePendingScrobblesAsync()).length).toBe(2);
 
     await replaceAllPendingScrobbles([
       makePending({ id: 'new-1', time: 5 }),
       makePending({ id: 'new-2', time: 10 }),
     ]);
 
-    expect(await countPendingScrobbles()).toBe(2);
-    const restored = hydratePendingScrobbles();
+    expect((await hydratePendingScrobblesAsync()).length).toBe(2);
+    const restored = await hydratePendingScrobblesAsync();
     expect(restored.map((s) => s.id).sort()).toEqual(['new-1', 'new-2']);
   });
 
@@ -228,15 +227,15 @@ describe('pendingScrobbleTable — replaceAllPendingScrobbles', () => {
       makePending({ id: 'null-song', song: null }),
     ] as any);
 
-    expect(await countPendingScrobbles()).toBe(1);
-    const restored = hydratePendingScrobbles();
+    expect((await hydratePendingScrobblesAsync()).length).toBe(1);
+    const restored = await hydratePendingScrobblesAsync();
     expect(restored[0].id).toBe('ok');
   });
 
   it('replaceAllPendingScrobbles with empty array clears the table', async () => {
     await insertPendingScrobble(makePending({ id: 'a' }));
     await replaceAllPendingScrobbles([]);
-    expect(await countPendingScrobbles()).toBe(0);
+    expect((await hydratePendingScrobblesAsync()).length).toBe(0);
   });
 });
 
@@ -245,13 +244,13 @@ describe('pendingScrobbleTable — clearPendingScrobbles', () => {
     await insertPendingScrobble(makePending({ id: 'a' }));
     await insertPendingScrobble(makePending({ id: 'b' }));
     await clearPendingScrobbles();
-    expect(await countPendingScrobbles()).toBe(0);
-    expect(hydratePendingScrobbles()).toEqual([]);
+    expect((await hydratePendingScrobblesAsync()).length).toBe(0);
+    expect(await hydratePendingScrobblesAsync()).toEqual([]);
   });
 
   it('is safe to call on an empty table', async () => {
     await expect(clearPendingScrobbles()).resolves.toBeUndefined();
-    expect(await countPendingScrobbles()).toBe(0);
+    expect((await hydratePendingScrobblesAsync()).length).toBe(0);
   });
 });
 
@@ -265,8 +264,8 @@ describe('pendingScrobbleTable — disabled db path', () => {
     await deletePendingScrobble('p-1');
     await replaceAllPendingScrobbles([makePending()]);
     await clearPendingScrobbles();
-    expect(await countPendingScrobbles()).toBe(0);
-    expect(hydratePendingScrobbles()).toEqual([]);
+    expect((await hydratePendingScrobblesAsync()).length).toBe(0);
+    expect(await hydratePendingScrobblesAsync()).toEqual([]);
   });
 });
 
@@ -313,7 +312,7 @@ describe('pendingScrobbleTable — db throws (error swallow path)', () => {
   });
 
   it('reads return safe defaults on DB error', async () => {
-    expect(await countPendingScrobbles()).toBe(0);
-    expect(hydratePendingScrobbles()).toEqual([]);
+    expect((await hydratePendingScrobblesAsync()).length).toBe(0);
+    expect(await hydratePendingScrobblesAsync()).toEqual([]);
   });
 });

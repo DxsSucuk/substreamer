@@ -1706,7 +1706,7 @@ export async function demoteAlbumToPartial(
   }
 
   // The album is now a PARTIAL grouping: every surviving song is — by the
-  // survivor definition (`countRealSongRefs > 1`) — also held by another REAL
+  // survivor definition (more than one REAL holder) — also held by another REAL
   // holder (a playlist/favorites/song download). Flip the album to `derived` so
   // it no longer independently keeps those songs alive: when their last real
   // holder is removed they orphan and this row is pruned. Without this, removing

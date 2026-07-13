@@ -291,27 +291,6 @@ export function hydrateCachedItems(): Record<string, CachedItemRow> {
   }
 }
 
-/**
- * Read the full download queue ordered by queue_position ASC. Used at launch
- * and whenever the queue needs a full refresh.
- */
-export function hydrateDownloadQueue(): DownloadQueueRow[] {
-  const db = getDb();
-  if (db === null) return [];
-  try {
-    const rows = db.getAllSync<RawQueueRow>(
-      `SELECT queue_id, item_id, type, name, artist, cover_art_id, status,
-              total_songs, completed_songs, error, added_at, queue_position,
-              songs_json
-         FROM download_queue
-         ORDER BY queue_position ASC;`,
-    );
-    return rows.map(mapQueueRow);
-  } catch {
-    return [];
-  }
-}
-
 /* ------------------------------------------------------------------ */
 /*  Async hydrate (boot path — off the JS thread)                      */
 /* ------------------------------------------------------------------ */
@@ -475,54 +454,8 @@ export function countDownloadQueueItems(): number {
 }
 
 /**
- * Refcount for a song — how many items reference it. When this returns 0,
- * the song is an orphan and its file can be deleted.
- */
-export function countSongRefs(songId: string): number {
-  const db = getDb();
-  if (db === null) return 0;
-  try {
-    const row = db.getFirstSync<{ c: number }>(
-      'SELECT COUNT(*) AS c FROM cached_item_songs WHERE song_id = ?;',
-      [songId],
-    );
-    return row?.c ?? 0;
-  } catch {
-    return 0;
-  }
-}
-
-/**
- * Count only REAL download holders of a song — edges whose item is NOT a derived
- * partial-album grouping (`derived = 0`). `COALESCE(derived,0)` treats a legacy /
- * NULL row as real (never as derived), so a real holder can never be miscounted
- * as derived and wrongly orphaned. When this hits 0 the song's file may be deleted
- * even if derived partial-album edges still reference it.
- */
-export function countRealSongRefs(songId: string): number {
-  const db = getDb();
-  if (db === null) return 0;
-  try {
-    const row = db.getFirstSync<{ c: number }>(
-      `SELECT COUNT(*) AS c FROM cached_item_songs e
-         JOIN cached_items i ON e.item_id = i.item_id
-        WHERE e.song_id = ? AND COALESCE(i.derived, 0) = 0;`,
-      [songId],
-    );
-    return row?.c ?? 0;
-  } catch {
-    // Fail SAFE: if the `derived` column doesn't exist yet (migration #31 not run
-    // — e.g. a headless start before the UI migration pass) the JOIN throws.
-    // Fall back to the raw all-edges count so we degrade to the OLD, non-destructive
-    // behaviour (a song stays until it has zero edges) rather than returning 0 and
-    // mass-orphaning everything.
-    return countSongRefs(songId);
-  }
-}
-
-/**
- * Batched, async form of {@link countRealSongRefs}: real-holder refcount for a set
- * of songs in one round-trip. Returns a Map songId → count of edges whose holder is
+ * Batched, async real-holder refcount for a set of songs in one round-trip.
+ * Returns a Map songId → count of edges whose holder is
  * NOT a derived partial-album grouping (`COALESCE(derived,0)=0`). Songs with no real
  * holder are omitted (caller treats a missing key as 0). Chunked to stay under the
  * SQLite bound-variable limit. Fails SAFE like the per-song version: if the `derived`
@@ -564,72 +497,13 @@ export async function countRealSongRefsForSongsAsync(
 }
 
 /**
- * Orphan a song that has lost its last REAL holder. It may still carry derived
- * partial-album edges, so — in one transaction — remove every remaining edge
- * (position-preserving per item, so surviving derived rows keep contiguous
- * positions), then delete the song row (safe only once no edge refers to it —
- * `cached_item_songs.song_id` has no ON DELETE CASCADE and `foreign_keys = ON`),
- * then prune any derived holder left with zero edges. Returns the touched holders
- * + the pruned ones so the store can mirror the change in memory.
- */
-export function orphanSongEverywhere(
-  songId: string,
-): { affectedItems: string[]; prunedItems: string[] } {
-  const db = getDb();
-  const affectedItems: string[] = [];
-  const prunedItems: string[] = [];
-  if (db === null) return { affectedItems, prunedItems };
-  try {
-    const edges = db.getAllSync<{ item_id: string; position: number }>(
-      'SELECT item_id, position FROM cached_item_songs WHERE song_id = ?;',
-      [songId],
-    );
-    const holders = [...new Set(edges.map((e) => e.item_id))];
-    db.withTransactionSync(() => {
-      for (const e of edges) {
-        // Inline position-preserving delete — cannot call `removeCachedItemSong`
-        // here (it opens its own transaction; SQLite can't nest).
-        db.runSync(
-          'DELETE FROM cached_item_songs WHERE item_id = ? AND position = ?;',
-          [e.item_id, e.position],
-        );
-        db.runSync(
-          'UPDATE cached_item_songs SET position = position - 1 WHERE item_id = ? AND position > ?;',
-          [e.item_id, e.position],
-        );
-      }
-      db.runSync('DELETE FROM cached_songs WHERE song_id = ?;', [songId]);
-      for (const itemId of holders) {
-        affectedItems.push(itemId);
-        const cnt = db.getFirstSync<{ c: number }>(
-          'SELECT COUNT(*) AS c FROM cached_item_songs WHERE item_id = ?;',
-          [itemId],
-        );
-        if ((cnt?.c ?? 0) > 0) continue;
-        const der = db.getFirstSync<{ d: number }>(
-          'SELECT COALESCE(derived, 0) AS d FROM cached_items WHERE item_id = ?;',
-          [itemId],
-        );
-        if ((der?.d ?? 0) === 1) {
-          db.runSync('DELETE FROM cached_items WHERE item_id = ?;', [itemId]);
-          prunedItems.push(itemId);
-        }
-      }
-    });
-  } catch {
-    /* dropped */
-  }
-  return { affectedItems, prunedItems };
-}
-
-/**
  * Atomic "orphan this song iff no REAL holder remains". Runs the real-ref
  * COUNT and the conditional orphan (edge deletes → song delete → derived-holder
  * prune) inside ONE transaction, so no concurrent insert can add a holder
  * between the count and the delete — the TOCTOU race a two-call
- * count-then-orphan would introduce now that these paths are async. Fuses
- * `countRealSongRefs` + `orphanSongEverywhere`; returns whether it orphaned
- * plus the touched/pruned holders so the store can mirror the change in memory.
+ * count-then-orphan would introduce now that these paths are async. Returns
+ * whether it orphaned plus the touched/pruned holders so the store can mirror
+ * the change in memory.
  */
 export async function orphanSongIfUnreferencedAsync(
   songId: string,
@@ -785,75 +659,6 @@ export async function deleteCachedSong(songId: string): Promise<void> {
     await serializeDbWrite(() => db.runAsync('DELETE FROM cached_songs WHERE song_id = ?;', [songId]));
   } catch {
     /* dropped */
-  }
-}
-
-/**
- * Atomically swap one downloaded song's row to a new song_id, repointing
- * the `cached_item_songs` junction edges in lock-step.
- *
- * Used by the stale-ID recovery flow (#146): when an album is reindexed
- * server-side and a downloaded song's ID changes underneath us, this
- * keeps the local cache pointing at the right thing.
- *
- * No-op (returns false) if:
- *   - oldId == newSong.id (identity — caller should pre-filter for clarity)
- *   - oldId has no row in cached_songs (nothing downloaded under that id)
- *
- * The transaction inserts the new song row, repoints the junction with
- * `UPDATE OR IGNORE` (to avoid UNIQUE violations if `newSong.id` is
- * already referenced for the same item — that row already won, the old
- * junction edge is redundant), then deletes the stale row.
- */
-export async function remapCachedSongId(
-  oldId: string,
-  newSong: CachedSongRow,
-): Promise<boolean> {
-  const db = getDb();
-  if (db === null) return false;
-  if (oldId === newSong.id) return false;
-  try {
-    let didRemap = false;
-    await serializeDbWrite(() =>
-      db.withTransactionAsync(async () => {
-        const exists = await db.getFirstAsync(
-          'SELECT 1 FROM cached_songs WHERE song_id = ? LIMIT 1;',
-          [oldId],
-        );
-        if (!exists) return;
-        await upsertCachedSongInternal(db, newSong);
-        await db.runAsync(
-          'UPDATE OR IGNORE cached_item_songs SET song_id = ? WHERE song_id = ?;',
-          [newSong.id, oldId],
-        );
-        // Clear any junction rows that survived UPDATE OR IGNORE (i.e.
-        // ones that conflicted because the new id was already wired up).
-        await db.runAsync('DELETE FROM cached_item_songs WHERE song_id = ?;', [oldId]);
-        await db.runAsync('DELETE FROM cached_songs WHERE song_id = ?;', [oldId]);
-        didRemap = true;
-      }),
-    );
-    return didRemap;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Return all song_ids that have zero cached_item_songs edges — songs whose
- * files are on disk but no item references them any more.
- */
-export function findOrphanSongs(): string[] {
-  const db = getDb();
-  if (db === null) return [];
-  try {
-    const rows = db.getAllSync<{ song_id: string }>(
-      `SELECT song_id FROM cached_songs
-         WHERE song_id NOT IN (SELECT song_id FROM cached_item_songs);`,
-    );
-    return rows.map((r) => r.song_id);
-  } catch {
-    return [];
   }
 }
 
@@ -1020,36 +825,6 @@ export async function reorderCachedItemSongs(
     );
   } catch {
     /* dropped */
-  }
-}
-
-/** Return song_ids for an item in position order. */
-export function getSongIdsForItem(itemId: string): string[] {
-  const db = getDb();
-  if (db === null) return [];
-  try {
-    const rows = db.getAllSync<{ song_id: string }>(
-      'SELECT song_id FROM cached_item_songs WHERE item_id = ? ORDER BY position ASC;',
-      [itemId],
-    );
-    return rows.map((r) => r.song_id);
-  } catch {
-    return [];
-  }
-}
-
-/** Return the items that reference a given song. */
-export function getItemIdsForSong(songId: string): string[] {
-  const db = getDb();
-  if (db === null) return [];
-  try {
-    const rows = db.getAllSync<{ item_id: string }>(
-      'SELECT item_id FROM cached_item_songs WHERE song_id = ?;',
-      [songId],
-    );
-    return rows.map((r) => r.item_id);
-  } catch {
-    return [];
   }
 }
 

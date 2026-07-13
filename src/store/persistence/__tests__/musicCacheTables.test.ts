@@ -18,18 +18,11 @@ import {
   countCachedItems,
   countCachedSongs,
   countDownloadQueueItems,
-  countRealSongRefs,
-  countSongRefs,
-  orphanSongEverywhere,
   deleteCachedItem,
   deleteCachedSong,
-  remapCachedSongId,
-  findOrphanSongs,
-  getItemIdsForSong,
-  getSongIdsForItem,
   hydrateCachedItems,
   hydrateCachedSongs,
-  hydrateDownloadQueue,
+  hydrateDownloadQueueAsync,
   insertCachedItemSong,
   insertDownloadQueueItem,
   markDownloadComplete,
@@ -842,50 +835,6 @@ describe('musicCacheTables — cached_songs', () => {
     expect(countCachedSongs()).toBe(0);
   });
 
-  // #146 — remapCachedSongId swaps a song's id atomically with its
-  // cached_item_songs edges. Used by the stale-ID recovery flow when
-  // the server reindexes a downloaded track.
-  describe('remapCachedSongId', () => {
-    it('rewrites the row and repoints junction edges to the new id', async () => {
-      await upsertCachedSong(makeSong({ id: 'old', albumId: 'alb-1', title: 'T' }));
-      await upsertCachedItem(makeItem({ itemId: 'alb-1' }));
-      await insertCachedItemSong('alb-1', 1, 'old');
-
-      const ok = await remapCachedSongId('old', makeSong({ id: 'new', albumId: 'alb-1', title: 'T' }));
-      expect(ok).toBe(true);
-      // Old row is gone, new row is in place.
-      const songs = hydrateCachedSongs();
-      expect(songs.old).toBeUndefined();
-      expect(songs.new).toBeDefined();
-      // Junction edge now references the new id.
-      const items = hydrateCachedItems();
-      expect(items['alb-1'].songIds).toEqual(['new']);
-    });
-
-    it('no-ops on identity (oldId === newSong.id)', async () => {
-      await upsertCachedSong(makeSong({ id: 'same' }));
-      const ok = await remapCachedSongId('same', makeSong({ id: 'same' }));
-      expect(ok).toBe(false);
-    });
-
-    it('no-ops when the old id has no cached_songs row', async () => {
-      const ok = await remapCachedSongId('never-existed', makeSong({ id: 'fresh' }));
-      expect(ok).toBe(false);
-      expect(countCachedSongs()).toBe(0);
-    });
-  });
-
-  it('findOrphanSongs returns songs without any edges', async () => {
-    await upsertCachedSong(makeSong({ id: 's1' }));
-    await upsertCachedSong(makeSong({ id: 's2' }));
-    await upsertCachedSong(makeSong({ id: 's3' }));
-    await upsertCachedItem(makeItem({ itemId: 'alb-1' }));
-    await insertCachedItemSong('alb-1', 1, 's2');
-
-    const orphans = findOrphanSongs().sort();
-    expect(orphans).toEqual(['s1', 's3']);
-  });
-
   it('hydrateCachedSongs skips rows with empty song_id', async () => {
     await upsertCachedSong(makeSong({ id: 's1' }));
     // Seed a bogus row directly via the fake to exercise the guard.
@@ -979,14 +928,14 @@ describe('musicCacheTables — cached_items + edges', () => {
     await upsertCachedItem(makeItem({ itemId: 'pl-1', type: 'playlist', name: 'Original' }));
     await insertCachedItemSong('pl-1', 1, 's-a');
     await insertCachedItemSong('pl-1', 2, 's-b');
-    expect(getSongIdsForItem('pl-1')).toEqual(['s-a', 's-b']);
+    expect(hydrateCachedItems()['pl-1']?.songIds ?? []).toEqual(['s-a', 's-b']);
 
     // Simulate a downstream write touching the same item_id — e.g. a sync
     // pass that re-writes the item's metadata. Before the fix this would
     // fire ON DELETE CASCADE and drop both edges.
     await upsertCachedItem(makeItem({ itemId: 'pl-1', type: 'playlist', name: 'Renamed' }));
 
-    expect(getSongIdsForItem('pl-1')).toEqual(['s-a', 's-b']);
+    expect(hydrateCachedItems()['pl-1']?.songIds ?? []).toEqual(['s-a', 's-b']);
   });
 
   it('upsertCachedItem updates columns on conflict without dropping the row', async () => {
@@ -1004,14 +953,14 @@ describe('musicCacheTables — cached_items + edges', () => {
     await upsertCachedItem(makeItem());
     await insertCachedItemSong('alb-1', 1, 's1');
     await insertCachedItemSong('alb-1', 1, 's2');
-    const songs = getSongIdsForItem('alb-1');
+    const songs = hydrateCachedItems()['alb-1']?.songIds ?? [];
     expect(songs).toEqual(['s1']);
   });
 
   it('insertCachedItemSong ignores rows missing itemId or songId', async () => {
     await insertCachedItemSong('', 1, 's1');
     await insertCachedItemSong('alb-1', 1, '');
-    expect(getSongIdsForItem('alb-1')).toEqual([]);
+    expect(hydrateCachedItems()['alb-1']?.songIds ?? []).toEqual([]);
   });
 
   it('deleteCachedItem cascades to edges', async () => {
@@ -1020,7 +969,7 @@ describe('musicCacheTables — cached_items + edges', () => {
     await insertCachedItemSong('alb-1', 2, 's2');
     await deleteCachedItem('alb-1');
     expect(countCachedItems()).toBe(0);
-    expect(getSongIdsForItem('alb-1')).toEqual([]);
+    expect(hydrateCachedItems()['alb-1']?.songIds ?? []).toEqual([]);
   });
 
   it('removeCachedItemSong shifts higher positions down by 1', async () => {
@@ -1030,7 +979,7 @@ describe('musicCacheTables — cached_items + edges', () => {
     await insertCachedItemSong('alb-1', 3, 's3');
     await insertCachedItemSong('alb-1', 4, 's4');
     await removeCachedItemSong('alb-1', 2);
-    expect(getSongIdsForItem('alb-1')).toEqual(['s1', 's3', 's4']);
+    expect(hydrateCachedItems()['alb-1']?.songIds ?? []).toEqual(['s1', 's3', 's4']);
     // And positions are contiguous (1, 2, 3) — verified via ordering.
     const edgesList = Array.from(fakeDb.edges.values())
       .filter((e) => e.item_id === 'alb-1')
@@ -1046,7 +995,7 @@ describe('musicCacheTables — cached_items + edges', () => {
     await insertCachedItemSong('alb-1', 4, 's4');
     // Move position 1 to position 3 — s2 and s3 shift down by 1.
     await reorderCachedItemSongs('alb-1', 1, 3);
-    expect(getSongIdsForItem('alb-1')).toEqual(['s2', 's3', 's1', 's4']);
+    expect(hydrateCachedItems()['alb-1']?.songIds ?? []).toEqual(['s2', 's3', 's1', 's4']);
   });
 
   it('reorderCachedItemSongs moves backward without PK collision', async () => {
@@ -1057,7 +1006,7 @@ describe('musicCacheTables — cached_items + edges', () => {
     await insertCachedItemSong('alb-1', 4, 's4');
     // Move position 4 to position 2 — s2 and s3 shift up by 1.
     await reorderCachedItemSongs('alb-1', 4, 2);
-    expect(getSongIdsForItem('alb-1')).toEqual(['s1', 's4', 's2', 's3']);
+    expect(hydrateCachedItems()['alb-1']?.songIds ?? []).toEqual(['s1', 's4', 's2', 's3']);
   });
 
   it('reorderCachedItemSongs is a no-op when from == to', async () => {
@@ -1065,192 +1014,7 @@ describe('musicCacheTables — cached_items + edges', () => {
     await insertCachedItemSong('alb-1', 1, 's1');
     await insertCachedItemSong('alb-1', 2, 's2');
     await reorderCachedItemSongs('alb-1', 2, 2);
-    expect(getSongIdsForItem('alb-1')).toEqual(['s1', 's2']);
-  });
-
-  it('getItemIdsForSong returns every referring item', async () => {
-    await upsertCachedSong(makeSong());
-    await upsertCachedItem(makeItem({ itemId: 'alb-1' }));
-    await upsertCachedItem(makeItem({ itemId: 'pl-1', type: 'playlist' }));
-    await upsertCachedItem(makeItem({ itemId: '__starred__', type: 'favorites' }));
-    await insertCachedItemSong('alb-1', 1, 's1');
-    await insertCachedItemSong('pl-1', 1, 's1');
-    await insertCachedItemSong('__starred__', 1, 's1');
-    expect(getItemIdsForSong('s1').sort()).toEqual(['__starred__', 'alb-1', 'pl-1']);
-  });
-
-  it('countSongRefs counts the number of edges for a song', async () => {
-    await upsertCachedSong(makeSong());
-    await upsertCachedItem(makeItem({ itemId: 'alb-1' }));
-    await upsertCachedItem(makeItem({ itemId: 'pl-1', type: 'playlist' }));
-    await insertCachedItemSong('alb-1', 1, 's1');
-    await insertCachedItemSong('pl-1', 1, 's1');
-    expect(countSongRefs('s1')).toBe(2);
-    expect(countSongRefs('s-missing')).toBe(0);
-  });
-});
-
-/* ------------------------------------------------------------------ */
-/*  countRealSongRefs — REAL holders only (derived edges don't count)  */
-/* ------------------------------------------------------------------ */
-
-describe('musicCacheTables — countRealSongRefs', () => {
-  it('counts only the REAL holder when a real + a derived item both edge a song', async () => {
-    await upsertCachedSong(makeSong({ id: 's1' }));
-    // Real holder (favorites — no derived flag set → 0).
-    await upsertCachedItem(makeItem({ itemId: '__starred__', type: 'favorites' }));
-    // Derived partial-album grouping holder.
-    await upsertCachedItem(makeItem({ itemId: 'album:A', type: 'album', derived: true }));
-    await insertCachedItemSong('__starred__', 1, 's1');
-    await insertCachedItemSong('album:A', 1, 's1');
-
-    // Raw edge count sees both edges; the REAL-ref count sees only the holder.
-    expect(countSongRefs('s1')).toBe(2);
-    expect(countRealSongRefs('s1')).toBe(1);
-  });
-
-  it('returns 0 when a song is only referenced by derived holders', async () => {
-    await upsertCachedSong(makeSong({ id: 's1' }));
-    await upsertCachedItem(makeItem({ itemId: 'album:A', type: 'album', derived: true }));
-    await upsertCachedItem(makeItem({ itemId: 'album:B', type: 'album', derived: true }));
-    await insertCachedItemSong('album:A', 1, 's1');
-    await insertCachedItemSong('album:B', 1, 's1');
-
-    expect(countSongRefs('s1')).toBe(2);
-    expect(countRealSongRefs('s1')).toBe(0);
-  });
-
-  it('counts every real holder (real + real → 2)', async () => {
-    await upsertCachedSong(makeSong({ id: 's1' }));
-    await upsertCachedItem(makeItem({ itemId: 'pl-1', type: 'playlist' }));
-    await upsertCachedItem(makeItem({ itemId: '__starred__', type: 'favorites' }));
-    await insertCachedItemSong('pl-1', 1, 's1');
-    await insertCachedItemSong('__starred__', 1, 's1');
-
-    expect(countRealSongRefs('s1')).toBe(2);
-  });
-
-  it('treats a legacy NULL-derived item as REAL', async () => {
-    await upsertCachedSong(makeSong({ id: 's1' }));
-    // Write the item row directly with derived = NULL to simulate a legacy row
-    // predating the `derived` column backfill (COALESCE(derived,0) → real).
-    await upsertCachedItem(makeItem({ itemId: 'legacy-alb', type: 'album' }));
-    fakeDb.items.set('legacy-alb', {
-      ...(fakeDb.items.get('legacy-alb') as any),
-      derived: null,
-    });
-    await insertCachedItemSong('legacy-alb', 1, 's1');
-
-    expect(countRealSongRefs('s1')).toBe(1);
-  });
-
-  it('returns 0 for a song with no edges at all', async () => {
-    expect(countRealSongRefs('nobody')).toBe(0);
-  });
-});
-
-/* ------------------------------------------------------------------ */
-/*  orphanSongEverywhere — drop all edges + song row, prune derived    */
-/* ------------------------------------------------------------------ */
-
-describe('musicCacheTables — orphanSongEverywhere', () => {
-  // Assert every surviving item keeps contiguous 1..n positions and no edge
-  // references a song row that was deleted.
-  function assertPositionsContiguous(itemId: string): void {
-    const positions = Array.from(fakeDb.edges.values())
-      .filter((e) => e.item_id === itemId)
-      .map((e) => e.position)
-      .sort((a, b) => a - b);
-    const expected = positions.map((_, i) => i + 1);
-    expect(positions).toEqual(expected);
-  }
-
-  it('drops the song edge + row but keeps a derived holder that still holds another song', async () => {
-    // Derived album:A holds S (pos 1) and T (pos 2). S loses its last real
-    // holder; orphaning S must remove S's edge, delete cached_songs[S], keep A
-    // (still holds T), and re-contiguous A's positions (T → pos 1).
-    await upsertCachedSong(makeSong({ id: 'S' }));
-    await upsertCachedSong(makeSong({ id: 'T' }));
-    await upsertCachedItem(makeItem({ itemId: 'album:A', type: 'album', derived: true }));
-    await insertCachedItemSong('album:A', 1, 'S');
-    await insertCachedItemSong('album:A', 2, 'T');
-
-    const result = orphanSongEverywhere('S');
-
-    expect(result.affectedItems).toEqual(['album:A']);
-    expect(result.prunedItems).toEqual([]);
-    // S's edge and song row are gone; T remains.
-    expect(getSongIdsForItem('album:A')).toEqual(['T']);
-    expect(hydrateCachedSongs()['S']).toBeUndefined();
-    expect(hydrateCachedSongs()['T']).toBeDefined();
-    // A survives as a holder.
-    expect(hydrateCachedItems()['album:A']).toBeDefined();
-    // No leftover edge references the deleted song, positions stay contiguous.
-    expect(getItemIdsForSong('S')).toEqual([]);
-    assertPositionsContiguous('album:A');
-  });
-
-  it('prunes a derived holder when the orphaned song was its only song', async () => {
-    await upsertCachedSong(makeSong({ id: 'S' }));
-    await upsertCachedItem(makeItem({ itemId: 'album:A', type: 'album', derived: true }));
-    await insertCachedItemSong('album:A', 1, 'S');
-
-    const result = orphanSongEverywhere('S');
-
-    expect(result.affectedItems).toEqual(['album:A']);
-    expect(result.prunedItems).toEqual(['album:A']);
-    expect(hydrateCachedSongs()['S']).toBeUndefined();
-    // Emptied derived holder is pruned.
-    expect(hydrateCachedItems()['album:A']).toBeUndefined();
-    expect(getItemIdsForSong('S')).toEqual([]);
-  });
-
-  it('never prunes a REAL holder even when it is emptied of its last song', async () => {
-    // A real holder (playlist) with a single song. Orphaning that song empties
-    // the playlist, but a REAL holder is never auto-pruned — the user still
-    // "downloaded" it and the row must survive as an (empty) intent.
-    await upsertCachedSong(makeSong({ id: 'S' }));
-    await upsertCachedItem(makeItem({ itemId: 'pl-1', type: 'playlist' }));
-    await insertCachedItemSong('pl-1', 1, 'S');
-
-    const result = orphanSongEverywhere('S');
-
-    expect(result.affectedItems).toEqual(['pl-1']);
-    expect(result.prunedItems).toEqual([]);
-    expect(hydrateCachedSongs()['S']).toBeUndefined();
-    // Real holder survives even though it is now empty.
-    expect(hydrateCachedItems()['pl-1']).toBeDefined();
-    expect(getSongIdsForItem('pl-1')).toEqual([]);
-    expect(getItemIdsForSong('S')).toEqual([]);
-  });
-
-  it('removes edges across a derived + real holder, pruning only the emptied derived one', async () => {
-    // S edged by a derived album:A (only S) and a real favorites (holds S + U).
-    // Orphaning S: drops both S edges + cached_songs[S], prunes album:A
-    // (derived, now empty), keeps favorites (real) with U re-contiguous.
-    await upsertCachedSong(makeSong({ id: 'S' }));
-    await upsertCachedSong(makeSong({ id: 'U' }));
-    await upsertCachedItem(makeItem({ itemId: 'album:A', type: 'album', derived: true }));
-    await upsertCachedItem(makeItem({ itemId: '__starred__', type: 'favorites' }));
-    await insertCachedItemSong('album:A', 1, 'S');
-    await insertCachedItemSong('__starred__', 1, 'S');
-    await insertCachedItemSong('__starred__', 2, 'U');
-
-    const result = orphanSongEverywhere('S');
-
-    expect(result.affectedItems.sort()).toEqual(['__starred__', 'album:A']);
-    expect(result.prunedItems).toEqual(['album:A']);
-    expect(hydrateCachedSongs()['S']).toBeUndefined();
-    expect(hydrateCachedItems()['album:A']).toBeUndefined();
-    // Favorites survives with only U, positions re-contiguous (1).
-    expect(getSongIdsForItem('__starred__')).toEqual(['U']);
-    assertPositionsContiguous('__starred__');
-    expect(getItemIdsForSong('S')).toEqual([]);
-  });
-
-  it('is a safe no-op for a song that has no edges', async () => {
-    const result = orphanSongEverywhere('ghost');
-    expect(result).toEqual({ affectedItems: [], prunedItems: [] });
+    expect(hydrateCachedItems()['alb-1']?.songIds ?? []).toEqual(['s1', 's2']);
   });
 });
 
@@ -1261,7 +1025,7 @@ describe('musicCacheTables — orphanSongEverywhere', () => {
 describe('musicCacheTables — download_queue', () => {
   it('insertDownloadQueueItem + hydrateDownloadQueue round-trips', async () => {
     await insertDownloadQueueItem(makeQueueRow());
-    const hydrated = hydrateDownloadQueue();
+    const hydrated = await hydrateDownloadQueueAsync();
     expect(hydrated).toHaveLength(1);
     expect(hydrated[0]).toEqual({
       queueId: 'q-1',
@@ -1294,26 +1058,26 @@ describe('musicCacheTables — download_queue', () => {
     await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-a', queuePosition: 5 }));
     await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-b', queuePosition: 1 }));
     await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-c', queuePosition: 3 }));
-    const hydrated = hydrateDownloadQueue();
+    const hydrated = await hydrateDownloadQueueAsync();
     expect(hydrated.map((q) => q.queueId)).toEqual(['q-b', 'q-c', 'q-a']);
   });
 
   it('updateDownloadQueueItem updates status only', async () => {
     await insertDownloadQueueItem(makeQueueRow());
     await updateDownloadQueueItem('q-1', { status: 'downloading' });
-    expect(hydrateDownloadQueue()[0].status).toBe('downloading');
+    expect((await hydrateDownloadQueueAsync())[0].status).toBe('downloading');
   });
 
   it('updateDownloadQueueItem updates completedSongs only', async () => {
     await insertDownloadQueueItem(makeQueueRow());
     await updateDownloadQueueItem('q-1', { completedSongs: 7 });
-    expect(hydrateDownloadQueue()[0].completedSongs).toBe(7);
+    expect((await hydrateDownloadQueueAsync())[0].completedSongs).toBe(7);
   });
 
   it('updateDownloadQueueItem updates error only', async () => {
     await insertDownloadQueueItem(makeQueueRow());
     await updateDownloadQueueItem('q-1', { error: 'network fail' });
-    expect(hydrateDownloadQueue()[0].error).toBe('network fail');
+    expect((await hydrateDownloadQueueAsync())[0].error).toBe('network fail');
   });
 
   it('updateDownloadQueueItem updates multiple fields at once', async () => {
@@ -1323,7 +1087,7 @@ describe('musicCacheTables — download_queue', () => {
       completedSongs: 3,
       error: 'boom',
     });
-    const row = hydrateDownloadQueue()[0];
+    const row = (await hydrateDownloadQueueAsync())[0];
     expect(row.status).toBe('error');
     expect(row.completedSongs).toBe(3);
     expect(row.error).toBe('boom');
@@ -1332,7 +1096,7 @@ describe('musicCacheTables — download_queue', () => {
   it('updateDownloadQueueItem is a no-op when update is empty', async () => {
     await insertDownloadQueueItem(makeQueueRow());
     await updateDownloadQueueItem('q-1', {});
-    expect(hydrateDownloadQueue()[0].status).toBe('queued');
+    expect((await hydrateDownloadQueueAsync())[0].status).toBe('queued');
   });
 
   it('reorderDownloadQueue shifts queue_position forward', async () => {
@@ -1342,7 +1106,7 @@ describe('musicCacheTables — download_queue', () => {
     await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-d', queuePosition: 4 }));
     // Move position 1 → position 3.
     await reorderDownloadQueue(1, 3);
-    const order = hydrateDownloadQueue();
+    const order = await hydrateDownloadQueueAsync();
     expect(order.map((q) => q.queueId)).toEqual(['q-b', 'q-c', 'q-a', 'q-d']);
   });
 
@@ -1353,21 +1117,21 @@ describe('musicCacheTables — download_queue', () => {
     await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-d', queuePosition: 4 }));
     // Move position 4 → position 2.
     await reorderDownloadQueue(4, 2);
-    const order = hydrateDownloadQueue();
+    const order = await hydrateDownloadQueueAsync();
     expect(order.map((q) => q.queueId)).toEqual(['q-a', 'q-d', 'q-b', 'q-c']);
   });
 
   it('reorderDownloadQueue is a no-op when from == to', async () => {
     await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-a', queuePosition: 1 }));
     await reorderDownloadQueue(1, 1);
-    expect(hydrateDownloadQueue()[0].queueId).toBe('q-a');
+    expect((await hydrateDownloadQueueAsync())[0].queueId).toBe('q-a');
   });
 
   it('insertDownloadQueueItem replaces rows with the same queue_id', async () => {
     await insertDownloadQueueItem(makeQueueRow({ totalSongs: 10 }));
     await insertDownloadQueueItem(makeQueueRow({ totalSongs: 99 }));
     expect(countDownloadQueueItems()).toBe(1);
-    expect(hydrateDownloadQueue()[0].totalSongs).toBe(99);
+    expect((await hydrateDownloadQueueAsync())[0].totalSongs).toBe(99);
   });
 });
 
@@ -1421,7 +1185,7 @@ describe('musicCacheTables — markDownloadComplete', () => {
     // but the songId on the edge list entry with '' must be filtered.
     // Note: position 3 edge songId 's2' is kept, but no row exists for s2; that's allowed
     // because we don't enforce FK on songs here and the store cleans up later.
-    expect(getSongIdsForItem('alb-1').sort()).toEqual(['s1', 's2']);
+    expect((hydrateCachedItems()['alb-1']?.songIds ?? []).sort()).toEqual(['s1', 's2']);
   });
 
   it('markDownloadComplete works for a fresh item that wasnt previously queued', async () => {
@@ -1554,12 +1318,12 @@ describe('musicCacheTables — bulkReplace', () => {
     await bulkReplace(payload);
     expect(countCachedItems()).toBe(1);
     expect(countCachedSongs()).toBe(2);
-    expect(getSongIdsForItem('pl-1')).toEqual(['s-a', 's-b']);
+    expect(hydrateCachedItems()['pl-1']?.songIds ?? []).toEqual(['s-a', 's-b']);
 
     await bulkReplace(payload);
     expect(countCachedItems()).toBe(1);
     expect(countCachedSongs()).toBe(2);
-    expect(getSongIdsForItem('pl-1')).toEqual(['s-a', 's-b']);
+    expect(hydrateCachedItems()['pl-1']?.songIds ?? []).toEqual(['s-a', 's-b']);
   });
 });
 
@@ -1579,7 +1343,6 @@ describe('musicCacheTables — clearAllMusicCacheRows', () => {
     expect(countCachedItems()).toBe(0);
     expect(countCachedSongs()).toBe(0);
     expect(countDownloadQueueItems()).toBe(0);
-    expect(findOrphanSongs()).toEqual([]);
   });
 
   it('is safe to call on empty tables', async () => {
@@ -1599,14 +1362,11 @@ describe('musicCacheTables — disabled db (healthy=false)', () => {
   it('every read returns a safe default', async () => {
     expect(hydrateCachedSongs()).toEqual({});
     expect(hydrateCachedItems()).toEqual({});
-    expect(hydrateDownloadQueue()).toEqual([]);
+    expect(await hydrateDownloadQueueAsync()).toEqual([]);
     expect(countCachedSongs()).toBe(0);
     expect(countCachedItems()).toBe(0);
     expect(countDownloadQueueItems()).toBe(0);
-    expect(countSongRefs('s1')).toBe(0);
-    expect(findOrphanSongs()).toEqual([]);
-    expect(getSongIdsForItem('alb-1')).toEqual([]);
-    expect(getItemIdsForSong('s1')).toEqual([]);
+    expect(hydrateCachedItems()['alb-1']?.songIds ?? []).toEqual([]);
   });
 
   it('every write is a no-op', async () => {
@@ -1673,14 +1433,11 @@ describe('musicCacheTables — db throws (error swallow path)', () => {
   it('reads return safe defaults on error', async () => {
     expect(hydrateCachedSongs()).toEqual({});
     expect(hydrateCachedItems()).toEqual({});
-    expect(hydrateDownloadQueue()).toEqual([]);
+    expect(await hydrateDownloadQueueAsync()).toEqual([]);
     expect(countCachedSongs()).toBe(0);
     expect(countCachedItems()).toBe(0);
     expect(countDownloadQueueItems()).toBe(0);
-    expect(countSongRefs('s1')).toBe(0);
-    expect(findOrphanSongs()).toEqual([]);
-    expect(getSongIdsForItem('alb-1')).toEqual([]);
-    expect(getItemIdsForSong('s1')).toEqual([]);
+    expect(hydrateCachedItems()['alb-1']?.songIds ?? []).toEqual([]);
   });
 
   it('writes swallow errors and do not propagate', async () => {

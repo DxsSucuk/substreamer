@@ -184,7 +184,6 @@ jest.mock('../../store/persistence/musicCacheTables', () => {
     // Hydrate helpers — return empty; tests seed in-memory state directly.
     hydrateCachedSongs: jest.fn(() => ({})),
     hydrateCachedItems: jest.fn(() => ({})),
-    hydrateDownloadQueue: jest.fn(() => []),
     hydrateCachedSongsAsync: jest.fn(async () => ({})),
     hydrateCachedItemsAsync: jest.fn(async () => ({})),
     hydrateDownloadQueueAsync: jest.fn(async () => []),
@@ -192,17 +191,10 @@ jest.mock('../../store/persistence/musicCacheTables', () => {
     countCachedSongs: jest.fn(() => 0),
     countCachedItems: jest.fn(() => 0),
     countDownloadQueueItems: jest.fn(() => 0),
-    // Refcount — drives store.removeCachedItem orphan detection.
-    // The store calls this after it has already deleted the item row in SQL;
-    // our mock keeps an `edges` array parallel to what the store does so
-    // the refcount check returns a plausible answer. We expose helpers to
-    // tests below so they can seed edges.
-    countSongRefs: jest.fn((songId: string) =>
-      edges.filter((e) => e.songId === songId).length,
-    ),
-    // REAL-holder refcount: only edges whose holder item is NOT derived.
-    // A legacy/unknown item (never stamped derived) counts as REAL, matching
-    // the production `COALESCE(derived,0)=0` guard.
+    // REAL-holder refcount — drives store.removeCachedItem orphan detection.
+    // Only edges whose holder item is NOT derived count; a legacy/unknown item
+    // (never stamped derived) counts as REAL, matching the production
+    // `COALESCE(derived,0)=0` guard. Tests seed edges via the helpers below.
     countRealSongRefsForSongsAsync: jest.fn(async (songIds: string[]) => {
       const m = new Map<string, number>();
       for (const songId of songIds) {
@@ -211,39 +203,12 @@ jest.mock('../../store/persistence/musicCacheTables', () => {
       }
       return m;
     }),
-    // Orphan a song that lost its last REAL holder: strip every remaining
-    // edge (keeping surviving holders contiguous), then prune any DERIVED
-    // holder left empty. Returns touched + pruned holders so the store can
-    // mirror the change in memory. Mirrors the production transaction.
-    orphanSongEverywhere: jest.fn((songId: string) => {
-      const affected = new Set<string>();
-      const removed = edges.filter((e) => e.songId === songId);
-      for (const e of removed) affected.add(e.itemId);
-      // Remove the edges (highest position first per holder so the shift is
-      // collision-free), decrementing higher positions to stay contiguous.
-      const sorted = [...removed].sort((a, b) => b.position - a.position);
-      for (const e of sorted) {
-        const i = edges.findIndex(
-          (x) => x.itemId === e.itemId && x.position === e.position && x.songId === songId,
-        );
-        if (i >= 0) edges.splice(i, 1);
-        for (const x of edges) {
-          if (x.itemId === e.itemId && x.position > e.position) x.position -= 1;
-        }
-      }
-      const prunedItems: string[] = [];
-      for (const itemId of affected) {
-        const remaining = edges.filter((e) => e.itemId === itemId).length;
-        if (remaining === 0 && isDerived(itemId)) {
-          derivedItems.delete(itemId);
-          prunedItems.push(itemId);
-        }
-      }
-      return { affectedItems: [...affected], prunedItems };
-    }),
-    // Atomic count+orphan: the fused helper the store now calls. Returns
-    // orphaned:false (unchanged) when a REAL holder still remains; else orphans
-    // (same logic as orphanSongEverywhere) and returns orphaned:true.
+    // Atomic count+orphan: the fused helper the store calls. Returns
+    // orphaned:false (unchanged) when a REAL holder still remains; else strips
+    // every remaining edge (keeping surviving holders contiguous), prunes any
+    // DERIVED holder left empty, and returns orphaned:true with the touched +
+    // pruned holders so the store can mirror the change. Mirrors the production
+    // transaction.
     orphanSongIfUnreferencedAsync: jest.fn(async (songId: string) => {
       const realRefs = edges.filter((e) => e.songId === songId && !isDerived(e.itemId)).length;
       if (realRefs !== 0) return { orphaned: false, affectedItems: [], prunedItems: [] };
@@ -270,7 +235,6 @@ jest.mock('../../store/persistence/musicCacheTables', () => {
       }
       return { orphaned: true, affectedItems: [...affected], prunedItems };
     }),
-    findOrphanSongs: jest.fn(() => []),
     // cached_songs writes
     upsertCachedSong: jest.fn(),
     deleteCachedSong: jest.fn(),
@@ -301,8 +265,6 @@ jest.mock('../../store/persistence/musicCacheTables', () => {
       }
     }),
     reorderCachedItemSongs: jest.fn(),
-    getSongIdsForItem: jest.fn(() => []),
-    getItemIdsForSong: jest.fn(() => []),
     // download_queue writes
     insertDownloadQueueItem: jest.fn(),
     removeDownloadQueueItem: jest.fn(),
@@ -418,7 +380,7 @@ function seedItem(itemId: string, opts: {
 }) {
   const type = opts.type ?? 'album';
   const songIds = opts.songIds ?? [];
-  // Seed edges in the persistence mock so countSongRefs is accurate.
+  // Seed edges in the persistence mock so the refcount check is accurate.
   for (let i = 0; i < songIds.length; i++) {
     persistenceMock.__edges.push({ itemId, position: i + 1, songId: songIds[i] });
   }

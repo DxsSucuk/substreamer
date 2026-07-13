@@ -15,12 +15,10 @@ import { __setDbForTests } from '../db';
 import {
   bulkUpsertSongs,
   clearDetailTables,
-  countAlbumDetailsAsync,
-  countSongIndex,
+  countSongIndexAsync,
   deleteAlbumDetail,
-  deleteSongsForAlbums,
+  deleteSongsForAlbumsAsync,
   fetchAllSongsByTitleAsync,
-  getAlbumDetailByIdAsync,
   getDetailedAlbumIdsAsync,
   hydrateAlbumDetails,
   persistAlbumDetailAndSongsAsync,
@@ -204,18 +202,18 @@ describe('detailTables — album_details', () => {
   it('upsertAlbumDetail replaces a prior entry', async () => {
     upsertAlbumDetail('a1', makeAlbum('a1'), 1);
     upsertAlbumDetail('a1', makeAlbum('a1'), 2);
-    expect(await countAlbumDetailsAsync()).toBe(1);
+    expect((await getDetailedAlbumIdsAsync()).size).toBe(1);
     expect(hydrateAlbumDetails()['a1'].retrievedAt).toBe(2);
   });
 
   it('deleteAlbumDetail removes both the album row and its songs', async () => {
     upsertAlbumDetail('a1', makeAlbum('a1'), 1);
     upsertSongsForAlbum('a1', makeAlbum('a1', [{ id: 's1' }, { id: 's2' }]).song);
-    expect(await countAlbumDetailsAsync()).toBe(1);
-    expect(countSongIndex()).toBe(2);
+    expect((await getDetailedAlbumIdsAsync()).size).toBe(1);
+    expect(await countSongIndexAsync()).toBe(2);
     await deleteAlbumDetail('a1');
-    expect(await countAlbumDetailsAsync()).toBe(0);
-    expect(countSongIndex()).toBe(0);
+    expect((await getDetailedAlbumIdsAsync()).size).toBe(0);
+    expect(await countSongIndexAsync()).toBe(0);
   });
 
   it('clearDetailTables wipes both tables atomically', async () => {
@@ -224,8 +222,8 @@ describe('detailTables — album_details', () => {
     upsertSongsForAlbum('a1', makeAlbum('a1', [{ id: 's1' }]).song);
     upsertSongsForAlbum('a2', makeAlbum('a2', [{ id: 's2' }, { id: 's3' }]).song);
     await clearDetailTables();
-    expect(await countAlbumDetailsAsync()).toBe(0);
-    expect(countSongIndex()).toBe(0);
+    expect((await getDetailedAlbumIdsAsync()).size).toBe(0);
+    expect(await countSongIndexAsync()).toBe(0);
   });
 
   it('hydrateAlbumDetails returns empty when table is empty', () => {
@@ -243,16 +241,16 @@ describe('detailTables — album_details', () => {
 describe('detailTables — atomic persist + walk-completion helpers (Phase B)', () => {
   it('persistAlbumDetailAndSongsAsync writes the detail row AND its songs, returning the net song delta', async () => {
     const delta = await persistAlbumDetailAndSongsAsync('a1', makeAlbum('a1', [{ id: 's1' }, { id: 's2' }]), 1700000000000);
-    expect(await countAlbumDetailsAsync()).toBe(1);
-    expect(countSongIndex()).toBe(2);
+    expect((await getDetailedAlbumIdsAsync()).size).toBe(1);
+    expect(await countSongIndexAsync()).toBe(2);
     expect(delta).toBe(2); // fresh album: 2 inserted, 0 deleted
     expect(hydrateAlbumDetails()['a1'].retrievedAt).toBe(1700000000000);
   });
 
   it('persistAlbumDetailAndSongsAsync commits an empty album as complete (detail row, 0 songs)', async () => {
     await persistAlbumDetailAndSongsAsync('a1', makeAlbum('a1', []), 1);
-    expect(await countAlbumDetailsAsync()).toBe(1);
-    expect(countSongIndex()).toBe(0);
+    expect((await getDetailedAlbumIdsAsync()).size).toBe(1);
+    expect(await countSongIndexAsync()).toBe(0);
     // The detail row's presence is the "done" marker — a song-count heuristic
     // would wrongly flag this as broken.
     expect(await getDetailedAlbumIdsAsync()).toEqual(new Set(['a1']));
@@ -261,7 +259,7 @@ describe('detailTables — atomic persist + walk-completion helpers (Phase B)', 
   it('persistAlbumDetailAndSongsAsync replaces prior songs for the same album (retag-safe)', async () => {
     await persistAlbumDetailAndSongsAsync('a1', makeAlbum('a1', [{ id: 's1' }, { id: 's2' }]), 1);
     await persistAlbumDetailAndSongsAsync('a1', makeAlbum('a1', [{ id: 's3' }]), 2);
-    expect(countSongIndex()).toBe(1);
+    expect(await countSongIndexAsync()).toBe(1);
     expect(Array.from(fakeDb.songIndex.keys())).toEqual(['s3']);
   });
 
@@ -274,20 +272,6 @@ describe('detailTables — atomic persist + walk-completion helpers (Phase B)', 
   it('getDetailedAlbumIdsAsync is empty when nothing is detailed', async () => {
     expect(await getDetailedAlbumIdsAsync()).toEqual(new Set());
   });
-
-  it('getAlbumDetailByIdAsync round-trips one album; null for a miss', async () => {
-    await persistAlbumDetailAndSongsAsync('a1', makeAlbum('a1', [{ id: 's1' }]), 42);
-    const got = await getAlbumDetailByIdAsync('a1');
-    expect(got?.retrievedAt).toBe(42);
-    expect(got?.album.id).toBe('a1');
-    expect(await getAlbumDetailByIdAsync('nope')).toBeNull();
-  });
-
-  it('countAlbumDetailsAsync counts detail rows', async () => {
-    await persistAlbumDetailAndSongsAsync('a1', makeAlbum('a1'), 1);
-    await persistAlbumDetailAndSongsAsync('a2', makeAlbum('a2'), 1);
-    expect(await countAlbumDetailsAsync()).toBe(2);
-  });
 });
 
 describe('detailTables — bulkUpsertSongs (paged fast-path song sync)', () => {
@@ -299,7 +283,7 @@ describe('detailTables — bulkUpsertSongs (paged fast-path song sync)', () => {
     ] as any;
     const n = await bulkUpsertSongs(songs);
     expect(n).toBe(3);
-    expect(countSongIndex()).toBe(3);
+    expect(await countSongIndexAsync()).toBe(3);
   });
 
   it('skips songs without id or albumId (albumId keys the index)', async () => {
@@ -310,7 +294,7 @@ describe('detailTables — bulkUpsertSongs (paged fast-path song sync)', () => {
     ] as any;
     const n = await bulkUpsertSongs(songs);
     expect(n).toBe(1);
-    expect(countSongIndex()).toBe(1);
+    expect(await countSongIndexAsync()).toBe(1);
   });
 
   it('upserts by song id across pages (no leading DELETE)', async () => {
@@ -319,46 +303,46 @@ describe('detailTables — bulkUpsertSongs (paged fast-path song sync)', () => {
       { id: 's1', albumId: 'a1', title: 'New' },
       { id: 's2', albumId: 'a1', title: 'Two' },
     ] as any);
-    expect(countSongIndex()).toBe(2);
+    expect(await countSongIndexAsync()).toBe(2);
   });
 });
 
 describe('detailTables — song_index', () => {
-  it('upsertSongsForAlbum inserts every song with denormalized fields', () => {
+  it('upsertSongsForAlbum inserts every song with denormalized fields', async () => {
     const album = makeAlbum('a1', [{ id: 's1' }, { id: 's2' }]);
     upsertSongsForAlbum('a1', album.song);
-    expect(countSongIndex()).toBe(2);
+    expect(await countSongIndexAsync()).toBe(2);
     const s1 = fakeDb.songIndex.get('s1');
     expect(s1?.albumId).toBe('a1');
     expect(s1?.title).toBe('Song s1');
     expect(s1?.starred).toBe(0);
   });
 
-  it('upsertSongsForAlbum clears prior songs for the same album (retag-safe)', () => {
+  it('upsertSongsForAlbum clears prior songs for the same album (retag-safe)', async () => {
     const a1 = makeAlbum('a1', [{ id: 's1' }, { id: 's2' }]);
     upsertSongsForAlbum('a1', a1.song);
-    expect(countSongIndex()).toBe(2);
+    expect(await countSongIndexAsync()).toBe(2);
     const a1Rev = makeAlbum('a1', [{ id: 's3' }]);
     upsertSongsForAlbum('a1', a1Rev.song);
-    expect(countSongIndex()).toBe(1);
+    expect(await countSongIndexAsync()).toBe(1);
     expect(fakeDb.songIndex.get('s3')?.albumId).toBe('a1');
     expect(fakeDb.songIndex.get('s1')).toBeUndefined();
     expect(fakeDb.songIndex.get('s2')).toBeUndefined();
   });
 
-  it('upsertSongsForAlbum with empty list just clears the album', () => {
+  it('upsertSongsForAlbum with empty list just clears the album', async () => {
     upsertSongsForAlbum('a1', makeAlbum('a1', [{ id: 's1' }]).song);
     upsertSongsForAlbum('a1', []);
-    expect(countSongIndex()).toBe(0);
+    expect(await countSongIndexAsync()).toBe(0);
   });
 
-  it('upsertSongsForAlbum skips entries with no id', () => {
+  it('upsertSongsForAlbum skips entries with no id', async () => {
     const withOrphan = [
       { id: 's1', title: 'ok', artist: 'A', duration: 0, coverArt: null, userRating: 0, starred: undefined, year: 0, track: 1, discNumber: 1 },
       { /* no id */ title: 'bad', artist: 'A', duration: 0 },
     ] as any[];
     upsertSongsForAlbum('a1', withOrphan);
-    expect(countSongIndex()).toBe(1);
+    expect(await countSongIndexAsync()).toBe(1);
   });
 
   it('upsertSongsForAlbum handles songs with every optional field missing', () => {
@@ -384,20 +368,20 @@ describe('detailTables — song_index', () => {
     expect(fakeDb.songIndex.get('s1')?.starred).toBe(1);
   });
 
-  it('deleteSongsForAlbums removes only the matching albums', () => {
+  it('deleteSongsForAlbums removes only the matching albums', async () => {
     upsertSongsForAlbum('a1', makeAlbum('a1', [{ id: 's1' }]).song);
     upsertSongsForAlbum('a2', makeAlbum('a2', [{ id: 's2' }, { id: 's3' }]).song);
     upsertSongsForAlbum('a3', makeAlbum('a3', [{ id: 's4' }]).song);
-    deleteSongsForAlbums(['a1', 'a3']);
-    expect(countSongIndex()).toBe(2);
+    await deleteSongsForAlbumsAsync(['a1', 'a3']);
+    expect(await countSongIndexAsync()).toBe(2);
     expect(fakeDb.songIndex.get('s2')).toBeDefined();
     expect(fakeDb.songIndex.get('s3')).toBeDefined();
   });
 
-  it('deleteSongsForAlbums with empty array is a no-op', () => {
+  it('deleteSongsForAlbums with empty array is a no-op', async () => {
     upsertSongsForAlbum('a1', makeAlbum('a1', [{ id: 's1' }]).song);
-    deleteSongsForAlbums([]);
-    expect(countSongIndex()).toBe(1);
+    await deleteSongsForAlbumsAsync([]);
+    expect(await countSongIndexAsync()).toBe(1);
   });
 });
 
@@ -494,15 +478,15 @@ describe('detailTables — disabled db (healthy=false path)', () => {
     upsertAlbumDetail('a1', makeAlbum('a1'), 1);
     upsertSongsForAlbum('a1', makeAlbum('a1', [{ id: 's1' }]).song);
     await deleteAlbumDetail('a1');
-    deleteSongsForAlbums(['a1']);
+    await deleteSongsForAlbumsAsync(['a1']);
     await clearDetailTables();
-    expect(await countAlbumDetailsAsync()).toBe(0);
-    expect(countSongIndex()).toBe(0);
+    expect((await getDetailedAlbumIdsAsync()).size).toBe(0);
+    expect(await countSongIndexAsync()).toBe(0);
     expect(hydrateAlbumDetails()).toEqual({});
   });
 
-  it('deleteSongsForAlbums with empty array is still a no-op with null db', () => {
-    expect(() => deleteSongsForAlbums([])).not.toThrow();
+  it('deleteSongsForAlbums with empty array is still a no-op with null db', async () => {
+    await expect(deleteSongsForAlbumsAsync([])).resolves.toBeUndefined();
   });
 });
 
@@ -523,13 +507,13 @@ describe('detailTables — db throws (error swallow path)', () => {
     expect(() => upsertAlbumDetail('a1', makeAlbum('a1'), 1)).not.toThrow();
     expect(() => upsertSongsForAlbum('a1', makeAlbum('a1', [{ id: 's1' }]).song)).not.toThrow();
     await expect(deleteAlbumDetail('a1')).resolves.toBeUndefined();
-    expect(() => deleteSongsForAlbums(['a1'])).not.toThrow();
+    await expect(deleteSongsForAlbumsAsync(['a1'])).resolves.toBeUndefined();
     await expect(clearDetailTables()).resolves.toBeUndefined();
   });
 
   it('reads return safe defaults on DB error', async () => {
-    expect(await countAlbumDetailsAsync()).toBe(0);
-    expect(countSongIndex()).toBe(0);
+    expect((await getDetailedAlbumIdsAsync()).size).toBe(0);
+    expect(await countSongIndexAsync()).toBe(0);
     expect(hydrateAlbumDetails()).toEqual({});
   });
 });

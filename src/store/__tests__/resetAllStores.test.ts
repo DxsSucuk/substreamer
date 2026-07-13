@@ -31,9 +31,6 @@ jest.mock('../persistence/detailTables', () => ({
   upsertAlbumDetail: jest.fn(),
   deleteAlbumDetail: jest.fn(),
   upsertSongsForAlbum: jest.fn(),
-  deleteSongsForAlbums: jest.fn(),
-  countAlbumDetailsAsync: jest.fn(async () => 0),
-  countSongIndex: jest.fn(() => 0),
 }));
 jest.mock('../persistence/scrobbleTable', () => ({
   clearScrobbles: jest.fn(),
@@ -46,15 +43,11 @@ jest.mock('../persistence/pendingScrobbleTable', () => ({
   insertPendingScrobble: jest.fn(),
   deletePendingScrobble: jest.fn(),
   replaceAllPendingScrobbles: jest.fn(),
-  hydratePendingScrobbles: jest.fn(() => []),
-  countPendingScrobbles: jest.fn(() => 0),
 }));
 jest.mock('../persistence/musicCacheTables', () => ({
   clearAllMusicCacheRows: jest.fn(),
   hydrateCachedSongs: jest.fn(() => ({})),
   hydrateCachedItems: jest.fn(() => ({})),
-  hydrateDownloadQueue: jest.fn(() => []),
-  countSongRefs: jest.fn(() => 0),
   deleteCachedItem: jest.fn(),
   deleteCachedSong: jest.fn(),
   insertDownloadQueueItem: jest.fn(),

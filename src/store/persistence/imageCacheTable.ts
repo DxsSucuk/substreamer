@@ -297,25 +297,6 @@ export async function findIncompleteCovers(): Promise<string[]> {
   }
 }
 
-export async function countIncompleteCovers(): Promise<number> {
-  const db = getDb();
-  if (db === null) return 0;
-  try {
-    const row = await db.getFirstAsync<{ c: number }>(
-      `SELECT COUNT(*) AS c FROM (
-         SELECT cover_art_id FROM cached_images
-           WHERE cover_art_id NOT IN (
-             SELECT cover_art_id FROM image_download_queue
-           )
-           GROUP BY cover_art_id HAVING COUNT(*) < 4
-       );`,
-    );
-    return row?.c ?? 0;
-  } catch {
-    return 0;
-  }
-}
-
 /* ------------------------------------------------------------------ */
 /*  Browser listing                                                    */
 /* ------------------------------------------------------------------ */

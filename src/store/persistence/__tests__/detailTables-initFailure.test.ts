@@ -14,8 +14,8 @@ jest.mock('expo-sqlite', () => ({
 
 import { __setDbForTests } from '../db';
 import {
-  countAlbumDetailsAsync,
-  countSongIndex,
+  countSongIndexAsync,
+  getDetailedAlbumIdsAsync,
   hydrateAlbumDetails,
   upsertAlbumDetail,
 } from '../detailTables';
@@ -33,8 +33,8 @@ describe('detailTables — null-handle safety', () => {
     expect(() =>
       upsertAlbumDetail('x', { id: 'x', name: 'X', songCount: 0, duration: 0, created: '' } as any, 1),
     ).not.toThrow();
-    expect(await countAlbumDetailsAsync()).toBe(0);
-    expect(countSongIndex()).toBe(0);
+    expect((await getDetailedAlbumIdsAsync()).size).toBe(0);
+    expect(await countSongIndexAsync()).toBe(0);
     expect(hydrateAlbumDetails()).toEqual({});
   });
 });

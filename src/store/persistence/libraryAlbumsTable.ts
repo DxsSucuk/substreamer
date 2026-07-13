@@ -163,20 +163,7 @@ export async function deleteLibraryAlbumsAsync(ids: readonly string[]): Promise<
   }
 }
 
-/** Wipe every library album row. Sync variant for the synchronous
- *  server-switch / force-resync clear path (rows must be gone before the new
- *  fetch starts). */
-export function clearLibraryAlbums(): void {
-  const db = getDb();
-  if (db === null) return;
-  try {
-    db.runSync('DELETE FROM library_albums;');
-  } catch {
-    /* dropped */
-  }
-}
-
-/** Async variant of {@link clearLibraryAlbums}. */
+/** Wipe every library album row. */
 export async function clearLibraryAlbumsAsync(): Promise<void> {
   const db = getDb();
   if (db === null) return;

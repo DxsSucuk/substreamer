@@ -305,7 +305,6 @@ jest.mock('../../store/persistence/imageCacheTable', () => ({
       .filter((r) => r.coverArtId === id)
       .sort((a, b) => a.size - b.size),
   countCachedImages: jest.fn(() => mockDbRows.size),
-  countIncompleteCovers: jest.fn(() => mockFindIncompleteCovers().length),
 }));
 
 jest.mock('../subsonicService');

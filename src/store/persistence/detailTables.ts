@@ -378,23 +378,8 @@ export async function bulkUpsertSongs(songs: readonly Child[]): Promise<number> 
   return valid.length;
 }
 
-/** Remove song_index rows for a set of album IDs. Used by orphan reaping. */
-export function deleteSongsForAlbums(albumIds: readonly string[]): void {
-  const db = getDb();
-  if (db === null || albumIds.length === 0) return;
-  try {
-    db.withTransactionSync(() => {
-      for (const id of albumIds) {
-        db.runSync('DELETE FROM song_index WHERE albumId = ?;', [id]);
-      }
-    });
-  } catch {
-    /* dropped */
-  }
-}
-
-/** Async counterpart of {@link deleteSongsForAlbums} — DELETEs run on the
- * background thread in one transaction. Used by `songIndexStore` reaping. */
+/** Remove song_index rows for a set of album IDs — DELETEs run on the background
+ * thread in one transaction. Used by `songIndexStore` orphan reaping. */
 export async function deleteSongsForAlbumsAsync(albumIds: readonly string[]): Promise<void> {
   const db = getDb();
   if (db === null || albumIds.length === 0) return;
@@ -413,20 +398,8 @@ export async function deleteSongsForAlbumsAsync(albumIds: readonly string[]): Pr
   }
 }
 
-/** Return the total song-index row count. Used by settings / diagnostics. */
-export function countSongIndex(): number {
-  const db = getDb();
-  if (db === null) return 0;
-  try {
-    const row = db.getFirstSync<{ c: number }>('SELECT COUNT(*) AS c FROM song_index;');
-    return row?.c ?? 0;
-  } catch {
-    return 0;
-  }
-}
-
-/** Async counterpart of {@link countSongIndex} — runs the COUNT on the
- * background thread for the boot hydration path. */
+/** Return the total song-index row count — runs the COUNT on the background
+ * thread. Used by settings / diagnostics + the boot hydration path. */
 export async function countSongIndexAsync(): Promise<number> {
   const db = getDb();
   if (db === null) return 0;
@@ -569,18 +542,6 @@ export function getAllSongAlbumIds(): Map<string, string> {
   return out;
 }
 
-/** Return the total album_details row count (async — runs off the JS thread). */
-export async function countAlbumDetailsAsync(): Promise<number> {
-  const db = getDb();
-  if (db === null) return 0;
-  try {
-    const row = await db.getFirstAsync<{ c: number }>('SELECT COUNT(*) AS c FROM album_details;');
-    return row?.c ?? 0;
-  } catch {
-    return 0;
-  }
-}
-
 /**
  * The set of album ids that have a persisted detail row — the detail walk's
  * completion signal. Lean (`SELECT id` only), so it scales to a 100k library
@@ -598,25 +559,5 @@ export async function getDetailedAlbumIdsAsync(): Promise<Set<string>> {
     return out;
   } catch {
     return new Set();
-  }
-}
-
-/** Read a single album detail row by id (on-demand, off the JS thread). Used by
- *  the bounded/on-demand `albumDetailStore` cache when an album isn't resident
- *  in memory (offline detail view / first open). */
-export async function getAlbumDetailByIdAsync(
-  id: string,
-): Promise<{ album: AlbumWithSongsID3; retrievedAt: number } | null> {
-  const db = getDb();
-  if (db === null) return null;
-  try {
-    const row = await db.getFirstAsync<{ json: string; retrievedAt: number }>(
-      'SELECT json, retrievedAt FROM album_details WHERE id = ?;',
-      [id],
-    );
-    if (!row) return null;
-    return { album: JSON.parse(row.json) as AlbumWithSongsID3, retrievedAt: row.retrievedAt };
-  } catch {
-    return null;
   }
 }

@@ -13,54 +13,15 @@ import { type PendingScrobble } from '../pendingScrobbleStore';
 /*  Reads                                                              */
 /* ------------------------------------------------------------------ */
 
-/**
- * Read every pending scrobble row in time order. Unparseable rows are skipped;
- * invalid rows (missing id / song.id / song.title) are filtered so the store
- * never sees garbage. Synchronous read primitive — used by table tests and any
- * sync caller; the boot path uses {@link hydratePendingScrobblesAsync}.
- */
-export function hydratePendingScrobbles(): PendingScrobble[] {
-  const db = getDb();
-  if (db === null) return [];
-  try {
-    const rows = db.getAllSync<{ id: string; song_json: string; time: number }>(
-      'SELECT id, song_json, time FROM pending_scrobble_events ORDER BY time ASC;',
-    );
-    const out: PendingScrobble[] = [];
-    const seen = new Set<string>();
-    for (const row of rows) {
-      if (!row.id || seen.has(row.id)) continue;
-      let song: unknown;
-      try {
-        song = JSON.parse(row.song_json);
-      } catch {
-        continue;
-      }
-      if (
-        !song ||
-        typeof song !== 'object' ||
-        !(song as { id?: unknown }).id ||
-        !(song as { title?: unknown }).title
-      ) {
-        continue;
-      }
-      seen.add(row.id);
-      out.push({ id: row.id, song: song as PendingScrobble['song'], time: row.time });
-    }
-    return out;
-  } catch {
-    return [];
-  }
-}
-
 /** Pending rows parsed per macrotask yield during async hydration. */
 const PENDING_PARSE_CHUNK = 1000;
 
 /**
- * Async counterpart of {@link hydratePendingScrobbles} — read on the background
- * thread + chunked `JSON.parse` with `setTimeout(0)` yields so the boot path
- * doesn't block the JS thread. setTimeout, not rAF (rAF can stall on RN
- * 0.85/Fabric). Used by `rehydrateAllStores`.
+ * Read every pending scrobble row in time order on the background thread, with
+ * chunked `JSON.parse` + `setTimeout(0)` yields so the boot path doesn't block
+ * the JS thread (setTimeout, not rAF — rAF can stall on RN 0.85/Fabric).
+ * Unparseable rows are skipped; invalid rows (missing id / song.id / song.title)
+ * are filtered so the store never sees garbage. Used by `rehydrateAllStores`.
  */
 export async function hydratePendingScrobblesAsync(): Promise<PendingScrobble[]> {
   const db = getDb();
@@ -97,20 +58,6 @@ export async function hydratePendingScrobblesAsync(): Promise<PendingScrobble[]>
     return out;
   } catch {
     return [];
-  }
-}
-
-/** Diagnostic — total pending row count. */
-export async function countPendingScrobbles(): Promise<number> {
-  const db = getDb();
-  if (db === null) return 0;
-  try {
-    const row = await db.getFirstAsync<{ c: number }>(
-      'SELECT COUNT(*) AS c FROM pending_scrobble_events;',
-    );
-    return row?.c ?? 0;
-  } catch {
-    return 0;
   }
 }
 

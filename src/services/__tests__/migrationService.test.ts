@@ -36,8 +36,6 @@ jest.mock('../../store/persistence/pendingScrobbleTable', () => ({
   insertPendingScrobble: jest.fn(),
   deletePendingScrobble: jest.fn(),
   clearPendingScrobbles: jest.fn(),
-  hydratePendingScrobbles: jest.fn(() => []),
-  countPendingScrobbles: jest.fn(() => 0),
 }));
 
 // Migration #21 imports deviceIdentityStore which transitively pulls
@@ -67,7 +65,6 @@ jest.mock('../../store/persistence/musicCacheTables', () => ({
   clearAllMusicCacheRows: jest.fn(),
   hydrateCachedSongs: jest.fn(() => ({})),
   hydrateCachedItems: jest.fn(() => ({})),
-  hydrateDownloadQueue: jest.fn(() => []),
   // Task 14 diagnostic helpers.
   countCachedSongs: jest.fn(() => 0),
   countCachedItems: jest.fn(() => 0),

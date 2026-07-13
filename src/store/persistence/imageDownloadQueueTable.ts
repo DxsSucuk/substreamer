@@ -62,22 +62,6 @@ function mapRow(row: RawImageQueueRow): ImageDownloadQueueRow {
 /*  Reads                                                              */
 /* ------------------------------------------------------------------ */
 
-/** Read the full queue in oldest-first order (diagnostics / tests). */
-export async function hydrateImageDownloadQueue(): Promise<ImageDownloadQueueRow[]> {
-  const db = getDb();
-  if (db === null) return [];
-  try {
-    const rows = await db.getAllAsync<RawImageQueueRow>(
-      `SELECT cover_art_id, scope, status, error, attempts, added_at, cycle_id
-         FROM image_download_queue
-         ORDER BY added_at ASC;`,
-    );
-    return rows.map(mapRow);
-  } catch {
-    return [];
-  }
-}
-
 /**
  * Pick the next row to process (oldest queued first). Single-threaded JS
  * makes the read+update sequence in the worker effectively atomic; we
@@ -135,38 +119,10 @@ export async function countImageQueueRowsByCycle(cycleId: string): Promise<numbe
 /* ------------------------------------------------------------------ */
 
 /**
- * Insert a row if not already present (dedupes via PK). No-op if the
- * cover_art_id is already in the queue under ANY scope or status —
- * matches the music queue's idempotent enqueue semantics. Returns true
- * if a row was actually inserted.
- */
-export async function enqueueImage(
-  coverArtId: string,
-  scope: ImageDownloadQueueScope,
-  cycleId: string,
-  now: number = Date.now(),
-): Promise<boolean> {
-  const db = getDb();
-  if (db === null) return false;
-  try {
-    const result = await serializeDbWrite(() =>
-      db.runAsync(
-        `INSERT OR IGNORE INTO image_download_queue
-           (cover_art_id, scope, status, error, attempts, added_at, cycle_id)
-           VALUES (?, ?, 'queued', NULL, 0, ?, ?);`,
-        [coverArtId, scope, now, cycleId],
-      ),
-    );
-    return result.changes > 0;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Bulk version of `enqueueImage` wrapped in a transaction. Used when a
- * refresh cycle enumerates hundreds of IDs at once. Returns the count of
- * rows actually inserted (PK conflicts are silently skipped).
+ * Insert rows for a batch of cover_art_ids in one transaction, deduping via PK
+ * (a cover already queued under ANY scope/status is skipped — matches the music
+ * queue's idempotent enqueue semantics). Used when a refresh cycle enumerates
+ * hundreds of IDs at once. Returns the count of rows actually inserted.
  */
 export async function enqueueImagesBulk(
   coverArtIds: readonly string[],
@@ -333,16 +289,5 @@ export async function resetErrorRowsForCycle(cycleId: string): Promise<number> {
     return result.changes;
   } catch {
     return 0;
-  }
-}
-
-/** Test-only / diagnostic: clear the entire table. */
-export async function clearImageDownloadQueue(): Promise<void> {
-  const db = getDb();
-  if (db === null) return;
-  try {
-    await serializeDbWrite(() => db.runAsync(`DELETE FROM image_download_queue;`));
-  } catch {
-    /* no-op */
   }
 }
