@@ -126,7 +126,8 @@ describe('persistence/db (happy path)', () => {
         'idx_pending_scrobble_events_time',
         'idx_scrobble_events_time',
         'idx_song_index_albumId',
-        'idx_song_index_title',
+        'idx_song_index_sort',
+        'idx_song_index_starred',
       ].sort(),
     );
   });

@@ -186,8 +186,25 @@ try {
   db.execSync(
     'CREATE INDEX IF NOT EXISTS idx_song_index_albumId ON song_index (albumId);',
   );
+  // Full sort-key index for the Songs library list. The list orders by
+  // `(title IS NULL), lower(title), id` (NULL titles last, then case-insensitive
+  // title, then a stable id tiebreak) — a leading `(title IS NULL)` term the old
+  // single-column `idx_song_index_title` could NOT serve, so every render did a
+  // full ~38k-row SCAN + TEMP B-TREE sort (confirmed via EXPLAIN QUERY PLAN).
+  // This composite matches the ORDER BY exactly → ordered index scan, no sort;
+  // it also serves the downloaded-only JOIN's ordering.
   db.execSync(
-    'CREATE INDEX IF NOT EXISTS idx_song_index_title ON song_index (lower(title));',
+    'CREATE INDEX IF NOT EXISTS idx_song_index_sort ON song_index((title IS NULL), lower(title), id);',
+  );
+  // Retire the superseded single-column index on existing installs: it never
+  // served the list sort (leading `(title IS NULL)` term) and no query filters
+  // on `lower(title)`, so it was pure write-cost dead weight.
+  db.execSync('DROP INDEX IF EXISTS idx_song_index_title;');
+  // Partial index for the Favorites filter (`WHERE starred = 1`): indexes only
+  // starred rows, pre-sorted to the list ORDER BY, so the Favorites view reads
+  // just those rows with no scan and no sort.
+  db.execSync(
+    'CREATE INDEX IF NOT EXISTS idx_song_index_starred ON song_index((title IS NULL), lower(title), id) WHERE starred = 1;',
   );
 
   // library_albums — the lean album-browse LIST (all albums, song-less
