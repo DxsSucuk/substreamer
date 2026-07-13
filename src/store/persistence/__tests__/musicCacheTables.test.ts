@@ -307,20 +307,6 @@ function makeFakeDb() {
       edges.delete(edgeKey(item_id, position));
       return;
     }
-    // remapCachedSongId — repoint every edge that references the old
-    // song id. `OR IGNORE` would skip rows that would conflict with an
-    // existing (item_id, song_id) unique index; in the fake we just
-    // perform the update unconditionally and let the follow-up
-    // DELETE FROM ... WHERE song_id = ? clean up anything that wasn't
-    // touched (matches the production behaviour closely enough for the
-    // remap test).
-    if (s.startsWith('UPDATE OR IGNORE cached_item_songs SET song_id = ? WHERE song_id = ?')) {
-      const [newSongId, oldSongId] = params as [string, string];
-      for (const edge of edges.values()) {
-        if (edge.song_id === oldSongId) edge.song_id = newSongId;
-      }
-      return;
-    }
     if (s.startsWith('DELETE FROM cached_item_songs WHERE song_id = ?')) {
       const [songId] = params as [string];
       for (const [k, edge] of edges) {
@@ -579,8 +565,8 @@ function makeFakeDb() {
         for (const edge of edges.values()) if (edge.song_id === songId) c += 1;
         return { c } as T;
       }
-      // countRealSongRefs — count only edges whose holder item is NOT derived.
-      // `COALESCE(i.derived, 0) = 0` treats a legacy/NULL row as REAL.
+      // orphanSongIfUnreferencedAsync real-ref count — edges whose holder item
+      // is NOT derived. `COALESCE(i.derived, 0) = 0` treats a legacy/NULL row as REAL.
       if (
         s ===
         'SELECT COUNT(*) AS c FROM cached_item_songs e JOIN cached_items i ON e.item_id = i.item_id WHERE e.song_id = ? AND COALESCE(i.derived, 0) = 0;'
@@ -596,25 +582,18 @@ function makeFakeDb() {
         }
         return { c } as T;
       }
-      // orphanSongEverywhere — per-holder remaining-edge count.
+      // orphanSongIfUnreferencedAsync — per-holder remaining-edge count (prune check).
       if (s === 'SELECT COUNT(*) AS c FROM cached_item_songs WHERE item_id = ?;') {
         const itemId = params[0] as string;
         let c = 0;
         for (const edge of edges.values()) if (edge.item_id === itemId) c += 1;
         return { c } as T;
       }
-      // orphanSongEverywhere — is this holder derived? NULL coalesces to 0.
+      // orphanSongIfUnreferencedAsync — is this holder derived? NULL coalesces to 0.
       if (s === 'SELECT COALESCE(derived, 0) AS d FROM cached_items WHERE item_id = ?;') {
         const itemId = params[0] as string;
         const item = items.get(itemId);
         return { d: item ? item.derived ?? 0 : 0 } as T;
-      }
-      // Used by remapCachedSongId to confirm the old row exists before
-      // swapping. Fake returns the existence sentinel when the song is
-      // in the in-memory map.
-      if (s === 'SELECT 1 FROM cached_songs WHERE song_id = ? LIMIT 1;') {
-        const songId = params[0] as string;
-        return songs.has(songId) ? ({ '1': 1 } as T) : undefined;
       }
       return undefined;
     },
@@ -641,40 +620,12 @@ function makeFakeDb() {
           (a, b) => a.queue_position - b.queue_position,
         ) as T[];
       }
-      if (
-        s.startsWith(
-          'SELECT song_id FROM cached_songs WHERE song_id NOT IN (SELECT song_id FROM cached_item_songs)',
-        )
-      ) {
-        const referenced = new Set<string>();
-        for (const edge of edges.values()) referenced.add(edge.song_id);
-        return Array.from(songs.values())
-          .filter((song) => !referenced.has(song.song_id))
-          .map((song) => ({ song_id: song.song_id })) as T[];
-      }
-      if (
-        s.startsWith('SELECT song_id FROM cached_item_songs WHERE item_id = ? ORDER BY position ASC')
-      ) {
-        const itemId = params[0] as string;
-        return Array.from(edges.values())
-          .filter((e) => e.item_id === itemId)
-          .sort((a, b) => a.position - b.position)
-          .map((e) => ({ song_id: e.song_id })) as T[];
-      }
-      // orphanSongEverywhere — every (item_id, position) edge for a song.
-      // Checked before the `item_id`-only branch below since both share the
-      // `SELECT item_id ... WHERE song_id = ?` prefix.
+      // orphanSongIfUnreferencedAsync — every (item_id, position) edge for a song.
       if (s === 'SELECT item_id, position FROM cached_item_songs WHERE song_id = ?;') {
         const songId = params[0] as string;
         return Array.from(edges.values())
           .filter((e) => e.song_id === songId)
           .map((e) => ({ item_id: e.item_id, position: e.position })) as T[];
-      }
-      if (s.startsWith('SELECT item_id FROM cached_item_songs WHERE song_id = ?')) {
-        const songId = params[0] as string;
-        return Array.from(edges.values())
-          .filter((e) => e.song_id === songId)
-          .map((e) => ({ item_id: e.item_id })) as T[];
       }
       return [];
     },
@@ -1023,7 +974,7 @@ describe('musicCacheTables — cached_items + edges', () => {
 /* ------------------------------------------------------------------ */
 
 describe('musicCacheTables — download_queue', () => {
-  it('insertDownloadQueueItem + hydrateDownloadQueue round-trips', async () => {
+  it('insertDownloadQueueItem + hydrateDownloadQueueAsync round-trips', async () => {
     await insertDownloadQueueItem(makeQueueRow());
     const hydrated = await hydrateDownloadQueueAsync();
     expect(hydrated).toHaveLength(1);
@@ -1054,7 +1005,7 @@ describe('musicCacheTables — download_queue', () => {
     expect(countDownloadQueueItems()).toBe(0);
   });
 
-  it('hydrateDownloadQueue returns rows ordered by queue_position ASC', async () => {
+  it('hydrateDownloadQueueAsync returns rows ordered by queue_position ASC', async () => {
     await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-a', queuePosition: 5 }));
     await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-b', queuePosition: 1 }));
     await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-c', queuePosition: 3 }));

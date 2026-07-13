@@ -367,7 +367,8 @@ export async function hydrateCachedItemsAsync(): Promise<Record<string, CachedIt
   }
 }
 
-/** Async counterpart of {@link hydrateDownloadQueue}. */
+/** Read the full download queue ordered by queue_position ASC, on the background
+ *  thread. Used at launch and whenever the queue needs a full refresh. */
 export async function hydrateDownloadQueueAsync(): Promise<DownloadQueueRow[]> {
   const db = getDb();
   if (db === null) return [];

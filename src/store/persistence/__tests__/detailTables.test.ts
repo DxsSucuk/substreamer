@@ -368,7 +368,7 @@ describe('detailTables — song_index', () => {
     expect(fakeDb.songIndex.get('s1')?.starred).toBe(1);
   });
 
-  it('deleteSongsForAlbums removes only the matching albums', async () => {
+  it('deleteSongsForAlbumsAsync removes only the matching albums', async () => {
     upsertSongsForAlbum('a1', makeAlbum('a1', [{ id: 's1' }]).song);
     upsertSongsForAlbum('a2', makeAlbum('a2', [{ id: 's2' }, { id: 's3' }]).song);
     upsertSongsForAlbum('a3', makeAlbum('a3', [{ id: 's4' }]).song);
@@ -378,7 +378,7 @@ describe('detailTables — song_index', () => {
     expect(fakeDb.songIndex.get('s3')).toBeDefined();
   });
 
-  it('deleteSongsForAlbums with empty array is a no-op', async () => {
+  it('deleteSongsForAlbumsAsync with empty array is a no-op', async () => {
     upsertSongsForAlbum('a1', makeAlbum('a1', [{ id: 's1' }]).song);
     await deleteSongsForAlbumsAsync([]);
     expect(await countSongIndexAsync()).toBe(1);
@@ -485,7 +485,7 @@ describe('detailTables — disabled db (healthy=false path)', () => {
     expect(hydrateAlbumDetails()).toEqual({});
   });
 
-  it('deleteSongsForAlbums with empty array is still a no-op with null db', async () => {
+  it('deleteSongsForAlbumsAsync with empty array is still a no-op with null db', async () => {
     await expect(deleteSongsForAlbumsAsync([])).resolves.toBeUndefined();
   });
 });

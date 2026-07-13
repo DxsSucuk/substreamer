@@ -96,7 +96,7 @@ afterEach(() => {
 });
 
 describe('pendingScrobbleTable — insert + hydrate', () => {
-  it('insertPendingScrobble + hydratePendingScrobbles round-trip preserves fields', async () => {
+  it('insertPendingScrobble + hydratePendingScrobblesAsync round-trip preserves fields', async () => {
     const s = makePending();
     await insertPendingScrobble(s);
 
@@ -128,7 +128,7 @@ describe('pendingScrobbleTable — insert + hydrate', () => {
     expect((await hydratePendingScrobblesAsync()).length).toBe(0);
   });
 
-  it('hydratePendingScrobbles returns rows in time-ascending order', async () => {
+  it('hydratePendingScrobblesAsync returns rows in time-ascending order', async () => {
     await insertPendingScrobble(makePending({ id: 'a', time: 300 }));
     await insertPendingScrobble(makePending({ id: 'b', time: 100 }));
     await insertPendingScrobble(makePending({ id: 'c', time: 200 }));
@@ -137,11 +137,11 @@ describe('pendingScrobbleTable — insert + hydrate', () => {
     expect(restored.map((s) => s.id)).toEqual(['b', 'c', 'a']);
   });
 
-  it('hydratePendingScrobbles returns empty when table is empty', async () => {
+  it('hydratePendingScrobblesAsync returns empty when table is empty', async () => {
     expect(await hydratePendingScrobblesAsync()).toEqual([]);
   });
 
-  it('hydratePendingScrobbles skips unparseable song_json rows', async () => {
+  it('hydratePendingScrobblesAsync skips unparseable song_json rows', async () => {
     fakeDb.rows.set('good', {
       id: 'good',
       song_json: JSON.stringify({ id: 's1', title: 'OK' }),
@@ -153,7 +153,7 @@ describe('pendingScrobbleTable — insert + hydrate', () => {
     expect(restored.map((s) => s.id)).toEqual(['good']);
   });
 
-  it('hydratePendingScrobbles filters rows whose decoded song is invalid', async () => {
+  it('hydratePendingScrobblesAsync filters rows whose decoded song is invalid', async () => {
     fakeDb.rows.set('missing-song-id', {
       id: 'missing-song-id',
       song_json: JSON.stringify({ title: 'no id' }),
