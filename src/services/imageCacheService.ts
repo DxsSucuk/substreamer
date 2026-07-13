@@ -1745,16 +1745,25 @@ async function teardownImageCacheState({ reinit }: { reinit: boolean }): Promise
   pendingRetries.clear();
   retryAttempts.clear();
   resolveAllWaiters();
-  if (cacheDir) {
-    const dirUri = cacheDir.uri;
-    cacheDir = null;
+  // Wipe the on-disk tree via the DETERMINISTIC path, NOT the in-memory
+  // `cacheDir` handle. Logout (resetAllStores) calls `teardownImageCache()`
+  // — which nulls `cacheDir` — BEFORE this runs, so gating the file wipe on
+  // `cacheDir` would skip it while `clearAllCachedImages()` below still drops
+  // every SQL row, orphaning thousands of files with no rows (a files-without-
+  // rows drift the reconcile safety gate then refuses to heal). The cache path
+  // is always `{document}/image-cache`, so delete it regardless of the handle.
+  cacheDir = null;
+  try {
     // Recursive on-disk wipe off the JS thread — the image cache is thousands
     // of small variant files; a sync Directory.delete() would freeze the UI
     // (this runs on logout + clear-cache). Awaited so the `reinit` recreate
     // below only runs after the delete completes (no recreate-vs-delete race).
-    try { await deleteDirectoryAsync(dirUri); } catch { /* best-effort */ }
-  }
-  clearAllCachedImages();
+    const dirUri = new Directory(Paths.document, 'image-cache').uri;
+    await deleteDirectoryAsync(dirUri);
+  } catch { /* best-effort */ }
+  // Await the SQL truncate so a caller that repopulates right after (e.g. the
+  // re-key migrations' re-warm cycle) starts from a committed-empty table.
+  await clearAllCachedImages();
   imageCacheStore.getState().reset();
   if (reinit) initImageCache();
 }

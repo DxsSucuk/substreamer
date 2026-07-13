@@ -22,6 +22,7 @@ const mockGetDirectorySizeAsync = jest.fn();
 // the leading file:// stripped) so reconcile tests can assert deletions the
 // same way they do for File.delete via mockFileDeleteCalls.
 const mockDeleteFileAsyncCalls = new Set<string>();
+const mockDeleteDirAsyncCalls = new Set<string>();
 
 const mockFileExistsMap = new Map<string, boolean>();
 const mockDirExistsMap = new Map<string, boolean>();
@@ -136,6 +137,10 @@ jest.mock('expo-async-fs', () => ({
     mockDeleteFileAsyncCalls.add(name);
     mockFileExistsMap.delete(name);
     mockFileSizeMap.delete(name);
+    return true;
+  },
+  deleteDirectoryAsync: async (uri: string) => {
+    mockDeleteDirAsyncCalls.add(uri.replace(/^file:\/\//, ''));
     return true;
   },
 }));
@@ -314,6 +319,7 @@ import { getCoverArtUrl } from '../subsonicService';
 import {
   IMAGE_SIZES,
   initImageCache,
+  teardownImageCache,
   deferredImageCacheInit,
   resolveCachedImageUri,
   deleteCachedVariant,
@@ -377,6 +383,7 @@ beforeEach(() => {
   mockFileSizeMap.clear();
   mockFileDeleteCalls.clear();
   mockDeleteFileAsyncCalls.clear();
+  mockDeleteDirAsyncCalls.clear();
   mockDbRows.clear();
   mockListDirectoryAsync.mockReset();
   mockGetDirectorySizeAsync.mockReset();
@@ -624,6 +631,24 @@ describe('clearImageCache', () => {
     expect(freedBytes).toBe(10000);
     expect(mockClearAllCachedImages).toHaveBeenCalled();
     expect(mockReset).toHaveBeenCalled();
+    expect(mockDbRows.size).toBe(0);
+  });
+
+  it('wipes the on-disk dir even when cacheDir was already nulled (logout ordering)', async () => {
+    // Repro of the files-without-rows drift: resetAllStores() calls
+    // teardownImageCache() — which nulls the in-memory cacheDir — BEFORE
+    // clearImageCache(). The on-disk wipe must still fire via the deterministic
+    // path, or every SQL row is dropped while the files orphan on disk (and the
+    // reconcile safety gate then refuses to re-index them).
+    seedDbRow({ coverArtId: 'a', size: 600, bytes: 5000 });
+    teardownImageCache(); // nulls cacheDir, mirroring the logout sequence
+
+    await clearImageCache({ reinit: false });
+
+    // On-disk wipe hit the deterministic {document}/image-cache path...
+    expect([...mockDeleteDirAsyncCalls].some((p) => p.endsWith('image-cache'))).toBe(true);
+    // ...and the SQL rows were cleared, so the two stay in step (no orphans).
+    expect(mockClearAllCachedImages).toHaveBeenCalled();
     expect(mockDbRows.size).toBe(0);
   });
 });
