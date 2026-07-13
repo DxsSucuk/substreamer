@@ -477,17 +477,17 @@ export function MusicCacheBrowserScreen() {
     setExpandedId((prev) => (prev === itemId ? null : itemId));
   }, []);
 
-  const handleDelete = useCallback((itemId: string) => {
+  const handleDelete = useCallback(async (itemId: string) => {
     const state = musicCacheStore.getState();
     const item = state.cachedItems[itemId];
     if (!item) return;
     // Albums with survivors get the partial-demote confirmation flow so the
     // user sees that songs will stay on device.
     if (item.type === 'album') {
-      const { survivorCount } = computeAlbumRemovalOutcome(itemId);
+      const { survivorCount } = await computeAlbumRemovalOutcome(itemId);
       if (survivorCount > 0) {
         setExpandedId((prev) => (prev === itemId ? null : prev));
-        confirmRemove(itemId);
+        void confirmRemove(itemId);
         return;
       }
     }

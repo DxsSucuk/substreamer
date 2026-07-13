@@ -467,7 +467,7 @@ export function MoreOptionsSheet() {
     try {
       if (downloadStatus === 'complete') {
         if (entity.type === 'album') {
-          confirmRemove(entity.item.id);
+          void confirmRemove(entity.item.id);
         } else {
           removeDownload(entity.item.id);
         }

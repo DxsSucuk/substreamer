@@ -46,7 +46,7 @@ import {
 } from '../store/musicCacheStore';
 import {
   countCachedSongs,
-  countRealSongRefs,
+  countRealSongRefsForSongsAsync,
   insertCachedItemSong,
 } from '../store/persistence/musicCacheTables';
 import { logImageCache } from './imageCacheLogger';
@@ -1632,19 +1632,21 @@ export async function deleteCachedItem(itemId: string): Promise<void> {
  * downloads). Survivors > 0 means the caller should confirm with the user
  * before proceeding.
  */
-export function computeAlbumRemovalOutcome(
+export async function computeAlbumRemovalOutcome(
   itemId: string,
-): { orphanSongIds: string[]; survivorCount: number } {
+): Promise<{ orphanSongIds: string[]; survivorCount: number }> {
   const cached = musicCacheStore.getState().cachedItems[itemId];
   if (!cached || cached.type !== 'album') {
     return { orphanSongIds: [], survivorCount: 0 };
   }
+  const realRefs = await countRealSongRefsForSongsAsync(cached.songIds);
   const orphanSongIds: string[] = [];
   let survivorCount = 0;
   for (const sid of cached.songIds) {
     // Only REAL holders keep a song; the album being removed is `derived=0` and
-    // counts, so `<= 1` means "held only by this album" → would orphan.
-    if (countRealSongRefs(sid) <= 1) {
+    // counts, so `<= 1` means "held only by this album" → would orphan. A song
+    // missing from the Map has zero real holders.
+    if ((realRefs.get(sid) ?? 0) <= 1) {
       orphanSongIds.push(sid);
     } else {
       survivorCount++;
@@ -1668,7 +1670,7 @@ export async function demoteAlbumToPartial(
     return { demoted: false, removed: false };
   }
 
-  const { orphanSongIds } = computeAlbumRemovalOutcome(itemId);
+  const { orphanSongIds } = await computeAlbumRemovalOutcome(itemId);
 
   if (orphanSongIds.length === initial.songIds.length) {
     // No survivors — full delete is the right outcome.

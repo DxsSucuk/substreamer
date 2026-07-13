@@ -64,7 +64,7 @@ export const DownloadButton = memo(function DownloadButton({
     if (!itemId) return;
     if (downloadStatus === 'complete') {
       if (onDelete) onDelete();
-      else if (type === 'album') confirmRemove(itemId);
+      else if (type === 'album') void confirmRemove(itemId);
       else deleteCachedItem(itemId);
     } else if (downloadStatus === 'queued' || downloadStatus === 'downloading') {
       const queueItem = musicCacheStore.getState().downloadQueue.find(

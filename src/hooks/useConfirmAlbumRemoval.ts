@@ -27,7 +27,7 @@ export function useConfirmAlbumRemoval() {
   const { t } = useTranslation();
 
   const confirmRemove = useCallback(
-    (itemId: string) => {
+    async (itemId: string) => {
       if (!itemId) return;
       const cached = musicCacheStore.getState().cachedItems[itemId];
       if (!cached) {
@@ -38,7 +38,7 @@ export function useConfirmAlbumRemoval() {
         void deleteCachedItem(itemId);
         return;
       }
-      const { survivorCount } = computeAlbumRemovalOutcome(itemId);
+      const { survivorCount } = await computeAlbumRemovalOutcome(itemId);
       if (survivorCount === 0) {
         void deleteCachedItem(itemId);
         return;

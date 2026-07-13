@@ -198,7 +198,7 @@ export const albumDetailStore = create<AlbumDetailState>()((set, get) => ({
     // clearDetailTables wipes both album_details and song_index atomically.
     // Refresh the index store's counter so UI subscribers see the change.
     await clearDetailTables();
-    songIndexStore.getState().refreshCount();
+    await songIndexStore.getState().refreshCountFromDb();
   },
 
   hydrateFromDbAsync: async () => {

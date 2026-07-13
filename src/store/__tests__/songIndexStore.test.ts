@@ -46,9 +46,9 @@ describe('songIndexStore', () => {
     });
   });
 
-  describe('refreshCount', () => {
-    it('reads from the DB', () => {
-      songIndexStore.getState().refreshCount();
+  describe('refreshCountFromDb', () => {
+    it('reads from the DB', async () => {
+      await songIndexStore.getState().refreshCountFromDb();
       expect(songIndexStore.getState().totalCount).toBe(0);
     });
   });

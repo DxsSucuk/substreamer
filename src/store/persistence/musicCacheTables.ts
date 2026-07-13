@@ -521,6 +521,49 @@ export function countRealSongRefs(songId: string): number {
 }
 
 /**
+ * Batched, async form of {@link countRealSongRefs}: real-holder refcount for a set
+ * of songs in one round-trip. Returns a Map songId → count of edges whose holder is
+ * NOT a derived partial-album grouping (`COALESCE(derived,0)=0`). Songs with no real
+ * holder are omitted (caller treats a missing key as 0). Chunked to stay under the
+ * SQLite bound-variable limit. Fails SAFE like the per-song version: if the `derived`
+ * column doesn't exist yet (migration #31 not run) the JOIN throws and we fall back
+ * to the raw all-edges count rather than mass-orphaning.
+ */
+export async function countRealSongRefsForSongsAsync(
+  songIds: string[],
+): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  const db = getDb();
+  if (db === null || songIds.length === 0) return counts;
+  const CHUNK = 500;
+  for (let i = 0; i < songIds.length; i += CHUNK) {
+    const chunk = songIds.slice(i, i + CHUNK);
+    const placeholders = chunk.map(() => '?').join(', ');
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const rows = await db.getAllAsync<{ song_id: string; c: number }>(
+        `SELECT e.song_id AS song_id, COUNT(*) AS c FROM cached_item_songs e
+           JOIN cached_items i ON e.item_id = i.item_id
+          WHERE e.song_id IN (${placeholders}) AND COALESCE(i.derived, 0) = 0
+          GROUP BY e.song_id;`,
+        chunk,
+      );
+      for (const r of rows) counts.set(r.song_id, r.c);
+    } catch {
+      // eslint-disable-next-line no-await-in-loop
+      const rows = await db.getAllAsync<{ song_id: string; c: number }>(
+        `SELECT song_id, COUNT(*) AS c FROM cached_item_songs
+          WHERE song_id IN (${placeholders})
+          GROUP BY song_id;`,
+        chunk,
+      );
+      for (const r of rows) counts.set(r.song_id, r.c);
+    }
+  }
+  return counts;
+}
+
+/**
  * Orphan a song that has lost its last REAL holder. It may still carry derived
  * partial-album edges, so — in one transaction — remove every remaining edge
  * (position-preserving per item, so surviving derived rows keep contiguous

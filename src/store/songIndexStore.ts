@@ -1,7 +1,6 @@
 import { create } from 'zustand';
 
 import {
-  countSongIndex,
   countSongIndexAsync,
   deleteSongsForAlbumsAsync as dbDeleteSongsForAlbumsAsync,
   upsertSongsForAlbumAsync as dbUpsertSongsForAlbumAsync,
@@ -40,8 +39,6 @@ export interface SongIndexState {
   deleteSongsForAlbums: (albumIds: readonly string[]) => void;
   /** Reset and re-read the count from the database (background COUNT). */
   hydrateFromDbAsync: () => Promise<void>;
-  /** Force-sync the in-store count with the live DB count (diagnostics). */
-  refreshCount: () => void;
 }
 
 export const songIndexStore = create<SongIndexState>()((set) => ({
@@ -86,9 +83,5 @@ export const songIndexStore = create<SongIndexState>()((set) => ({
   hydrateFromDbAsync: async () => {
     // Idempotent re-read; the per-row tables are the source of truth.
     set({ totalCount: await countSongIndexAsync(), hasHydrated: true });
-  },
-
-  refreshCount: () => {
-    set({ totalCount: countSongIndex() });
   },
 }));

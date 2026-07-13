@@ -203,9 +203,14 @@ jest.mock('../../store/persistence/musicCacheTables', () => {
     // REAL-holder refcount: only edges whose holder item is NOT derived.
     // A legacy/unknown item (never stamped derived) counts as REAL, matching
     // the production `COALESCE(derived,0)=0` guard.
-    countRealSongRefs: jest.fn((songId: string) =>
-      edges.filter((e) => e.songId === songId && !isDerived(e.itemId)).length,
-    ),
+    countRealSongRefsForSongsAsync: jest.fn(async (songIds: string[]) => {
+      const m = new Map<string, number>();
+      for (const songId of songIds) {
+        const c = edges.filter((e) => e.songId === songId && !isDerived(e.itemId)).length;
+        if (c > 0) m.set(songId, c);
+      }
+      return m;
+    }),
     // Orphan a song that lost its last REAL holder: strip every remaining
     // edge (keeping surviving holders contiguous), then prune any DERIVED
     // holder left empty. Returns touched + pruned holders so the store can
@@ -1424,12 +1429,12 @@ describe('computeAlbumRemovalOutcome', () => {
   it('returns empty outcome for non-album types', async () => {
     seedSong(makeCachedSong('s1'));
     seedItem('pl-1', { type: 'playlist', songIds: ['s1'] });
-    const outcome = computeAlbumRemovalOutcome('pl-1');
+    const outcome = await computeAlbumRemovalOutcome('pl-1');
     expect(outcome).toEqual({ orphanSongIds: [], survivorCount: 0 });
   });
 
   it('returns empty outcome for unknown itemId', async () => {
-    expect(computeAlbumRemovalOutcome('nonexistent')).toEqual({
+    expect(await computeAlbumRemovalOutcome('nonexistent')).toEqual({
       orphanSongIds: [],
       survivorCount: 0,
     });
@@ -1439,7 +1444,7 @@ describe('computeAlbumRemovalOutcome', () => {
     seedSong(makeCachedSong('s1'));
     seedSong(makeCachedSong('s2'));
     seedItem('album-1', { type: 'album', songIds: ['s1', 's2'] });
-    const outcome = computeAlbumRemovalOutcome('album-1');
+    const outcome = await computeAlbumRemovalOutcome('album-1');
     expect(outcome.orphanSongIds.sort()).toEqual(['s1', 's2']);
     expect(outcome.survivorCount).toBe(0);
   });
@@ -1450,7 +1455,7 @@ describe('computeAlbumRemovalOutcome', () => {
     seedItem('album-1', { type: 'album', songIds: ['s1', 's2'] });
     // Add a second item (playlist) referencing s1 → s1 is a survivor.
     seedItem('pl-1', { type: 'playlist', songIds: ['s1'] });
-    const outcome = computeAlbumRemovalOutcome('album-1');
+    const outcome = await computeAlbumRemovalOutcome('album-1');
     expect(outcome.orphanSongIds).toEqual(['s2']);
     expect(outcome.survivorCount).toBe(1);
   });

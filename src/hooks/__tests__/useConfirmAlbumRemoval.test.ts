@@ -44,20 +44,20 @@ function seedAlbum(itemId: string, overrides: Partial<Record<string, unknown>> =
 }
 
 describe('useConfirmAlbumRemoval', () => {
-  it('no-ops on empty id', () => {
+  it('no-ops on empty id', async () => {
     const { result } = renderHook(() => useConfirmAlbumRemoval());
-    act(() => result.current.confirmRemove(''));
+    await act(async () => { await result.current.confirmRemove(''); });
     expect(mockDeleteCachedItem).not.toHaveBeenCalled();
     expect(mockDemoteAlbumToPartial).not.toHaveBeenCalled();
   });
 
-  it('passes through to deleteCachedItem when item has no cache entry', () => {
+  it('passes through to deleteCachedItem when item has no cache entry', async () => {
     const { result } = renderHook(() => useConfirmAlbumRemoval());
-    act(() => result.current.confirmRemove('missing'));
+    await act(async () => { await result.current.confirmRemove('missing'); });
     expect(mockDeleteCachedItem).toHaveBeenCalledWith('missing');
   });
 
-  it('passes through to deleteCachedItem for non-album types', () => {
+  it('passes through to deleteCachedItem for non-album types', async () => {
     musicCacheStore.setState({
       cachedItems: {
         pl: {
@@ -72,24 +72,24 @@ describe('useConfirmAlbumRemoval', () => {
       },
     } as any);
     const { result } = renderHook(() => useConfirmAlbumRemoval());
-    act(() => result.current.confirmRemove('pl'));
+    await act(async () => { await result.current.confirmRemove('pl'); });
     expect(mockDeleteCachedItem).toHaveBeenCalledWith('pl');
   });
 
-  it('fully deletes album when no survivors', () => {
+  it('fully deletes album when no survivors', async () => {
     seedAlbum('a1');
-    mockComputeAlbumRemovalOutcome.mockReturnValue({ orphanSongIds: ['s1', 's2', 's3', 's4', 's5'], survivorCount: 0 });
+    mockComputeAlbumRemovalOutcome.mockResolvedValue({ orphanSongIds: ['s1', 's2', 's3', 's4', 's5'], survivorCount: 0 });
     const { result } = renderHook(() => useConfirmAlbumRemoval());
-    act(() => result.current.confirmRemove('a1'));
+    await act(async () => { await result.current.confirmRemove('a1'); });
     expect(mockDeleteCachedItem).toHaveBeenCalledWith('a1');
     expect(alertSpy).not.toHaveBeenCalled();
   });
 
-  it('shows confirmation and on confirm calls demoteAlbumToPartial when survivors exist', () => {
+  it('shows confirmation and on confirm calls demoteAlbumToPartial when survivors exist', async () => {
     seedAlbum('a1');
-    mockComputeAlbumRemovalOutcome.mockReturnValue({ orphanSongIds: ['s1'], survivorCount: 2 });
+    mockComputeAlbumRemovalOutcome.mockResolvedValue({ orphanSongIds: ['s1'], survivorCount: 2 });
     const { result } = renderHook(() => useConfirmAlbumRemoval());
-    act(() => result.current.confirmRemove('a1'));
+    await act(async () => { await result.current.confirmRemove('a1'); });
 
     expect(alertSpy).toHaveBeenCalledTimes(1);
     // Fire the destructive button's onPress.
@@ -101,11 +101,11 @@ describe('useConfirmAlbumRemoval', () => {
     expect(mockDeleteCachedItem).not.toHaveBeenCalled();
   });
 
-  it('cancel button does nothing destructive', () => {
+  it('cancel button does nothing destructive', async () => {
     seedAlbum('a1');
-    mockComputeAlbumRemovalOutcome.mockReturnValue({ orphanSongIds: ['s1'], survivorCount: 2 });
+    mockComputeAlbumRemovalOutcome.mockResolvedValue({ orphanSongIds: ['s1'], survivorCount: 2 });
     const { result } = renderHook(() => useConfirmAlbumRemoval());
-    act(() => result.current.confirmRemove('a1'));
+    await act(async () => { await result.current.confirmRemove('a1'); });
     const [, , buttons] = alertSpy.mock.calls[0];
     const cancel = buttons?.find((b: any) => b.style === 'cancel');
     expect(cancel).toBeDefined();
