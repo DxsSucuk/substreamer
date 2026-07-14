@@ -32,7 +32,7 @@ import { coverArtForAlbum, coverArtForPlaylist } from '../utils/coverArtId';
 import { baseCollator } from '../utils/intl';
 import { resolveSongCoverArt } from '../hooks/useSongCoverArt';
 import {
-  performOfflineSearch,
+  searchLibrary,
   performOnlineSearch,
   getOfflineSongsByGenre,
 } from './searchService';
@@ -383,9 +383,9 @@ async function resolveVoice(request: MediaSearchRequest): Promise<Child[]> {
   // Android App Actions path historically concatenated song+artist into) could
   // never substring-match a single field. Fall back to `query` only when no song.
   const term = request.song?.trim() || request.query;
-  const results = isOffline()
-    ? await performOfflineSearch(term)
-    : await performOnlineSearch(term);
+  // Data-state-aware routing (offline vs local-first vs server) lives in
+  // `searchLibrary` — voice and the in-app box share the one path.
+  const results = await searchLibrary(term);
   let songs = results.songs;
   // When the assistant gave a distinct artist, prefer songs whose artist matches
   // it — disambiguates same-titled songs and drops the wrong-artist hit.
@@ -419,9 +419,7 @@ async function getOnlineSongsByGenre(genre: string): Promise<Child[]> {
 async function resolveSearch(query: string): Promise<BrowseItem[]> {
   await ensureHeadlessDataReady();
   if (query.trim().length === 0) return [];
-  const results = isOffline()
-    ? await performOfflineSearch(query)
-    : await performOnlineSearch(query);
+  const results = await searchLibrary(query);
   lastSearchSongs = results.songs;
   const songRows = await trackRows(results.songs, (i) => `${SEARCH_ID_PREFIX}${i}`);
   const albumRows = await Promise.all(results.albums.map(albumRow));

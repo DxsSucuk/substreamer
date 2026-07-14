@@ -8,11 +8,13 @@ jest.mock('../../store/persistence/rehydrate', () => ({
   awaitKvHydration: async () => {},
 }));
 
-const mockOffline = jest.fn();
-const mockOnline = jest.fn();
+// resolveVoice delegates all offline/online routing to `searchLibrary`; the
+// data-state matrix itself is covered in searchService.test. Here we only assert
+// the resolver feeds it the clean structured term and applies the artist filter.
+const mockSearchLibrary = jest.fn();
 jest.mock('../searchService', () => ({
-  performOfflineSearch: (...a: unknown[]) => mockOffline(...a),
-  performOnlineSearch: (...a: unknown[]) => mockOnline(...a),
+  searchLibrary: (...a: unknown[]) => mockSearchLibrary(...a),
+  performOnlineSearch: async () => ({ songs: [], albums: [], artists: [] }),
   getOfflineSongsByGenre: () => [],
 }));
 
@@ -37,37 +39,36 @@ function req(over: Record<string, unknown>): any {
 }
 
 beforeEach(() => {
-  mockOffline.mockReset();
-  mockOnline.mockReset();
+  mockSearchLibrary.mockReset();
   offlineModeStore.setState({ offlineMode: true } as any);
 });
 
-describe('resolveVoice — structured-field handling (Phase 0)', () => {
+describe('resolveVoice — structured-field handling', () => {
   it('searches the structured song term (NOT the concatenated query) and filters by artist', async () => {
-    mockOffline.mockResolvedValue({ songs: [korn, other], albums: [], artists: [] });
+    mockSearchLibrary.mockResolvedValue({ songs: [korn, other], albums: [], artists: [] });
     const songs = await __test.resolveVoice(
       req({ query: 'Freak on a Leash Korn', song: 'Freak on a Leash', artist: 'Korn', type: 'song' }),
     );
     // Used the clean song term, NOT the old concatenated blob ("Freak on a Leash Korn").
-    expect(mockOffline).toHaveBeenCalledWith('Freak on a Leash');
+    expect(mockSearchLibrary).toHaveBeenCalledWith('Freak on a Leash');
     // Same-titled tracks by different artists → the artist filter keeps only Korn.
     expect(songs.map((s: any) => s.id)).toEqual(['sk']);
   });
 
   it('falls back to the query when no structured song, and does not filter without an artist', async () => {
-    mockOffline.mockResolvedValue({ songs: [korn, other], albums: [], artists: [] });
+    mockSearchLibrary.mockResolvedValue({ songs: [korn, other], albums: [], artists: [] });
     const songs = await __test.resolveVoice(req({ query: 'freak', origin: 'ios-siri' }));
-    expect(mockOffline).toHaveBeenCalledWith('freak');
+    expect(mockSearchLibrary).toHaveBeenCalledWith('freak');
     expect(songs.map((s: any) => s.id)).toEqual(['sk', 'so']);
   });
 
-  it('online path uses performOnlineSearch with the song term', async () => {
+  it('delegates offline/online routing to searchLibrary (no branch in the resolver)', async () => {
     offlineModeStore.setState({ offlineMode: false } as any);
-    mockOnline.mockResolvedValue({ songs: [korn], albums: [], artists: [] });
+    mockSearchLibrary.mockResolvedValue({ songs: [korn], albums: [], artists: [] });
     const songs = await __test.resolveVoice(
       req({ query: 'X', song: 'Freak on a Leash', artist: 'Korn', type: 'song' }),
     );
-    expect(mockOnline).toHaveBeenCalledWith('Freak on a Leash');
+    expect(mockSearchLibrary).toHaveBeenCalledWith('Freak on a Leash');
     expect(songs.map((s: any) => s.id)).toEqual(['sk']);
   });
 });

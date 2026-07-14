@@ -4,19 +4,32 @@ jest.mock('../imageCacheService', () => ({
   ensureCached: jest.fn().mockResolvedValue(undefined),
   prefetchCoverArt: jest.fn(),
 }));
+jest.mock('../../store/persistence/searchIndexQueries');
 
 import { ensureCoverArtAuth, search3 } from '../subsonicService';
 import { albumLibraryStore } from '../../store/albumLibraryStore';
 import { musicCacheStore } from '../../store/musicCacheStore';
 import { playlistLibraryStore } from '../../store/playlistLibraryStore';
+import { offlineModeStore } from '../../store/offlineModeStore';
+import { syncStatusStore } from '../../store/syncStatusStore';
+import { connectivityStore } from '../../store/connectivityStore';
+import {
+  querySongCandidates,
+  queryAlbumCandidates,
+  hasLocalLibraryRows,
+} from '../../store/persistence/searchIndexQueries';
 import {
   performOnlineSearch,
   performOfflineSearch,
   getOfflineSongsByGenre,
+  searchLibrary,
 } from '../searchService';
 
 const mockSearch3 = search3 as jest.MockedFunction<typeof search3>;
 const mockEnsureCoverArtAuth = ensureCoverArtAuth as jest.MockedFunction<typeof ensureCoverArtAuth>;
+const mockQuerySongs = querySongCandidates as jest.MockedFunction<typeof querySongCandidates>;
+const mockQueryAlbums = queryAlbumCandidates as jest.MockedFunction<typeof queryAlbumCandidates>;
+const mockHasLocalRows = hasLocalLibraryRows as jest.MockedFunction<typeof hasLocalLibraryRows>;
 
 function resetStores() {
   musicCacheStore.setState({ cachedItems: {}, cachedSongs: {} } as any);
@@ -331,5 +344,88 @@ describe('getOfflineSongsByGenre', () => {
     });
 
     expect(getOfflineSongsByGenre('Rock')).toHaveLength(0);
+  });
+});
+
+describe('searchLibrary — data-state routing', () => {
+  const localSong = (id: string, title = 'Test Song') =>
+    ({ id, albumId: 'a1', title, artist: 'A', duration: 200 }) as any;
+
+  beforeEach(() => {
+    // Sane online + fully-synced + reachable defaults; each test overrides.
+    offlineModeStore.setState({ offlineMode: false });
+    syncStatusStore.setState({ librarySyncComplete: true, songSyncComplete: true });
+    connectivityStore.setState({ hasConnection: true, isServerReachable: true });
+    mockHasLocalRows.mockResolvedValue(true);
+    mockQuerySongs.mockResolvedValue([]);
+    mockQueryAlbums.mockResolvedValue([]);
+  });
+
+  it('empty query short-circuits to empty with no queries', async () => {
+    const res = await searchLibrary('   ');
+    expect(res).toEqual({ albums: [], artists: [], songs: [] });
+    expect(mockHasLocalRows).not.toHaveBeenCalled();
+    expect(mockSearch3).not.toHaveBeenCalled();
+  });
+
+  it('offlineMode ON → downloaded-only scan, never the full-library path or server', async () => {
+    offlineModeStore.setState({ offlineMode: true });
+    seedCache({
+      a1: { name: 'Album', tracks: [{ id: 't1', title: 'Freak on a Leash', artist: 'Korn', duration: 200 }] },
+    });
+    const res = await searchLibrary('freak on a leash');
+    expect(res.songs.map((s) => s.id)).toContain('t1');
+    expect(mockSearch3).not.toHaveBeenCalled();
+    expect(mockQuerySongs).not.toHaveBeenCalled();
+  });
+
+  it('online + fully synced + confident local hit → local authoritative, no server', async () => {
+    mockQuerySongs.mockResolvedValue([localSong('s1')]);
+    const res = await searchLibrary('test song');
+    expect(res.songs.map((s) => s.id)).toEqual(['s1']);
+    expect(mockSearch3).not.toHaveBeenCalled();
+  });
+
+  it('online + fully synced + weak local hit → safety-net server merge', async () => {
+    mockQuerySongs.mockResolvedValue([]); // nothing local → topScore 0 < CONFIDENT
+    mockSearch3.mockResolvedValue({ albums: [], artists: [], songs: [{ id: 'srv', title: 'Server' }] } as any);
+    const res = await searchLibrary('test song');
+    expect(mockSearch3).toHaveBeenCalled();
+    expect(res.songs.map((s) => s.id)).toContain('srv');
+  });
+
+  it('online + partially synced + reachable → local-first MERGED with server', async () => {
+    syncStatusStore.setState({ librarySyncComplete: false, songSyncComplete: false });
+    mockQuerySongs.mockResolvedValue([localSong('loc')]);
+    mockSearch3.mockResolvedValue({ albums: [], artists: [], songs: [{ id: 'srv', title: 'Server' }] } as any);
+    const res = await searchLibrary('test song');
+    expect(mockSearch3).toHaveBeenCalled();
+    expect(res.songs.map((s) => s.id)).toEqual(['loc', 'srv']); // local ranked first
+  });
+
+  it('online + partially synced + unreachable → local only, no server', async () => {
+    syncStatusStore.setState({ librarySyncComplete: false, songSyncComplete: false });
+    connectivityStore.setState({ hasConnection: false, isServerReachable: false });
+    mockQuerySongs.mockResolvedValue([localSong('loc')]);
+    const res = await searchLibrary('test song');
+    expect(mockSearch3).not.toHaveBeenCalled();
+    expect(res.songs.map((s) => s.id)).toEqual(['loc']);
+  });
+
+  it('online + no local corpus + reachable → straight to the server', async () => {
+    mockHasLocalRows.mockResolvedValue(false);
+    mockSearch3.mockResolvedValue({ albums: [], artists: [], songs: [{ id: 'srv', title: 'S' }] } as any);
+    const res = await searchLibrary('anything');
+    expect(mockSearch3).toHaveBeenCalled();
+    expect(res.songs.map((s) => s.id)).toEqual(['srv']);
+    expect(mockQuerySongs).not.toHaveBeenCalled();
+  });
+
+  it('online + no local corpus + unreachable → empty (no hang)', async () => {
+    mockHasLocalRows.mockResolvedValue(false);
+    connectivityStore.setState({ hasConnection: false, isServerReachable: false });
+    const res = await searchLibrary('anything');
+    expect(mockSearch3).not.toHaveBeenCalled();
+    expect(res).toEqual({ albums: [], artists: [], songs: [] });
   });
 });

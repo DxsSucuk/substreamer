@@ -1,11 +1,6 @@
 import { create } from 'zustand';
 
-import {
-  performOnlineSearch,
-  performOfflineSearch,
-  type SearchResults,
-} from '../services/searchService';
-import { offlineModeStore } from './offlineModeStore';
+import { searchLibrary, type SearchResults } from '../services/searchService';
 import { ratingStore } from './ratingStore';
 
 const EMPTY_RESULTS: SearchResults = {
@@ -67,28 +62,18 @@ export const searchStore = create<SearchState>()((set, get) => ({
       return;
     }
 
-    if (offlineModeStore.getState().offlineMode) {
-      // The offline scan is async + chunked; pass a stale-check so it can
-      // bail mid-scan once the user types further (this query is no longer
-      // current), avoiding wasted work on a superseded search.
-      const results = await performOfflineSearch(
+    set({ loading: true, error: null });
+    try {
+      // One data-state-aware path (offline → downloaded-only; online →
+      // local-first over the full synced library, merged with the server when
+      // partially synced) — see `searchLibrary`. The stale-check lets a
+      // superseded (further-typed) query bail mid-scan.
+      const results = await searchLibrary(
         requestQuery.trim(),
         () => get().query !== requestQuery,
       );
-      // Stale-result guard: another keystroke may have landed while the
-      // chunked scan was running. Don't overwrite a newer query's state.
-      if (get().query !== requestQuery) return;
-      set({ results, loading: false, error: null });
-      return;
-    }
-
-    set({ loading: true, error: null });
-    try {
-      const results = await performOnlineSearch(requestQuery);
-      // Stale-result guard: the user typed further while we were
-      // fetching. A newer performSearch is in flight; let it land and
-      // ignore this stale response so the displayed list always
-      // matches the latest typed query.
+      // Stale-result guard: a newer performSearch is in flight; let it land and
+      // ignore this stale response so the list always matches the latest query.
       if (get().query !== requestQuery) return;
       const ratingEntries: Array<{ id: string; serverRating: number }> = [
         ...results.albums.map((a) => ({ id: a.id, serverRating: a.userRating ?? 0 })),

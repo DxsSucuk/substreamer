@@ -8,7 +8,15 @@ import {
 import { albumLibraryStore } from '../store/albumLibraryStore';
 import { musicCacheStore, getSongEnvelope } from '../store/musicCacheStore';
 import { playlistLibraryStore } from '../store/playlistLibraryStore';
-import { normalize, scoreField, REJECT } from './searchMatch';
+import { offlineModeStore } from '../store/offlineModeStore';
+import { syncStatusStore } from '../store/syncStatusStore';
+import { connectivityStore } from '../store/connectivityStore';
+import {
+  querySongCandidates,
+  queryAlbumCandidates,
+  hasLocalLibraryRows,
+} from '../store/persistence/searchIndexQueries';
+import { normalize, tokenize, metaphoneKey, scoreField, REJECT, CONFIDENT } from './searchMatch';
 import { getGenreNames } from '../utils/genreHelpers';
 
 export interface SearchResults {
@@ -139,6 +147,143 @@ export async function performOfflineSearch(
     artists: [],
     songs: scored.map((x) => x.c),
   };
+}
+
+const EMPTY_RESULTS: SearchResults = { albums: [], artists: [], songs: [] };
+
+/** The server call can't be allowed to hang the search on a slow/unreachable
+ *  host — cap it (local results are already the primary answer). */
+const SERVER_SEARCH_TIMEOUT_MS = 5000;
+
+/** Fuzzy/phonetic-tolerant relevance for a name (+ optional artist): the best of
+ *  the two field scores. Shared by the full-library SQL path below. */
+function relevance(query: string, name: string, artist?: string | null): number {
+  return Math.max(
+    scoreField(query, name).score,
+    artist ? scoreField(query, artist).score : 0,
+  );
+}
+
+/**
+ * Local fuzzy search over the ENTIRE synced library (`song_index` +
+ * `library_albums`) via candidate SQL + JS re-rank. Distinct from
+ * `performOfflineSearch`, which scans only the downloaded set held in memory.
+ * Returns the ranked results plus the top relevance score — the routing gate for
+ * whether the server is still worth consulting. `shouldAbort` bails a superseded
+ * query (the user typed further).
+ */
+export async function searchFullLibraryScored(
+  query: string,
+  shouldAbort?: () => boolean,
+): Promise<{ results: SearchResults; topScore: number }> {
+  const norm = normalize(query);
+  if (!norm) return { results: EMPTY_RESULTS, topScore: 0 };
+  const tokens = tokenize(norm);
+  // Phonetic tier is gated to tokens ≥4 chars (short tokens over-collide) and
+  // to non-empty codes (non-Latin encodes to '' — never a phonetic candidate).
+  const dmetaTokens = tokens
+    .filter((t) => t.length >= 4)
+    .map((t) => metaphoneKey(t))
+    .filter((k) => k.length > 0);
+
+  const [songCands, albumCands] = await Promise.all([
+    querySongCandidates(norm, tokens, dmetaTokens),
+    queryAlbumCandidates(norm, tokens, dmetaTokens),
+  ]);
+  if (shouldAbort?.()) return { results: EMPTY_RESULTS, topScore: 0 };
+
+  const songs = songCands
+    .map((c) => ({ c, s: relevance(query, c.title ?? '', c.artist) }))
+    .filter((x) => x.s >= REJECT)
+    .sort((a, b) => b.s - a.s);
+  const albums = albumCands
+    .map((a) => ({ a, s: relevance(query, a.name, a.artist) }))
+    .filter((x) => x.s >= REJECT)
+    .sort((a, b) => b.s - a.s);
+
+  const topScore = Math.max(songs[0]?.s ?? 0, albums[0]?.s ?? 0);
+  return {
+    results: { albums: albums.map((x) => x.a), artists: [], songs: songs.map((x) => x.c) },
+    topScore,
+  };
+}
+
+/** `performOnlineSearch` (search3) wrapped with a timeout + error swallow so a
+ *  slow or unreachable server can't hang the search — null on either. */
+async function guardedServerSearch(query: string): Promise<SearchResults | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      performOnlineSearch(query),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), SERVER_SEARCH_TIMEOUT_MS);
+      }),
+    ]);
+  } catch {
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Merge server results into local — local first (it ranked by real relevance),
+ *  the server contributing only ids not already present. Per-type dedup by id. */
+function mergeResults(local: SearchResults, server: SearchResults): SearchResults {
+  const merge = <T extends { id: string }>(a: T[], b: T[]): T[] => {
+    const seen = new Set(a.map((x) => x.id));
+    return [...a, ...b.filter((x) => !seen.has(x.id))];
+  };
+  return {
+    albums: merge(local.albums, server.albums),
+    artists: merge(local.artists, server.artists),
+    songs: merge(local.songs, server.songs),
+  };
+}
+
+/**
+ * Data-state-aware search router shared by the in-app box AND voice. Keys off
+ * the hard `offlineMode` toggle, the existing `isFullySynced` flags, and server
+ * reachability (see the routing matrix in the search plan):
+ *   - offlineMode ON → downloaded-only local scan, never the server.
+ *   - online, no local corpus → straight to the server (empty if unreachable).
+ *   - online, fully synced → local authoritative; the server is a rare safety
+ *     net only when the best local hit is weak (content added server-side since
+ *     the last change-detection) AND reachable.
+ *   - online, partially synced → local-first for instant results, MERGED with
+ *     the server for completeness (local alone would miss un-synced entries).
+ * The server call is always reachability-guarded + timed out so it can't hang.
+ */
+export async function searchLibrary(
+  query: string,
+  shouldAbort?: () => boolean,
+): Promise<SearchResults> {
+  if (!normalize(query)) return EMPTY_RESULTS;
+
+  if (offlineModeStore.getState().offlineMode) {
+    return performOfflineSearch(query, shouldAbort);
+  }
+
+  const { librarySyncComplete, songSyncComplete } = syncStatusStore.getState();
+  const fullySynced = librarySyncComplete && songSyncComplete;
+  const { hasConnection, isServerReachable } = connectivityStore.getState();
+  const reachable = hasConnection && isServerReachable;
+
+  if (!(await hasLocalLibraryRows())) {
+    return reachable ? performOnlineSearch(query) : EMPTY_RESULTS;
+  }
+
+  const { results: local, topScore } = await searchFullLibraryScored(query, shouldAbort);
+  if (shouldAbort?.()) return EMPTY_RESULTS;
+
+  // Fully synced: local is authoritative when the hit is already confident or
+  // the server is unreachable anyway.
+  if (fullySynced && (topScore >= CONFIDENT || !reachable)) return local;
+  if (!reachable) return local;
+
+  // Partial sync, or a weak full-sync hit → complete with the server, merged.
+  const server = await guardedServerSearch(query);
+  if (!server || shouldAbort?.()) return local;
+  return mergeResults(local, server);
 }
 
 /**
