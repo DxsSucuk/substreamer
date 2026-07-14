@@ -7,6 +7,15 @@
 // propagates to every worker.
 process.env.EXPO_PUBLIC_USE_RN_FETCH = '1';
 
+// jest-expo's default transformIgnorePatterns, extended to also transpile
+// `double-metaphone` (ESM-only, used by the fuzzy search matcher). Project-level
+// transformIgnorePatterns REPLACES the preset's, so we mirror all three entries.
+const transformIgnorePatterns = [
+  '/node_modules/(?!(.pnpm|react-native|@react-native|@react-native-community|expo|@expo|@expo-google-fonts|react-navigation|@react-navigation|@sentry/react-native|native-base|standard-navigation|double-metaphone))',
+  '/node_modules/react-native-reanimated/plugin/',
+  '/node_modules/@react-native/babel-preset/',
+];
+
 module.exports = {
   projects: [
     {
@@ -24,6 +33,7 @@ module.exports = {
         '^@react-native-vector-icons/.+/static$': '<rootDir>/src/test-utils/iconMock.tsx',
       },
       setupFiles: ['<rootDir>/src/test-utils/i18nSetup.ts'],
+      transformIgnorePatterns,
     },
     {
       preset: 'jest-expo/android',
@@ -40,6 +50,7 @@ module.exports = {
         '^@react-native-vector-icons/.+/static$': '<rootDir>/src/test-utils/iconMock.tsx',
       },
       setupFiles: ['<rootDir>/src/test-utils/i18nSetup.ts'],
+      transformIgnorePatterns,
     },
   ],
   collectCoverageFrom: [

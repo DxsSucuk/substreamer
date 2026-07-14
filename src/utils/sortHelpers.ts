@@ -107,7 +107,7 @@ export function stripArticle(name: string, articles?: readonly string[]): string
  * Hermes supports `String.prototype.normalize` (since RN 0.59) and
  * Unicode property escapes (since RN 0.72).
  */
-function foldAccents(s: string): string {
+export function foldAccents(s: string): string {
   return s.normalize('NFD').replace(/\p{Diacritic}/gu, '');
 }
 
