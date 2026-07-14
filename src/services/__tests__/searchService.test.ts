@@ -154,6 +154,27 @@ describe('performOfflineSearch', () => {
     expect(result.songs[0].title).toBe('Matching Song');
   });
 
+  it('fuzzy: phonetic typo in artist ("corn") still finds Korn', async () => {
+    seedCache({
+      a1: { name: 'Album', tracks: [{ id: 't1', title: 'Freak on a Leash', artist: 'Korn', duration: 200 }] },
+    });
+    expect((await performOfflineSearch('corn')).songs.map((s) => s.id)).toContain('t1');
+  });
+
+  it('fuzzy: out-of-order tokens ("leash freak") match "Freak on a Leash"', async () => {
+    seedCache({
+      a1: { name: 'Album', tracks: [{ id: 't1', title: 'Freak on a Leash', artist: 'Korn', duration: 200 }] },
+    });
+    expect((await performOfflineSearch('leash freak')).songs.map((s) => s.id)).toContain('t1');
+  });
+
+  it('empty / whitespace query returns nothing (no match-everything)', async () => {
+    seedCache({
+      a1: { name: 'Album', tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200 }] },
+    });
+    expect((await performOfflineSearch('   ')).songs).toHaveLength(0);
+  });
+
   it('searches cached songs by artist', async () => {
     seedCache({
       a1: { name: 'Album', tracks: [{ id: 't1', title: 'Song', artist: 'Radiohead', duration: 200 }] },

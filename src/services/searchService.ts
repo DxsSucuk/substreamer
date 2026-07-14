@@ -8,6 +8,7 @@ import {
 import { albumLibraryStore } from '../store/albumLibraryStore';
 import { musicCacheStore, getSongEnvelope } from '../store/musicCacheStore';
 import { playlistLibraryStore } from '../store/playlistLibraryStore';
+import { normalize, scoreField, REJECT } from './searchMatch';
 import { getGenreNames } from '../utils/genreHelpers';
 
 export interface SearchResults {
@@ -69,24 +70,34 @@ export async function performOfflineSearch(
   query: string,
   shouldAbort?: () => boolean,
 ): Promise<SearchResults> {
-  const q = query.toLowerCase();
+  // Empty / whitespace query matches nothing (guards the scan too).
+  if (!normalize(query)) return { albums: [], artists: [], songs: [] };
   const { cachedItems, cachedSongs } = musicCacheStore.getState();
   const cachedIds = new Set(Object.keys(cachedItems));
 
+  // Fuzzy/phonetic-tolerant relevance for a name (+ optional artist) — the best
+  // of the two field scores. Replaces the old raw `.includes()` substring match.
+  const rel = (name: string, artist?: string | null): number =>
+    Math.max(
+      scoreField(query, name).score,
+      artist ? scoreField(query, artist).score : 0,
+    );
+
   const albums = albumLibraryStore
     .getState()
-    .albums.filter(
-      (a) =>
-        cachedIds.has(a.id) &&
-        (a.name.toLowerCase().includes(q) ||
-          (a.artist?.toLowerCase().includes(q) ?? false))
-    );
+    .albums.filter((a) => cachedIds.has(a.id))
+    .map((a) => ({ a, s: rel(a.name, a.artist) }))
+    .filter((x) => x.s >= REJECT)
+    .sort((x, y) => y.s - x.s)
+    .map((x) => x.a);
 
   const playlists = playlistLibraryStore
     .getState()
-    .playlists.filter(
-      (p) => cachedIds.has(p.id) && p.name.toLowerCase().includes(q)
-    );
+    .playlists.filter((p) => cachedIds.has(p.id))
+    .map((p) => ({ p, s: scoreField(query, p.name).score }))
+    .filter((x) => x.s >= REJECT)
+    .sort((x, y) => y.s - x.s)
+    .map((x) => x.p);
 
   const playlistAlbums: AlbumID3[] = playlists.map((p) => ({
     id: p.id,
@@ -98,7 +109,7 @@ export async function performOfflineSearch(
     created: p.created,
   }));
 
-  const songs: Child[] = [];
+  const scored: Array<{ c: Child; s: number }> = [];
   const seen = new Set<string>();
   let ops = 0;
   for (const item of Object.values(cachedItems)) {
@@ -114,20 +125,19 @@ export async function performOfflineSearch(
       if (seen.has(songId)) continue;
       const track = cachedSongs[songId];
       if (!track) continue;
-      if (
-        track.title.toLowerCase().includes(q) ||
-        (track.artist?.toLowerCase().includes(q) ?? false)
-      ) {
+      const s = rel(track.title, track.artist);
+      if (s >= REJECT) {
         seen.add(songId);
-        songs.push(childFromCachedSong(track, item.name));
+        scored.push({ c: childFromCachedSong(track, item.name), s });
       }
     }
   }
+  scored.sort((a, b) => b.s - a.s);
 
   return {
     albums: [...albums, ...playlistAlbums],
     artists: [],
-    songs,
+    songs: scored.map((x) => x.c),
   };
 }
 
