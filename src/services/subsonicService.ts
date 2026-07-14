@@ -959,8 +959,15 @@ export async function getStarred2(): Promise<{
 }
 
 /**
+ * Per-category result cap for the interactive `search3` box search. Local
+ * fuzzy search mirrors this so switching between the server path and the
+ * local-first path yields a comparably-sized list (not an arbitrary number).
+ */
+export const SEARCH3_RESULT_LIMIT = 20;
+
+/**
  * Search for albums, artists, and songs using the search3 API.
- * Returns up to 20 results per category.
+ * Returns up to {@link SEARCH3_RESULT_LIMIT} results per category.
  */
 export async function search3(query: string): Promise<{
   albums: AlbumID3[];
@@ -971,9 +978,9 @@ export async function search3(query: string): Promise<{
   if (!api || !query.trim()) return { albums: [], artists: [], songs: [] };
   const response = await api.search3({
     query: query.trim(),
-    albumCount: 20,
-    artistCount: 20,
-    songCount: 20,
+    albumCount: SEARCH3_RESULT_LIMIT,
+    artistCount: SEARCH3_RESULT_LIMIT,
+    songCount: SEARCH3_RESULT_LIMIT,
   });
   const r = response.searchResult3;
   return {

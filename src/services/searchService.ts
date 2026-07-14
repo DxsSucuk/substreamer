@@ -1,6 +1,7 @@
 import {
   ensureCoverArtAuth,
   search3,
+  SEARCH3_RESULT_LIMIT,
   type AlbumID3,
   type ArtistID3,
   type Child,
@@ -16,7 +17,7 @@ import {
   queryAlbumCandidates,
   hasLocalLibraryRows,
 } from '../store/persistence/searchIndexQueries';
-import { normalize, tokenize, metaphoneKey, scoreField, REJECT, CONFIDENT } from './searchMatch';
+import { normalize, tokenize, metaphoneKey, scoreField, REJECT } from './searchMatch';
 import { getGenreNames } from '../utils/genreHelpers';
 
 export interface SearchResults {
@@ -143,13 +144,21 @@ export async function performOfflineSearch(
   scored.sort((a, b) => b.s - a.s);
 
   return {
-    albums: [...albums, ...playlistAlbums],
+    albums: [...albums, ...playlistAlbums].slice(0, ALBUM_RESULT_CAP),
     artists: [],
-    songs: scored.map((x) => x.c),
+    songs: scored.slice(0, SONG_RESULT_CAP).map((x) => x.c),
   };
 }
 
 const EMPTY_RESULTS: SearchResults = { albums: [], artists: [], songs: [] };
+
+// Output caps. Local search can score hundreds of candidates; the on-screen
+// results list (a SectionList) re-renders the whole set per keystroke, so an
+// uncapped list makes the full Search screen janky. Mirror the server path's
+// per-category cap (`search3` returns 20 each) so the two paths feel the same
+// — not an arbitrary number. Ranked, so the cap keeps the best matches.
+const SONG_RESULT_CAP = SEARCH3_RESULT_LIMIT;
+const ALBUM_RESULT_CAP = SEARCH3_RESULT_LIMIT;
 
 /** The server call can't be allowed to hang the search on a slow/unreachable
  *  host — cap it (local results are already the primary answer). */
@@ -203,14 +212,22 @@ export async function searchFullLibraryScored(
 
   const topScore = Math.max(songs[0]?.s ?? 0, albums[0]?.s ?? 0);
   return {
-    results: { albums: albums.map((x) => x.a), artists: [], songs: songs.map((x) => x.c) },
+    results: {
+      albums: albums.slice(0, ALBUM_RESULT_CAP).map((x) => x.a),
+      artists: [],
+      songs: songs.slice(0, SONG_RESULT_CAP).map((x) => x.c),
+    },
     topScore,
   };
 }
 
 /** `performOnlineSearch` (search3) wrapped with a timeout + error swallow so a
  *  slow or unreachable server can't hang the search — null on either. */
-async function guardedServerSearch(query: string): Promise<SearchResults | null> {
+async function guardedServerSearch(
+  query: string,
+  shouldAbort?: () => boolean,
+): Promise<SearchResults | null> {
+  if (shouldAbort?.()) return null;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
@@ -240,23 +257,37 @@ function mergeResults(local: SearchResults, server: SearchResults): SearchResult
   };
 }
 
+export interface SearchLibraryOptions {
+  /** Bail early when the query has been superseded (the user typed further). */
+  shouldAbort?: () => boolean;
+  /**
+   * Called with the LOCAL results the instant they're ready, BEFORE any server
+   * augmentation. Lets an interactive caller (the search box) render locally
+   * without waiting on the network. Only fires on the partial-sync path — the
+   * fully-synced / offline / unreachable paths return local directly with
+   * nothing further to wait for.
+   */
+  onLocalResults?: (results: SearchResults) => void;
+}
+
 /**
  * Data-state-aware search router shared by the in-app box AND voice. Keys off
- * the hard `offlineMode` toggle, the existing `isFullySynced` flags, and server
- * reachability (see the routing matrix in the search plan):
+ * the hard `offlineMode` toggle, the `isFullySynced` flags, and reachability:
  *   - offlineMode ON → downloaded-only local scan, never the server.
  *   - online, no local corpus → straight to the server (empty if unreachable).
- *   - online, fully synced → local authoritative; the server is a rare safety
- *     net only when the best local hit is weak (content added server-side since
- *     the last change-detection) AND reachable.
- *   - online, partially synced → local-first for instant results, MERGED with
- *     the server for completeness (local alone would miss un-synced entries).
- * The server call is always reachability-guarded + timed out so it can't hang.
+ *   - online, fully synced (or unreachable) → local is authoritative and
+ *     COMPLETE; return it immediately — NEVER block an interactive search on the
+ *     network (a weak/typo/partial hit is still just local; the server can't
+ *     hold anything a fully-synced library doesn't).
+ *   - online, partially synced + reachable → surface local FIRST (via
+ *     `onLocalResults`), then augment with a timeout-guarded server search for
+ *     the entries not yet synced, MERGED into the returned value.
  */
 export async function searchLibrary(
   query: string,
-  shouldAbort?: () => boolean,
+  options?: SearchLibraryOptions,
 ): Promise<SearchResults> {
+  const { shouldAbort, onLocalResults } = options ?? {};
   if (!normalize(query)) return EMPTY_RESULTS;
 
   if (offlineModeStore.getState().offlineMode) {
@@ -272,16 +303,15 @@ export async function searchLibrary(
     return reachable ? performOnlineSearch(query) : EMPTY_RESULTS;
   }
 
-  const { results: local, topScore } = await searchFullLibraryScored(query, shouldAbort);
+  const { results: local } = await searchFullLibraryScored(query, shouldAbort);
   if (shouldAbort?.()) return EMPTY_RESULTS;
 
-  // Fully synced: local is authoritative when the hit is already confident or
-  // the server is unreachable anyway.
-  if (fullySynced && (topScore >= CONFIDENT || !reachable)) return local;
-  if (!reachable) return local;
+  // Local is the complete answer — return instantly, no network wait.
+  if (fullySynced || !reachable) return local;
 
-  // Partial sync, or a weak full-sync hit → complete with the server, merged.
-  const server = await guardedServerSearch(query);
+  // Partial sync + reachable → show local now, then augment with the server.
+  onLocalResults?.(local);
+  const server = await guardedServerSearch(query, shouldAbort);
   if (!server || shouldAbort?.()) return local;
   return mergeResults(local, server);
 }

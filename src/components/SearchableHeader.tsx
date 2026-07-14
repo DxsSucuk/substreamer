@@ -42,7 +42,7 @@ export function SearchableHeader({ route }: BottomTabHeaderProps) {
   const setQuery = searchStore((s) => s.setQuery);
   const performSearch = searchStore((s) => s.performSearch);
   const showOverlay = searchStore((s) => s.showOverlay);
-  const hideOverlay = searchStore((s) => s.hideOverlay);
+  const clear = searchStore((s) => s.clear);
   // On the search tab, results are shown inline -- no overlay needed
   const isSearchTab = route.name === 'search';
 
@@ -58,10 +58,12 @@ export function SearchableHeader({ route }: BottomTabHeaderProps) {
           performSearch();
         }, DEBOUNCE_MS);
       } else {
-        hideOverlay();
+        // Emptied the box (backspaced to nothing) — wipe results too, so they
+        // don't reappear the moment the next query starts.
+        clear();
       }
     },
-    [setQuery, performSearch, showOverlay, hideOverlay, isSearchTab]
+    [setQuery, performSearch, showOverlay, clear, isSearchTab]
   );
 
   const handleFocus = useCallback(() => {
@@ -79,11 +81,12 @@ export function SearchableHeader({ route }: BottomTabHeaderProps) {
       clearTimeout(debounceTimer.current);
       debounceTimer.current = null;
     }
-    setQuery('');
-    hideOverlay();
+    // `clear()` (not `setQuery('')`) so the previous results are wiped too —
+    // otherwise stale hits linger and reappear the instant you retype.
+    clear();
     inputRef.current?.blur();
     Keyboard.dismiss();
-  }, [setQuery, hideOverlay]);
+  }, [clear]);
 
   // Clean up debounce timer on unmount
   useEffect(() => {

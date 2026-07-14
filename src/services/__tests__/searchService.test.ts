@@ -386,12 +386,13 @@ describe('searchLibrary — data-state routing', () => {
     expect(mockSearch3).not.toHaveBeenCalled();
   });
 
-  it('online + fully synced + weak local hit → safety-net server merge', async () => {
-    mockQuerySongs.mockResolvedValue([]); // nothing local → topScore 0 < CONFIDENT
-    mockSearch3.mockResolvedValue({ albums: [], artists: [], songs: [{ id: 'srv', title: 'Server' }] } as any);
+  it('online + fully synced + weak/empty local hit → local only, NEVER the server (no blocking)', async () => {
+    mockQuerySongs.mockResolvedValue([]); // nothing local
     const res = await searchLibrary('test song');
-    expect(mockSearch3).toHaveBeenCalled();
-    expect(res.songs.map((s) => s.id)).toContain('srv');
+    // Fully synced ⇒ local is complete; an interactive search must not block on
+    // the network for a weak hit.
+    expect(mockSearch3).not.toHaveBeenCalled();
+    expect(res).toEqual({ albums: [], artists: [], songs: [] });
   });
 
   it('online + partially synced + reachable → local-first MERGED with server', async () => {
@@ -401,6 +402,18 @@ describe('searchLibrary — data-state routing', () => {
     const res = await searchLibrary('test song');
     expect(mockSearch3).toHaveBeenCalled();
     expect(res.songs.map((s) => s.id)).toEqual(['loc', 'srv']); // local ranked first
+  });
+
+  it('online + partially synced → surfaces local via onLocalResults BEFORE merging the server', async () => {
+    syncStatusStore.setState({ librarySyncComplete: false, songSyncComplete: false });
+    mockQuerySongs.mockResolvedValue([localSong('loc')]);
+    mockSearch3.mockResolvedValue({ albums: [], artists: [], songs: [{ id: 'srv', title: 'Server' }] } as any);
+    const surfaced: string[][] = [];
+    const res = await searchLibrary('test song', {
+      onLocalResults: (r) => surfaced.push(r.songs.map((s) => s.id)),
+    });
+    expect(surfaced).toEqual([['loc']]); // local delivered first, before the server call
+    expect(res.songs.map((s) => s.id)).toEqual(['loc', 'srv']);
   });
 
   it('online + partially synced + unreachable → local only, no server', async () => {

@@ -65,13 +65,17 @@ export const searchStore = create<SearchState>()((set, get) => ({
     set({ loading: true, error: null });
     try {
       // One data-state-aware path (offline → downloaded-only; online →
-      // local-first over the full synced library, merged with the server when
-      // partially synced) — see `searchLibrary`. The stale-check lets a
-      // superseded (further-typed) query bail mid-scan.
-      const results = await searchLibrary(
-        requestQuery.trim(),
-        () => get().query !== requestQuery,
-      );
+      // local-first over the full synced library, augmented by the server when
+      // partially synced) — see `searchLibrary`. `onLocalResults` renders local
+      // hits the instant they're ready so a partial-sync search never blanks on
+      // the network; `shouldAbort` bails a superseded (further-typed) query.
+      const results = await searchLibrary(requestQuery.trim(), {
+        shouldAbort: () => get().query !== requestQuery,
+        onLocalResults: (local) => {
+          if (get().query !== requestQuery) return;
+          set({ results: local });
+        },
+      });
       // Stale-result guard: a newer performSearch is in flight; let it land and
       // ignore this stale response so the list always matches the latest query.
       if (get().query !== requestQuery) return;

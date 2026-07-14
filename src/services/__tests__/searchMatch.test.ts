@@ -8,6 +8,7 @@ import {
   scoreField,
   scoreCandidate,
   CONFIDENT,
+  REJECT,
 } from '../searchMatch';
 
 describe('normalize', () => {
@@ -93,8 +94,33 @@ describe('scoreField tiers', () => {
     expect(r.score).toBeLessThan(0.9); // never outranks a prefix/exact
     expect(r.score).toBeGreaterThan(0);
   });
+  it('phonetic false friend: corn ranks Korn (1 char off) well above Green (same metaphone, distant)', () => {
+    // doubleMetaphone('corn') === doubleMetaphone('green') === 'KRN'; the visual
+    // floor must stop "green" scoring like the real target.
+    const korn = scoreField('corn', 'Korn').score;
+    const green = scoreField('corn', 'Green').score;
+    expect(korn).toBeGreaterThan(green + 0.2);
+  });
   it('no match scores low', () => {
     expect(scoreField('zzzz', 'Freak on a Leash').score).toBeLessThan(0.5);
+  });
+  it('per-token: "stone rose" ranks The Stone Roses far above Stone Temple Pilots', () => {
+    const roses = scoreField('stone rose', 'The Stone Roses');
+    const stp = scoreField('stone rose', 'Stone Temple Pilots');
+    // The near-miss "rose"≈"roses" must count — the missing word is what
+    // separates the two, not just the shared "stone".
+    expect(roses.score).toBeGreaterThan(stp.score);
+    expect(roses.score).toBeGreaterThan(0.75);
+  });
+  it('per-token: tolerates a typo in one word of a multi-word title', () => {
+    expect(scoreField('smashing pumkins', 'Smashing Pumpkins').score).toBeGreaterThanOrEqual(REJECT);
+  });
+  it('per-token: a query word matching nothing drags the score down', () => {
+    // "stone banana" — banana aligns to no token in either title, so both stay
+    // well below a genuine two-word match.
+    expect(scoreField('stone banana', 'The Stone Roses').score).toBeLessThan(
+      scoreField('stone rose', 'The Stone Roses').score,
+    );
   });
 });
 

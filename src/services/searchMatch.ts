@@ -141,6 +141,33 @@ export interface FieldScore {
 }
 
 /**
+ * Best similarity of ONE query token to any of the candidate's tokens, with a
+ * phonetic-equivalence boost (corn≈korn, rose≈roze) so a misspelled/plural word
+ * still aligns to its counterpart. Exact token match short-circuits at 1.
+ */
+function bestTokenSim(qt: string, cTokens: readonly string[]): number {
+  let best = 0;
+  let qKey: string | null = null;
+  for (const ct of cTokens) {
+    if (ct === qt) return 1;
+    let s = similarity(qt, ct);
+    // Phonetic agreement lifts a genuine near-miss (corn→korn), but ONLY when
+    // the pair is ALREADY visually plausible, and ADDITIVELY so a closer
+    // spelling still outranks a farther one. Without the visual floor a flat
+    // phonetic boost scores same-code-but-distant words identically — "corn"
+    // and "green" share Double-Metaphone 'KRN', which flooded green albums
+    // above Korn (sim corn/korn ≈ 0.83, corn/green ≈ 0.63).
+    if (s >= 0.7 && s < 0.95 && qt.length >= 3 && ct.length >= 3) {
+      if (qKey === null) qKey = doubleMetaphone(qt)[0] ?? '';
+      if (qKey && qKey === (doubleMetaphone(ct)[0] ?? '')) s = Math.min(0.95, s + 0.12);
+    }
+    if (s > best) best = s;
+    if (best === 1) break;
+  }
+  return best;
+}
+
+/**
  * Tiered similarity of a query term to a candidate field (both raw; normalized
  * inside). exact > prefix > all-tokens(any order) > fuzzy > phonetic. Exact and
  * prefix always outrank any fuzzy/phonetic tier.
@@ -154,25 +181,36 @@ export function scoreField(query: string, candidate: string): FieldScore {
   const lenRatio = Math.min(q.length, c.length) / Math.max(q.length, c.length);
   if (c.startsWith(q)) return { score: 0.88 + 0.04 * lenRatio, tier: 'prefix' };
 
-  const cTokens = new Set(c.split(' '));
+  const cTokens = c.split(' ');
+  const cTokenSet = new Set(cTokens);
   const qTokens = q.split(' ');
-  if (qTokens.every((t) => cTokens.has(t))) {
+  if (qTokens.every((t) => cTokenSet.has(t))) {
     return { score: 0.86, tier: 'all-tokens' };
   }
 
+  // Per-token alignment: score EACH query token against its best-matching
+  // candidate token (fuzzy + phonetic), then blend the mean with the WEAKEST
+  // token so a query word that aligns to nothing drags the score down. This is
+  // what ranks "stone rose" → "The Stone Roses" (rose≈roses) well above "Stone
+  // Temple Pilots" (rose aligns to no token) — the old exact-token overlap gave
+  // both the same score because neither contained the literal token "rose".
+  const perTok = qTokens.map((qt) => bestTokenSim(qt, cTokens));
+  const meanTok = perTok.reduce((sum, s) => sum + s, 0) / perTok.length;
+  const minTok = Math.min(...perTok);
+  const alignment = 0.5 * meanTok + 0.5 * minTok;
+
+  // Whole-string similarity too (single-token typos / run-together forms).
   const sim = similarity(q, c);
-  if (sim >= 0.9) return { score: 0.6 + 0.25 * sim, tier: 'fuzzy' };
+  const best = Math.max(alignment, sim);
 
-  // Phonetic recall — gated: min length + non-empty key + a secondary floor so
-  // a same-code but visually-distant token can't win.
-  const qKey = metaphoneKey(query);
-  if (q.length >= 4 && qKey && qKey === metaphoneKey(candidate) && sim >= 0.55) {
-    return { score: 0.7, tier: 'phonetic' };
-  }
-
-  const overlap = qTokens.filter((t) => cTokens.has(t)).length / qTokens.length;
-  if (overlap >= 0.5) return { score: 0.55 + 0.1 * overlap, tier: 'fuzzy' };
-  return { score: sim * 0.5, tier: 'none' };
+  // Fuzzy band — always kept below the all-tokens (0.86) / prefix / exact floors
+  // so a fuzzy hit can never outrank a literal one. Phonetic recall is folded
+  // into the per-token alignment above (visually gated), so there's no separate
+  // whole-key phonetic tier — that one scored same-code-but-distant words (corn
+  // vs green) a flat 0.7 and buried the real target.
+  if (best >= 0.9) return { score: 0.6 + 0.25 * best, tier: 'fuzzy' }; // 0.825..0.85
+  if (best >= 0.62) return { score: 0.55 + 0.5 * (best - 0.62), tier: 'fuzzy' }; // 0.55..~0.69
+  return { score: best * 0.5, tier: 'none' };
 }
 
 export interface Candidate {

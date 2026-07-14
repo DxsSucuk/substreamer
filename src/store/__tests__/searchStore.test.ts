@@ -48,9 +48,35 @@ describe('searchStore', () => {
 
       await searchStore.getState().performSearch();
 
-      expect(mockSearchLibrary).toHaveBeenCalledWith('test', expect.any(Function));
+      expect(mockSearchLibrary).toHaveBeenCalledWith(
+        'test',
+        expect.objectContaining({
+          shouldAbort: expect.any(Function),
+          onLocalResults: expect.any(Function),
+        }),
+      );
       expect(searchStore.getState().results).toEqual(results);
       expect(searchStore.getState().loading).toBe(false);
+    });
+
+    it('renders local results immediately via onLocalResults, ahead of the merged final', async () => {
+      const local = { albums: [], artists: [], songs: [{ id: 'loc', title: 'Local' }] };
+      const merged = {
+        albums: [],
+        artists: [],
+        songs: [{ id: 'loc', title: 'Local' }, { id: 'srv', title: 'Server' }],
+      };
+      mockSearchLibrary.mockImplementation(async (_q: string, opts: any) => {
+        opts.onLocalResults(local); // partial-sync path surfaces local first
+        return merged;
+      });
+      searchStore.setState({ query: 'test' });
+      const seen: string[][] = [];
+      const unsub = searchStore.subscribe((s) => seen.push(s.results.songs.map((x: any) => x.id)));
+      await searchStore.getState().performSearch();
+      unsub();
+      expect(seen).toContainEqual(['loc']); // local surfaced before the merge
+      expect(searchStore.getState().results).toEqual(merged);
     });
 
     it('sets error on failure', async () => {
