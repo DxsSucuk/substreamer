@@ -44,6 +44,10 @@ function makeFakeDb() {
       year: number | null;
       track: number | null;
       disc: number | null;
+      normTitle?: string;
+      normArtist?: string;
+      dmetaTitle?: string;
+      dmetaArtist?: string;
     }
   >();
 
@@ -53,14 +57,20 @@ function makeFakeDb() {
       const [id, json, retrievedAt] = params as [string, string, number];
       albumDetails.set(id, { id, json, retrievedAt });
     } else if (s.startsWith('INSERT OR REPLACE INTO song_index')) {
-      // Handles single-row (13 params) AND multi-row batch INSERTs
-      // (`bulkUpsertSongs`) — iterate params in 13-column chunks.
-      const COLS = 13;
+      // Handles single-row AND multi-row batch INSERTs (`bulkUpsertSongs`) —
+      // iterate params in 17-column chunks: 13 base cols (id..disc, raw_json)
+      // + norm_title/norm_artist/dmeta_title/dmeta_artist.
+      const COLS = 17;
       for (let i = 0; i + COLS <= params.length; i += COLS) {
-        const [id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc] =
-          params.slice(i, i + COLS) as [string, string, string | null, string | null, string | null,
-            number | null, string | null, number | null, number | null, number | null, number | null, number | null];
-        songIndex.set(id, { id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc });
+        const row = params.slice(i, i + COLS) as [string, string, string | null, string | null, string | null,
+          number | null, string | null, number | null, number | null, number | null, number | null, number | null,
+          string, string, string, string, string];
+        const [id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc] = row;
+        const [normTitle, normArtist, dmetaTitle, dmetaArtist] = row.slice(13) as [string, string, string, string];
+        songIndex.set(id, {
+          id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc,
+          normTitle, normArtist, dmetaTitle, dmetaArtist,
+        });
       }
     } else if (s.startsWith('DELETE FROM album_details WHERE id = ?')) {
       albumDetails.delete(params[0] as string);
@@ -286,6 +296,17 @@ describe('detailTables — bulkUpsertSongs (paged fast-path song sync)', () => {
     expect(await countSongIndexAsync()).toBe(3);
   });
 
+  it('populates fuzzy-search columns for every row in a multi-row batch', async () => {
+    await bulkUpsertSongs([
+      { id: 's1', albumId: 'a1', title: 'One', artist: 'Korn' },
+      { id: 's2', albumId: 'a1', title: 'Two', artist: 'Radiohead' },
+    ] as any);
+    // Batch INSERT must chunk on the full 17-column stride, not bleed across rows.
+    expect(fakeDb.songIndex.get('s1')?.normTitle).toBe('one');
+    expect(fakeDb.songIndex.get('s2')?.normTitle).toBe('two');
+    expect(fakeDb.songIndex.get('s2')?.normArtist).toBe('radiohead');
+  });
+
   it('skips songs without id or albumId (albumId keys the index)', async () => {
     const songs = [
       { id: 's1', albumId: 'a1', title: 'One' },
@@ -366,6 +387,15 @@ describe('detailTables — song_index', () => {
     const starredSong = { id: 's1', title: 'x', starred: '2020-01-01' } as any;
     upsertSongsForAlbum('a1', [starredSong]);
     expect(fakeDb.songIndex.get('s1')?.starred).toBe(1);
+  });
+
+  it('populates the fuzzy-search columns (norm + phonetic) on write', () => {
+    upsertSongsForAlbum('a1', [{ id: 's1', title: 'Freak on a Leash', artist: 'Korn' }] as any);
+    const row = fakeDb.songIndex.get('s1');
+    expect(row?.normTitle).toBe('freak on a leash');
+    expect(row?.normArtist).toBe('korn');
+    // 'Korn' and 'corn' share a Double-Metaphone key → phonetic recall works.
+    expect(row?.dmetaArtist).toBe('KRN');
   });
 
   it('deleteSongsForAlbumsAsync removes only the matching albums', async () => {

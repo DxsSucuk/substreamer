@@ -4,8 +4,24 @@
  * and test injection live in `./db.ts`.
  */
 import type { AlbumWithSongsID3, Child } from '../../services/subsonicService';
+import { normalize, normalizeArtist, metaphoneKey } from '../../services/searchMatch';
 
 import { getDb, serializeDbWrite } from './db';
+
+/**
+ * The four fuzzy-search column values for a `song_index` row, in column order:
+ * `norm_title`, `norm_artist`, `dmeta_title`, `dmeta_artist`. Populated at every
+ * write path so the exact/prefix/infix/phonetic candidate SQL can run against
+ * the full library without a re-sync. `normalize`/`metaphoneKey` return `''` for
+ * empty/non-Latin input — stored as-is; the lookup side never matches empty
+ * dmeta, and the backfill targets `norm_title IS NULL` (only pre-migration rows,
+ * never these). See `searchMatch.ts` + the schema in `db.ts`.
+ */
+function songSearchCols(s: Child): [string, string, string, string] {
+  const title = s.title ?? '';
+  const artist = s.artist ?? '';
+  return [normalize(title), normalizeArtist(artist), metaphoneKey(title), metaphoneKey(artist)];
+}
 
 /* ------------------------------------------------------------------ */
 /*  album_details                                                      */
@@ -169,8 +185,8 @@ export function upsertSongsForAlbum(albumId: string, songs: Child[]): void {
         if (!song.id) continue;
         db.runSync(
           `INSERT OR REPLACE INTO song_index
-             (id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc, raw_json)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+             (id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc, raw_json, norm_title, norm_artist, dmeta_title, dmeta_artist)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
           [
             song.id,
             albumId,
@@ -185,6 +201,7 @@ export function upsertSongsForAlbum(albumId: string, songs: Child[]): void {
             song.track ?? null,
             song.discNumber ?? null,
             JSON.stringify(song),
+            ...songSearchCols(song),
           ],
         );
       }
@@ -224,8 +241,8 @@ export async function upsertSongsForAlbumAsync(albumId: string, songs: Child[]):
           // eslint-disable-next-line no-await-in-loop
           await db.runAsync(
             `INSERT OR REPLACE INTO song_index
-               (id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc, raw_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+               (id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc, raw_json, norm_title, norm_artist, dmeta_title, dmeta_artist)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
             [
               song.id,
               albumId,
@@ -240,6 +257,7 @@ export async function upsertSongsForAlbumAsync(albumId: string, songs: Child[]):
               song.track ?? null,
               song.discNumber ?? null,
               JSON.stringify(song),
+              ...songSearchCols(song),
             ],
           );
         }
@@ -288,8 +306,8 @@ export async function persistAlbumDetailAndSongsAsync(
           // eslint-disable-next-line no-await-in-loop
           await db.runAsync(
             `INSERT OR REPLACE INTO song_index
-               (id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc, raw_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+               (id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc, raw_json, norm_title, norm_artist, dmeta_title, dmeta_artist)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
             [
               song.id,
               id,
@@ -304,6 +322,7 @@ export async function persistAlbumDetailAndSongsAsync(
               song.track ?? null,
               song.discNumber ?? null,
               JSON.stringify(song),
+              ...songSearchCols(song),
             ],
           );
           inserted += 1;
@@ -333,7 +352,7 @@ export async function bulkUpsertSongs(songs: readonly Child[]): Promise<number> 
   if (db === null) return 0;
   const valid = songs.filter((s) => s.id && s.albumId);
   if (valid.length === 0) return 0;
-  const COLS = 13;
+  const COLS = 17;
   const CHUNK = 500;
   try {
     await serializeSongIndexWrite(() =>
@@ -358,12 +377,13 @@ export async function bulkUpsertSongs(songs: readonly Child[]): Promise<number> 
               s.track ?? null,
               s.discNumber ?? null,
               JSON.stringify(s),
+              ...songSearchCols(s),
             );
           }
           // eslint-disable-next-line no-await-in-loop
           await db.runAsync(
             `INSERT OR REPLACE INTO song_index
-               (id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc, raw_json)
+               (id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc, raw_json, norm_title, norm_artist, dmeta_title, dmeta_artist)
                VALUES ${placeholders};`,
             params,
           );

@@ -32,7 +32,8 @@ import {
   upsertAlbumDetail,
   upsertSongsForAlbum,
 } from '../store/persistence/detailTables';
-import { getDb } from '../store/persistence/db';
+import { getDb, serializeDbWrite } from '../store/persistence/db';
+import { normalize, normalizeArtist, metaphoneKey } from './searchMatch';
 import {
   addColumnIfMissing,
   bulkReplace as bulkReplaceMusicCache,
@@ -2188,6 +2189,97 @@ const MIGRATION_TASKS: MigrationTask[] = [
         }
       }
       log(`[m31] derived column ${added ? 'added' : 'present'}; partial-album rows flagged`);
+    },
+  },
+
+  {
+    id: 32,
+    name: 'Backfill fuzzy-search columns',
+    run: async (log) => {
+      // Populate norm_/dmeta_ on existing song_index + library_albums rows so
+      // the fuzzy candidate SQL works without a full re-sync. New writes already
+      // populate these (detailTables / libraryAlbumsTable); this catches rows
+      // written before the columns existed. ASYNC-CHUNKED — a 38k-row
+      // normalize+phonetic pass inside one withTransactionSync would freeze the
+      // splash / risk an Android ANR, so each ~1000-row batch runs in its own
+      // async transaction (shared write mutex) with a macrotask yield between
+      // batches. NULL norm_title/norm_name is the "not yet backfilled" marker;
+      // every UPDATE sets a non-null value (''+ for empty/non-Latin) so a row
+      // always leaves the WHERE set — no infinite loop. Runs at the splash (UI),
+      // never headless (migrations don't run headless).
+      const db = getDb();
+      if (!db) {
+        log('[m32] no db — skipped');
+        return;
+      }
+      const BATCH = 1000;
+
+      let songTotal = 0;
+      for (let guard = 0; guard < 1000; guard++) {
+        // eslint-disable-next-line no-await-in-loop
+        const rows = await db.getAllAsync<{
+          id: string;
+          title: string | null;
+          artist: string | null;
+        }>('SELECT id, title, artist FROM song_index WHERE norm_title IS NULL LIMIT ?;', [BATCH]);
+        if (rows.length === 0) break;
+        // eslint-disable-next-line no-await-in-loop
+        await serializeDbWrite(() =>
+          db.withTransactionAsync(async () => {
+            for (const r of rows) {
+              const title = r.title ?? '';
+              const artist = r.artist ?? '';
+              // eslint-disable-next-line no-await-in-loop
+              await db.runAsync(
+                'UPDATE song_index SET norm_title = ?, norm_artist = ?, dmeta_title = ?, dmeta_artist = ? WHERE id = ?;',
+                [normalize(title), normalizeArtist(artist), metaphoneKey(title), metaphoneKey(artist), r.id],
+              );
+            }
+          }),
+        );
+        songTotal += rows.length;
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (rows.length < BATCH) break;
+      }
+      log(`[m32] song_index backfilled ${songTotal} rows`);
+
+      let albumTotal = 0;
+      for (let guard = 0; guard < 1000; guard++) {
+        // library_albums has no name/artist column — parse the raw_json envelope.
+        // eslint-disable-next-line no-await-in-loop
+        const rows = await db.getAllAsync<{ id: string; raw_json: string }>(
+          'SELECT id, raw_json FROM library_albums WHERE norm_name IS NULL LIMIT ?;',
+          [BATCH],
+        );
+        if (rows.length === 0) break;
+        // eslint-disable-next-line no-await-in-loop
+        await serializeDbWrite(() =>
+          db.withTransactionAsync(async () => {
+            for (const r of rows) {
+              let name = '';
+              let artist = '';
+              try {
+                const a = JSON.parse(r.raw_json) as { name?: string; artist?: string };
+                name = a?.name ?? '';
+                artist = a?.artist ?? '';
+              } catch {
+                /* unparseable — store empties so the row leaves the backfill set */
+              }
+              // eslint-disable-next-line no-await-in-loop
+              await db.runAsync(
+                'UPDATE library_albums SET norm_name = ?, norm_artist = ?, dmeta_name = ?, dmeta_artist = ? WHERE id = ?;',
+                [normalize(name), normalizeArtist(artist), metaphoneKey(name), metaphoneKey(artist), r.id],
+              );
+            }
+          }),
+        );
+        albumTotal += rows.length;
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (rows.length < BATCH) break;
+      }
+      log(`[m32] library_albums backfilled ${albumTotal} rows`);
     },
   },
 

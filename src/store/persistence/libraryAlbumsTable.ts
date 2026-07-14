@@ -13,8 +13,19 @@
  * `userRating` so ratings reconcile without parsing every blob).
  */
 import type { AlbumID3 } from '../../services/subsonicService';
+import { normalize, normalizeArtist, metaphoneKey } from '../../services/searchMatch';
 
 import { getDb, serializeDbWrite } from './db';
+
+/** The four fuzzy-search column values for a `library_albums` row, in column
+ *  order: `norm_name`, `norm_artist`, `dmeta_name`, `dmeta_artist`. Mirrors
+ *  `songSearchCols` in detailTables — see `searchMatch.ts` + the schema in
+ *  `db.ts`. Empty/non-Latin input yields `''` (never matched at lookup). */
+function albumSearchCols(a: AlbumID3): [string, string, string, string] {
+  const name = a.name ?? '';
+  const artist = a.artist ?? '';
+  return [normalize(name), normalizeArtist(artist), metaphoneKey(name), metaphoneKey(artist)];
+}
 
 /** How the caller derives the stored sort key for a row. Passed in (not
  *  computed here) so this table module doesn't import the stores that own the
@@ -57,7 +68,7 @@ export async function upsertLibraryAlbumsAsync(
   if (db === null || albums.length === 0) return;
   const valid = albums.filter((a) => a.id);
   if (valid.length === 0) return;
-  const COLS = 6;
+  const COLS = 10;
   const CHUNK = 500;
   try {
     await serializeLibraryAlbumWrite(() =>
@@ -75,12 +86,13 @@ export async function upsertLibraryAlbumsAsync(
               album.userRating ?? null,
               createdToEpoch(album.created),
               JSON.stringify(album),
+              ...albumSearchCols(album),
             );
           }
           // eslint-disable-next-line no-await-in-loop
           await db.runAsync(
             `INSERT OR REPLACE INTO library_albums
-               (id, sortKey, starred, userRating, created, raw_json)
+               (id, sortKey, starred, userRating, created, raw_json, norm_name, norm_artist, dmeta_name, dmeta_artist)
                VALUES ${placeholders};`,
             params,
           );

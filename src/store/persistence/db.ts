@@ -206,6 +206,21 @@ try {
   db.execSync(
     'CREATE INDEX IF NOT EXISTS idx_song_index_starred ON song_index((title IS NULL), lower(title), id) WHERE starred = 1;',
   );
+  // Fuzzy-search columns (populated by the upsert fns + a backfill migration).
+  // Nullable — a headless-first boot before backfill degrades to exact/prefix on
+  // raw columns. `norm_*` = normalized (accent-folded, punctuation-stripped) text
+  // for exact/prefix/infix; `dmeta_*` = per-token Double-Metaphone for phonetic
+  // recall (empty codes excluded so non-Latin titles never collide). See searchMatch.ts.
+  for (const col of ['norm_title', 'norm_artist', 'dmeta_title', 'dmeta_artist']) {
+    try {
+      db.execSync(`ALTER TABLE song_index ADD COLUMN ${col} TEXT;`);
+    } catch {
+      /* column already exists */
+    }
+  }
+  db.execSync('CREATE INDEX IF NOT EXISTS idx_song_index_norm_title ON song_index (norm_title);');
+  db.execSync('CREATE INDEX IF NOT EXISTS idx_song_index_dmeta_title ON song_index (dmeta_title);');
+  db.execSync('CREATE INDEX IF NOT EXISTS idx_song_index_dmeta_artist ON song_index (dmeta_artist);');
 
   // library_albums — the lean album-browse LIST (all albums, song-less
   // `AlbumID3`). Replaces the old `substreamer-album-library` KV blob: written
@@ -230,6 +245,17 @@ try {
   db.execSync(
     'CREATE INDEX IF NOT EXISTS idx_library_albums_sortKey ON library_albums (sortKey, id);',
   );
+  // Fuzzy-search columns for album/artist matching (see song_index above).
+  for (const col of ['norm_name', 'norm_artist', 'dmeta_name', 'dmeta_artist']) {
+    try {
+      db.execSync(`ALTER TABLE library_albums ADD COLUMN ${col} TEXT;`);
+    } catch {
+      /* column already exists */
+    }
+  }
+  db.execSync('CREATE INDEX IF NOT EXISTS idx_library_albums_norm_name ON library_albums (norm_name);');
+  db.execSync('CREATE INDEX IF NOT EXISTS idx_library_albums_dmeta_name ON library_albums (dmeta_name);');
+  db.execSync('CREATE INDEX IF NOT EXISTS idx_library_albums_dmeta_artist ON library_albums (dmeta_artist);');
 
   // scrobble_events — completed scrobbles.
   db.execSync(
