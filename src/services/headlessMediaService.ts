@@ -378,10 +378,26 @@ async function resolveVoice(request: MediaSearchRequest): Promise<Child[]> {
       : await getOnlineSongsByGenre(request.genre);
     if (byGenre.length) return byGenre;
   }
+  // Prefer the structured `song` term over the flat `query`. RNQP supplies clean
+  // `song`/`artist` for Siri + Android Assistant/Auto; the flat query (which the
+  // Android App Actions path historically concatenated song+artist into) could
+  // never substring-match a single field. Fall back to `query` only when no song.
+  const term = request.song?.trim() || request.query;
   const results = isOffline()
-    ? await performOfflineSearch(request.query)
-    : await performOnlineSearch(request.query);
-  return results.songs;
+    ? await performOfflineSearch(term)
+    : await performOnlineSearch(term);
+  let songs = results.songs;
+  // When the assistant gave a distinct artist, prefer songs whose artist matches
+  // it — disambiguates same-titled songs and drops the wrong-artist hit.
+  const wantArtist = request.artist?.trim().toLowerCase();
+  if (wantArtist && songs.length > 1) {
+    const matched = songs.filter((s) => {
+      const a = (s.artist ?? '').toLowerCase();
+      return a.includes(wantArtist) || wantArtist.includes(a);
+    });
+    if (matched.length) songs = matched;
+  }
+  return songs;
 }
 
 /**
@@ -586,6 +602,7 @@ export const __test = {
   buildSnapshot,
   resolveBrowseChildren,
   resolvePlayback,
+  resolveVoice,
   pushSnapshot,
   /** Tear down subscriptions + reset module state so install-path tests isolate. */
   reset: () => {

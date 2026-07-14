@@ -15,10 +15,14 @@ describe('parseVoiceDeepLink', () => {
     });
   });
 
-  it('composes query from multiple fields (song before artist)', () => {
+  it('query is the primary single term, NOT concatenated (structured fields kept)', () => {
     const r = parseVoiceDeepLink('substreamer://play?artist=Nirvana&song=Come%20As%20You%20Are');
     expect(r?.type).toBe('song');
-    expect(r?.query).toBe('Come As You Are Nirvana');
+    // The song term only — the artist stays in the structured `artist` field,
+    // it is NOT joined into `query` (which could never substring-match).
+    expect(r?.query).toBe('Come As You Are');
+    expect(r?.song).toBe('Come As You Are');
+    expect(r?.artist).toBe('Nirvana');
   });
 
   it('returns null for a non-play or wrong-scheme URL', () => {

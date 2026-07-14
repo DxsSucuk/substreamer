@@ -47,11 +47,11 @@ export function buildMediaSearchRequest(fields: VoiceFields): MediaSearchRequest
   if (!artist && !album && !song && !playlist && !genre) return null;
 
   const type = inferType({ artist, album, song, playlist, genre });
-  // Human-readable query for the resolver's substring fallback.
-  const query = [song, album, artist, playlist, genre]
-    .filter((v): v is string => v != null)
-    .join(' ')
-    .trim();
+  // `query` is the PRIMARY single term (most-specific field first), NOT a
+  // concatenation. Concatenating song+artist ("Come As You Are Nirvana") could
+  // never substring-match one field; the resolver prefers the structured
+  // `song`/`artist` fields below and only uses `query` as a single-term fallback.
+  const query = song ?? album ?? artist ?? playlist ?? genre ?? '';
 
   return { query, type, artist, album, song, playlist, genre, origin: 'android-assistant' };
 }
