@@ -441,6 +441,8 @@ export async function onScanCompleted(
   // Pull the changed albums' SONGS into song_index (album_details stays
   // on-demand). Keeps the flat Songs list current without a full re-sync.
   await fetchSongsForAlbums(changedAlbumIds);
+  // Real data changed (we returned early above when changedAlbumIds was empty).
+  syncStatusStore.getState().bumpLibraryUpdated();
 }
 
 /**
@@ -502,6 +504,8 @@ export async function onAlbumReferenced(albumId: string): Promise<void> {
       if (song && song.length > 0) {
         songIndexStore.getState().upsertSongsForAlbum(albumId, song);
       }
+      // A new album was ingested into the library → mark the data as updated.
+      syncStatusStore.getState().bumpLibraryUpdated();
     }
   } catch {
     /* best-effort: a missed reference resolves on the next full sync */

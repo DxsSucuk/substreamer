@@ -140,4 +140,45 @@ describe('syncStatusStore', () => {
       expect(syncStatusStore.getState().getInFlight('artists')).toBe(b);
     });
   });
+
+  describe('full-sync + last-updated markers', () => {
+    it('fullSyncCompletedAt is stamped only once BOTH flags complete (songs first)', () => {
+      syncStatusStore.setState({
+        librarySyncComplete: false,
+        songSyncComplete: false,
+        fullSyncCompletedAt: null,
+      });
+      syncStatusStore.getState().markSongSyncComplete();
+      expect(syncStatusStore.getState().fullSyncCompletedAt).toBeNull();
+      syncStatusStore.getState().markLibrarySyncComplete();
+      expect(syncStatusStore.getState().fullSyncCompletedAt).toBeGreaterThan(0);
+    });
+
+    it('fullSyncCompletedAt is stamped in the reverse order too (library first)', () => {
+      syncStatusStore.setState({
+        librarySyncComplete: false,
+        songSyncComplete: false,
+        fullSyncCompletedAt: null,
+      });
+      syncStatusStore.getState().markLibrarySyncComplete();
+      expect(syncStatusStore.getState().fullSyncCompletedAt).toBeNull();
+      syncStatusStore.getState().markSongSyncComplete();
+      expect(syncStatusStore.getState().fullSyncCompletedAt).toBeGreaterThan(0);
+    });
+
+    it('resetting either sync clears fullSyncCompletedAt', () => {
+      syncStatusStore.setState({ fullSyncCompletedAt: 123 });
+      syncStatusStore.getState().resetSongSync();
+      expect(syncStatusStore.getState().fullSyncCompletedAt).toBeNull();
+      syncStatusStore.setState({ fullSyncCompletedAt: 123 });
+      syncStatusStore.getState().resetLibrarySync();
+      expect(syncStatusStore.getState().fullSyncCompletedAt).toBeNull();
+    });
+
+    it('bumpLibraryUpdated stamps libraryLastUpdatedAt', () => {
+      syncStatusStore.setState({ libraryLastUpdatedAt: null });
+      syncStatusStore.getState().bumpLibraryUpdated();
+      expect(syncStatusStore.getState().libraryLastUpdatedAt).toBeGreaterThan(0);
+    });
+  });
 });

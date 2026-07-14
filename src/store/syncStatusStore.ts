@@ -93,6 +93,16 @@ export interface SyncStatusState extends LastKnownMarkers {
   /** True once every song has been fetched into `song_index`. Startup gate. */
   songSyncComplete: boolean;
 
+  // --- Full-sync + last-updated markers (search routing + Settings display) ---
+  /** Epoch ms when the FULL sync (album list + all songs) last completed — set
+   *  when both `librarySyncComplete` and `songSyncComplete` are true. Null until
+   *  the first complete sync; cleared when either sync is reset. */
+  fullSyncCompletedAt: number | null;
+  /** Epoch ms of the last PARTIAL update that actually CHANGED library data
+   *  (scan-detected new/changed album, album refresh writing new songs). Distinct
+   *  from `lastChangeDetectionAt`, which is only when detection last RAN. */
+  libraryLastUpdatedAt: number | null;
+
   // Ephemeral
   generation: number;
   inFlight: Map<SyncScope, Promise<void>>;
@@ -118,6 +128,8 @@ export interface SyncStatusState extends LastKnownMarkers {
   setSongSyncCursor: (cursor: number) => void;
   markSongSyncComplete: () => void;
   resetSongSync: () => void;
+  /** Stamp `libraryLastUpdatedAt = now` — called at partial-update ingestion. */
+  bumpLibraryUpdated: () => void;
   bumpGeneration: () => void;
   setInFlight: (scope: SyncScope, promise: Promise<void>) => void;
   clearInFlight: (scope: SyncScope) => void;
@@ -144,6 +156,9 @@ export const syncStatusStore = create<SyncStatusState>()(
       songSyncStrategy: null,
       songSyncCursor: 0,
       songSyncComplete: false,
+
+      fullSyncCompletedAt: null,
+      libraryLastUpdatedAt: null,
 
       lastChangeDetectionAt: null,
       lastKnownServerUrl: null,
@@ -179,11 +194,13 @@ export const syncStatusStore = create<SyncStatusState>()(
       setLibrarySyncProgress: (count) => set({ librarySyncCount: count }),
       setLibrarySyncCursor: (cursor) => set({ librarySyncCursor: cursor }),
       markLibrarySyncComplete: () =>
-        set({
+        set((s) => ({
           librarySyncComplete: true,
           librarySyncPhase: 'idle',
           librarySyncLastFetchedAt: Date.now(),
-        }),
+          // Full sync is complete only once BOTH the album list and songs are done.
+          fullSyncCompletedAt: s.songSyncComplete ? Date.now() : s.fullSyncCompletedAt,
+        })),
       resetLibrarySync: () =>
         set({
           librarySyncPhase: 'idle',
@@ -191,12 +208,19 @@ export const syncStatusStore = create<SyncStatusState>()(
           librarySyncCount: 0,
           librarySyncCursor: 0,
           librarySyncLastFetchedAt: null,
+          fullSyncCompletedAt: null,
         }),
       setSyncStrategy: (strategy) => set({ syncStrategy: strategy }),
       setSongSyncStrategy: (strategy) => set({ songSyncStrategy: strategy }),
       setSongSyncCursor: (cursor) => set({ songSyncCursor: cursor }),
       markSongSyncComplete: () =>
-        set({ songSyncComplete: true, detailSyncPhase: 'idle', detailSyncTotal: 0, detailSyncCompleted: 0 }),
+        set((s) => ({
+          songSyncComplete: true,
+          detailSyncPhase: 'idle',
+          detailSyncTotal: 0,
+          detailSyncCompleted: 0,
+          fullSyncCompletedAt: s.librarySyncComplete ? Date.now() : s.fullSyncCompletedAt,
+        })),
       resetSongSync: () =>
         set({
           songSyncStrategy: null,
@@ -205,7 +229,9 @@ export const syncStatusStore = create<SyncStatusState>()(
           detailSyncPhase: 'idle',
           detailSyncTotal: 0,
           detailSyncCompleted: 0,
+          fullSyncCompletedAt: null,
         }),
+      bumpLibraryUpdated: () => set({ libraryLastUpdatedAt: Date.now() }),
       bumpGeneration: () => set({ generation: get().generation + 1 }),
       setInFlight: (scope, promise) => {
         // Replace (not mutate) the Map so Zustand selector subscribers using
@@ -241,6 +267,8 @@ export const syncStatusStore = create<SyncStatusState>()(
         songSyncStrategy: state.songSyncStrategy,
         songSyncCursor: state.songSyncCursor,
         songSyncComplete: state.songSyncComplete,
+        fullSyncCompletedAt: state.fullSyncCompletedAt,
+        libraryLastUpdatedAt: state.libraryLastUpdatedAt,
         lastChangeDetectionAt: state.lastChangeDetectionAt,
         lastKnownServerUrl: state.lastKnownServerUrl,
         lastKnownServerSongCount: state.lastKnownServerSongCount,
