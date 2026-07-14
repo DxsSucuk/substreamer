@@ -37,6 +37,7 @@ import {
   getOfflineSongsByGenre,
 } from './searchService';
 import { getLocalTrackUri } from './musicCacheService';
+import { logVoiceSearch } from './voiceSearchLogger';
 import { composeHomeAlbumSections } from './homeSectionsService';
 import { albumLibraryStore } from '../store/albumLibraryStore';
 import { playlistLibraryStore } from '../store/playlistLibraryStore';
@@ -361,22 +362,46 @@ function findPlaylistByName(name: string): Playlist | undefined {
   );
 }
 
+/** One-line description of a voice request for the diagnostics log — reveals
+ *  exactly what the assistant transcribed (query/song/artist/…) so an on-device
+ *  miss is debuggable. Gated by the Voice Search Diagnostics toggle. */
+function describeVoiceRequest(r: MediaSearchRequest): string {
+  const f = (k: string, v?: string) => (v ? ` ${k}=${JSON.stringify(v)}` : '');
+  return (
+    `request origin=${r.origin ?? '?'} offline=${isOffline()}` +
+    f('type', r.type) +
+    f('query', r.query) +
+    f('song', r.song) +
+    f('artist', r.artist) +
+    f('album', r.album) +
+    f('playlist', r.playlist) +
+    f('genre', r.genre)
+  );
+}
+
 /** Resolve a voice request → a Child[] to play. Structured fields first
  *  (playlist by name, then genre), else the query's song matches. */
 async function resolveVoice(request: MediaSearchRequest): Promise<Child[]> {
   await ensureHeadlessDataReady();
+  logVoiceSearch(describeVoiceRequest(request));
   if (request.playlist) {
     const pl = findPlaylistByName(request.playlist);
     if (pl) {
       const songs = await playlistSongs(pl.id);
-      if (songs.length) return songs;
+      if (songs.length) {
+        logVoiceSearch(`→ playlist "${pl.name}": ${songs.length} songs`);
+        return songs;
+      }
     }
   }
   if (request.genre) {
     const byGenre = isOffline()
       ? getOfflineSongsByGenre(request.genre)
       : await getOnlineSongsByGenre(request.genre);
-    if (byGenre.length) return byGenre;
+    if (byGenre.length) {
+      logVoiceSearch(`→ genre "${request.genre}": ${byGenre.length} songs`);
+      return byGenre;
+    }
   }
   // Prefer the structured `song` term over the flat `query`. RNQP supplies clean
   // `song`/`artist` for Siri + Android Assistant/Auto; the flat query (which the
@@ -397,6 +422,12 @@ async function resolveVoice(request: MediaSearchRequest): Promise<Child[]> {
     });
     if (matched.length) songs = matched;
   }
+  logVoiceSearch(
+    `→ search term=${JSON.stringify(term)}: ${songs.length} hit(s)` +
+      (songs[0]
+        ? ` top="${songs[0].title ?? ''}" / "${songs[0].artist ?? ''}"`
+        : ' (MISS)'),
+  );
   return songs;
 }
 

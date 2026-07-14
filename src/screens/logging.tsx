@@ -11,15 +11,18 @@ import { BottomChrome } from '../components/BottomChrome';
 import { useTheme } from '../hooks/useTheme';
 import { settingsStyles } from '../styles/settingsStyles';
 import { IMAGE_CACHE_DIAG_LOG_FILE } from '../services/imageCacheLogger';
+import { VOICE_SEARCH_DIAG_LOG_FILE } from '../services/voiceSearchLogger';
 import { audioDiagnosticsStore } from '../store/audioDiagnosticsStore';
 import { imageCacheDiagnosticsStore } from '../store/imageCacheDiagnosticsStore';
 import { remoteControlDiagnosticsStore } from '../store/remoteControlDiagnosticsStore';
+import { voiceSearchDiagnosticsStore } from '../store/voiceSearchDiagnosticsStore';
 import { formatBytes } from '../utils/formatters';
 
 const LOG_FILE = new File(Paths.document, 'migration-log.txt');
 const DIAG_LOG_FILE = new File(Paths.document, 'audio-diagnostics.log');
 const REMOTE_LOG_FILE = new File(Paths.document, 'remote-control-diagnostics.log');
 const IMAGE_LOG_FILE = new File(Paths.document, IMAGE_CACHE_DIAG_LOG_FILE);
+const VOICE_LOG_FILE = new File(Paths.document, VOICE_SEARCH_DIAG_LOG_FILE);
 
 export function LoggingScreen() {
   const { colors } = useTheme();
@@ -34,11 +37,14 @@ export function LoggingScreen() {
   const remoteLogSize = remoteControlDiagnosticsStore((s) => s.logFileSize);
   const imageEnabled = imageCacheDiagnosticsStore((s) => s.enabled);
   const imageLogSize = imageCacheDiagnosticsStore((s) => s.logFileSize);
+  const voiceEnabled = voiceSearchDiagnosticsStore((s) => s.enabled);
+  const voiceLogSize = voiceSearchDiagnosticsStore((s) => s.logFileSize);
 
   useEffect(() => {
     audioDiagnosticsStore.getState().refreshStatus();
     remoteControlDiagnosticsStore.getState().refreshStatus();
     imageCacheDiagnosticsStore.getState().refreshStatus();
+    voiceSearchDiagnosticsStore.getState().refreshStatus();
     if (LOG_FILE.exists) {
       LOG_FILE.text().then((text) => {
         setContent(text);
@@ -88,6 +94,20 @@ export function LoggingScreen() {
   const handleShareImageLog = useCallback(async () => {
     if (IMAGE_LOG_FILE.exists) {
       await shareAsync(IMAGE_LOG_FILE.uri, { mimeType: 'text/plain' });
+    }
+  }, []);
+
+  const handleVoiceToggle = useCallback(async (value: boolean) => {
+    await voiceSearchDiagnosticsStore.getState().setEnabled(value);
+  }, []);
+
+  const handleVoiceReset = useCallback(async () => {
+    await voiceSearchDiagnosticsStore.getState().resetLog();
+  }, []);
+
+  const handleShareVoiceLog = useCallback(async () => {
+    if (VOICE_LOG_FILE.exists) {
+      await shareAsync(VOICE_LOG_FILE.uri, { mimeType: 'text/plain' });
     }
   }, []);
 
@@ -228,6 +248,64 @@ export function LoggingScreen() {
             >
               <Ionicons name="trash-outline" size={18} color={remoteLogSize != null ? colors.red : colors.textSecondary} />
               <Text style={[styles.actionButtonText, { color: remoteLogSize != null ? colors.red : colors.textSecondary }]}>
+                {t('clear')}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+
+      {/* Voice Search Diagnostics */}
+      <View style={settingsStyles.section}>
+        <Text style={[settingsStyles.sectionTitle, { color: colors.label }]}>{t('voiceSearchDiagnostics')}</Text>
+        <View style={[settingsStyles.card, settingsStyles.cardPadded, { backgroundColor: colors.card }]}>
+          <View style={[styles.diagRow, { borderBottomColor: colors.border }]}>
+            <View style={styles.diagTextWrap}>
+              <Text style={[styles.diagLabel, { color: colors.textPrimary }]}>{t('voiceSearchLogging')}</Text>
+              <Text style={[styles.diagHint, { color: colors.textSecondary }]}>
+                {t('voiceSearchLoggingHint')}
+              </Text>
+            </View>
+            <Switch
+              value={voiceEnabled}
+              onValueChange={handleVoiceToggle}
+              trackColor={{ false: colors.border, true: colors.primary }}
+            />
+          </View>
+          <View style={[styles.diagRow, styles.diagRowLast]}>
+            <Text style={[styles.diagLabel, { color: colors.textPrimary }]}>{t('logFile')}</Text>
+            <Text style={[styles.diagValue, { color: colors.textSecondary }]}>
+              {voiceLogSize != null ? formatBytes(voiceLogSize) : t('none')}
+            </Text>
+          </View>
+          <View style={styles.buttonRow}>
+            <Pressable
+              onPress={handleShareVoiceLog}
+              disabled={voiceLogSize == null}
+              style={({ pressed }) => [
+                styles.actionButton,
+                { borderColor: colors.border },
+                pressed && voiceLogSize != null && settingsStyles.pressed,
+                voiceLogSize == null && settingsStyles.disabled,
+              ]}
+            >
+              <Ionicons name="share-outline" size={18} color={voiceLogSize != null ? colors.primary : colors.textSecondary} />
+              <Text style={[styles.actionButtonText, { color: voiceLogSize != null ? colors.primary : colors.textSecondary }]}>
+                {t('share')}
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={handleVoiceReset}
+              disabled={voiceLogSize == null}
+              style={({ pressed }) => [
+                styles.actionButton,
+                { borderColor: colors.border },
+                pressed && voiceLogSize != null && settingsStyles.pressed,
+                voiceLogSize == null && settingsStyles.disabled,
+              ]}
+            >
+              <Ionicons name="trash-outline" size={18} color={voiceLogSize != null ? colors.red : colors.textSecondary} />
+              <Text style={[styles.actionButtonText, { color: voiceLogSize != null ? colors.red : colors.textSecondary }]}>
                 {t('clear')}
               </Text>
             </Pressable>

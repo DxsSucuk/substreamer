@@ -18,6 +18,11 @@ jest.mock('../searchService', () => ({
   getOfflineSongsByGenre: () => [],
 }));
 
+const mockLogVoiceSearch = jest.fn();
+jest.mock('../voiceSearchLogger', () => ({
+  logVoiceSearch: (...a: unknown[]) => mockLogVoiceSearch(...a),
+}));
+
 import { __test } from '../headlessMediaService';
 import { offlineModeStore } from '../../store/offlineModeStore';
 
@@ -40,6 +45,7 @@ function req(over: Record<string, unknown>): any {
 
 beforeEach(() => {
   mockSearchLibrary.mockReset();
+  mockLogVoiceSearch.mockReset();
   offlineModeStore.setState({ offlineMode: true } as any);
 });
 
@@ -70,5 +76,17 @@ describe('resolveVoice — structured-field handling', () => {
     );
     expect(mockSearchLibrary).toHaveBeenCalledWith('Freak on a Leash');
     expect(songs.map((s: any) => s.id)).toEqual(['sk']);
+  });
+
+  it('logs the request (revealing the transcribed query) and the outcome', async () => {
+    mockSearchLibrary.mockResolvedValue({ songs: [korn], albums: [], artists: [] });
+    await __test.resolveVoice(
+      req({ query: 'Freak on a Leash Korn', song: 'Freak on a Leash', artist: 'Korn', type: 'song' }),
+    );
+    const logged = mockLogVoiceSearch.mock.calls.map((c) => String(c[0]));
+    // The incoming request is captured verbatim (the key diagnostic).
+    expect(logged.some((l) => l.includes('song="Freak on a Leash"') && l.includes('artist="Korn"'))).toBe(true);
+    // …and the resolution outcome (hit count / top result).
+    expect(logged.some((l) => l.includes('1 hit(s)') && l.includes('Freak on a Leash'))).toBe(true);
   });
 });
