@@ -35,9 +35,12 @@ import {
   searchLibrary,
   performOnlineSearch,
   getOfflineSongsByGenre,
+  findAlbum,
+  findArtistSongs,
 } from './searchService';
 import { getLocalTrackUri } from './musicCacheService';
 import { logVoiceSearch } from './voiceSearchLogger';
+import { scoreCandidate, REJECT } from './searchMatch';
 import { composeHomeAlbumSections } from './homeSectionsService';
 import { albumLibraryStore } from '../store/albumLibraryStore';
 import { playlistLibraryStore } from '../store/playlistLibraryStore';
@@ -379,13 +382,83 @@ function describeVoiceRequest(r: MediaSearchRequest): string {
   );
 }
 
-/** Resolve a voice request → a Child[] to play. Structured fields first
- *  (playlist by name, then genre), else the query's song matches. */
+type VoiceIntent = 'playlist' | 'genre' | 'album' | 'artist' | 'song' | 'free-text';
+
+/** Classify a voice request into an intent. The assistant's explicit `type`
+ *  wins when present (iOS SiriKit + Android media-focus both set it); otherwise
+ *  we infer from which slot fields are populated; a bare `query` with nothing
+ *  else is free-text. Never assumes a field is present — see the plan's
+ *  per-surface table. */
+function classifyVoiceIntent(r: MediaSearchRequest): VoiceIntent {
+  switch (r.type) {
+    case 'playlist':
+      return 'playlist';
+    case 'genre':
+      return 'genre';
+    case 'album':
+      return 'album';
+    case 'artist':
+      return 'artist';
+    case 'song':
+      return 'song';
+    default:
+      break; // no / unrecognized type → infer from the populated slots
+  }
+  if (r.playlist?.trim()) return 'playlist';
+  if (r.genre?.trim()) return 'genre';
+  if (r.album?.trim()) return 'album';
+  if (r.song?.trim()) return 'song';
+  if (r.artist?.trim()) return 'artist';
+  return 'free-text';
+}
+
+/**
+ * Song-title search with the artist used as a SCORING signal (boost + fuzzy
+ * filter) rather than a blunt substring match. `scoreCandidate` weights title
+ * with an artist agreement term, so "Freak on a Leash" **by Korn** locks onto
+ * Korn — and "by corn" still does, phonetically. Never returns empty when there
+ * were title hits: if the artist floor kills everything, we keep the top title
+ * hit (better to play something than nothing).
+ */
+async function resolveSongIntent(song: string, artist?: string): Promise<Child[]> {
+  const { songs } = await searchLibrary(song);
+  if (songs.length === 0 || !artist?.trim()) return songs;
+  const ranked = songs
+    .map((s) => ({
+      s,
+      score: scoreCandidate({ song, artist }, { title: s.title ?? '', artist: s.artist }),
+    }))
+    .sort((a, b) => b.score - a.score);
+  const kept = ranked.filter((r) => r.score >= REJECT).map((r) => r.s);
+  return kept.length ? kept : [ranked[0].s];
+}
+
+/** Album tracks in playback order: disc, then track, then a stable id tiebreak
+ *  (defensive — servers usually return album order, but multi-disc can slip). */
+function sortAlbumTracks(songs: Child[]): Child[] {
+  return [...songs].sort((a, b) => {
+    const ad = a.discNumber ?? 1;
+    const bd = b.discNumber ?? 1;
+    if (ad !== bd) return ad - bd;
+    const at = a.track ?? 0;
+    const bt = b.track ?? 0;
+    if (at !== bt) return at - bt;
+    return (a.id ?? '') < (b.id ?? '') ? -1 : 1;
+  });
+}
+
+/** Resolve a voice request → a Child[] to play. Intent-driven: the assistant's
+ *  structure (playlist / genre / album / artist / song) is used when present,
+ *  with a free-text fallback and every branch falling through rather than
+ *  dead-ending. */
 async function resolveVoice(request: MediaSearchRequest): Promise<Child[]> {
   await ensureHeadlessDataReady();
   logVoiceSearch(describeVoiceRequest(request));
-  if (request.playlist) {
-    const pl = findPlaylistByName(request.playlist);
+  const intent = classifyVoiceIntent(request);
+  logVoiceSearch(`intent=${intent}`);
+
+  if (intent === 'playlist') {
+    const pl = findPlaylistByName(request.playlist?.trim() || request.query);
     if (pl) {
       const songs = await playlistSongs(pl.id);
       if (songs.length) {
@@ -393,35 +466,50 @@ async function resolveVoice(request: MediaSearchRequest): Promise<Child[]> {
         return songs;
       }
     }
+    // no playlist matched → fall through to a text search
   }
-  if (request.genre) {
+
+  if (intent === 'genre') {
+    const genre = request.genre?.trim() || request.query;
     const byGenre = isOffline()
-      ? getOfflineSongsByGenre(request.genre)
-      : await getOnlineSongsByGenre(request.genre);
+      ? getOfflineSongsByGenre(genre)
+      : await getOnlineSongsByGenre(genre);
     if (byGenre.length) {
-      logVoiceSearch(`→ genre "${request.genre}": ${byGenre.length} songs`);
+      logVoiceSearch(`→ genre "${genre}": ${byGenre.length} songs`);
       return byGenre;
     }
+    // no genre songs → fall through
   }
-  // Prefer the structured `song` term over the flat `query`. RNQP supplies clean
-  // `song`/`artist` for Siri + Android Assistant/Auto; the flat query (which the
-  // Android App Actions path historically concatenated song+artist into) could
-  // never substring-match a single field. Fall back to `query` only when no song.
-  const term = request.song?.trim() || request.query;
-  // Data-state-aware routing (offline vs local-first vs server) lives in
-  // `searchLibrary` — voice and the in-app box share the one path.
-  const results = await searchLibrary(term);
-  let songs = results.songs;
-  // When the assistant gave a distinct artist, prefer songs whose artist matches
-  // it — disambiguates same-titled songs and drops the wrong-artist hit.
-  const wantArtist = request.artist?.trim().toLowerCase();
-  if (wantArtist && songs.length > 1) {
-    const matched = songs.filter((s) => {
-      const a = (s.artist ?? '').toLowerCase();
-      return a.includes(wantArtist) || wantArtist.includes(a);
-    });
-    if (matched.length) songs = matched;
+
+  if (intent === 'album') {
+    // Match the album name over the local album list, preferring the given
+    // artist ("Ten by Pearl Jam" → Pearl Jam's Ten), then play it in order.
+    const albumName = request.album?.trim() || request.song?.trim() || request.query;
+    const album = await findAlbum(albumName, request.artist);
+    if (album) {
+      const tracks = sortAlbumTracks(await albumSongs(album.id));
+      if (tracks.length) {
+        logVoiceSearch(`→ album "${album.name}" / "${album.artist ?? ''}": ${tracks.length} tracks`);
+        return tracks;
+      }
+    }
+    // no album resolved → fall through to a song search
   }
+
+  if (intent === 'artist') {
+    const artistName = request.artist?.trim() || request.query;
+    const artistSongs = await findArtistSongs(artistName);
+    if (artistSongs.length) {
+      logVoiceSearch(`→ artist "${artistName}": ${artistSongs.length} songs`);
+      return artistSongs;
+    }
+    // no strong artist match → fall through
+  }
+
+  // song / free-text (and any fall-throughs above): title search with fuzzy
+  // artist boost/filter.
+  const term = request.song?.trim() || request.album?.trim() || request.query;
+  const songs = await resolveSongIntent(term, request.artist);
   logVoiceSearch(
     `→ search term=${JSON.stringify(term)}: ${songs.length} hit(s)` +
       (songs[0]
@@ -632,6 +720,7 @@ export const __test = {
   resolveBrowseChildren,
   resolvePlayback,
   resolveVoice,
+  classifyVoiceIntent,
   pushSnapshot,
   /** Tear down subscriptions + reset module state so install-path tests isolate. */
   reset: () => {

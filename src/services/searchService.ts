@@ -7,6 +7,7 @@ import {
   type Child,
 } from './subsonicService';
 import { albumLibraryStore } from '../store/albumLibraryStore';
+import { artistLibraryStore } from '../store/artistLibraryStore';
 import { musicCacheStore, getSongEnvelope } from '../store/musicCacheStore';
 import { playlistLibraryStore } from '../store/playlistLibraryStore';
 import { offlineModeStore } from '../store/offlineModeStore';
@@ -17,7 +18,7 @@ import {
   queryAlbumCandidates,
   hasLocalLibraryRows,
 } from '../store/persistence/searchIndexQueries';
-import { normalize, tokenize, metaphoneKey, scoreField, REJECT } from './searchMatch';
+import { normalize, tokenize, metaphoneKey, scoreField, scoreCandidate, REJECT, CONFIDENT } from './searchMatch';
 import { getGenreNames } from '../utils/genreHelpers';
 
 export interface SearchResults {
@@ -145,6 +146,7 @@ export async function performOfflineSearch(
 
   return {
     albums: [...albums, ...playlistAlbums].slice(0, ALBUM_RESULT_CAP),
+    // No artists offline — a meaningful artist view needs online calls.
     artists: [],
     songs: scored.slice(0, SONG_RESULT_CAP).map((x) => x.c),
   };
@@ -159,6 +161,7 @@ const EMPTY_RESULTS: SearchResults = { albums: [], artists: [], songs: [] };
 // — not an arbitrary number. Ranked, so the cap keeps the best matches.
 const SONG_RESULT_CAP = SEARCH3_RESULT_LIMIT;
 const ALBUM_RESULT_CAP = SEARCH3_RESULT_LIMIT;
+const ARTIST_RESULT_CAP = SEARCH3_RESULT_LIMIT;
 
 /** The server call can't be allowed to hang the search on a slow/unreachable
  *  host — cap it (local results are already the primary answer). */
@@ -210,11 +213,20 @@ export async function searchFullLibraryScored(
     .filter((x) => x.s >= REJECT)
     .sort((a, b) => b.s - a.s);
 
-  const topScore = Math.max(songs[0]?.s ?? 0, albums[0]?.s ?? 0);
+  // Artists (online only): fuzzy-match names against the synced artist library.
+  // CONFIDENT floor, not REJECT — this scores every artist un-prefiltered, so a
+  // looser floor would admit weak Jaro-Winkler noise.
+  const artists = artistLibraryStore
+    .getState()
+    .artists.map((a) => ({ a, s: scoreField(query, a.name).score }))
+    .filter((x) => x.s >= CONFIDENT)
+    .sort((x, y) => y.s - x.s);
+
+  const topScore = Math.max(songs[0]?.s ?? 0, albums[0]?.s ?? 0, artists[0]?.s ?? 0);
   return {
     results: {
       albums: albums.slice(0, ALBUM_RESULT_CAP).map((x) => x.a),
-      artists: [],
+      artists: artists.slice(0, ARTIST_RESULT_CAP).map((x) => x.a),
       songs: songs.slice(0, SONG_RESULT_CAP).map((x) => x.c),
     },
     topScore,
@@ -314,6 +326,43 @@ export async function searchLibrary(
   const server = await guardedServerSearch(query, shouldAbort);
   if (!server || shouldAbort?.()) return local;
   return mergeResults(local, server);
+}
+
+/**
+ * Best local album match for a voice "play album" intent. Fuzzy-matches the
+ * album name over `library_albums`, weighting the (optional) artist via
+ * `scoreCandidate` so "Ten by Pearl Jam" picks Pearl Jam's Ten, not some other
+ * "Ten". Local-only (library_albums is on-device, so it works offline too);
+ * null when nothing clears the reject floor. The caller fetches + plays the
+ * album's tracks in order.
+ */
+export async function findAlbum(name: string, artist?: string): Promise<AlbumID3 | null> {
+  const norm = normalize(name);
+  if (!norm) return null;
+  const tokens = tokenize(norm);
+  const dmetaTokens = tokens
+    .filter((t) => t.length >= 4)
+    .map((t) => metaphoneKey(t))
+    .filter((k) => k.length > 0);
+  const candidates = await queryAlbumCandidates(norm, tokens, dmetaTokens);
+  if (candidates.length === 0) return null;
+  const scored = candidates
+    .map((a) => ({ a, score: scoreCandidate({ song: name, artist }, { title: a.name, artist: a.artist }) }))
+    .filter((x) => x.score >= REJECT)
+    .sort((x, y) => y.score - x.score);
+  return scored[0]?.a ?? null;
+}
+
+/**
+ * Songs strongly attributed to an artist for a voice "play artist" intent. Runs
+ * the shared offline/online-aware `searchLibrary` on the artist name, then keeps
+ * only hits whose ARTIST field confidently matches (drops same-named-title
+ * noise). Bounded by the search cap — the top tracks, plenty to seed a queue.
+ */
+export async function findArtistSongs(name: string): Promise<Child[]> {
+  if (!normalize(name)) return [];
+  const { songs } = await searchLibrary(name);
+  return songs.filter((s) => scoreField(name, s.artist ?? '').score >= CONFIDENT);
 }
 
 /**
