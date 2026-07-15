@@ -166,7 +166,14 @@ const pendingResolvers = new Map<string, (() => void)[]>();
  * bridge crossing per row — material when indexing tens of thousands of rows.
  */
 function buildVariantUri(coverArtId: string, size: number, ext: string): string {
-  return `${ensureCacheDir().uri}/${coverArtPathKey(coverArtId)}/${size}.${ext}`;
+  // Build the URI via the SAME File/Directory objects the write path uses, so a
+  // sanitised id (e.g. a disc-cover colon → `%3A`) is encoded identically. A
+  // hand-built string under-encodes the `%` and resolves to a different on-disk
+  // path than the file was written to — the file is never found.
+  return new File(
+    new Directory(ensureCacheDir(), coverArtPathKey(coverArtId)),
+    `${size}.${ext}`,
+  ).uri;
 }
 
 /**
