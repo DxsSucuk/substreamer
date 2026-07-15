@@ -1,5 +1,28 @@
 # Changelog
 
+## [8.0.86] - 2026-07-15
+
+- fix(image-cache): build variant URI via File/Directory so sanitised ids resolve
+- docs: trim verbose/history-narration comments in the search feature
+- feat(search): structured voice intent + restore artist results
+- fix(search): non-blocking local-first + per-token scoring + result caps
+- feat(voice): on-device voice-search diagnostics logging
+- feat(search): local-first full-library routing for voice + in-app box
+- feat(search): norm/dmeta columns on song_index + library_albums
+- feat(search): fuzzy/phonetic offline search via searchMatch
+- feat(sync): add fullSyncCompletedAt + libraryLastUpdatedAt to syncStatusStore
+- feat(search): fuzzy-match core module (normalize, phonetic, tiered scorer)
+- fix(voice): use structured song/artist fields, stop concatenating the query
+- perf(db): index the song_index list sort (kills the 38k-row scan+sort)
+- chore(deps): bump react-native-queue-player 1.0.7 → 1.0.8
+- fix(image-cache): wipe on-disk files unconditionally on clear/logout
+- chore(db): fix stale references left by the dead-code sweep
+- refactor(db): remove dead persistence functions + their tests/mocks
+- perf(db): wire last two interactive DB reads onto async
+- perf(db): async music-cache write API + atomic refcount orphan (Phase 2)
+- refactor(sqlite): async DB writes Phase 1 — move interactive paths off the JS thread
+- fix(sqlite): serialize all async writes on one connection-wide mutex + tuning PRAGMAs
+- ci: update coverage badge [skip ci]
 ## [8.0.85] - 2026-07-11
 
 - chore(deps): bump react-native-queue-player to 1.0.7
