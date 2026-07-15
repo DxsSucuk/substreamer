@@ -151,12 +151,9 @@ function bestTokenSim(qt: string, cTokens: readonly string[]): number {
   for (const ct of cTokens) {
     if (ct === qt) return 1;
     let s = similarity(qt, ct);
-    // Phonetic agreement lifts a genuine near-miss (corn→korn), but ONLY when
-    // the pair is ALREADY visually plausible, and ADDITIVELY so a closer
-    // spelling still outranks a farther one. Without the visual floor a flat
-    // phonetic boost scores same-code-but-distant words identically — "corn"
-    // and "green" share Double-Metaphone 'KRN', which flooded green albums
-    // above Korn (sim corn/korn ≈ 0.83, corn/green ≈ 0.63).
+    // Phonetic boost only for an already visually-plausible pair (≥0.7), and
+    // additive — else same-code but distant words (corn/green, both 'KRN') would
+    // tie with the real target (corn/korn).
     if (s >= 0.7 && s < 0.95 && qt.length >= 3 && ct.length >= 3) {
       if (qKey === null) qKey = doubleMetaphone(qt)[0] ?? '';
       if (qKey && qKey === (doubleMetaphone(ct)[0] ?? '')) s = Math.min(0.95, s + 0.12);
@@ -188,12 +185,9 @@ export function scoreField(query: string, candidate: string): FieldScore {
     return { score: 0.86, tier: 'all-tokens' };
   }
 
-  // Per-token alignment: score EACH query token against its best-matching
-  // candidate token (fuzzy + phonetic), then blend the mean with the WEAKEST
-  // token so a query word that aligns to nothing drags the score down. This is
-  // what ranks "stone rose" → "The Stone Roses" (rose≈roses) well above "Stone
-  // Temple Pilots" (rose aligns to no token) — the old exact-token overlap gave
-  // both the same score because neither contained the literal token "rose".
+  // Per-token alignment: each query token vs its best candidate token
+  // (fuzzy + phonetic), blending the mean with the weakest token so a word that
+  // aligns to nothing drags the score down (ranks "stone rose" → Stone Roses).
   const perTok = qTokens.map((qt) => bestTokenSim(qt, cTokens));
   const meanTok = perTok.reduce((sum, s) => sum + s, 0) / perTok.length;
   const minTok = Math.min(...perTok);
@@ -203,11 +197,9 @@ export function scoreField(query: string, candidate: string): FieldScore {
   const sim = similarity(q, c);
   const best = Math.max(alignment, sim);
 
-  // Fuzzy band — always kept below the all-tokens (0.86) / prefix / exact floors
-  // so a fuzzy hit can never outrank a literal one. Phonetic recall is folded
-  // into the per-token alignment above (visually gated), so there's no separate
-  // whole-key phonetic tier — that one scored same-code-but-distant words (corn
-  // vs green) a flat 0.7 and buried the real target.
+  // Fuzzy band, kept below the all-tokens (0.86)/prefix/exact floors so a fuzzy
+  // hit never outranks a literal one. Phonetic recall lives in the per-token
+  // alignment (visually gated), so there's no separate whole-key phonetic tier.
   if (best >= 0.9) return { score: 0.6 + 0.25 * best, tier: 'fuzzy' }; // 0.825..0.85
   if (best >= 0.62) return { score: 0.55 + 0.5 * (best - 0.62), tier: 'fuzzy' }; // 0.55..~0.69
   return { score: best * 0.5, tier: 'none' };

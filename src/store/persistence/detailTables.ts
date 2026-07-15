@@ -11,11 +11,8 @@ import { getDb, serializeDbWrite } from './db';
 /**
  * The four fuzzy-search column values for a `song_index` row, in column order:
  * `norm_title`, `norm_artist`, `dmeta_title`, `dmeta_artist`. Populated at every
- * write path so the exact/prefix/infix/phonetic candidate SQL can run against
- * the full library without a re-sync. `normalize`/`metaphoneKey` return `''` for
- * empty/non-Latin input — stored as-is; the lookup side never matches empty
- * dmeta, and the backfill targets `norm_title IS NULL` (only pre-migration rows,
- * never these). See `searchMatch.ts` + the schema in `db.ts`.
+ * write path so candidate SQL runs without a re-sync. Empty/non-Latin input
+ * yields '' — never matched at lookup. See `searchMatch.ts`.
  */
 function songSearchCols(s: Child): [string, string, string, string] {
   const title = s.title ?? '';

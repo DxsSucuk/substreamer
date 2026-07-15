@@ -1,19 +1,13 @@
 /**
  * Recall-oriented candidate generation for local fuzzy search over the full
- * synced library (`song_index`, `library_albums`). These queries cast a WIDE
- * net cheaply — exact/prefix on the indexed `norm_*` columns, then infix + a
- * phonetic pass over the `dmeta_*` columns — capped per tier. PRECISION is the
- * JS re-rank's job (`scoreCandidate`/`scoreField` in `searchService`); the SQL
- * only has to surface the right rows into a bounded shortlist.
+ * synced library (`song_index`, `library_albums`). Casts a wide net cheaply —
+ * exact/prefix on the indexed `norm_*` columns, then infix + phonetic over
+ * `dmeta_*`, capped per tier. Precision is the JS re-rank's job in
+ * `searchService`; the SQL only surfaces a bounded shortlist.
  *
- * The `norm_*`/`dmeta_*` columns + their indexes live in `db.ts`; they are
- * written at every upsert path and backfilled by migration 32. Rows written
- * before the backfill (headless-first boot after an update) have NULL columns
- * and simply don't match — the exact/prefix tiers still serve them via the base
- * columns, so voice never degrades to nothing. Empty dmeta (`''`, all non-Latin
- * input) is never matched: the query side only issues dmeta clauses for
- * non-empty query codes, and `''` can't be a substring hit for a non-empty
- * needle.
+ * NULL columns (rows written before the backfill) still match via exact/prefix
+ * on the base columns. Empty dmeta ('') is never matched — the query side only
+ * issues dmeta clauses for non-empty codes.
  */
 import type { AlbumID3, Child } from '../../services/subsonicService';
 import { getDb } from './db';

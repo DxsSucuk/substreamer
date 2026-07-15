@@ -64,11 +64,9 @@ export const searchStore = create<SearchState>()((set, get) => ({
 
     set({ loading: true, error: null });
     try {
-      // One data-state-aware path (offline → downloaded-only; online →
-      // local-first over the full synced library, augmented by the server when
-      // partially synced) — see `searchLibrary`. `onLocalResults` renders local
-      // hits the instant they're ready so a partial-sync search never blanks on
-      // the network; `shouldAbort` bails a superseded (further-typed) query.
+      // Routing lives in `searchLibrary`. `onLocalResults` renders local hits
+      // instantly so a partial-sync search never blanks on the network;
+      // `shouldAbort` bails a superseded query.
       const results = await searchLibrary(requestQuery.trim(), {
         shouldAbort: () => get().query !== requestQuery,
         onLocalResults: (local) => {

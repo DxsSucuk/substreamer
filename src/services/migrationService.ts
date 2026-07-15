@@ -2196,17 +2196,10 @@ const MIGRATION_TASKS: MigrationTask[] = [
     id: 32,
     name: 'Backfill fuzzy-search columns',
     run: async (log) => {
-      // Populate norm_/dmeta_ on existing song_index + library_albums rows so
-      // the fuzzy candidate SQL works without a full re-sync. New writes already
-      // populate these (detailTables / libraryAlbumsTable); this catches rows
-      // written before the columns existed. ASYNC-CHUNKED — a 38k-row
-      // normalize+phonetic pass inside one withTransactionSync would freeze the
-      // splash / risk an Android ANR, so each ~1000-row batch runs in its own
-      // async transaction (shared write mutex) with a macrotask yield between
-      // batches. NULL norm_title/norm_name is the "not yet backfilled" marker;
-      // every UPDATE sets a non-null value (''+ for empty/non-Latin) so a row
-      // always leaves the WHERE set — no infinite loop. Runs at the splash (UI),
-      // never headless (migrations don't run headless).
+      // Backfill norm_/dmeta_ on existing rows so fuzzy candidate SQL works
+      // without a re-sync. Async-chunked (per-batch async txn + macrotask yield)
+      // so a 38k-row pass doesn't freeze the splash / ANR. NULL norm is the "not
+      // yet done" marker; every UPDATE writes non-null so rows leave the set.
       const db = getDb();
       if (!db) {
         log('[m32] no db — skipped');

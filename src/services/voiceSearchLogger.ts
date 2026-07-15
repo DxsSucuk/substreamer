@@ -6,12 +6,9 @@
  * `Paths.document`. The user-facing toggle lives in Settings → Logging → Voice
  * Search Diagnostics.
  *
- * Purpose: voice requests (Siri / Android Assistant / Android Auto) route
- * through RNQP → `resolveVoice`, and the ONLY way to confirm what the assistant
- * actually transcribed (and whether we resolved it) is to capture the raw
- * structured request + the outcome on-device — `console.*` is stripped in
- * release builds, so this is file-based. Own log file (not the native-owned
- * remote-control log) so JS writes can't clobber native appends.
+ * Captures the raw voice request + resolution outcome on-device (console.* is
+ * stripped in release). Own log file, not the native remote-control log, so JS
+ * writes can't clobber native appends.
  */
 
 import { File, Paths } from 'expo-file-system';

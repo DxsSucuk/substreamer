@@ -384,11 +384,9 @@ function describeVoiceRequest(r: MediaSearchRequest): string {
 
 type VoiceIntent = 'playlist' | 'genre' | 'album' | 'artist' | 'song' | 'free-text';
 
-/** Classify a voice request into an intent. The assistant's explicit `type`
- *  wins when present (iOS SiriKit + Android media-focus both set it); otherwise
- *  we infer from which slot fields are populated; a bare `query` with nothing
- *  else is free-text. Never assumes a field is present — see the plan's
- *  per-surface table. */
+/** Classify a voice request into an intent: the assistant's `type` when present
+ *  (iOS SiriKit + Android media-focus set it), else inferred from populated
+ *  slots, else free-text. Never assumes a field is present. */
 function classifyVoiceIntent(r: MediaSearchRequest): VoiceIntent {
   switch (r.type) {
     case 'playlist':
@@ -413,12 +411,10 @@ function classifyVoiceIntent(r: MediaSearchRequest): VoiceIntent {
 }
 
 /**
- * Song-title search with the artist used as a SCORING signal (boost + fuzzy
- * filter) rather than a blunt substring match. `scoreCandidate` weights title
- * with an artist agreement term, so "Freak on a Leash" **by Korn** locks onto
- * Korn — and "by corn" still does, phonetically. Never returns empty when there
- * were title hits: if the artist floor kills everything, we keep the top title
- * hit (better to play something than nothing).
+ * Song-title search with the artist as a SCORING signal (boost + fuzzy filter)
+ * via `scoreCandidate`, so "by Korn" — and phonetically "by corn" — locks onto
+ * Korn. Keeps the top title hit if the artist floor empties the list (better to
+ * play something than nothing).
  */
 async function resolveSongIntent(song: string, artist?: string): Promise<Child[]> {
   const { songs } = await searchLibrary(song);

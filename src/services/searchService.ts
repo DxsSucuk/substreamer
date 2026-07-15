@@ -85,8 +85,7 @@ export async function performOfflineSearch(
   const { cachedItems, cachedSongs } = musicCacheStore.getState();
   const cachedIds = new Set(Object.keys(cachedItems));
 
-  // Fuzzy/phonetic-tolerant relevance for a name (+ optional artist) — the best
-  // of the two field scores. Replaces the old raw `.includes()` substring match.
+  // Relevance for a name (+ optional artist) — the best of the two field scores.
   const rel = (name: string, artist?: string | null): number =>
     Math.max(
       scoreField(query, name).score,
