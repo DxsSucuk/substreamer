@@ -18,6 +18,7 @@ import { getTrackPlayer } from 'react-native-queue-player';
 import { errMessage } from '../utils/errorMessage';
 import { installHeadlessMediaService } from './headlessMediaService';
 import { LOOKAHEAD_MAX_CACHE_MB } from '../store/playbackSettingsStore';
+import { ensureNowPlayingPlaceholderUri } from './nowPlayingPlaceholder';
 
 // The lookahead-cache disk budget AND eviction policy are fixed here at
 // configure() — Android's Media3 SimpleCache is built at the right size (it
@@ -28,6 +29,9 @@ void getTrackPlayer()
   .configure({
     audioContentType: 'music',
     userAgent: 'substreamer8',
+    // Our mild gray-waveform placeholder (matches the in-app cover-art
+    // placeholder) in place of RNQP's built-in. Needs a local file:// URI.
+    placeholderArtworkUri: ensureNowPlayingPlaceholderUri(),
     autoRetries: 3,
     lookaheadCacheMaxSizeMb: LOOKAHEAD_MAX_CACHE_MB,
     // LRU keeps the most-recently-played tracks (best for a client where users

@@ -26,7 +26,8 @@ import { getTrackPlayer, registerPlaybackService, SectionIcon } from 'react-nati
 
 import type { AlbumID3, Child, Playlist } from './subsonicService';
 import { buildPlayableQueue } from './playerHelpers';
-import { playTrack } from './playerService';
+import { playTrack, initPlayer } from './playerService';
+import { initScrobbleService } from './scrobbleService';
 import { resolveDisplayImage } from './imageCacheService';
 import { coverArtForAlbum, coverArtForPlaylist } from '../utils/coverArtId';
 import { baseCollator } from '../utils/intl';
@@ -653,7 +654,16 @@ function scheduleRefresh(): void {
 function ensureHeadlessDataReady(): Promise<void> {
   if (!dataReadyPromise) {
     dataReadyPromise = Promise.all([rehydrateAllStores(), awaitKvHydration()])
-      .then(() => {})
+      // Run the full player + scrobble init now that the stores are hydrated. On
+      // a headless CarPlay/Siri cold start the UI's `initPlayer()` /
+      // `initScrobbleService()` never run, so a headless queue would ignore
+      // persisted repeat (+ speed/pitch/EQ) and — crucially — never attach the
+      // onTrackChange/onProgress listeners that capture scrobbles, nor the retry
+      // timer that drains the pending queue. Both are idempotent.
+      .then(async () => {
+        await initPlayer();
+        initScrobbleService();
+      })
       .catch((e) => console.warn(`${LOG_TAG} ensureHeadlessDataReady failed:`, e));
   }
   return dataReadyPromise;

@@ -112,7 +112,8 @@ function reportPlay(trackIndex: number): void {
 /**
  * Apply persisted settings + remote controls and attach the RNQP event
  * listeners that push native state into the Zustand store. The engine is
- * already configured by `playerBootstrap.ts`. Safe to call multiple times.
+ * already configured by `playerBootstrap.ts`. Idempotent — safe to call from
+ * both the UI boot AND the headless CarPlay/Siri boot.
  */
 export async function initPlayer(): Promise<void> {
   if (isPlayerReady) return;
