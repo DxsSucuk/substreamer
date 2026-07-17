@@ -3,6 +3,9 @@ import Ionicons from "@react-native-vector-icons/ionicons/static";
 // re-export BottomTabBar as a named export. Use the deeper path until
 // upstream surfaces it at js-tabs.
 import { BottomTabBar } from "expo-router/build/react-navigation/bottom-tabs";
+// Same deep-path gap as BottomTabBar above — the public entry doesn't
+// re-export PlatformPressable (the default tab button).
+import { PlatformPressable } from "expo-router/build/react-navigation/elements";
 import { Tabs } from 'expo-router';
 import { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -53,6 +56,13 @@ export default function TabLayout() {
           sceneStyle: { backgroundColor: 'transparent' },
           tabBarActiveTintColor: colors.primary,
           tabBarInactiveTintColor: colors.textSecondary,
+          // The default tab button uses a borderless Android ripple — an
+          // unbounded circle sized to the tab width that overshoots the short
+          // bar and clips at the top (#222). Bound it to the cell + a small
+          // radius so it's a centred, contained circle. iOS ignores android_ripple.
+          tabBarButton: (props) => (
+            <PlatformPressable {...props} android_ripple={{ borderless: false, radius: 28 }} />
+          ),
         }}
       >
         <Tabs.Screen
