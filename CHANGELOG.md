@@ -1,5 +1,9 @@
 # Changelog
 
+## [8.0.87] - 2026-07-17
+
+- feat: RNQP 1.0.9 + gray placeholder artwork; run player/scrobble init headless
+- ci: update coverage badge [skip ci]
 ## [8.0.86] - 2026-07-15
 
 - fix(image-cache): build variant URI via File/Directory so sanitised ids resolve
