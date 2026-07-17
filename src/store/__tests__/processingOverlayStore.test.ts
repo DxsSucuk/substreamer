@@ -69,4 +69,46 @@ describe('processingOverlayStore', () => {
     expect(processingOverlayStore.getState().status).toBe('error');
     expect(processingOverlayStore.getState().label).toBe('Failed');
   });
+
+  it('cancels a pending success when hidden before the min-duration elapses', () => {
+    processingOverlayStore.getState().show('Working...');
+    processingOverlayStore.getState().showSuccess('Done');
+    processingOverlayStore.getState().hide();
+    jest.advanceTimersByTime(900);
+    // The deferred success must not re-show over the dismissed op.
+    expect(processingOverlayStore.getState().status).toBe('idle');
+  });
+
+  it('does not re-show a pending result after a reset (resetAllStores path)', () => {
+    processingOverlayStore.getState().show('Working...');
+    processingOverlayStore.getState().showSuccess('Done');
+    // Simulate resetAllStores: state → idle without touching module timers.
+    processingOverlayStore.setState({ status: 'idle', label: '', _showedAt: 0 });
+    jest.advanceTimersByTime(900);
+    expect(processingOverlayStore.getState().status).toBe('idle');
+  });
+
+  it('a new op supersedes a prior op pending result (last-op-wins)', () => {
+    processingOverlayStore.getState().show('A');
+    processingOverlayStore.getState().showSuccess('A done'); // deferred ~900ms
+    processingOverlayStore.getState().show('B'); // clears A's pending timer
+    jest.advanceTimersByTime(900);
+    expect(processingOverlayStore.getState().status).toBe('processing');
+    expect(processingOverlayStore.getState().label).toBe('B');
+  });
+
+  it('watchdog force-hides a hung processing state', () => {
+    processingOverlayStore.getState().show('Working...');
+    // Never resolves — no showSuccess/showError.
+    jest.advanceTimersByTime(60000);
+    expect(processingOverlayStore.getState().status).toBe('idle');
+  });
+
+  it('watchdog is cancelled once the op resolves', () => {
+    processingOverlayStore.getState().show('Working...');
+    processingOverlayStore.getState().showSuccess('Done');
+    jest.advanceTimersByTime(60000);
+    // Resolved to success (after the min-duration); watchdog did not fire.
+    expect(processingOverlayStore.getState().status).toBe('success');
+  });
 });

@@ -1,5 +1,5 @@
 import Ionicons from "@react-native-vector-icons/ionicons/static";
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet } from 'react-native';
 import Animated, {
   useAnimatedStyle,
@@ -17,6 +17,8 @@ import {
 const FADE_MS = 250;
 const SUCCESS_DISPLAY_MS = 1200;
 const ERROR_DISPLAY_MS = 2000;
+/** Extra time past the fade before unmounting, so the exit animation finishes. */
+const UNMOUNT_BUFFER_MS = 80;
 
 export function ProcessingOverlay() {
   const status = processingOverlayStore((s) => s.status);
@@ -24,63 +26,107 @@ export function ProcessingOverlay() {
   const hide = processingOverlayStore((s) => s.hide);
   const { colors } = useTheme();
 
+  const shown = status !== 'idle';
+
+  // Stay mounted through the fade-out, then unmount deterministically via a JS
+  // timer (in the effect) — never via the Reanimated completion callback, which
+  // can stall on Fabric and leave the card stuck on screen.
+  const [mounted, setMounted] = useState(shown);
+
+  // Retain the last real content so the fade-out never renders the empty `idle`
+  // card (idle has no spinner/icon/label). The card always shows a spinner or a
+  // result until it is fully gone.
+  const lastContent = useRef<{ status: OverlayStatus; label: string }>({
+    status: 'processing',
+    label: '',
+  });
+  if (shown) lastContent.current = { status, label };
+  const display = shown ? { status, label } : lastContent.current;
+
   const opacity = useSharedValue(0);
   const scale = useSharedValue(0.9);
   const dismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const unmountTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wasShown = useRef(false);
 
   useEffect(() => {
     if (dismissTimer.current) {
       clearTimeout(dismissTimer.current);
       dismissTimer.current = null;
     }
+    // Clearing here cancels a pending unmount when a new op re-shows within the
+    // fade window (so a rapid idle→processing isn't unmounted mid-show).
+    if (unmountTimer.current) {
+      clearTimeout(unmountTimer.current);
+      unmountTimer.current = null;
+    }
 
-    if (status === 'idle') {
-      opacity.value = withTiming(0, { duration: FADE_MS });
-      scale.value = withTiming(0.9, { duration: FADE_MS });
-    } else {
+    if (shown) {
+      setMounted(true);
+      // Clean entrance from 0 — reset only on the real not-shown→shown
+      // transition so a `processing→success` change doesn't re-fade, and a
+      // previously-stalled value can't leak in.
+      if (!wasShown.current) {
+        opacity.value = 0;
+        scale.value = 0.9;
+      }
+      wasShown.current = true;
       opacity.value = withTiming(1, { duration: FADE_MS });
       scale.value = withTiming(1, { duration: FADE_MS });
 
       if (status === 'success' || status === 'error') {
         const delay = status === 'success' ? SUCCESS_DISPLAY_MS : ERROR_DISPLAY_MS;
-        dismissTimer.current = setTimeout(() => {
-          hide();
-        }, delay);
+        dismissTimer.current = setTimeout(() => hide(), delay);
       }
+    } else {
+      wasShown.current = false;
+      opacity.value = withTiming(0, { duration: FADE_MS });
+      scale.value = withTiming(0.9, { duration: FADE_MS });
+      // Deterministic unmount, independent of the fade completing.
+      unmountTimer.current = setTimeout(
+        () => setMounted(false),
+        FADE_MS + UNMOUNT_BUFFER_MS,
+      );
     }
 
     return () => {
       if (dismissTimer.current) clearTimeout(dismissTimer.current);
+      if (unmountTimer.current) clearTimeout(unmountTimer.current);
     };
-  }, [status, hide, opacity, scale]);
+  }, [shown, status, hide, opacity, scale]);
 
-  const backdropStyle = useAnimatedStyle(() => ({
-    opacity: opacity.value,
-    pointerEvents: (opacity.value > 0 ? 'auto' : 'none') as 'auto' | 'none',
-  }));
-
+  const backdropStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));
   const cardStyle = useAnimatedStyle(() => ({
     opacity: opacity.value,
     transform: [{ scale: scale.value }],
   }));
 
-  const icon = getIcon(status);
+  if (!mounted) return null;
+
+  const icon = getIcon(display.status);
 
   return (
-    <Animated.View style={[styles.backdrop, backdropStyle]}>
+    <Animated.View
+      testID="processingOverlayBackdrop"
+      style={[styles.backdrop, backdropStyle]}
+      // Blocking is driven by React `status`, not the animated value: the instant
+      // the op ends (idle) touches pass through even if the fade stalls, so a
+      // stuck fade can never trap the UI.
+      pointerEvents={shown ? 'auto' : 'none'}
+    >
       <Animated.View style={[styles.card, { backgroundColor: colors.card }, cardStyle]}>
-        {status === 'processing' ? (
+        {display.status === 'processing' ? (
           <ActivityIndicator size="large" color={colors.textPrimary} />
         ) : icon ? (
           <Ionicons
             name={icon.name}
             size={40}
-            color={status === 'error' ? colors.red : colors.primary}
+            color={display.status === 'error' ? colors.red : colors.primary}
           />
         ) : null}
-        {label ? (
+        {display.label ? (
           <Animated.Text style={[styles.label, { color: colors.textPrimary }]}>
-            {label}
+            {display.label}
           </Animated.Text>
         ) : null}
       </Animated.View>
