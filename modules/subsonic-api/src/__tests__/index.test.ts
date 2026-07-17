@@ -333,6 +333,34 @@ describe('request building', () => {
     const url = parseUrl(calls[0].url);
     expect(url.pathname).toBe('/subsonic/rest/ping.view');
   });
+
+  it('handles a .rest TLD hostname (does not mistake it for the /rest path)', async () => {
+    const { mockFetch, calls } = createMockFetch({ status: 'ok' });
+    const api = new SubsonicAPI({
+      ...PASSWORD_CONFIG,
+      url: 'https://my.domain.rest',
+      fetch: mockFetch,
+    });
+
+    await api.ping();
+
+    const url = parseUrl(calls[0].url);
+    expect(url.pathname).toBe('/rest/ping.view');
+  });
+
+  it('does not double the /rest path when the url already ends in /rest', async () => {
+    const { mockFetch, calls } = createMockFetch({ status: 'ok' });
+    const api = new SubsonicAPI({
+      ...PASSWORD_CONFIG,
+      url: 'https://my.domain.rest/rest',
+      fetch: mockFetch,
+    });
+
+    await api.ping();
+
+    const url = parseUrl(calls[0].url);
+    expect(url.pathname).toBe('/rest/ping.view');
+  });
 });
 
 // =============================

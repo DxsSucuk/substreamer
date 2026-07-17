@@ -482,6 +482,19 @@ describe('normalizeServerUrl (tested indirectly via login)', () => {
     const result = await login('http://music.local', 'user', 'pass');
     expect(result.success).toBe(true);
   });
+
+  it('preserves a .rest TLD hostname (does not strip the TLD) — #225', () => {
+    const { normalizeServerUrl } = require('../subsonicService');
+    expect(normalizeServerUrl('https://my.domain.rest')).toBe('https://my.domain.rest');
+    expect(normalizeServerUrl('http://my.domain.rest')).toBe('http://my.domain.rest');
+  });
+
+  it('strips a trailing /rest path segment so it is not doubled — #225', () => {
+    const { normalizeServerUrl } = require('../subsonicService');
+    expect(normalizeServerUrl('https://my.domain.rest/rest')).toBe('https://my.domain.rest');
+    expect(normalizeServerUrl('https://host.com/rest/')).toBe('https://host.com');
+    expect(normalizeServerUrl('https://host.com/subsonic/rest')).toBe('https://host.com/subsonic');
+  });
 });
 
 describe('API wrapper functions', () => {

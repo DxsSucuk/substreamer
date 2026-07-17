@@ -45,7 +45,10 @@ export function normalizeServerUrl(url: string): string {
   if (!base.startsWith('http://') && !base.startsWith('https://')) {
     base = `https://${base}`;
   }
-  return base.replace(/\/+$/, '');
+  // Strip a trailing '/rest' path segment (leading slash — never the '.rest'
+  // TLD) so a saved '.../rest' URL doesn't double up when callers append the
+  // Subsonic '/rest/' path (issue #225).
+  return base.replace(/\/+$/, '').replace(/\/rest$/i, '');
 }
 
 // Subsonic protocol identity sent on every request (SDK ctor + hand-built URLs).
