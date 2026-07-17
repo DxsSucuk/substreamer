@@ -32,7 +32,7 @@ import {
   upsertAlbumDetail,
   upsertSongsForAlbum,
 } from '../store/persistence/detailTables';
-import { getDb, serializeDbWrite } from '../store/persistence/db';
+import { getDb, isDbHealthy, serializeDbWrite } from '../store/persistence/db';
 import { normalize, normalizeArtist, metaphoneKey } from './searchMatch';
 import {
   addColumnIfMissing,
@@ -65,6 +65,13 @@ interface MigrationTask {
   name: string;
   /** The work to perform. Use `log` to record findings. Throw on unrecoverable failure. */
   run: (log: (message: string) => void) => Promise<void>;
+  /**
+   * Runs even on a fresh install, which otherwise fast-tracks past the no-op
+   * sweep (see `getPendingTasks`). Set only on tasks that DO something on an
+   * empty DB: old-release filesystem cleanup, or seeding state a fresh install
+   * needs. Pure data transforms no-op on an empty DB and must stay untagged.
+   */
+  runOnFreshInstall?: boolean;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1063,6 +1070,7 @@ const MIGRATION_TASKS: MigrationTask[] = [
   {
     id: 1,
     name: 'Legacy data migration',
+    runOnFreshInstall: true,
     run: async (log) => {
       // Cordova cache folder names used across app versions.
       // 'music' and 'images' are from the earliest Substreamer releases;
@@ -1113,6 +1121,7 @@ const MIGRATION_TASKS: MigrationTask[] = [
   {
     id: 2,
     name: 'Remove legacy Ionic database',
+    runOnFreshInstall: true,
     run: async (log) => {
       let dbDir: Directory | undefined;
 
@@ -1812,6 +1821,11 @@ const MIGRATION_TASKS: MigrationTask[] = [
   {
     id: 21,
     name: 'Tag device + upgrade backups to v5',
+    // Persists the deviceId (else it regenerates each launch — Zustand persist
+    // only writes on set()), which a fresh install genuinely needs for stable
+    // backup tagging. Not skippable on the fast-track. migrateV4BackupMetas
+    // no-ops on a fresh install (no backups).
+    runOnFreshInstall: true,
     run: async (log) => {
       // Initialise + force-persist the deviceIdentityStore so the freshly-
       // generated UUID survives the next launch. Zustand persist only saves
@@ -2284,11 +2298,17 @@ const MIGRATION_TASKS: MigrationTask[] = [
   //   3. Implement the async `run` function with the migration logic.
   //   4. The runner will pick it up automatically on next launch for
   //      any user whose completedVersion is below the new id.
+  //   5. A fresh install (completedVersion 0) fast-tracks straight to the
+  //      latest id, running ONLY tasks tagged `runOnFreshInstall`. Pure data
+  //      transforms no-op on an empty DB and stay untagged. Tag the task if it
+  //      seeds state a fresh install needs (see #21's deviceId persist) or
+  //      cleans up old-release files — otherwise it is silently skipped on
+  //      fresh installs.
   //
   // Example:
   //
   // {
-  //   id: 31,
+  //   id: 33,
   //   name: 'Reset playback settings',
   //   run: async () => {
   //     // your migration logic here
@@ -2302,9 +2322,24 @@ const MIGRATION_TASKS: MigrationTask[] = [
 /* ------------------------------------------------------------------ */
 
 /**
- * Returns tasks that have not yet been completed.
+ * Highest migration id, derived from the task list at load — a fresh install
+ * fast-tracks the counter straight to this. Auto-tracks new tasks; `Math.max`
+ * (not the last element) because ids 22/23 are intentionally absent.
+ */
+export const LATEST_MIGRATION_ID = Math.max(...MIGRATION_TASKS.map((t) => t.id));
+
+/**
+ * Returns tasks that still need to run.
+ *
+ * A fresh install (completedVersion 0, DB healthy) has an empty DB — every data
+ * migration no-ops — so only the `runOnFreshInstall` tasks are returned and the
+ * runner then fast-tracks the counter to `LATEST_MIGRATION_ID`. The `isDbHealthy`
+ * guard avoids misreading a fallback-store 0 (DB failed to open) as "fresh".
  */
 export function getPendingTasks(completedVersion: number): MigrationTask[] {
+  if (completedVersion === 0 && isDbHealthy()) {
+    return MIGRATION_TASKS.filter((t) => t.runOnFreshInstall);
+  }
   return MIGRATION_TASKS.filter((t) => t.id > completedVersion);
 }
 
@@ -2313,12 +2348,17 @@ export function getPendingTasks(completedVersion: number): MigrationTask[] {
  *
  * @param completedVersion – The highest task ID already completed.
  * @param onProgress       – Optional callback fired before each task runs.
- * @returns The new completedVersion (highest task ID that ran).
+ * @returns The new completedVersion — `LATEST_MIGRATION_ID` on a fresh install
+ *          (the fast-track skips the no-op sweep), else the highest task ID run.
  */
 export async function runMigrations(
   completedVersion: number,
   onProgress?: (task: MigrationTask) => void,
 ): Promise<number> {
+  // Fresh install: `pending` is only the `runOnFreshInstall` tasks; stamp
+  // straight to latest afterwards so the skipped no-op data migrations aren't
+  // re-swept next boot. Best-effort — return latest even if a cleanup throws.
+  const freshInstall = completedVersion === 0 && isDbHealthy();
   const pending = getPendingTasks(completedVersion);
   const lines: string[] = [];
 
@@ -2351,5 +2391,5 @@ export async function runMigrations(
        fail the migration run itself. */
   }
 
-  return completedVersion;
+  return freshInstall ? LATEST_MIGRATION_ID : completedVersion;
 }

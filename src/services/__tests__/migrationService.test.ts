@@ -20,6 +20,15 @@ jest.mock('expo-sqlite', () => ({
   },
 }));
 
+// isDbHealthy gates the fresh-install fast-track. This suite mocks expo-sqlite
+// to throw (DB unavailable), so the real isDbHealthy is false — default the
+// mock to false to match, keeping every full-sweep test unchanged, and flip it
+// true only inside the fast-track block.
+jest.mock('../../store/persistence/db', () => {
+  const actual = jest.requireActual('../../store/persistence/db');
+  return { ...actual, isDbHealthy: jest.fn(() => false) };
+});
+
 // Task #13 delegates bulk-insert to the scrobble table helper. Mock it so we
 // can assert wiring without needing a real SQLite handle.
 jest.mock('../../store/persistence/scrobbleTable', () => ({
@@ -140,7 +149,8 @@ jest.mock('react-native', () => ({
 }));
 
 import { Platform } from 'react-native';
-import { getPendingTasks, runMigrations } from '../migrationService';
+import { getPendingTasks, runMigrations, LATEST_MIGRATION_ID } from '../migrationService';
+import { isDbHealthy } from '../../store/persistence/db';
 import { completedScrobbleStore } from '../../store/completedScrobbleStore';
 import { mbidOverrideStore } from '../../store/mbidOverrideStore';
 import { musicCacheStore } from '../../store/musicCacheStore';
@@ -208,7 +218,8 @@ beforeEach(() => {
 });
 
 describe('getPendingTasks', () => {
-  it('returns all tasks when completedVersion is 0', () => {
+  it('returns the full sweep at completedVersion 0 when the DB is unhealthy (default)', () => {
+    // isDbHealthy() is false in this suite, so v0 falls back to the full sweep.
     const tasks = getPendingTasks(0);
     expect(tasks.length).toBeGreaterThanOrEqual(2);
     expect(tasks[0].id).toBe(1);
@@ -230,6 +241,39 @@ describe('getPendingTasks', () => {
     for (let i = 1; i < tasks.length; i++) {
       expect(tasks[i].id).toBeGreaterThan(tasks[i - 1].id);
     }
+  });
+});
+
+describe('fresh-install fast-track (completedVersion 0, DB healthy)', () => {
+  beforeEach(() => (isDbHealthy as jest.Mock).mockReturnValue(true));
+  afterEach(() => (isDbHealthy as jest.Mock).mockReturnValue(false));
+
+  it('getPendingTasks(0) returns only the runOnFreshInstall tasks, in order', () => {
+    const tasks = getPendingTasks(0);
+    expect(tasks.map((t) => t.id)).toEqual([1, 2, 21]);
+    expect(tasks.every((t) => t.runOnFreshInstall)).toBe(true);
+  });
+
+  it('does not fast-track upgrades — v>0 keeps the id filter even when DB healthy', () => {
+    expect(getPendingTasks(LATEST_MIGRATION_ID - 1).map((t) => t.id)).toEqual([
+      LATEST_MIGRATION_ID,
+    ]);
+  });
+
+  it('runMigrations(0) runs only #1/#2/#21 and stamps LATEST_MIGRATION_ID', async () => {
+    const onProgress = jest.fn();
+    const newVersion = await runMigrations(0, onProgress);
+    expect(newVersion).toBe(LATEST_MIGRATION_ID);
+    expect(onProgress.mock.calls.map((c) => c[0].id)).toEqual([1, 2, 21]);
+  });
+});
+
+describe('fresh-install guard — DB unhealthy falls back to the full sweep', () => {
+  it('getPendingTasks(0) returns the full task list when isDbHealthy() is false', () => {
+    expect(isDbHealthy()).toBe(false);
+    const tasks = getPendingTasks(0);
+    expect(tasks[0].id).toBe(1);
+    expect(tasks.length).toBeGreaterThan(3);
   });
 });
 
