@@ -29,6 +29,11 @@ void getTrackPlayer()
   .configure({
     audioContentType: 'music',
     userAgent: 'substreamer8',
+    // Standard music-player skip-back: restart the current track if past the
+    // fixed ~3s threshold, else go to the previous track. Restores the
+    // pre-RNQP-migration fork behaviour; with this, Previous never greys out
+    // (at index 0, past the threshold it restarts) — matches useCanSkip.
+    skipToPreviousBehavior: 'restart-or-previous',
     // Our mild gray-waveform placeholder (matches the in-app cover-art
     // placeholder) in place of RNQP's built-in. Needs a local file:// URI.
     placeholderArtworkUri: ensureNowPlayingPlaceholderUri(),

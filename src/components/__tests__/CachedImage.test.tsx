@@ -72,6 +72,24 @@ jest.mock('../../services/imageCacheService', () => ({
   },
 }));
 
+// expo-image renders the leaf cover image. Mock it to a plain RN Image that
+// forwards `source`/`onError`, so `UNSAFE_queryAllByType(RNImage)` and the
+// `props.onError()` assertions below keep working — identically under both the
+// ios and android jest-expo projects.
+jest.mock('expo-image', () => {
+  const ReactMock = require('react');
+  const RN = require('react-native');
+  return {
+    __esModule: true,
+    Image: (props: { source?: unknown; onError?: () => void; style?: unknown }) =>
+      ReactMock.createElement(RN.Image, {
+        source: props.source,
+        onError: props.onError,
+        style: props.style,
+      }),
+  };
+});
+
 jest.mock('../../services/subsonicService', () => ({
   VARIOUS_ARTISTS_COVER_ART_ID: '__VA__',
 }));

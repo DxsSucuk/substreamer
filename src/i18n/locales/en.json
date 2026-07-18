@@ -969,7 +969,7 @@
   "backupExclusionCount_other": "{{count}} exclusions",
   "genresWithCount": "Genres ({{selected}}/{{max}})",
   "startingUp": "Starting up",
-  "migrationValidating": "validating",
+  "migrationValidating": "Running Migrations",
   "migrationComplete": "complete",
   "less": "Less",
   "more": "More",

@@ -37,6 +37,7 @@ import {
   View,
   type ViewStyle,
 } from 'react-native';
+import { Image as ExpoImage } from 'expo-image';
 
 import WaveformLogo from './WaveformLogo';
 import {
@@ -66,6 +67,14 @@ const MAX_LOGO_SIZE = 80;
 const LOGO_SCALE = 0.4;
 /** Default colour for the placeholder waveform bars. */
 const PLACEHOLDER_COLOR = 'rgba(150,150,150,0.25)';
+
+/** RN `resizeMode` → expo-image `contentFit`. Covers are square-filled ('cover'). */
+const RESIZE_MODE_TO_CONTENT_FIT: Record<string, 'cover' | 'contain' | 'fill' | 'none'> = {
+  cover: 'cover',
+  contain: 'contain',
+  stretch: 'fill',
+  center: 'none',
+};
 
 /** Resolved URI for the bundled starred-songs cover art. */
 const STARRED_COVER_URI = RNImage.resolveAssetSource(
@@ -111,7 +120,7 @@ export const CachedImage = memo(function CachedImage({
   fallbackUri: rawFallbackUri,
   style,
   placeholderColor,
-  ...imageProps
+  resizeMode,
 }: CachedImageProps) {
   // Sentinel cover ids resolve to bundled assets — the cache service
   // never sees them. Map the id to `undefined` so the rest of the
@@ -251,6 +260,7 @@ export const CachedImage = memo(function CachedImage({
   }, [coverArtId, size, resolved, isRemote, remoteFailed, fallbackUri]);
 
   const flatStyle = StyleSheet.flatten(style) as (ImageStyle & ViewStyle) | undefined;
+  const contentFit = RESIZE_MODE_TO_CONTENT_FIT[resizeMode ?? 'cover'] ?? 'cover';
   const logoSize = computeLogoSize(
     layoutSize?.w ?? (typeof flatStyle?.width === 'number' ? flatStyle.width : undefined),
     layoutSize?.h ?? (typeof flatStyle?.height === 'number' ? flatStyle.height : undefined),
@@ -265,24 +275,23 @@ export const CachedImage = memo(function CachedImage({
         />
       </View>
       {renderUri && (
-        <RNImage
-          {...imageProps}
+        <ExpoImage
           source={{ uri: renderUri }}
           style={StyleSheet.absoluteFill as ImageStyle}
+          contentFit={contentFit}
           onError={onError}
-          // Plain RN Image at full opacity — NO reanimated opacity wrapper.
-          // A reanimated `useAnimatedStyle` opacity desyncs from the native
-          // view when a horizontal FlashList recycles the cell: the cover
-          // resolves to `local` (valid file URI) but the shared value stays
-          // stuck at the 0 it held during the earlier `remote` phase, so the
-          // image is permanently invisible behind the placeholder. See
-          // [[feedback_useeffect_entrance_animation_fragile]].
-          //
-          // fadeDuration={0} also disables Fresco's built-in fade, shrinking
-          // the window in which a recycled view delivers a decode-success
-          // callback to a released CloseableReference (the IllegalStateException
-          // in PipelineDraweeController on Android).
-          fadeDuration={0}
+          // Glide (Android) / SDWebImage (iOS), NOT Fresco — sidesteps the
+          // PipelineDraweeController recycle/re-attach crashes. Both fetch via
+          // our trusted OkHttp / URLSession, so self-signed servers still load.
+          transition={0}
+          // id+size for FlashList recycling; resolveToken forces a reload when
+          // reportBadCache re-downloads the same file:// path (expo-image has
+          // no per-key memory eviction).
+          recyclingKey={`${rawCoverArtId}:${size}:${resolveToken}`}
+          // We own resize (pre-sized variants) + disk cache (imageCacheService),
+          // so expo-image retains nothing.
+          cachePolicy="none"
+          allowDownscaling={false}
         />
       )}
     </View>
