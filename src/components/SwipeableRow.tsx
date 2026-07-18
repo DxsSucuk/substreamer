@@ -105,6 +105,15 @@ const FULL_SWIPE_PROGRESS_THRESHOLD = 1.5;
 /** Fallback timeout (ms) to close the row if onSwipeableOpen never fires. */
 const FULL_SWIPE_CLOSE_TIMEOUT = 500;
 
+/**
+ * Leftmost band (px) reserved for the OS back-swipe. A negative-left hitSlop
+ * insets the pan's begin-region so the row swipe won't START in this band,
+ * letting the native iOS edge-back recognizer win there (#217). Taps are
+ * unaffected. Tunable: raise if back-swipe still opens a row, lower if
+ * near-edge row swipes feel unresponsive.
+ */
+const EDGE_BACK_GESTURE_WIDTH = 25;
+
 /* ------------------------------------------------------------------ */
 /*  SwipeableRow                                                       */
 /* ------------------------------------------------------------------ */
@@ -338,6 +347,7 @@ export const SwipeableRow = memo(function SwipeableRow({
     <ReanimatedSwipeable
       ref={swipeableRef as any}
       enabled={!disabled}
+      hitSlop={{ left: -EDGE_BACK_GESTURE_WIDTH }}
       friction={effectiveFriction}
       overshootFriction={effectiveOvershootFriction}
       leftThreshold={40}

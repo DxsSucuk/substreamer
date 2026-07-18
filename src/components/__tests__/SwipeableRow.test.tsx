@@ -28,6 +28,10 @@ jest.mock('@/utils/haptics', () => ({
   ImpactFeedbackStyle: { Heavy: 'heavy' },
 }));
 
+// Captures the last props ReanimatedSwipeable received, so tests can assert
+// what SwipeableRow forwards (e.g. the edge-reserving hitSlop).
+const mockSwipeableProps: { hitSlop?: unknown } = {};
+
 // ReanimatedSwipeable is the gesture-handling wrapper. The SwipeableRow
 // passes `enabled={!disabled}` which the gesture handler honours at
 // runtime. The mock forwards the `enabled` flag as a testID so tests can
@@ -39,14 +43,19 @@ jest.mock('react-native-gesture-handler/ReanimatedSwipeable', () => {
     default: ({
       children,
       enabled,
+      hitSlop,
     }: {
       children: React.ReactNode;
       enabled?: boolean;
-    }) => (
-      <RN.View testID={`swipeable-${enabled === false ? 'gesture-disabled' : 'gesture-enabled'}`}>
-        {children}
-      </RN.View>
-    ),
+      hitSlop?: unknown;
+    }) => {
+      mockSwipeableProps.hitSlop = hitSlop;
+      return (
+        <RN.View testID={`swipeable-${enabled === false ? 'gesture-disabled' : 'gesture-enabled'}`}>
+          {children}
+        </RN.View>
+      );
+    },
   };
 });
 
@@ -139,5 +148,17 @@ describe('SwipeableRow — disabled prop', () => {
     fireEvent(getByTestId('content'), 'longPress');
     expect(onLongPress).toHaveBeenCalledTimes(1);
     expect(mockHapticsImpact).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('SwipeableRow — edge-back gesture (#217)', () => {
+  it('reserves the left edge via negative-left hitSlop so the OS back-swipe wins', () => {
+    render(
+      <SwipeableRow>
+        <View testID="content" />
+      </SwipeableRow>,
+    );
+    // Negative-left hitSlop insets the pan begin-region off the screen edge.
+    expect(mockSwipeableProps.hitSlop).toEqual({ left: -25 });
   });
 });
