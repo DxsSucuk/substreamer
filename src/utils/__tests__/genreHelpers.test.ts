@@ -1,4 +1,4 @@
-import { getGenreNames, getPrimaryGenre } from '../genreHelpers';
+import { getGenreNames, getPrimaryGenre, splitGenreValue } from '../genreHelpers';
 
 describe('getGenreNames', () => {
   it('extracts names from {name} objects (real runtime shape)', () => {
@@ -80,5 +80,24 @@ describe('getPrimaryGenre', () => {
 
   it('handles plain string in genres array', () => {
     expect(getPrimaryGenre({ genres: ['Electronic'] })).toBe('Electronic');
+  });
+});
+
+describe('splitGenreValue', () => {
+  it('splits a compound tag and strips a leading conjunction', () => {
+    expect(splitGenreValue('Folk, World, & Country')).toEqual(['Folk', 'World', 'Country']);
+    expect(splitGenreValue('Rock; Pop / Jazz')).toEqual(['Rock', 'Pop', 'Jazz']);
+  });
+
+  it('leaves single-value names with & intact (no delimiter)', () => {
+    expect(splitGenreValue('R&B')).toEqual(['R&B']);
+    expect(splitGenreValue('Rock & Roll')).toEqual(['Rock & Roll']);
+    expect(splitGenreValue('Drum & Bass')).toEqual(['Drum & Bass']);
+    expect(splitGenreValue('Hip-Hop')).toEqual(['Hip-Hop']);
+  });
+
+  it('trims, drops empties, and dedupes', () => {
+    expect(splitGenreValue('Rock,  , Rock ,Pop')).toEqual(['Rock', 'Pop']);
+    expect(splitGenreValue('')).toEqual([]);
   });
 });

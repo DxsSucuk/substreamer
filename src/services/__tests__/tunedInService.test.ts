@@ -8,6 +8,7 @@ import {
   getTimeOfDayLabel,
   getTopDecade,
   getTopGenreForHour,
+  resolveGenreSlot,
 } from '../tunedInService';
 import { type Child } from '../subsonicService';
 
@@ -964,5 +965,51 @@ describe('DECADES', () => {
     const recent = DECADES.find((d) => d.label === 'Recent');
     expect(recent).toBeDefined();
     expect(recent!.toYear! - recent!.fromYear!).toBeGreaterThanOrEqual(4);
+  });
+});
+
+describe('resolveGenreSlot', () => {
+  const song = (id: string) => ({ id }) as Child;
+
+  it('returns the primary result in a single call when it has songs', async () => {
+    mockGetRandomSongsFiltered.mockResolvedValueOnce([song('a')]);
+    const result = await resolveGenreSlot('Rock', {}, 10);
+    expect(result).toEqual([song('a')]);
+    expect(mockGetRandomSongsFiltered).toHaveBeenCalledTimes(1);
+  });
+
+  it('splits a compound genre and merges parts when the primary is empty', async () => {
+    mockGetRandomSongsFiltered
+      .mockResolvedValueOnce([]) // "Folk, World, & Country" — no match
+      .mockResolvedValueOnce([song('f')]) // Folk
+      .mockResolvedValueOnce([song('w')]) // World
+      .mockResolvedValueOnce([song('c')]); // Country
+    const result = await resolveGenreSlot('Folk, World, & Country', {}, 12);
+    expect(result).toEqual([song('f'), song('w'), song('c')]);
+    expect(mockGetRandomSongsFiltered).toHaveBeenCalledTimes(4);
+  });
+
+  it('treats a null primary as empty and still splits a compound genre', async () => {
+    mockGetRandomSongsFiltered
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce([song('f')])
+      .mockResolvedValueOnce([song('w')]);
+    const result = await resolveGenreSlot('Folk, World', {}, 10);
+    expect(result).toEqual([song('f'), song('w')]);
+    expect(mockGetRandomSongsFiltered).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not split a single-value genre — one call, empty stays empty', async () => {
+    mockGetRandomSongsFiltered.mockResolvedValueOnce([]);
+    const result = await resolveGenreSlot('Rock', {}, 10);
+    expect(result).toEqual([]);
+    expect(mockGetRandomSongsFiltered).toHaveBeenCalledTimes(1);
+  });
+
+  it('makes exactly one call for an era-only slot (no genre)', async () => {
+    mockGetRandomSongsFiltered.mockResolvedValueOnce([song('x')]);
+    const result = await resolveGenreSlot(undefined, { fromYear: 1990, toYear: 1999 }, 10);
+    expect(result).toEqual([song('x')]);
+    expect(mockGetRandomSongsFiltered).toHaveBeenCalledTimes(1);
   });
 });

@@ -64,3 +64,24 @@ export function getPrimaryGenre(item: HasGenreFields | null | undefined): string
   const names = getGenreNames(item);
   return names.length > 0 ? names[0] : null;
 }
+
+/**
+ * Split a compound genre string into its component genres for a genre query.
+ * Servers that store split single-value genres (e.g. Navidrome splits on
+ * `; / ,`) can't match a joined tag like "Folk, World, & Country", so we split
+ * on those delimiters and strip a leading "& "/"and " conjunction from each
+ * part → ['Folk', 'World', 'Country']. Single-value names with no delimiter
+ * ("R&B", "Rock & Roll", "Drum & Bass") are left intact. Trimmed + deduped.
+ */
+export function splitGenreValue(genre: string): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const raw of genre.split(/[,;/]/)) {
+    const part = raw.trim().replace(/^\s*(?:&|and)\s+/i, '').trim();
+    if (part.length > 0 && !seen.has(part)) {
+      seen.add(part);
+      result.push(part);
+    }
+  }
+  return result;
+}

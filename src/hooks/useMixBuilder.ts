@@ -6,6 +6,7 @@
  */
 
 import { useCallback, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import { connectivityStore } from '../store/connectivityStore';
 import { genreStore } from '../store/genreStore';
@@ -26,6 +27,8 @@ export interface MixBuilder {
   selectedGenres: string[];
   selectedDecades: string[];
   loading: boolean;
+  /** User-facing message when a mix resolves empty or fails; null otherwise. */
+  error: string | null;
   searchQuery: string;
   setSearchQuery: (q: string) => void;
   /** History genres + genres added via search, deduped. */
@@ -45,6 +48,8 @@ export function useMixBuilder(availableGenres: string[]): MixBuilder {
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [addedGenres, setAddedGenres] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const { t } = useTranslation();
 
   const serverGenres = genreStore((s) => s.genres);
 
@@ -68,6 +73,7 @@ export function useMixBuilder(availableGenres: string[]): MixBuilder {
   }, [searchQuery, serverGenres, displayGenres]);
 
   const toggleGenre = useCallback((genre: string) => {
+    setError(null);
     setSelectedGenres((prev) => {
       if (prev.includes(genre)) return prev.filter((g) => g !== genre);
       if (prev.length >= MAX_SELECTED_GENRES) return prev;
@@ -77,6 +83,7 @@ export function useMixBuilder(availableGenres: string[]): MixBuilder {
 
   const selectSearchResult = useCallback((genre: string) => {
     selectionAsync();
+    setError(null);
     setAddedGenres((prev) => [genre, ...prev.filter((g) => g !== genre)]);
     setSelectedGenres((prev) => {
       if (prev.includes(genre)) return prev;
@@ -88,6 +95,7 @@ export function useMixBuilder(availableGenres: string[]): MixBuilder {
 
   const toggleDecade = useCallback((label: string) => {
     selectionAsync();
+    setError(null);
     setSelectedDecades((prev) =>
       prev.includes(label) ? prev.filter((d) => d !== label) : [...prev, label],
     );
@@ -96,6 +104,7 @@ export function useMixBuilder(availableGenres: string[]): MixBuilder {
   const play = useCallback(async () => {
     if (loading) return;
     selectionAsync();
+    setError(null);
     setLoading(true);
     try {
       const online =
@@ -115,16 +124,24 @@ export function useMixBuilder(availableGenres: string[]): MixBuilder {
         // Genre-only, era-only, or both (incl. multiple non-contiguous decades).
         songs = await fetchCustomMix(selectedGenres, decadeRanges, online, ll);
       }
-      if (songs.length > 0) await playTrack(songs[0], songs);
+      if (songs.length > 0) {
+        await playTrack(songs[0], songs);
+      } else {
+        // Never fail silently — the resolved mix was empty.
+        setError(t('noSongsFound'));
+      }
+    } catch {
+      setError(t('failedToLoad'));
     } finally {
       setLoading(false);
     }
-  }, [loading, selectedGenres, selectedDecades]);
+  }, [loading, selectedGenres, selectedDecades, t]);
 
   return {
     selectedGenres,
     selectedDecades,
     loading,
+    error,
     searchQuery,
     setSearchQuery,
     displayGenres,

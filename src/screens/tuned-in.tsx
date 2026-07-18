@@ -756,6 +756,9 @@ const MixBuilderSheet = memo(function MixBuilderSheet({
         {renderDecadePills(builder, colors, t)}
       </ScrollView>
 
+      {builder.error ? (
+        <Text style={[styles.builderError, { color: colors.red }]}>{builder.error}</Text>
+      ) : null}
       <PlayMixButton colors={colors} loading={builder.loading} onPress={builder.play} />
       <View style={styles.sheetBottomPad} />
     </ScrollView>
@@ -817,6 +820,9 @@ const MixBuilderPanel = memo(function MixBuilderPanel({
           {decadesSection}
         </>
       )}
+      {builder.error ? (
+        <Text style={[styles.builderError, { color: colors.red }]}>{builder.error}</Text>
+      ) : null}
       <PlayMixButton colors={colors} loading={builder.loading} onPress={builder.play} />
     </View>
   );
@@ -1498,6 +1504,12 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: '#fff',
+  },
+  builderError: {
+    fontSize: 13,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginTop: 16,
   },
   footer: {
     height: 40,

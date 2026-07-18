@@ -10,6 +10,7 @@ import {
 } from './subsonicService';
 import { getOfflineSongsByGenre, getOfflineSongsAll } from './searchService';
 import { shuffleArray } from '../utils/arrayHelpers';
+import { splitGenreValue } from '../utils/genreHelpers';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -402,12 +403,44 @@ export function generateMixes(input: GenerateMixesInput): MixDefinition[] {
 /*  Fetch execution                                                    */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Resolve songs for one genre[+era] slot. Primary is a random pull for the
+ * genre; if that comes back empty and the genre is a compound tag (e.g.
+ * "Folk, World, & Country"), retry each split part and merge — a server that
+ * stores split single-value genres can't match the joined string. Era-only
+ * slots (no genre) make exactly one call.
+ */
+export async function resolveGenreSlot(
+  genre: string | undefined,
+  era: { fromYear?: number; toYear?: number },
+  size: number,
+): Promise<Child[]> {
+  const primary = await getRandomSongsFiltered({
+    size,
+    genre,
+    fromYear: era.fromYear,
+    toYear: era.toYear,
+  });
+  if (primary && primary.length > 0) return primary;
+  const parts = genre ? splitGenreValue(genre) : [];
+  if (parts.length <= 1) return primary ?? [];
+  const batches = await Promise.all(
+    parts.map((p) =>
+      getRandomSongsFiltered({ size, genre: p, fromYear: era.fromYear, toYear: era.toYear })
+        .then((s) => s ?? [])
+        .catch(() => []),
+    ),
+  );
+  return batches.flat();
+}
+
 export async function fetchMixSongs(strategy: FetchStrategy, listLength = 20): Promise<Child[]> {
   try {
     switch (strategy.type) {
       case 'randomByGenre': {
-        const songs = await getRandomSongsFiltered({ size: strategy.size, genre: strategy.genre });
-        return songs ?? [];
+        // await (not bare return) so a rejection is caught by the outer
+        // try/catch below and falls back to random.
+        return await resolveGenreSlot(strategy.genre, {}, strategy.size);
       }
       case 'randomByDecade': {
         const songs = await getRandomSongsFiltered({
@@ -432,8 +465,7 @@ export async function fetchMixSongs(strategy: FetchStrategy, listLength = 20): P
       case 'multiGenreBlend': {
         const results: Child[] = [];
         for (const g of strategy.genres) {
-          const songs = await getRandomSongsFiltered({ size: g.size, genre: g.name });
-          if (songs) results.push(...songs);
+          results.push(...(await resolveGenreSlot(g.name, {}, g.size)));
         }
         return shuffleArray(results).slice(0, listLength);
       }
@@ -519,14 +551,7 @@ export async function fetchCustomMix(
   const perCombo = Math.max(1, Math.ceil(listLength / combos.length));
   const batches = await Promise.all(
     combos.map((c) =>
-      getRandomSongsFiltered({
-        size: perCombo,
-        genre: c.genre,
-        fromYear: c.fromYear,
-        toYear: c.toYear,
-      })
-        .then((songs) => songs ?? [])
-        .catch(() => []),
+      resolveGenreSlot(c.genre, { fromYear: c.fromYear, toYear: c.toYear }, perCombo).catch(() => []),
     ),
   );
   return shuffleArray(batches.flat()).slice(0, listLength);
