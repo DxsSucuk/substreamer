@@ -38,7 +38,7 @@ export function DetailScreenBackground({
 }) {
   const { theme, colors } = useTheme();
   const insets = useSafeAreaInsets();
-  const { primary, secondary, gradientOpacity } = useImagePalette(
+  const { primary, gradientOpacity } = useImagePalette(
     isWide ? SKIP_COLOR_EXTRACTION : coverArt,
   );
 
@@ -50,7 +50,7 @@ export function DetailScreenBackground({
     ) as [string, string, ...string[]];
   }, [isWide, theme, colors.primary, colors.background]);
 
-  const gradientTopColor = secondary ?? primary ?? colors.background;
+  const gradientTopColor = primary ?? colors.background;
   const gradientColors: readonly [string, string, ...string[]] = [gradientTopColor, colors.background];
 
   const gradientAnimatedStyle = useAnimatedStyle(() => ({

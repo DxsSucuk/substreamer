@@ -59,8 +59,8 @@ export function PlayerTabletPortraitMini() {
     setSideWidth((prev) => (Math.abs(prev - w) > 0.5 ? w : prev));
   }, []);
 
-  // Colour extraction (theme-aware; secondary preferred for a calmer top hue).
-  const { primary, secondary, gradientOpacity } = useImagePalette(songCoverArtId);
+  // Colour extraction (theme-aware; primary is the dominant/vibrant cover colour).
+  const { primary, gradientOpacity } = useImagePalette(songCoverArtId);
   const gradientAnimatedStyle = useAnimatedStyle(() => ({
     opacity: gradientOpacity.value,
   }));
@@ -76,7 +76,7 @@ export function PlayerTabletPortraitMini() {
 
   if (!currentTrack) return null;
 
-  const extractedTop = secondary ?? primary ?? colors.card;
+  const extractedTop = primary ?? colors.card;
   const topColor = queueLoading ? PLACEHOLDER_BG : extractedTop;
   const gradientColors: readonly [string, string, ...string[]] = [
     withAlpha(topColor, 0.65),

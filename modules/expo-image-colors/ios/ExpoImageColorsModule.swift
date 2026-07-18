@@ -64,6 +64,9 @@ public class ExpoImageColorsModule: Module {
   private static let lightYMin = 0.55  // 3:1 vs black
   private static let lStep = 0.02
   private static let chromaShrink = 0.9
+  // Primary-hue score = count × avgChroma^exp. exp<1 dampens chroma so the
+  // most-used hue leads (exp=1 would be Σchroma). Tunable. (Mirrored in Kotlin.)
+  private static let dominantChromaExponent = 0.5
 
   /// Core extraction. Returns a dict suitable for the Expo Modules bridge to
   /// convert into the TS `Palette` interface, or nil for no-usable-colour.
@@ -106,12 +109,15 @@ public class ExpoImageColorsModule: Module {
       vibrance[bucket] += C
     }
 
-    // Primary = max vibrance bucket.
+    // Primary = the dominant hue: the bucket maximising count × avgChroma^exp
+    // (population-led, chroma a mild tiebreak), so the tint follows the colour
+    // that fills most of the artwork.
     var primaryIdx = -1
     var primaryScore = 0.0
     for i in 0..<hueBuckets {
       if count[i] == 0 { continue }
-      let score = vibrance[i]
+      let avgC = vibrance[i] / Double(count[i])
+      let score = Double(count[i]) * pow(avgC, dominantChromaExponent)
       if score > primaryScore {
         primaryScore = score
         primaryIdx = i
@@ -119,7 +125,28 @@ public class ExpoImageColorsModule: Module {
     }
     if primaryIdx < 0 { return nil }
 
-    // Secondary = max-count bucket with hue ≥ 60° from primary.
+    return [
+      "dark": modeVariant(primaryIdx, count, sumR, sumG, sumB, dark: true),
+      "light": modeVariant(primaryIdx, count, sumR, sumG, sumB, dark: false),
+    ]
+  }
+
+  /// Build one `{primary, secondary}` variant for a chosen primary bucket: its
+  /// average colour + the max-count bucket ≥ 60° away, clamped for the requested
+  /// theme. Mirrors the original single-primary logic.
+  private static func modeVariant(
+    _ primaryIdx: Int,
+    _ count: [Int],
+    _ sumR: [Double],
+    _ sumG: [Double],
+    _ sumB: [Double],
+    dark: Bool
+  ) -> [String: Any?] {
+    let primaryLin = (
+      sumR[primaryIdx] / Double(count[primaryIdx]),
+      sumG[primaryIdx] / Double(count[primaryIdx]),
+      sumB[primaryIdx] / Double(count[primaryIdx])
+    )
     var secondaryIdx = -1
     var secondaryCount = 0
     let bucketSpan = 2.0 * Double.pi / Double(hueBuckets)
@@ -132,27 +159,20 @@ public class ExpoImageColorsModule: Module {
         secondaryIdx = i
       }
     }
-
-    let primaryLin = (
-      sumR[primaryIdx] / Double(count[primaryIdx]),
-      sumG[primaryIdx] / Double(count[primaryIdx]),
-      sumB[primaryIdx] / Double(count[primaryIdx])
-    )
     let secondaryLin: (Double, Double, Double)? = secondaryIdx >= 0 ? (
       sumR[secondaryIdx] / Double(count[secondaryIdx]),
       sumG[secondaryIdx] / Double(count[secondaryIdx]),
       sumB[secondaryIdx] / Double(count[secondaryIdx])
     ) : nil
-
-    return [
-      "dark": [
+    if dark {
+      return [
         "primary": clampToDarkHex(primaryLin),
         "secondary": secondaryLin.map { clampToDarkHex($0) } as Any?,
-      ] as [String: Any?],
-      "light": [
-        "primary": clampToLightHex(primaryLin),
-        "secondary": secondaryLin.map { clampToLightHex($0) } as Any?,
-      ] as [String: Any?],
+      ]
+    }
+    return [
+      "primary": clampToLightHex(primaryLin),
+      "secondary": secondaryLin.map { clampToLightHex($0) } as Any?,
     ]
   }
 

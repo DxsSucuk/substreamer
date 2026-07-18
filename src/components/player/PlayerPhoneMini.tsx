@@ -55,8 +55,8 @@ export function PlayerPhoneMini() {
   );
 
   // --- Colour extraction (palette is theme-aware; primary is lightness-clamped
-  // for safe icon contrast, secondary is null for monochromatic covers). ---
-  const { primary, secondary, gradientOpacity } = useImagePalette(songCoverArtId);
+  // for safe icon contrast). ---
+  const { primary, gradientOpacity } = useImagePalette(songCoverArtId);
 
   const gradientAnimatedStyle = useAnimatedStyle(() => ({
     opacity: gradientOpacity.value,
@@ -74,13 +74,9 @@ export function PlayerPhoneMini() {
     return `${hex}${a}`;
   };
 
-  // 2-stop vertical gradient: extracted secondary (prefer) → theme
-  // background. On smaller screens the richer 3-stop bi-tone read as
-  // too busy over the mini player, so we drop the more-vibrant `primary`
-  // from the render and use `secondary` (the most-common hue distinct
-  // from primary) as the calmer top colour. `primary` still extracts
-  // and is available in the hook for future tablet/landscape layouts.
-  const extractedTop = secondary ?? primary ?? colors.card;
+  // 2-stop vertical gradient: the extracted primary (the dominant/vibrant cover
+  // colour, lightness-clamped) → theme background.
+  const extractedTop = primary ?? colors.card;
   const topColor = queueLoading ? PLACEHOLDER_BG : extractedTop;
   const gradientColors: readonly [string, string, ...string[]] = [
     withAlpha(topColor, 0.65),

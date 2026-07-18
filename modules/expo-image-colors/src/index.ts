@@ -17,9 +17,10 @@ export type { Palette, PaletteMode };
  *  3. Reject near-black (Oklab L < 0.10), near-white (L > 0.96), and
  *     near-grey (chroma < 0.04) pixels.
  *  4. Bucket surviving pixels into 24 hue bins × 15°.
- *  5. Primary = max vibrance-weighted bucket (chroma × count).
- *     Secondary = max count bucket with hue ≥ 60° from primary,
- *     else null (monochromatic image).
+ *  5. Primary = the dominant hue: max (count × avgChroma^k) bucket
+ *     (population-led, chroma a mild tiebreak; k = 0.5) — the colour that
+ *     fills most of the artwork. Secondary = max count bucket with hue ≥ 60°
+ *     from the primary, else null (monochromatic image).
  *  6. For each selected bucket, weighted-average linear-RGB → Oklab.
  *  7. Clamp Oklab L into safe lightness bands for text contrast:
  *       dark variant  → [0.22, 0.40], with WCAG Y ≤ 0.18 fallback

@@ -1,9 +1,9 @@
 import { requireNativeModule } from 'expo-modules-core';
 
 export interface PaletteMode {
-  /** Most-vibrant hue bucket's colour, lightness-clamped for this theme. `#RRGGBB`. */
+  /** Dominant hue bucket's colour, lightness-clamped for this theme. `#RRGGBB`. */
   primary: string;
-  /** Most-common hue bucket's colour (if sufficiently distinct from primary), else `null`. */
+  /** A distinct secondary hue bucket's colour (max-count ≥60° away), else `null`. */
   secondary: string | null;
 }
 

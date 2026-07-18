@@ -63,6 +63,9 @@ class ExpoImageColorsModule : Module() {
   private val lightYMin = 0.55  // 3:1 vs black (#000 has Y=0)
   private val lStep = 0.02
   private val chromaShrink = 0.9
+  // Primary-hue score = count × avgChroma^exp. exp<1 dampens chroma so the
+  // most-used hue leads (exp=1 would be Σchroma). Tunable. (Mirrored in Swift.)
+  private val dominantChromaExponent = 0.5
 
   /**
    * Core extraction. Returns a Map suitable for the Expo Modules bridge to
@@ -107,12 +110,15 @@ class ExpoImageColorsModule : Module() {
       vibrance[bucket] += C
     }
 
-    // Pick primary = max vibrance bucket.
+    // Primary = the dominant hue: the bucket maximising count × avgChroma^exp
+    // (population-led, chroma a mild tiebreak), so the tint follows the colour
+    // that fills most of the artwork.
     var primaryIdx = -1
     var primaryScore = 0.0
     for (i in 0 until hueBuckets) {
       if (count[i] == 0) continue
-      val score = vibrance[i]
+      val avgC = vibrance[i] / count[i]
+      val score = count[i] * Math.pow(avgC, dominantChromaExponent)
       if (score > primaryScore) {
         primaryScore = score
         primaryIdx = i
@@ -120,7 +126,30 @@ class ExpoImageColorsModule : Module() {
     }
     if (primaryIdx < 0) return null
 
-    // Pick secondary = max-count bucket with hue ≥ 60° from primary.
+    return mapOf(
+      "dark" to modeVariant(primaryIdx, count, sumR, sumG, sumB, dark = true),
+      "light" to modeVariant(primaryIdx, count, sumR, sumG, sumB, dark = false),
+    )
+  }
+
+  /**
+   * Build one {primary, secondary} variant for a chosen primary bucket: its
+   * average colour + the max-count bucket ≥ 60° away, clamped for the requested
+   * theme. Mirrors the original single-primary logic.
+   */
+  private fun modeVariant(
+    primaryIdx: Int,
+    count: IntArray,
+    sumR: DoubleArray,
+    sumG: DoubleArray,
+    sumB: DoubleArray,
+    dark: Boolean,
+  ): Map<String, Any?> {
+    val primaryLin = doubleArrayOf(
+      sumR[primaryIdx] / count[primaryIdx],
+      sumG[primaryIdx] / count[primaryIdx],
+      sumB[primaryIdx] / count[primaryIdx],
+    )
     var secondaryIdx = -1
     var secondaryCount = 0
     val bucketSpan = 2.0 * Math.PI / hueBuckets
@@ -133,27 +162,17 @@ class ExpoImageColorsModule : Module() {
         secondaryIdx = i
       }
     }
-
-    val primaryLin = doubleArrayOf(
-      sumR[primaryIdx] / count[primaryIdx],
-      sumG[primaryIdx] / count[primaryIdx],
-      sumB[primaryIdx] / count[primaryIdx],
-    )
     val secondaryLin = if (secondaryIdx >= 0) doubleArrayOf(
       sumR[secondaryIdx] / count[secondaryIdx],
       sumG[secondaryIdx] / count[secondaryIdx],
       sumB[secondaryIdx] / count[secondaryIdx],
     ) else null
-
-    return mapOf(
-      "dark" to mapOf(
-        "primary" to clampToDarkHex(primaryLin),
-        "secondary" to secondaryLin?.let { clampToDarkHex(it) },
-      ),
-      "light" to mapOf(
-        "primary" to clampToLightHex(primaryLin),
-        "secondary" to secondaryLin?.let { clampToLightHex(it) },
-      ),
+    return if (dark) mapOf(
+      "primary" to clampToDarkHex(primaryLin),
+      "secondary" to secondaryLin?.let { clampToDarkHex(it) },
+    ) else mapOf(
+      "primary" to clampToLightHex(primaryLin),
+      "secondary" to secondaryLin?.let { clampToLightHex(it) },
     )
   }
 
