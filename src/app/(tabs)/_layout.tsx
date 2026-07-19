@@ -59,9 +59,10 @@ export default function TabLayout() {
           // The default tab button uses a borderless Android ripple — an
           // unbounded circle sized to the tab width that overshoots the short
           // bar and clips at the top (#222). Bound it to the cell + a small
-          // radius so it's a centred, contained circle. iOS ignores android_ripple.
+          // radius so the circle fits inside the short bar's height without
+          // clipping top/bottom. iOS ignores android_ripple.
           tabBarButton: (props) => (
-            <PlatformPressable {...props} android_ripple={{ borderless: false, radius: 28 }} />
+            <PlatformPressable {...props} android_ripple={{ borderless: false, radius: 22 }} />
           ),
         }}
       >

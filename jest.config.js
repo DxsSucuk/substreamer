@@ -32,7 +32,10 @@ module.exports = {
         // `@react-native-vector-icons/*/static` import to the shared stub.
         '^@react-native-vector-icons/.+/static$': '<rootDir>/src/test-utils/iconMock.tsx',
       },
-      setupFiles: ['<rootDir>/src/test-utils/i18nSetup.ts'],
+      setupFiles: [
+        '<rootDir>/src/test-utils/i18nSetup.ts',
+        '<rootDir>/src/test-utils/keyboardControllerSetup.ts',
+      ],
       transformIgnorePatterns,
     },
     {
@@ -49,7 +52,10 @@ module.exports = {
         // `@react-native-vector-icons/*/static` import to the shared stub.
         '^@react-native-vector-icons/.+/static$': '<rootDir>/src/test-utils/iconMock.tsx',
       },
-      setupFiles: ['<rootDir>/src/test-utils/i18nSetup.ts'],
+      setupFiles: [
+        '<rootDir>/src/test-utils/i18nSetup.ts',
+        '<rootDir>/src/test-utils/keyboardControllerSetup.ts',
+      ],
       transformIgnorePatterns,
     },
   ],

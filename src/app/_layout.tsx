@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Appearance, AppState, BackHandler, Dimensions, LogBox, Platform, StyleSheet, View } from 'react-native';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { I18nextProvider } from 'react-i18next';
 import { Easing, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
 
@@ -667,6 +668,7 @@ export default function RootLayout() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.background }}>
+      <KeyboardProvider statusBarTranslucent>
       <I18nextProvider i18n={i18n}>
       <ThemeProvider value={navigationTheme}>
       <RootErrorBoundary colors={colors}>
@@ -888,6 +890,7 @@ export default function RootLayout() {
       </RootErrorBoundary>
       </ThemeProvider>
       </I18nextProvider>
+      </KeyboardProvider>
     </GestureHandlerRootView>
   );
 }

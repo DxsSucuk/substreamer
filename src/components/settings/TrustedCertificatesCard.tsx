@@ -1,8 +1,9 @@
 import Ionicons from '@react-native-vector-icons/ionicons/static';
 import { useCallback, useMemo, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
+import { BottomSheet } from '../BottomSheet';
 import { CertificatePromptModal } from '../CertificatePromptModal';
 import { useTheme } from '../../hooks/useTheme';
 import { useThemedAlert } from '../../hooks/useThemedAlert';
@@ -36,6 +37,7 @@ export function TrustedCertificatesCard() {
 
   const [certUrlPromptVisible, setCertUrlPromptVisible] = useState(false);
   const [certUrlValue, setCertUrlValue] = useState('');
+  const [pendingFetch, setPendingFetch] = useState<{ url: string; hostname: string } | null>(null);
   const [certFetching, setCertFetching] = useState(false);
   const [certModalVisible, setCertModalVisible] = useState(false);
   const [certInfo, setCertInfo] = useState<CertificateInfo | null>(null);
@@ -76,32 +78,54 @@ export function TrustedCertificatesCard() {
     setCertUrlPromptVisible(true);
   }, []);
 
-  const handleFetchCertificate = useCallback(async () => {
-    const result = normalizeUrl(certUrlValue);
-    if (!result) {
-      alert(t('invalidUrl'), t('invalidUrlMessage'));
-      return;
-    }
-    setCertUrlPromptVisible(false);
+  // Fetch the cert for a validated URL. Run only after the input sheet's Modal
+  // has fully torn down (see handleUrlPromptCloseComplete) so the certificate
+  // prompt Modal never stacks on top of the input sheet's Modal (Android shows
+  // one at a time).
+  const fetchCertificate = useCallback(async (url: string, hostname: string) => {
     setCertFetching(true);
     try {
-      const info = await getCertificateInfo(result.url);
+      const info = await getCertificateInfo(url);
       if (info.isSystemTrusted) {
         // The device already trusts this cert. Pinning it would do nothing for
         // security and would needlessly route streaming through the loopback
         // proxy (and break at the next cert rotation), so refuse it.
-        alert(t('certAlreadyTrustedTitle'), t('certAlreadyTrustedMessage', { hostname: result.hostname }));
+        alert(t('certAlreadyTrustedTitle'), t('certAlreadyTrustedMessage', { hostname }));
         return;
       }
       setCertInfo(info);
-      setCertHostname(result.hostname);
+      setCertHostname(hostname);
       setCertModalVisible(true);
     } catch (e) {
       alert(t('certificateError'), e instanceof Error ? e.message : t('failedToFetchCertificate'));
     } finally {
       setCertFetching(false);
     }
+  }, [alert, t]);
+
+  const handleFetchCertificate = useCallback(() => {
+    const result = normalizeUrl(certUrlValue);
+    if (!result) {
+      alert(t('invalidUrl'), t('invalidUrlMessage'));
+      return;
+    }
+    // Stash the resolved target and close the input sheet; the fetch (which can
+    // open the certificate prompt Modal) fires from onCloseComplete once this
+    // sheet's Modal is gone.
+    setPendingFetch(result);
+    setCertUrlPromptVisible(false);
   }, [certUrlValue, normalizeUrl, alert, t]);
+
+  const handleUrlPromptClose = useCallback(() => {
+    setCertUrlPromptVisible(false);
+  }, []);
+
+  const handleUrlPromptCloseComplete = useCallback(() => {
+    if (!pendingFetch) return;
+    const { url, hostname } = pendingFetch;
+    setPendingFetch(null);
+    void fetchCertificate(url, hostname);
+  }, [pendingFetch, fetchCertificate]);
 
   const handleTrustFetchedCert = useCallback(async () => {
     if (!certInfo || !certHostname) return;
@@ -191,50 +215,49 @@ export function TrustedCertificatesCard() {
         </View>
       </View>
 
-      {/* Certificate URL input modal */}
-      <Modal
+      {/* Certificate URL input sheet */}
+      <BottomSheet
         visible={certUrlPromptVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setCertUrlPromptVisible(false)}
+        onClose={handleUrlPromptClose}
+        onCloseComplete={handleUrlPromptCloseComplete}
       >
-        <Pressable style={styles.modalBackdrop} onPress={() => setCertUrlPromptVisible(false)}>
-          <Pressable style={[styles.modalCard, { backgroundColor: colors.card }]} onPress={() => {}}>
-            <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>
-              {t('addCertificate')}
-            </Text>
-            <Text style={[styles.modalHint, { color: colors.textSecondary }]}>
-              {t('addCertificateHint')}
-            </Text>
-            <TextInput
-              style={[styles.modalInput, { color: colors.textPrimary, backgroundColor: colors.inputBg, borderColor: colors.border }]}
-              value={certUrlValue}
-              onChangeText={setCertUrlValue}
-              placeholder="https://music.example.com"
-              placeholderTextColor={colors.textSecondary}
-              autoFocus
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="url"
-              onSubmitEditing={handleFetchCertificate}
-            />
-            <View style={styles.modalButtons}>
-              <Pressable
-                onPress={() => setCertUrlPromptVisible(false)}
-                style={({ pressed }) => [styles.modalButton, pressed && settingsStyles.pressed]}
-              >
-                <Text style={[styles.modalButtonText, { color: colors.textSecondary }]}>{t('cancel')}</Text>
-              </Pressable>
-              <Pressable
-                onPress={handleFetchCertificate}
-                style={({ pressed }) => [styles.modalButton, pressed && settingsStyles.pressed]}
-              >
-                <Text style={[styles.modalButtonText, { color: colors.primary }]}>{t('fetch')}</Text>
-              </Pressable>
-            </View>
+        <View style={styles.sheetHeader}>
+          <Text style={[styles.sheetTitle, { color: colors.textPrimary }]}>
+            {t('addCertificate')}
+          </Text>
+          <Text style={[styles.sheetHint, { color: colors.textSecondary }]}>
+            {t('addCertificateHint')}
+          </Text>
+        </View>
+        <View style={styles.sheetForm}>
+          <TextInput
+            style={[styles.sheetInput, { color: colors.textPrimary, backgroundColor: colors.inputBg, borderColor: colors.border }]}
+            value={certUrlValue}
+            onChangeText={setCertUrlValue}
+            placeholder="https://music.example.com"
+            placeholderTextColor={colors.textSecondary}
+            autoFocus
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            returnKeyType="go"
+            onSubmitEditing={handleFetchCertificate}
+          />
+          <Pressable
+            onPress={handleFetchCertificate}
+            style={({ pressed }) => [
+              styles.sheetSaveButton,
+              { backgroundColor: colors.primary },
+              pressed && settingsStyles.pressed,
+            ]}
+          >
+            <Text style={styles.sheetSaveButtonText}>{t('fetch')}</Text>
           </Pressable>
-        </Pressable>
-      </Modal>
+          <Pressable onPress={handleUrlPromptClose} style={styles.sheetCancelButton}>
+            <Text style={[styles.sheetCancelButtonText, { color: colors.primary }]}>{t('cancel')}</Text>
+          </Pressable>
+        </View>
+      </BottomSheet>
 
       <CertificatePromptModal
         visible={certModalVisible}
@@ -266,23 +289,28 @@ const styles = StyleSheet.create({
   placeholder: { fontSize: 16, fontStyle: 'italic', padding: 16 },
   addRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 12 },
   addText: { fontSize: 16, fontWeight: '500' },
-  modalBackdrop: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.5)',
-  },
-  modalCard: { width: '80%', borderRadius: 14, padding: 20 },
-  modalTitle: { fontSize: 16, fontWeight: '600', marginBottom: 16 },
-  modalHint: { fontSize: 12, marginBottom: 12 },
-  modalInput: {
+  sheetHeader: { paddingHorizontal: 4, marginBottom: 16 },
+  sheetTitle: { fontSize: 18, fontWeight: '700', marginBottom: 6 },
+  sheetHint: { fontSize: 13, lineHeight: 18 },
+  sheetForm: { paddingHorizontal: 4 },
+  sheetInput: {
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     fontSize: 16,
-    borderWidth: 1,
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 16,
   },
-  modalButtons: { flexDirection: 'row', justifyContent: 'flex-end', gap: 16 },
-  modalButton: { paddingVertical: 6, paddingHorizontal: 4 },
-  modalButtonText: { fontSize: 16, fontWeight: '600' },
+  sheetSaveButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderRadius: 12,
+    paddingVertical: 14,
+    marginTop: 20,
+    marginBottom: 8,
+  },
+  sheetSaveButtonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  sheetCancelButton: { alignItems: 'center', paddingVertical: 12, marginBottom: 4 },
+  sheetCancelButtonText: { fontSize: 16, fontWeight: '500' },
 });

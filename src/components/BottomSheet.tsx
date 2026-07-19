@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Keyboard,
   Modal,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -12,6 +10,7 @@ import {
   type LayoutChangeEvent,
 } from 'react-native';
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
+import { useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller';
 import Animated, {
   runOnJS,
   useAnimatedStyle,
@@ -104,8 +103,13 @@ export function BottomSheet({
   // Shared values so worklet gesture callbacks can read them
   const sheetHeightSV = useSharedValue(DEFAULT_HEIGHT);
   const closeableSV = useSharedValue(closeable);
-  // On-screen keyboard height, tracked so the sheet can lift above it.
-  const keyboardHeight = useSharedValue(0);
+  // Frame-synced on-screen keyboard height (negative while open) from
+  // react-native-keyboard-controller. Its root <KeyboardProvider> reports the
+  // keyboard position per-frame via WindowInsetsAnimationCallback and works
+  // inside our RN <Modal> — replacing the hand-rolled Keyboard.addListener,
+  // which lacked keyboardWillShow on Android (catch-up jank). We negate it below
+  // so the sheet lifts by the keyboard height.
+  const { height: keyboardOffset } = useReanimatedKeyboardAnimation();
 
   // Keep closeableSV in sync with prop
   useEffect(() => {
@@ -207,33 +211,6 @@ export function BottomSheet({
     }
   }, [visible, internalVisible, translateY, backdropOpacity, scheduleCloseComplete]);
 
-  // Lift the sheet above the on-screen keyboard. The sheet is pinned to the
-  // bottom of a transparent Modal, and nothing moves it out from under the
-  // keyboard for us: iOS never resizes for the keyboard, and on Android the
-  // Modal is a separate Dialog window that doesn't inherit the activity's
-  // adjustResize. So track the keyboard height ourselves and feed it into the
-  // sheet's transform + maxHeight (see sheetAnimatedStyle). Only while shown.
-  useEffect(() => {
-    if (!internalVisible) return undefined;
-    // iOS exposes Will* events that animate in lockstep with the keyboard;
-    // Android only fires Did*.
-    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
-    const showSub = Keyboard.addListener(showEvt, (e) => {
-      keyboardHeight.value = withTiming(e.endCoordinates?.height ?? 0, {
-        duration: e.duration || 250,
-      });
-    });
-    const hideSub = Keyboard.addListener(hideEvt, (e) => {
-      keyboardHeight.value = withTiming(0, { duration: e?.duration || 200 });
-    });
-    return () => {
-      showSub.remove();
-      hideSub.remove();
-      keyboardHeight.value = 0;
-    };
-  }, [internalVisible, keyboardHeight]);
-
   const handleModalShow = useCallback(() => {
     playEntryAnimation();
   }, [playEntryAnimation]);
@@ -287,14 +264,23 @@ export function BottomSheet({
       }
     });
 
-  const sheetAnimatedStyle = useAnimatedStyle(() => ({
-    // Lift by the keyboard height so the sheet's bottom sits on the keyboard
-    // top, and cap the height to the space that leaves above it — the inner
-    // ScrollView / FlashList then reflows into the visible area (header stays
-    // put, content scrolls) instead of hiding behind the keyboard.
-    transform: [{ translateY: translateY.value - keyboardHeight.value }],
-    maxHeight: Math.min(resolvedMaxHeight, screenCap - keyboardHeight.value),
-  }));
+  const sheetAnimatedStyle = useAnimatedStyle(() => {
+    // keyboard-controller reports the offset as a negative translateY while the
+    // keyboard is open; flip it to a positive height for the expressions below.
+    const keyboardHeight = -keyboardOffset.value;
+    return {
+      // Lift by the keyboard height so the sheet's bottom sits on the keyboard
+      // top, and cap the height to the space that leaves above it — the inner
+      // ScrollView / FlashList then reflows into the visible area (header stays
+      // put, content scrolls) instead of hiding behind the keyboard.
+      transform: [{ translateY: translateY.value - keyboardHeight }],
+      maxHeight: Math.min(resolvedMaxHeight, screenCap - keyboardHeight),
+      // Collapse the bottom safe-area padding as the keyboard rises: the keyboard
+      // occupies the home-indicator area, so keeping insets.bottom there would
+      // over-lift the content ~34px, leaving a dead gap above the keyboard.
+      paddingBottom: Math.max(16, insets.bottom - keyboardHeight),
+    };
+  });
 
   const backdropAnimatedStyle = useAnimatedStyle(() => ({
     // toFixed(4) prevents scientific notation (e.g. 3.5e-8) which
@@ -323,10 +309,7 @@ export function BottomSheet({
         <Animated.View
           style={[
             styles.sheet,
-            {
-              backgroundColor: colors.card,
-              paddingBottom: Math.max(insets.bottom, 16),
-            },
+            { backgroundColor: colors.card },
             sheetAnimatedStyle,
           ]}
           onLayout={handleLayout}

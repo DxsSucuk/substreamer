@@ -17,9 +17,16 @@ import {
  * library reconcile hook. Receives the OLD and NEW id lists so consumers can
  * reap orphans from `playlistDetailStore` and pre-fetch new playlists.
  */
-let reconcileHook: ((oldIds: readonly string[], newIds: readonly string[]) => void) | null = null;
+// Passes the full old + new playlist objects (not just ids) so the reconcile
+// can detect UPDATED playlists by comparing `changed`/`songCount`, not only
+// additions/removals.
+let reconcileHook:
+  | ((oldPlaylists: readonly Playlist[], newPlaylists: readonly Playlist[]) => void)
+  | null = null;
 export function registerPlaylistLibraryReconcileHook(
-  hook: ((oldIds: readonly string[], newIds: readonly string[]) => void) | null,
+  hook:
+    | ((oldPlaylists: readonly Playlist[], newPlaylists: readonly Playlist[]) => void)
+    | null,
 ): void {
   reconcileHook = hook;
 }
@@ -61,12 +68,12 @@ export const playlistLibraryStore = create<PlaylistLibraryState>()(
           await ensureCoverArtAuth();
           const playlists = await getAllPlaylists();
 
-          // Capture old IDs at COMMIT time, not at fetch start, so the
-          // reconcile hook sees the actual baseline at the moment the
-          // store replacement happens. `getAllPlaylists` throws on
-          // protocol or HTTP failure (see `throwIfSubsonicFailure` in
-          // subsonicService), so we trust the result here.
-          const oldIds = get().playlists.map((p) => p.id);
+          // Capture the old playlists at COMMIT time, not at fetch start, so
+          // the reconcile hook sees the actual baseline at the moment the
+          // store replacement happens. `getAllPlaylists` throws on protocol
+          // or HTTP failure (see `throwIfSubsonicFailure` in subsonicService),
+          // so we trust the result here.
+          const oldPlaylists = get().playlists;
 
           set({
             playlists,
@@ -76,7 +83,7 @@ export const playlistLibraryStore = create<PlaylistLibraryState>()(
 
           if (reconcileHook) {
             try {
-              reconcileHook(oldIds, playlists.map((p) => p.id));
+              reconcileHook(oldPlaylists, playlists);
             } catch {
               /* non-critical — reconcile is best-effort */
             }

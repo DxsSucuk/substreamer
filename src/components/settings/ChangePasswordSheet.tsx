@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
+import { BottomSheet } from '../BottomSheet';
 import { useTheme } from '../../hooks/useTheme';
 import { useThemedAlert } from '../../hooks/useThemedAlert';
 import { settingsStyles } from '../../styles/settingsStyles';
@@ -26,6 +27,11 @@ export function ChangePasswordSheet({
   const [confirmPw, setConfirmPw] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // Set only on a successful change so the confirmation alert fires from
+  // onCloseComplete — after this sheet's Modal has fully torn down. Opening the
+  // alert directly after onClose() would stack two Modals (Android shows one at
+  // a time). Cancel / failure leave this false so no alert appears.
+  const succeededRef = useRef(false);
 
   useEffect(() => {
     if (visible) {
@@ -33,6 +39,7 @@ export function ChangePasswordSheet({
       setNewPw('');
       setConfirmPw('');
       setError(null);
+      succeededRef.current = false;
     }
   }, [visible]);
 
@@ -62,112 +69,87 @@ export function ChangePasswordSheet({
       const auth = authStore.getState();
       auth.setSession(auth.serverUrl!, username, newPw, auth.apiVersion!, auth.legacyAuth);
       clearApiCache();
+      succeededRef.current = true;
       onClose();
-      alert(t('passwordChanged'), t('passwordChangedMessage'));
     } else {
       setError(t('failedToChangePassword'));
     }
-  }, [username, password, currentPw, newPw, confirmPw, t, alert, onClose]);
+  }, [username, password, currentPw, newPw, confirmPw, t, onClose]);
+
+  const handleCloseComplete = useCallback(() => {
+    if (succeededRef.current) {
+      succeededRef.current = false;
+      alert(t('passwordChanged'), t('passwordChangedMessage'));
+    }
+  }, [alert, t]);
 
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={onClose}
-    >
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={[styles.card, { backgroundColor: colors.card }]} onPress={() => {}}>
-          <Text style={[styles.title, { color: colors.textPrimary }]}>{t('changePassword')}</Text>
-          <TextInput
-            style={[styles.input, { backgroundColor: colors.inputBg, color: colors.textPrimary, borderColor: colors.border }]}
-            placeholder={t('currentPassword')}
-            placeholderTextColor={colors.textSecondary}
-            secureTextEntry
-            value={currentPw}
-            onChangeText={(v) => { setCurrentPw(v); setError(null); }}
-            autoFocus
-            editable={!loading}
-          />
-          <TextInput
-            style={[styles.input, { backgroundColor: colors.inputBg, color: colors.textPrimary, borderColor: colors.border }]}
-            placeholder={t('newPassword')}
-            placeholderTextColor={colors.textSecondary}
-            secureTextEntry
-            value={newPw}
-            onChangeText={(v) => { setNewPw(v); setError(null); }}
-            editable={!loading}
-          />
-          <TextInput
-            style={[styles.input, { backgroundColor: colors.inputBg, color: colors.textPrimary, borderColor: colors.border }]}
-            placeholder={t('confirmNewPassword')}
-            placeholderTextColor={colors.textSecondary}
-            secureTextEntry
-            value={confirmPw}
-            onChangeText={(v) => { setConfirmPw(v); setError(null); }}
-            editable={!loading}
-            returnKeyType="done"
-            onSubmitEditing={handleSave}
-          />
-          {error && (
-            <Text style={[styles.error, { color: colors.red }]}>{error}</Text>
+    <BottomSheet visible={visible} onClose={onClose} onCloseComplete={handleCloseComplete}>
+      <View style={styles.header}>
+        <Text style={[styles.title, { color: colors.textPrimary }]}>{t('changePassword')}</Text>
+      </View>
+      <View style={styles.form}>
+        <TextInput
+          style={[styles.input, { backgroundColor: colors.inputBg, color: colors.textPrimary, borderColor: colors.border }]}
+          placeholder={t('currentPassword')}
+          placeholderTextColor={colors.textSecondary}
+          secureTextEntry
+          value={currentPw}
+          onChangeText={(v) => { setCurrentPw(v); setError(null); }}
+          autoFocus
+          editable={!loading}
+        />
+        <TextInput
+          style={[styles.input, { backgroundColor: colors.inputBg, color: colors.textPrimary, borderColor: colors.border }]}
+          placeholder={t('newPassword')}
+          placeholderTextColor={colors.textSecondary}
+          secureTextEntry
+          value={newPw}
+          onChangeText={(v) => { setNewPw(v); setError(null); }}
+          editable={!loading}
+        />
+        <TextInput
+          style={[styles.input, { backgroundColor: colors.inputBg, color: colors.textPrimary, borderColor: colors.border }]}
+          placeholder={t('confirmNewPassword')}
+          placeholderTextColor={colors.textSecondary}
+          secureTextEntry
+          value={confirmPw}
+          onChangeText={(v) => { setConfirmPw(v); setError(null); }}
+          editable={!loading}
+          returnKeyType="done"
+          onSubmitEditing={handleSave}
+        />
+        {error && (
+          <Text style={[styles.error, { color: colors.red }]}>{error}</Text>
+        )}
+        <Pressable
+          onPress={handleSave}
+          disabled={loading}
+          style={({ pressed }) => [
+            styles.saveButton,
+            { backgroundColor: colors.primary },
+            pressed && settingsStyles.pressed,
+            loading && settingsStyles.disabled,
+          ]}
+        >
+          {loading ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : (
+            <Text style={styles.saveButtonText}>{t('save')}</Text>
           )}
-          <View style={styles.buttons}>
-            <Pressable
-              onPress={onClose}
-              disabled={loading}
-              style={({ pressed }) => [
-                styles.button,
-                { borderColor: colors.border },
-                pressed && settingsStyles.pressed,
-              ]}
-            >
-              <Text style={[styles.buttonText, { color: colors.textPrimary }]}>{t('cancel')}</Text>
-            </Pressable>
-            <Pressable
-              onPress={handleSave}
-              disabled={loading}
-              style={({ pressed }) => [
-                styles.button,
-                styles.buttonPrimary,
-                { backgroundColor: colors.primary },
-                pressed && settingsStyles.pressed,
-                loading && settingsStyles.disabled,
-              ]}
-            >
-              {loading ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <Text style={[styles.buttonText, { color: '#fff' }]}>{t('save')}</Text>
-              )}
-            </Pressable>
-          </View>
         </Pressable>
-      </Pressable>
-    </Modal>
+        <Pressable onPress={onClose} disabled={loading} style={styles.cancelButton}>
+          <Text style={[styles.cancelButtonText, { color: colors.primary }]}>{t('cancel')}</Text>
+        </Pressable>
+      </View>
+    </BottomSheet>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 24,
-  },
-  card: {
-    width: '100%',
-    maxWidth: 400,
-    borderRadius: 16,
-    padding: 24,
-  },
-  title: {
-    fontSize: 18,
-    fontWeight: '700',
-    marginBottom: 16,
-    textAlign: 'center',
-  },
+  header: { paddingHorizontal: 4, marginBottom: 16 },
+  title: { fontSize: 18, fontWeight: '700' },
+  form: { paddingHorizontal: 4 },
   input: {
     borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,
@@ -176,16 +158,18 @@ const styles = StyleSheet.create({
     fontSize: 16,
     marginBottom: 10,
   },
-  error: { fontSize: 12, marginBottom: 10, textAlign: 'center' },
-  buttons: { flexDirection: 'row', gap: 8, marginTop: 6 },
-  button: {
-    flex: 1,
+  error: { fontSize: 12, marginBottom: 4, textAlign: 'center' },
+  saveButton: {
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 10,
-    paddingVertical: 12,
-    borderWidth: StyleSheet.hairlineWidth,
+    gap: 8,
+    borderRadius: 12,
+    paddingVertical: 14,
+    marginTop: 10,
+    marginBottom: 8,
   },
-  buttonPrimary: { borderWidth: 0 },
-  buttonText: { fontSize: 16, fontWeight: '600' },
+  saveButtonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  cancelButton: { alignItems: 'center', paddingVertical: 12, marginBottom: 4 },
+  cancelButtonText: { fontSize: 16, fontWeight: '500' },
 });

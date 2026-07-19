@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
+import { BottomSheet } from '../BottomSheet';
 import { useTheme } from '../../hooks/useTheme';
 import { settingsStyles } from '../../styles/settingsStyles';
 import { authStore } from '../../store/authStore';
@@ -17,7 +17,6 @@ export function EditShareUrlSheet({
 }) {
   const { t } = useTranslation();
   const { colors } = useTheme();
-  const insets = useSafeAreaInsets();
   const serverUrl = authStore((s) => s.primaryServerUrl ?? s.serverUrl);
   const shareBaseUrl = shareSettingsStore((s) => s.shareBaseUrl);
 
@@ -46,24 +45,14 @@ export function EditShareUrlSheet({
   }, [onClose]);
 
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="slide"
-      onRequestClose={onClose}
-    >
-      <Pressable style={settingsStyles.sheetBackdrop} onPress={onClose} />
-      <View
-        style={[
-          settingsStyles.sheet,
-          { backgroundColor: colors.card, paddingBottom: Math.max(insets.bottom, 16) },
-        ]}
-      >
-        <View style={[settingsStyles.sheetHandle, { backgroundColor: colors.border }]} />
+    <BottomSheet visible={visible} onClose={onClose}>
+      <View style={styles.header}>
         <Text style={[styles.title, { color: colors.textPrimary }]}>{t('shareUrl')}</Text>
         <Text style={[styles.hint, { color: colors.textSecondary }]}>
           {serverUrl ? t('shareUrlHintWithServer', { serverUrl }) : t('shareUrlHint')}
         </Text>
+      </View>
+      <View style={styles.form}>
         <TextInput
           style={[styles.input, { backgroundColor: colors.inputBg, color: colors.textPrimary, borderColor: colors.border }]}
           value={input}
@@ -102,33 +91,27 @@ export function EditShareUrlSheet({
             <Text style={styles.buttonText}>{saved ? t('saved') : t('save')}</Text>
           </Pressable>
         </View>
+        <Pressable onPress={onClose} style={styles.cancelButton}>
+          <Text style={[styles.cancelButtonText, { color: colors.primary }]}>{t('cancel')}</Text>
+        </Pressable>
       </View>
-    </Modal>
+    </BottomSheet>
   );
 }
 
 const styles = StyleSheet.create({
-  title: {
-    fontSize: 18,
-    fontWeight: '700',
-    marginBottom: 4,
-    paddingHorizontal: 4,
-  },
-  hint: {
-    fontSize: 13,
-    lineHeight: 18,
-    marginBottom: 12,
-    paddingHorizontal: 4,
-  },
+  header: { paddingHorizontal: 4, marginBottom: 16 },
+  title: { fontSize: 18, fontWeight: '700', marginBottom: 6 },
+  hint: { fontSize: 13, lineHeight: 18 },
+  form: { paddingHorizontal: 4 },
   input: {
     borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: 14,
     paddingVertical: 12,
     fontSize: 16,
-    marginHorizontal: 4,
   },
-  buttons: { flexDirection: 'row', gap: 8, marginTop: 16, paddingHorizontal: 4 },
+  buttons: { flexDirection: 'row', gap: 8, marginTop: 16 },
   button: {
     flex: 1,
     alignItems: 'center',
@@ -139,4 +122,6 @@ const styles = StyleSheet.create({
   resetButton: { borderWidth: StyleSheet.hairlineWidth },
   resetText: { fontSize: 16, fontWeight: '500' },
   buttonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  cancelButton: { alignItems: 'center', paddingVertical: 12, marginTop: 4, marginBottom: 4 },
+  cancelButtonText: { fontSize: 16, fontWeight: '500' },
 });

@@ -23,6 +23,7 @@ These rules override everything else in this file when in conflict:
 4. **Stop when confused.** If the task has two plausible interpretations, ask. Do not pick silently and proceed.
 5. **Touch only what you must.** Every changed line must trace directly to the user's request. No drive-by refactors, reformatting, or "while I was in there" cleanups.
 6. **Never assume, never guess, always validate.** A mechanism you have not observed is a hypothesis, not a fact — never state it as one, and never build a fix on top of it. When behaviour surprises you, get evidence *before* theorising: read the actual source (not what you remember it does), capture the real logs (`adb logcat`, instrument the code, add a temporary diagnostic), and reproduce it. Diff against the correct baseline (the shipped tag, not whatever branch is handy). Phrases like "it probably works like…", "this should fix it", or "I presume" are red flags — replace them with what you measured. A wrong root cause asserted confidently wastes more time than saying "I don't know yet — let me get evidence."
+7. **Check the latest version before adding a dependency.** When adding any package, look up its current version on the web / npm registry first (e.g. `npm view <pkg> version`) and install that deliberately. Never blindly accept whatever a resolver picks (`expo install`, an SDK version map, a template) — they lag npm-latest. If you intentionally pin below latest, say why.
 
 ---
 

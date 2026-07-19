@@ -20,6 +20,8 @@ import {
   registerPlaylistLibraryReconcileHook,
 } from '../store/playlistLibraryStore';
 import { playlistDetailStore } from '../store/playlistDetailStore';
+import { musicCacheStore } from '../store/musicCacheStore';
+import { connectivityStore } from '../store/connectivityStore';
 import { scanStatusStore } from '../store/scanStatusStore';
 import { authStore } from '../store/authStore';
 import { runWhenIdle } from '../utils/runWhenIdle';
@@ -39,7 +41,7 @@ import {
 } from '../store/persistence/detailTables';
 import { songIndexStore } from '../store/songIndexStore';
 import { songLibraryStore } from '../store/songLibraryStore';
-import { registerMusicCacheOnAlbumReferencedHook } from './musicCacheService';
+import { registerMusicCacheOnAlbumReferencedHook, syncCachedItemTracks } from './musicCacheService';
 import { fetchScanStatus, registerScanCompletedHook } from './scanService';
 import { registerScrobbleBatchCompletedHook } from './scrobbleService';
 import { canUserScan } from './serverCapabilityService';
@@ -52,6 +54,7 @@ import {
   searchSongsPage,
   type AlbumID3,
   type Child,
+  type Playlist,
 } from './subsonicService';
 
 /** Bounded concurrency for the album-detail walk. */
@@ -317,8 +320,19 @@ async function startupOrResumeFlow(): Promise<void> {
       if (artistLibraryStore.getState().artists.length === 0) {
         artistLibraryStore.getState().fetchAllArtists();
       }
-      if (playlistLibraryStore.getState().playlists.length === 0) {
-        playlistLibraryStore.getState().fetchAllPlaylists();
+      // Refresh playlists on every ONLINE startup (not just when empty) so the
+      // reconcile picks up NEW/UPDATED playlists and refreshes their detail.
+      // Three-gate it (mirrors albumListsStore.refreshAllIfDue) so we don't burn
+      // a call when offline / the server is known-unreachable.
+      {
+        const conn = connectivityStore.getState();
+        if (
+          !offlineModeStore.getState().offlineMode &&
+          conn.hasConnection &&
+          conn.isServerReachable
+        ) {
+          playlistLibraryStore.getState().fetchAllPlaylists();
+        }
       }
       genreStore.getState().fetchGenres();
 
@@ -516,47 +530,97 @@ export async function onAlbumReferenced(albumId: string): Promise<void> {
  *  album walk since playlist details can be large per entry). */
 const PLAYLIST_PREFETCH_CONCURRENCY = 2;
 
+/** Max playlists whose detail we eagerly refetch per reconcile. Bounds bandwidth
+ *  when a server bumps `changed` on many playlists at once; the rest refresh on
+ *  the next pass / on-demand. Downloaded playlists are exempt (their tracks must
+ *  re-sync). */
+const PLAYLIST_REFRESH_CAP = 50;
+
 /**
- * Mirror of `reconcileAlbumLibrary` for the playlist library: reap orphaned
- * detail entries from `playlistDetailStore` and pre-fetch newly added
- * playlists. Unlike albums, playlists don't feed the flat `songIndexStore`.
+ * Mirror of `reconcileAlbumLibrary` for the playlist library, run after every
+ * `fetchAllPlaylists`. Reaps orphaned detail entries and refetches the detail
+ * (track listing) of NEW and UPDATED playlists so the cached detail — and any
+ * downloaded copy — stays current. Unlike albums, playlists don't feed the flat
+ * `songIndexStore`.
+ *
+ * "Updated" is detected by comparing `changed`/`songCount`. NB: `Playlist.changed`
+ * is typed `Date` but is actually a STRING at runtime (subsonic-api does no date
+ * revival), persisted the same way — so both sides go through `parseCreatedMs`.
  */
 export function reconcilePlaylistLibrary(
-  oldIds: readonly string[],
-  newIds: readonly string[],
+  oldPlaylists: readonly Playlist[],
+  newPlaylists: readonly Playlist[],
 ): void {
-  const newSet = new Set(newIds);
-  const oldSet = new Set(oldIds);
+  const oldById = new Map(oldPlaylists.map((p) => [p.id, p]));
+  const newIds = new Set(newPlaylists.map((p) => p.id));
+  const cachedItems = musicCacheStore.getState().cachedItems;
+  const detail = playlistDetailStore.getState();
 
-  const removed: string[] = [];
-  for (const id of oldIds) {
-    if (!newSet.has(id)) removed.push(id);
-  }
-  const added: string[] = [];
-  for (const id of newIds) {
-    if (!oldSet.has(id)) added.push(id);
-  }
-
-  if (removed.length > 0) {
-    const detail = playlistDetailStore.getState();
-    for (const id of removed) detail.removePlaylist(id);
+  // Reap detail for removed playlists — but KEEP it for still-downloaded ones:
+  // the offline/downloaded filter renders from the cached detail, so removing it
+  // orphans the files (invisible + unplayable). Drop from the online list only.
+  for (const p of oldPlaylists) {
+    if (newIds.has(p.id)) continue; // still present
+    if (p.id in cachedItems) continue; // downloaded → keep detail
+    detail.removePlaylist(p.id);
   }
 
-  if (added.length > 0 && !offlineModeStore.getState().offlineMode) {
-    const detail = playlistDetailStore.getState();
-    // Fire-and-forget with a small pool; playlist detail fetches are
-    // individually large so we keep concurrency lower than the album walk.
-    // `prefetchCovers: false` — background metadata sync; the detail
-    // screen will cache art the first time the user opens a playlist.
-    fireAndForget(
-      runPool(
-        added,
-        async (id) => detail.fetchPlaylist(id, { prefetchCovers: false }),
-        { concurrency: PLAYLIST_PREFETCH_CONCURRENCY },
-      ),
-      'sync.playlistDetailPrefetch',
+  // NEW (unseen id) or UPDATED (changed timestamp / songCount differs).
+  const toFetch: Playlist[] = [];
+  for (const p of newPlaylists) {
+    const old = oldById.get(p.id);
+    if (!old) {
+      toFetch.push(p);
+    } else if (
+      parseCreatedMs(old.changed) !== parseCreatedMs(p.changed) ||
+      old.songCount !== p.songCount
+    ) {
+      toFetch.push(p);
+    }
+  }
+
+  if (toFetch.length === 0 || offlineModeStore.getState().offlineMode) return;
+
+  // Cap eager fetches (most-recently-changed first), but always include
+  // downloaded playlists so their tracks re-sync regardless of the cap.
+  const ordered = [...toFetch].sort(
+    (a, b) => parseCreatedMs(b.changed) - parseCreatedMs(a.changed),
+  );
+  const capped: Playlist[] = [];
+  let nonDownloaded = 0;
+  for (const p of ordered) {
+    if (p.id in cachedItems) {
+      capped.push(p);
+    } else if (nonDownloaded < PLAYLIST_REFRESH_CAP) {
+      capped.push(p);
+      nonDownloaded += 1;
+    }
+  }
+  if (capped.length < toFetch.length) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[sync] playlist refresh capped: ${capped.length}/${toFetch.length} eager, ` +
+        `${toFetch.length - capped.length} deferred to next refresh`,
     );
   }
+
+  // Fire-and-forget with a small pool; playlist detail fetches are individually
+  // large so concurrency stays lower than the album walk. `prefetchCovers:false`
+  // — background metadata sync; the detail screen caches art on first open.
+  fireAndForget(
+    runPool(
+      capped,
+      async (p) => {
+        const updated = await detail.fetchPlaylist(p.id, { prefetchCovers: false });
+        // Keep a downloaded playlist's cached tracks in step with the server.
+        if (updated && p.id in musicCacheStore.getState().cachedItems) {
+          syncCachedItemTracks(p.id, updated.entry ?? []);
+        }
+      },
+      { concurrency: PLAYLIST_PREFETCH_CONCURRENCY },
+    ),
+    'sync.playlistDetailRefresh',
+  );
 }
 
 /**

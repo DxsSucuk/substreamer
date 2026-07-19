@@ -273,137 +273,149 @@ export function AddToPlaylistSheet() {
         </View>
       </View>
 
-      <Animated.View style={[styles.flexContainer, phase !== 'ready' && containerAnimatedStyle]}>
-        {phase === 'loading' ? (
-          <ActivityIndicator style={styles.loadingIndicator} color={colors.textSecondary} />
-        ) : (
-          <Animated.View
-            style={[
-              styles.flexContainer,
-              contentAnimatedStyle,
-              // During 'measuring', render absolutely positioned and off-screen
-              // so the content can report its natural height without affecting layout
-              phase === 'measuring' && styles.measuring,
-            ]}
-            onLayout={phase === 'measuring' ? handleContentLayout : undefined}
-          >
-          {mode === 'pick' ? (
-            <ScrollView
-            style={styles.listContainer}
-            contentContainerStyle={styles.listContent}
-            bounces={false}
-            showsVerticalScrollIndicator={false}
-          >
-            {/* New Playlist row */}
-            <Pressable
-              onPress={handleShowCreate}
-              style={({ pressed }) => [
-                styles.playlistRow,
-                pressed && styles.rowPressed,
-              ]}
-            >
-              <Ionicons name="add-circle-outline" size={24} color={colors.primary} />
-              <Text style={[styles.newPlaylistLabel, dynamicStyles.newPlaylistLabel]}>
-                {t('newPlaylist')}
-              </Text>
-            </Pressable>
+      {mode === 'create' ? (
+        // Create form lives OUTSIDE the fixed-height measuring container: that
+        // container is overflow:'hidden' and sized to the pick-list's measured
+        // height, which clipped the create button. Here it renders at natural
+        // height in its own scroll view so the button reflows above the keyboard
+        // (#224). This is not the node measured by handleContentLayout, so the
+        // pick-list reveal animation is untouched.
+        <ScrollView
+          style={styles.flexContainer}
+          contentContainerStyle={styles.formSection}
+          bounces={false}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Back arrow */}
+          <Pressable onPress={handleBackToPick} style={styles.backButton}>
+            <Ionicons name="arrow-back" size={20} color={colors.primary} />
+            <Text style={[styles.backLabel, { color: colors.primary }]}>{t('back')}</Text>
+          </Pressable>
 
-            <View style={[styles.separator, dynamicStyles.separator]} />
+          <Text style={[styles.label, dynamicStyles.subtitle]}>{t('playlistName')}</Text>
+          <TextInput
+            style={[styles.input, dynamicStyles.input]}
+            value={name}
+            onChangeText={setName}
+            placeholder={t('enterPlaylistNamePlaceholder')}
+            placeholderTextColor={colors.textSecondary}
+            returnKeyType="done"
+            autoFocus
+            editable={!busy}
+            onSubmitEditing={handleCreatePlaylist}
+          />
 
-            {playlists.map((playlist) => (
-              <Pressable
-                key={playlist.id}
-                onPress={() => handleSelectPlaylist(playlist)}
-                disabled={busy}
-                style={({ pressed }) => [
-                  styles.playlistRow,
-                  pressed && styles.rowPressed,
-                ]}
-              >
-                <Ionicons name="list-outline" size={22} color={colors.textSecondary} />
-                <View style={styles.playlistInfo}>
-                  <Text
-                    style={[styles.playlistName, dynamicStyles.playlistName]}
-                    numberOfLines={1}
-                  >
-                    {playlist.name}
-                  </Text>
-                  <Text style={[styles.playlistCount, dynamicStyles.playlistCount]}>
-                    {t('trackWithCount', { count: playlist.songCount ?? 0 })}
-                  </Text>
-                </View>
-              </Pressable>
-            ))}
-
-            {playlists.length === 0 && playlistsLoading && (
-              <ActivityIndicator style={styles.loadingIndicator} color={colors.textSecondary} />
-            )}
-
-            {playlists.length === 0 && !playlistsLoading && !playlistsFetchError && (
-              <Text style={[styles.emptyText, dynamicStyles.playlistCount]}>
-                {t('noPlaylistsYet')}
-              </Text>
-            )}
-
-            {playlistsFetchError && playlists.length === 0 && !playlistsLoading && (
-              <Text style={[styles.emptyText, dynamicStyles.errorText]}>
-                {t('failedToLoadPlaylists')}
-              </Text>
-            )}
-
-            {playlists.length > 0 && playlistsLoading && (
-              <ActivityIndicator style={styles.loadingIndicator} size="small" color={colors.textSecondary} />
-            )}
-          </ScrollView>
-        ) : (
-          <View style={styles.formSection}>
-            {/* Back arrow */}
-            <Pressable onPress={handleBackToPick} style={styles.backButton}>
-              <Ionicons name="arrow-back" size={20} color={colors.primary} />
-              <Text style={[styles.backLabel, { color: colors.primary }]}>{t('back')}</Text>
-            </Pressable>
-
-            <Text style={[styles.label, dynamicStyles.subtitle]}>{t('playlistName')}</Text>
-            <TextInput
-              style={[styles.input, dynamicStyles.input]}
-              value={name}
-              onChangeText={setName}
-              placeholder={t('enterPlaylistNamePlaceholder')}
-              placeholderTextColor={colors.textSecondary}
-              returnKeyType="done"
-              autoFocus
-              editable={!busy}
-              onSubmitEditing={handleCreatePlaylist}
-            />
-
-            {error && (
-              <Text style={[styles.errorText, dynamicStyles.errorText]}>{error}</Text>
-            )}
-
-            <Pressable
-              onPress={handleCreatePlaylist}
-              disabled={busy}
-              style={({ pressed }) => [
-                styles.createButton,
-                dynamicStyles.createButton,
-                pressed && styles.buttonPressed,
-                busy && styles.buttonDisabled,
-              ]}
-            >
-              {busy ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <>
-                  <Ionicons name="add-outline" size={18} color="#fff" />
-                  <Text style={styles.createButtonText}>{t('createPlaylist')}</Text>
-                </>
-              )}
-            </Pressable>
-          </View>
+          {error && (
+            <Text style={[styles.errorText, dynamicStyles.errorText]}>{error}</Text>
           )}
-          </Animated.View>
-        )}
-      </Animated.View>
+
+          <Pressable
+            onPress={handleCreatePlaylist}
+            disabled={busy}
+            style={({ pressed }) => [
+              styles.createButton,
+              dynamicStyles.createButton,
+              pressed && styles.buttonPressed,
+              busy && styles.buttonDisabled,
+            ]}
+          >
+            {busy ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <>
+                <Ionicons name="add-outline" size={18} color="#fff" />
+                <Text style={styles.createButtonText}>{t('createPlaylist')}</Text>
+              </>
+            )}
+          </Pressable>
+        </ScrollView>
+      ) : (
+        <Animated.View style={[styles.flexContainer, phase !== 'ready' && containerAnimatedStyle]}>
+          {phase === 'loading' ? (
+            <ActivityIndicator style={styles.loadingIndicator} color={colors.textSecondary} />
+          ) : (
+            <Animated.View
+              style={[
+                styles.flexContainer,
+                contentAnimatedStyle,
+                // During 'measuring', render absolutely positioned and off-screen
+                // so the content can report its natural height without affecting layout
+                phase === 'measuring' && styles.measuring,
+              ]}
+              onLayout={phase === 'measuring' ? handleContentLayout : undefined}
+            >
+              <ScrollView
+                style={styles.listContainer}
+                contentContainerStyle={styles.listContent}
+                bounces={false}
+                showsVerticalScrollIndicator={false}
+              >
+                {/* New Playlist row */}
+                <Pressable
+                  onPress={handleShowCreate}
+                  style={({ pressed }) => [
+                    styles.playlistRow,
+                    pressed && styles.rowPressed,
+                  ]}
+                >
+                  <Ionicons name="add-circle-outline" size={24} color={colors.primary} />
+                  <Text style={[styles.newPlaylistLabel, dynamicStyles.newPlaylistLabel]}>
+                    {t('newPlaylist')}
+                  </Text>
+                </Pressable>
+
+                <View style={[styles.separator, dynamicStyles.separator]} />
+
+                {playlists.map((playlist) => (
+                  <Pressable
+                    key={playlist.id}
+                    onPress={() => handleSelectPlaylist(playlist)}
+                    disabled={busy}
+                    style={({ pressed }) => [
+                      styles.playlistRow,
+                      pressed && styles.rowPressed,
+                    ]}
+                  >
+                    <Ionicons name="list-outline" size={22} color={colors.textSecondary} />
+                    <View style={styles.playlistInfo}>
+                      <Text
+                        style={[styles.playlistName, dynamicStyles.playlistName]}
+                        numberOfLines={1}
+                      >
+                        {playlist.name}
+                      </Text>
+                      <Text style={[styles.playlistCount, dynamicStyles.playlistCount]}>
+                        {t('trackWithCount', { count: playlist.songCount ?? 0 })}
+                      </Text>
+                    </View>
+                  </Pressable>
+                ))}
+
+                {playlists.length === 0 && playlistsLoading && (
+                  <ActivityIndicator style={styles.loadingIndicator} color={colors.textSecondary} />
+                )}
+
+                {playlists.length === 0 && !playlistsLoading && !playlistsFetchError && (
+                  <Text style={[styles.emptyText, dynamicStyles.playlistCount]}>
+                    {t('noPlaylistsYet')}
+                  </Text>
+                )}
+
+                {playlistsFetchError && playlists.length === 0 && !playlistsLoading && (
+                  <Text style={[styles.emptyText, dynamicStyles.errorText]}>
+                    {t('failedToLoadPlaylists')}
+                  </Text>
+                )}
+
+                {playlists.length > 0 && playlistsLoading && (
+                  <ActivityIndicator style={styles.loadingIndicator} size="small" color={colors.textSecondary} />
+                )}
+              </ScrollView>
+            </Animated.View>
+          )}
+        </Animated.View>
+      )}
     </BottomSheet>
   );
 }

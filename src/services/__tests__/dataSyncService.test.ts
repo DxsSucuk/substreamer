@@ -138,14 +138,13 @@ jest.mock('../../store/playlistLibraryStore', () => ({
   registerPlaylistLibraryReconcileHook: () => {},
 }));
 
+const mockPlaylistDetail = {
+  removePlaylist: jest.fn(),
+  fetchPlaylist: jest.fn((_id: string) => Promise.resolve(null as unknown)),
+};
 jest.mock('../../store/playlistDetailStore', () => ({
   __esModule: true,
-  playlistDetailStore: {
-    getState: () => ({
-      removePlaylist: () => {},
-      fetchPlaylist: () => Promise.resolve(null),
-    }),
-  },
+  playlistDetailStore: { getState: () => mockPlaylistDetail },
 }));
 
 jest.mock('../../store/favoritesStore', () => ({
@@ -203,9 +202,23 @@ jest.mock('../scrobbleService', () => ({
   registerScrobbleBatchCompletedHook: () => {},
 }));
 
+const mockSyncCachedItemTracks = jest.fn();
 jest.mock('../musicCacheService', () => ({
   __esModule: true,
   registerMusicCacheOnAlbumReferencedHook: () => {},
+  syncCachedItemTracks: (...args: unknown[]) => mockSyncCachedItemTracks(...args),
+}));
+
+const mockCachedItems: Record<string, unknown> = {};
+jest.mock('../../store/musicCacheStore', () => ({
+  __esModule: true,
+  musicCacheStore: { getState: () => ({ cachedItems: mockCachedItems }) },
+}));
+
+const mockConnectivity = { hasConnection: true, isServerReachable: true };
+jest.mock('../../store/connectivityStore', () => ({
+  __esModule: true,
+  connectivityStore: { getState: () => mockConnectivity },
 }));
 
 // Shortcut minDelay to a near-instant resolve in tests — its purpose is UI
@@ -245,6 +258,7 @@ import {
   __internal,
 } from '../dataSyncService';
 import * as subsonicService from '../subsonicService';
+import type { Playlist } from '../subsonicService';
 import { syncStatusStore } from '../../store/syncStatusStore';
 
 const mockFetchServerInfo = subsonicService.fetchServerInfo as jest.Mock;
@@ -261,6 +275,13 @@ beforeEach(() => {
   playlistLibraryState.playlists = [];
   mockDetailState.albums = {};
   mockDetailState.fetched = [];
+  mockPlaylistDetail.removePlaylist.mockClear();
+  mockPlaylistDetail.fetchPlaylist.mockClear();
+  mockPlaylistDetail.fetchPlaylist.mockResolvedValue(null);
+  mockSyncCachedItemTracks.mockClear();
+  for (const k of Object.keys(mockCachedItems)) delete mockCachedItems[k];
+  mockConnectivity.hasConnection = true;
+  mockConnectivity.isServerReachable = true;
   mockFetchAlbum.mockClear();
   mockFetchServerInfo.mockResolvedValue(null);
   syncStatusStore.setState({
@@ -539,7 +560,7 @@ describe('dataSyncService — deferred startup prefetches', () => {
     expect(mockFetchGenres).toHaveBeenCalled();
   });
 
-  it('deferred block skips the library fetch when the list sync is complete + rows present', async () => {
+  it('skips album/artist fetch when synced, but ALWAYS refreshes playlists (online)', async () => {
     albumLibraryState.albums = [{ id: 'a1' }];
     libraryTableState.rowCount = 1;
     syncStatusStore.setState({ librarySyncComplete: true });
@@ -549,9 +570,29 @@ describe('dataSyncService — deferred startup prefetches', () => {
     await jest.advanceTimersByTimeAsync(2000);
     expect(mockFetchAllAlbums).not.toHaveBeenCalled();
     expect(mockFetchAllArtists).not.toHaveBeenCalled();
-    expect(mockFetchAllPlaylists).not.toHaveBeenCalled();
-    // genres fetch always runs.
+    // Playlists now refresh on every online startup (delta/updated detection),
+    // not just when the list is empty.
+    expect(mockFetchAllPlaylists).toHaveBeenCalled();
     expect(mockFetchGenres).toHaveBeenCalled();
+  });
+
+  it('does NOT refresh playlists on startup when offline', async () => {
+    offlineState.offline = true;
+    playlistLibraryState.playlists = [{ id: 'p1' }];
+    await onStartup();
+    await jest.advanceTimersByTimeAsync(2000);
+    expect(mockFetchAllPlaylists).not.toHaveBeenCalled();
+  });
+
+  it('does NOT refresh playlists on startup when the server is unreachable', async () => {
+    mockConnectivity.isServerReachable = false;
+    albumLibraryState.albums = [{ id: 'a1' }];
+    libraryTableState.rowCount = 1;
+    syncStatusStore.setState({ librarySyncComplete: true });
+    playlistLibraryState.playlists = [{ id: 'p1' }];
+    await onStartup();
+    await jest.advanceTimersByTimeAsync(2000);
+    expect(mockFetchAllPlaylists).not.toHaveBeenCalled();
   });
 
   it('seeds songSyncComplete on upgrade (populated tables) so it does NOT re-sync songs', async () => {
@@ -1019,15 +1060,70 @@ describe('dataSyncService — forceFullResync', () => {
 });
 
 describe('dataSyncService — reconcilePlaylistLibrary', () => {
-  it('reaps removed playlist IDs and pre-fetches new ones', () => {
-    reconcilePlaylistLibrary(['p1', 'p2', 'p3'], ['p2', 'p4']);
-    // Removed: p1, p3. Added: p4. No assertions on the mocked detail store
-    // beyond "does not throw"; Phase-5 fidelity test.
-    expect(true).toBe(true);
+  const T1 = '2026-01-01T00:00:00.000Z';
+  const T2 = '2026-02-01T00:00:00.000Z';
+  const pl = (id: string, changed: string, songCount = 1): Playlist =>
+    ({ id, name: id, changed, created: changed, duration: 0, songCount } as unknown as Playlist);
+  // Let the fire-and-forget detail-fetch pool drain.
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  it('reaps removed non-downloaded playlists but KEEPS downloaded ones', () => {
+    mockCachedItems.p2 = {}; // p2 is downloaded → its detail must survive
+    reconcilePlaylistLibrary([pl('p1', T1), pl('p2', T1), pl('p3', T1)], []);
+    expect(mockPlaylistDetail.removePlaylist).toHaveBeenCalledWith('p1');
+    expect(mockPlaylistDetail.removePlaylist).toHaveBeenCalledWith('p3');
+    expect(mockPlaylistDetail.removePlaylist).not.toHaveBeenCalledWith('p2');
+  });
+
+  it('fetches detail for NEW and UPDATED playlists, skips unchanged', async () => {
+    reconcilePlaylistLibrary(
+      [pl('p1', T1, 1), pl('p2', T1, 1), pl('p3', T1, 1)],
+      [
+        pl('p1', T1, 1), // unchanged → skip
+        pl('p2', T2, 1), // changed timestamp → updated
+        pl('p3', T1, 2), // songCount differs → updated
+        pl('p4', T1, 1), // new
+      ],
+    );
+    await flush();
+    const fetched = mockPlaylistDetail.fetchPlaylist.mock.calls.map((c) => c[0]);
+    expect(fetched).toEqual(expect.arrayContaining(['p2', 'p3', 'p4']));
+    expect(fetched).not.toContain('p1');
+  });
+
+  it('syncs cached tracks for a downloaded UPDATED playlist', async () => {
+    mockCachedItems.p1 = {};
+    mockPlaylistDetail.fetchPlaylist.mockResolvedValue({ id: 'p1', entry: [{ id: 's1' }] } as unknown);
+    reconcilePlaylistLibrary([pl('p1', T1, 1)], [pl('p1', T2, 1)]);
+    await flush();
+    expect(mockSyncCachedItemTracks).toHaveBeenCalledWith('p1', [{ id: 's1' }]);
+  });
+
+  it('does not fetch when offline', async () => {
+    offlineState.offline = true;
+    reconcilePlaylistLibrary([], [pl('p1', T1), pl('p2', T1)]);
+    await flush();
+    expect(mockPlaylistDetail.fetchPlaylist).not.toHaveBeenCalled();
+  });
+
+  it('caps eager fetches at 50 but exempts downloaded playlists', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    mockCachedItems.dl = {};
+    const next: Playlist[] = [pl('dl', T2, 1)]; // downloaded + new → exempt from cap
+    for (let i = 0; i < 60; i++) next.push(pl(`n${i}`, T2, 1)); // 60 new, non-downloaded
+    reconcilePlaylistLibrary([], next);
+    await flush();
+    const fetched = mockPlaylistDetail.fetchPlaylist.mock.calls.map((c) => c[0]);
+    expect(fetched).toContain('dl'); // downloaded always fetched
+    expect(fetched.length).toBe(51); // 50 capped non-downloaded + 1 downloaded
+    expect(warn).toHaveBeenCalled(); // truncation logged (no silent cap)
+    warn.mockRestore();
   });
 
   it('is a no-op when both lists are identical', () => {
-    expect(() => reconcilePlaylistLibrary(['p1', 'p2'], ['p1', 'p2'])).not.toThrow();
+    expect(() =>
+      reconcilePlaylistLibrary([pl('p1', T1), pl('p2', T1)], [pl('p1', T1), pl('p2', T1)]),
+    ).not.toThrow();
   });
 });
 

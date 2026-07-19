@@ -124,42 +124,16 @@ export function OfflineCard() {
 
   const handleAddSSIDManual = useCallback(() => {
     const defaultValue = currentSSID && !homeSSIDs.includes(currentSSID) ? currentSSID : '';
-    if (Platform.OS === 'ios') {
-      Alert.prompt(t('addNetwork'), t('enterWifiName'), [
-        { text: t('cancel'), style: 'cancel' },
-        {
-          text: t('add'),
-          onPress: (value?: string) => {
-            const trimmed = value?.trim();
-            if (trimmed) autoOfflineStore.getState().addSSID(trimmed);
-          },
-        },
-      ], 'plain-text', defaultValue);
-    } else {
-      setSsidEditTarget(null);
-      setSsidPromptValue(defaultValue);
-      setSsidPromptVisible(true);
-    }
-  }, [currentSSID, homeSSIDs, t]);
+    setSsidEditTarget(null);
+    setSsidPromptValue(defaultValue);
+    setSsidPromptVisible(true);
+  }, [currentSSID, homeSSIDs]);
 
   const handleEditSSID = useCallback((ssid: string) => {
-    if (Platform.OS === 'ios') {
-      Alert.prompt(t('editNetwork'), t('updateWifiName'), [
-        { text: t('cancel'), style: 'cancel' },
-        {
-          text: t('save'),
-          onPress: (value?: string) => {
-            const trimmed = value?.trim();
-            if (trimmed) autoOfflineStore.getState().updateSSID(ssid, trimmed);
-          },
-        },
-      ], 'plain-text', ssid);
-    } else {
-      setSsidEditTarget(ssid);
-      setSsidPromptValue(ssid);
-      setSsidPromptVisible(true);
-    }
-  }, [t]);
+    setSsidEditTarget(ssid);
+    setSsidPromptValue(ssid);
+    setSsidPromptVisible(true);
+  }, []);
 
   const handleSsidPromptSubmit = useCallback(() => {
     const trimmed = ssidPromptValue.trim();
@@ -415,7 +389,7 @@ export function OfflineCard() {
         </View>
       </View>
 
-      {/* Android SSID prompt sheet */}
+      {/* SSID add/edit prompt sheet (both platforms) */}
       <BottomSheet visible={ssidPromptVisible} onClose={handleSsidPromptClose}>
         <View style={styles.sheetHeader}>
           <Text style={[styles.sheetTitle, { color: colors.textPrimary }]} numberOfLines={1}>
