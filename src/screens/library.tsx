@@ -1,10 +1,12 @@
 import { useIsFocused } from "expo-router/react-navigation";
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
 import { EmptyState } from '../components/EmptyState';
 import { SegmentControl } from '../components/SegmentControl';
+import { useTheme } from '../hooks/useTheme';
+import { runWhenIdle } from '../utils/runWhenIdle';
 import { filterBarStore } from '../store/filterBarStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { searchStore } from '../store/searchStore';
@@ -32,9 +34,20 @@ const SEGMENT_KEYS = [
 
 export function LibraryScreen() {
   const { t } = useTranslation();
+  const { colors } = useTheme();
   const isFocused = useIsFocused();
   const headerHeight = searchStore((s) => s.headerHeight);
   const [activeSegment, setActiveSegment] = useState<LibrarySegment>('albums');
+
+  // Defer the heavy list render past the tap so switching segments (and the
+  // first tab mount) stays responsive on slower devices — the segment control
+  // updates instantly and the list fills in on the next idle window. Mirrors
+  // how detail screens gate heavy content behind useTransitionComplete().
+  const [contentReady, setContentReady] = useState(false);
+  useEffect(() => {
+    setContentReady(false);
+    return runWhenIdle(() => setContentReady(true));
+  }, [activeSegment]);
 
   const segments = useMemo(
     () => SEGMENT_KEYS.map((s) => ({ key: s.key, label: t(s.labelKey) })),
@@ -108,46 +121,54 @@ export function LibraryScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.content}>
-        {activeSegment === 'albums' && (
-          <AlbumLibraryListScreen
-            layout={albumLayout}
-            downloadedOnly={downloadedOnly}
-            favoritesOnly={favoritesOnly}
-            contentInsetTop={contentInsetTop}
-          />
-        )}
-        {activeSegment === 'artists' && (
-          offlineMode ? (
-            <View style={[styles.emptyContainer, { paddingTop: contentInsetTop }]}>
-              <EmptyState
-                icon="cloud-offline-outline"
-                title={t('notAvailableOffline')}
-                subtitle={t('artistsNotAvailableOffline')}
+        {contentReady ? (
+          <>
+            {activeSegment === 'albums' && (
+              <AlbumLibraryListScreen
+                layout={albumLayout}
+                downloadedOnly={downloadedOnly}
+                favoritesOnly={favoritesOnly}
+                contentInsetTop={contentInsetTop}
               />
-            </View>
-          ) : (
-            <ArtistListScreen
-              layout={artistLayout}
-              downloadedOnly={downloadedOnly}
-              favoritesOnly={favoritesOnly}
-              contentInsetTop={contentInsetTop}
-            />
-          )
-        )}
-        {activeSegment === 'playlists' && (
-          <PlaylistListScreen
-            layout={playlistLayout}
-            downloadedOnly={downloadedOnly}
-            contentInsetTop={contentInsetTop}
-          />
-        )}
-        {activeSegment === 'songs' && (
-          <SongLibraryListScreen
-            layout={songLayout}
-            downloadedOnly={downloadedOnly}
-            favoritesOnly={favoritesOnly}
-            contentInsetTop={contentInsetTop}
-          />
+            )}
+            {activeSegment === 'artists' && (
+              offlineMode ? (
+                <View style={[styles.emptyContainer, { paddingTop: contentInsetTop }]}>
+                  <EmptyState
+                    icon="cloud-offline-outline"
+                    title={t('notAvailableOffline')}
+                    subtitle={t('artistsNotAvailableOffline')}
+                  />
+                </View>
+              ) : (
+                <ArtistListScreen
+                  layout={artistLayout}
+                  downloadedOnly={downloadedOnly}
+                  favoritesOnly={favoritesOnly}
+                  contentInsetTop={contentInsetTop}
+                />
+              )
+            )}
+            {activeSegment === 'playlists' && (
+              <PlaylistListScreen
+                layout={playlistLayout}
+                downloadedOnly={downloadedOnly}
+                contentInsetTop={contentInsetTop}
+              />
+            )}
+            {activeSegment === 'songs' && (
+              <SongLibraryListScreen
+                layout={songLayout}
+                downloadedOnly={downloadedOnly}
+                favoritesOnly={favoritesOnly}
+                contentInsetTop={contentInsetTop}
+              />
+            )}
+          </>
+        ) : (
+          <View style={[styles.emptyContainer, { paddingTop: contentInsetTop }]}>
+            <ActivityIndicator color={colors.primary} size="large" />
+          </View>
         )}
       </View>
       <View style={[styles.segmentOverlay, { top: headerHeight }]}>
