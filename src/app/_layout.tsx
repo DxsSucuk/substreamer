@@ -668,7 +668,9 @@ export default function RootLayout() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.background }}>
-      <KeyboardProvider statusBarTranslucent>
+      {/* No statusBarTranslucent — the app is edge-to-edge, so kbc forces it
+          true anyway; passing it explicitly only trips a dev-only warning. */}
+      <KeyboardProvider>
       <I18nextProvider i18n={i18n}>
       <ThemeProvider value={navigationTheme}>
       <RootErrorBoundary colors={colors}>
