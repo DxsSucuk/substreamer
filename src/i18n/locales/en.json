@@ -594,6 +594,8 @@
   "findDownloadedMusic": "Find songs and albums in your downloaded music",
   "findMusic": "Find songs, albums, and artists",
   "noResultsFor": "No results for \"{{query}}\"",
+  "recentSearches": "Recent Searches",
+  "removeRecentSearch": "Remove {{term}}",
   "unknownArtist": "Unknown Artist",
   "albumCount_one": "{{count}} album",
   "albumCount_few": "{{count}} albums",

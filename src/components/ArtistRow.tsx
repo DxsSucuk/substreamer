@@ -17,7 +17,14 @@ import { offlineModeStore } from '../store/offlineModeStore';
 
 const COVER_SIZE = 300;
 
-export const ArtistRow = memo(function ArtistRow({ artist }: { artist: ArtistID3 }) {
+export const ArtistRow = memo(function ArtistRow({
+  artist,
+  onPress,
+}: {
+  artist: ArtistID3;
+  /** Overrides the default tap action (navigate to the artist). */
+  onPress?: () => void;
+}) {
   const { colors } = useTheme();
   const { t } = useTranslation();
   const router = useRouter();
@@ -25,9 +32,10 @@ export const ArtistRow = memo(function ArtistRow({ artist }: { artist: ArtistID3
   const rating = useRating(artist.id, artist.userRating);
   const offlineMode = offlineModeStore((s) => s.offlineMode);
 
-  const onPress = useCallback(() => {
+  const defaultOnPress = useCallback(() => {
     router.push(`/artist/${artist.id}`);
   }, [artist.id, router]);
+  const handlePress = onPress ?? defaultOnPress;
 
   const handleToggleStar = useCallback(() => {
     toggleStar('artist', artist.id);
@@ -58,7 +66,7 @@ export const ArtistRow = memo(function ArtistRow({ artist }: { artist: ArtistID3
       enableFullSwipeLeft={!offlineMode}
       rowGap={8}
       onLongPress={handleLongPress}
-      onPress={onPress}
+      onPress={handlePress}
     >
       <View style={styles.row}>
         <CachedImage coverArtId={artist.coverArt} size={COVER_SIZE} style={styles.cover} resizeMode="cover" />

@@ -20,7 +20,14 @@ import { formatCompactDuration } from '../utils/formatters';
 
 const COVER_SIZE = 300;
 
-export const AlbumRow = memo(function AlbumRow({ album }: { album: AlbumID3 }) {
+export const AlbumRow = memo(function AlbumRow({
+  album,
+  onPress,
+}: {
+  album: AlbumID3;
+  /** Overrides the default tap action (navigate to the album). */
+  onPress?: () => void;
+}) {
   const { colors } = useTheme();
   const { t } = useTranslation();
   const router = useRouter();
@@ -29,9 +36,10 @@ export const AlbumRow = memo(function AlbumRow({ album }: { album: AlbumID3 }) {
   const rating = useRating(album.id, album.userRating);
   const offlineMode = offlineModeStore((s) => s.offlineMode);
 
-  const onPress = useCallback(() => {
+  const defaultOnPress = useCallback(() => {
     router.push(`/album/${album.id}`);
   }, [album.id, router]);
+  const handlePress = onPress ?? defaultOnPress;
 
   const handleAddToQueue = useCallback(() => {
     addAlbumToQueue(album);
@@ -84,7 +92,7 @@ export const AlbumRow = memo(function AlbumRow({ album }: { album: AlbumID3 }) {
       enableFullSwipeLeft={!offlineMode}
       rowGap={8}
       onLongPress={handleLongPress}
-      onPress={onPress}
+      onPress={handlePress}
     >
       <View style={styles.row}>
         <CachedImage coverArtId={album.coverArt} size={COVER_SIZE} style={styles.cover} resizeMode="cover" />

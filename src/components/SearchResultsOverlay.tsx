@@ -23,6 +23,7 @@ import {
   type ArtistID3,
   type Child,
 } from '../services/subsonicService';
+import { recentSearchStore } from '../store/recentSearchStore';
 import { searchStore } from '../store/searchStore';
 
 import { absoluteFill } from '../utils/styles';
@@ -259,37 +260,47 @@ export function SearchResultsOverlay() {
     Keyboard.dismiss();
   }, [hideOverlay]);
 
+  // Tapping any result (or "see more") is the "this search led somewhere"
+  // signal — record the query into recent searches.
+  const recordCurrent = useCallback(() => {
+    recentSearchStore.getState().record(query);
+  }, [query]);
+
   const handleSeeMore = useCallback(() => {
+    recordCurrent();
     hideOverlay();
     Keyboard.dismiss();
     router.push('/(tabs)/search');
-  }, [hideOverlay, router]);
+  }, [recordCurrent, hideOverlay, router]);
 
   const navigateToArtist = useCallback(
     (id: string) => {
+      recordCurrent();
       hideOverlay();
       Keyboard.dismiss();
       router.push(`/artist/${id}`);
     },
-    [hideOverlay, router]
+    [recordCurrent, hideOverlay, router]
   );
 
   const navigateToAlbum = useCallback(
     (id: string) => {
+      recordCurrent();
       hideOverlay();
       Keyboard.dismiss();
       router.push(`/album/${id}`);
     },
-    [hideOverlay, router]
+    [recordCurrent, hideOverlay, router]
   );
 
   const handlePlaySong = useCallback(
     (song: Child) => {
+      recordCurrent();
       hideOverlay();
       Keyboard.dismiss();
       playTrack(song, [song]);
     },
-    [hideOverlay]
+    [recordCurrent, hideOverlay]
   );
 
   if (!isOverlayVisible || !query.trim()) return null;

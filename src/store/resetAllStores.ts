@@ -45,6 +45,7 @@ import { playbackSettingsStore } from './playbackSettingsStore';
 import { playlistDetailStore } from './playlistDetailStore';
 import { playlistLibraryStore } from './playlistLibraryStore';
 import { ratingStore } from './ratingStore';
+import { recentSearchStore } from './recentSearchStore';
 import { scanStatusStore } from './scanStatusStore';
 import { scrobbleExclusionStore } from './scrobbleExclusionStore';
 import { serverInfoStore } from './serverInfoStore';
@@ -101,6 +102,7 @@ const allStores = [
   playlistDetailStore,
   playlistLibraryStore,
   ratingStore,
+  recentSearchStore,
   scanStatusStore,
   scrobbleExclusionStore,
   serverInfoStore,

@@ -23,6 +23,7 @@ import { DARK_MIX, GRADIENT_LOCATIONS, GRADIENT_MIX_CURVE, LIGHT_MIX } from './G
 import { useTheme } from '../hooks/useTheme';
 import { mixHexColors } from '../utils/colors';
 import { offlineModeStore } from '../store/offlineModeStore';
+import { recentSearchStore } from '../store/recentSearchStore';
 import { searchStore } from '../store/searchStore';
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
@@ -73,8 +74,11 @@ export function SearchableHeader({ route }: BottomTabHeaderProps) {
   }, [query, showOverlay, isSearchTab]);
 
   const handleSubmitEditing = useCallback(() => {
+    // Pressing the search/return key is an explicit "run this search" — record
+    // the term (search itself already ran via the debounced onChangeText path).
+    recentSearchStore.getState().record(query);
     Keyboard.dismiss();
-  }, []);
+  }, [query]);
 
   const handleClear = useCallback(() => {
     if (debounceTimer.current) {

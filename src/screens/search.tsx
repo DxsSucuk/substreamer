@@ -1,3 +1,4 @@
+import { useRouter } from 'expo-router';
 import { useIsFocused } from "expo-router/react-navigation";
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -11,9 +12,11 @@ import { useTranslation } from 'react-i18next';
 import { AlbumRow } from '../components/AlbumRow';
 import { EmptyState } from '../components/EmptyState';
 import { ArtistRow } from '../components/ArtistRow';
+import { RecentSearches } from '../components/RecentSearches';
 import { SongRow } from '../components/SongRow';
 import { useTheme } from '../hooks/useTheme';
 import { getLocalTrackUri } from '../services/musicCacheService';
+import { playTrack } from '../services/playerService';
 import { minDelay } from '../utils/stringHelpers';
 import {
   type AlbumID3,
@@ -26,6 +29,7 @@ import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { albumPassesDownloadedFilter } from '../store/persistence/cachedItemHelpers';
 import { offlineModeStore } from '../store/offlineModeStore';
+import { recentSearchStore } from '../store/recentSearchStore';
 import { searchStore } from '../store/searchStore';
 
 /* ------------------------------------------------------------------ */
@@ -49,8 +53,10 @@ interface ResultSection {
 export function SearchScreen() {
   const { colors } = useTheme();
   const { t } = useTranslation();
+  const router = useRouter();
   const isFocused = useIsFocused();
   const headerHeight = searchStore((s) => s.headerHeight);
+  const recentSearches = recentSearchStore((s) => s.recentSearches);
 
   const query = searchStore((s) => s.query);
   const results = searchStore((s) => s.results);
@@ -152,18 +158,45 @@ export function SearchScreen() {
 
   const renderItem = useCallback(
     ({ item }: { item: SectionItem }) => {
+      // Tapping a result is the "this search led somewhere" signal — record the
+      // live query (read lazily so these closures don't churn per keystroke),
+      // then perform the row's normal action.
+      const recordCurrent = () =>
+        recentSearchStore.getState().record(searchStore.getState().query);
       switch (item.type) {
         case 'artist':
-          return <ArtistRow artist={item.data} />;
+          return (
+            <ArtistRow
+              artist={item.data}
+              onPress={() => {
+                recordCurrent();
+                router.push(`/artist/${item.data.id}`);
+              }}
+            />
+          );
         case 'album':
-          return <AlbumRow album={item.data} />;
+          return (
+            <AlbumRow
+              album={item.data}
+              onPress={() => {
+                recordCurrent();
+                router.push(`/album/${item.data.id}`);
+              }}
+            />
+          );
         case 'song':
           return (
-            <SongRow song={item.data} />
+            <SongRow
+              song={item.data}
+              onPress={() => {
+                recordCurrent();
+                playTrack(item.data, [item.data]);
+              }}
+            />
           );
       }
     },
-    []
+    [router]
   );
 
   const renderSectionHeader = useCallback(
@@ -180,22 +213,32 @@ export function SearchScreen() {
     []
   );
 
-  if (!query.trim() || (!hasResults && !loading)) {
-    const emptyQuery = !query.trim();
-    const title = emptyQuery
-      ? offlineMode
-        ? t('searchDownloadedMusic')
-        : t('searchForMusic')
-      : t('noResultsFound');
-    const subtitle = emptyQuery
-      ? offlineMode
-        ? t('findDownloadedMusic')
-        : t('findMusic')
-      : t('noResultsFor', { query });
-
+  // Empty box: show recent-searches history when present, otherwise the
+  // original placeholder (offline-aware).
+  if (!query.trim()) {
+    if (recentSearches.length > 0) {
+      return <RecentSearches paddingTop={headerHeight} />;
+    }
     return (
       <View style={[styles.container, { paddingTop: headerHeight }]}>
-        <EmptyState icon="search-outline" title={title} subtitle={subtitle} />
+        <EmptyState
+          icon="search-outline"
+          title={offlineMode ? t('searchDownloadedMusic') : t('searchForMusic')}
+          subtitle={offlineMode ? t('findDownloadedMusic') : t('findMusic')}
+        />
+      </View>
+    );
+  }
+
+  // Query present, no results, not mid-search: no-results placeholder.
+  if (!hasResults && !loading) {
+    return (
+      <View style={[styles.container, { paddingTop: headerHeight }]}>
+        <EmptyState
+          icon="search-outline"
+          title={t('noResultsFound')}
+          subtitle={t('noResultsFor', { query })}
+        />
       </View>
     );
   }
