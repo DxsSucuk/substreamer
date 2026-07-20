@@ -1,5 +1,23 @@
 # Changelog
 
+## [8.0.88] - 2026-07-20
+
+- ci: update coverage badge [skip ci]
+- fix(keyboard): drop redundant statusBarTranslucent on KeyboardProvider
+- perf(library): defer segment list render past the tap
+- feat: keyboard-controller + input-sheet standardisation, playlist refresh, dep bumps
+- fix(images): render cover art via expo-image, fixing Fresco crash
+- chore: expo deps
+- ci: update coverage badge [skip ci]
+- fix(swipe): reserve left edge for iOS back gesture over row swipe (#217)
+- fix(player): tint from dominant cover colour, not vibrant accent (#172)
+- fix(tuned-in): genre-mix feedback + compound-genre resolution (#219)
+- fix(tabs): contain the Android tab-bar ripple so it isn't clipped (#222)
+- fix(overlay): never render ProcessingOverlay empty or trapping (#223)
+- fix(subsonic-api): don't skip /rest path for .rest TLD hosts (#225)
+- ci: update coverage badge [skip ci]
+- perf(migrations): fast-track the no-op sweep on fresh installs
+- ci: update coverage badge [skip ci]
 ## [8.0.87] - 2026-07-17
 
 - feat: RNQP 1.0.9 + gray placeholder artwork; run player/scrobble init headless
