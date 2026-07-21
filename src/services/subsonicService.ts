@@ -813,6 +813,26 @@ export async function updatePlaylistOrder(
 }
 
 /**
+ * Update a playlist's editable properties (name, comment, public flag) via
+ * `updatePlaylist`. Only the owner may update; a non-owner attempt fails and
+ * returns false. Undefined fields are omitted by the request layer, so pass
+ * only what should change (or all three to re-assert after a track replace).
+ */
+export async function updatePlaylistDetails(
+  playlistId: string,
+  fields: { name?: string; comment?: string; public?: boolean },
+): Promise<boolean> {
+  const api = getApi();
+  if (!api) return false;
+  try {
+    await api.updatePlaylist({ playlistId, ...fields });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Create a new playlist with the given name and initial songs.
  */
 export async function createNewPlaylist(

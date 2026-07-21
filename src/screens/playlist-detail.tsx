@@ -1,12 +1,15 @@
 import { Stack, useLocalSearchParams, useNavigation } from 'expo-router';
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { MutableRefObject } from 'react';
 import {
   ActivityIndicator,
   Platform,
   Pressable,
   RefreshControl,
   StyleSheet,
+  Switch,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import Ionicons from "@react-native-vector-icons/ionicons/static";
@@ -41,12 +44,14 @@ import { useTransitionComplete } from '../hooks/useTransitionComplete';
 import { ensureCached, refreshCoverArt } from '../services/imageCacheService';
 import { enqueuePlaylistDownload, syncCachedPlaylistTracks } from '../services/musicCacheService';
 import { playTrack } from '../services/playerService';
-import { updatePlaylistOrder } from '../services/subsonicService';
+import { updatePlaylistDetails, updatePlaylistOrder } from '../services/subsonicService';
 import { shuffleArray } from '../utils/arrayHelpers';
+import { authStore } from '../store/authStore';
 import { moreOptionsStore } from '../store/moreOptionsStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { playlistDetailStore } from '../store/playlistDetailStore';
+import { playlistLibraryStore } from '../store/playlistLibraryStore';
 import { processingOverlayStore } from '../store/processingOverlayStore';
 
 import { formatCompactDuration } from '../utils/formatters';
@@ -125,6 +130,83 @@ const EditTrackRow = memo(function EditTrackRow({
   );
 });
 
+/**
+ * Editable playlist properties shown in the edit-mode list header: name +
+ * description + a public/private toggle. Name and description are UNCONTROLLED
+ * (defaultValue + ref) so typing never triggers a screen re-render — the parent
+ * `listHeader` useMemo would otherwise recompute on every keystroke and yank
+ * input focus in the reorderable list. Memoized on stable props so a track
+ * reorder doesn't re-render the form. Only the Switch is controlled (a single
+ * tap, and the uncontrolled inputs keep their content across its re-render).
+ */
+const PlaylistEditHeader = memo(function PlaylistEditHeader({
+  colors,
+  initialName,
+  initialComment,
+  isPublic,
+  onChangePublic,
+  nameRef,
+  commentRef,
+  t,
+}: {
+  colors: ReturnType<typeof useTheme>['colors'];
+  initialName: string;
+  initialComment: string;
+  isPublic: boolean;
+  onChangePublic: (value: boolean) => void;
+  nameRef: MutableRefObject<string>;
+  commentRef: MutableRefObject<string>;
+  t: (key: string) => string;
+}) {
+  return (
+    <View style={styles.editHeaderForm}>
+      <TextInput
+        defaultValue={initialName}
+        onChangeText={(v) => {
+          nameRef.current = v;
+        }}
+        placeholder={t('playlistName')}
+        placeholderTextColor={colors.textSecondary}
+        style={[
+          styles.editInput,
+          { backgroundColor: colors.inputBg, color: colors.textPrimary, borderColor: colors.border },
+        ]}
+        returnKeyType="done"
+      />
+      <TextInput
+        defaultValue={initialComment}
+        onChangeText={(v) => {
+          commentRef.current = v;
+        }}
+        placeholder={t('descriptionOptional')}
+        placeholderTextColor={colors.textSecondary}
+        multiline
+        style={[
+          styles.editInput,
+          styles.editInputMultiline,
+          { backgroundColor: colors.inputBg, color: colors.textPrimary, borderColor: colors.border },
+        ]}
+      />
+      <View style={styles.publicRow}>
+        <View style={styles.publicText}>
+          <Text style={[styles.publicLabel, { color: colors.textPrimary }]}>
+            {t('publicPlaylist')}
+          </Text>
+          <Text style={[styles.publicHint, { color: colors.textSecondary }]}>
+            {t('publicPlaylistHint')}
+          </Text>
+        </View>
+        <Switch
+          value={isPublic}
+          onValueChange={onChangePublic}
+          trackColor={{ false: colors.border, true: colors.primary }}
+          accessibilityLabel={t('publicPlaylist')}
+        />
+      </View>
+    </View>
+  );
+});
+
 export function PlaylistDetailScreen() {
   const { t } = useTranslation();
   const { colors } = useTheme();
@@ -139,9 +221,23 @@ export function PlaylistDetailScreen() {
   const refreshControlKey = useRefreshControlKey();
 
   const offlineMode = offlineModeStore((s) => s.offlineMode);
+  const username = authStore((s) => s.username);
   const [editing, setEditing] = useState(false);
   const [editedTracks, setEditedTracks] = useState<Child[]>([]);
+  const [editedPublic, setEditedPublic] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Name + comment are ref-backed (uncontrolled inputs) so typing doesn't
+  // re-render the screen / the reorderable-list header — see PlaylistEditHeader.
+  const nameRef = useRef('');
+  const commentRef = useRef('');
+
+  // Ownership drives both the edit gate and the "Shared" badge. Case-insensitive
+  // because Subsonic usernames are commonly case-insensitive server-side (login
+  // `Greg` vs stored `greg` must still count as own). Unknown owner ⇒ treat as own.
+  const isOwn =
+    playlist?.owner == null ||
+    playlist.owner.toLowerCase() === (username ?? '').toLowerCase();
+  const canEdit = !offlineMode && isOwn;
 
   /* ---- Data fetching ---- */
   const { fetchPlaylist } = playlistDetailStore.getState();
@@ -169,8 +265,11 @@ export function PlaylistDetailScreen() {
 
   const handleStartEdit = useCallback(() => {
     setEditedTracks([...tracks]);
+    nameRef.current = playlist?.name ?? '';
+    commentRef.current = playlist?.comment ?? '';
+    setEditedPublic(!!playlist?.public);
     setEditing(true);
-  }, [tracks]);
+  }, [tracks, playlist]);
 
   const handleCancelEdit = useCallback(() => {
     setEditing(false);
@@ -191,9 +290,24 @@ export function PlaylistDetailScreen() {
   const handleSave = useCallback(async () => {
     if (!playlist || !id) return;
 
+    const name = nameRef.current.trim();
+    // Empty string is a real "clear the comment" — do NOT coalesce to undefined.
+    const comment = commentRef.current;
+    if (!name) {
+      processingOverlayStore.getState().showError(t('pleaseEnterPlaylistName'));
+      return;
+    }
+
     const originalIds = tracks.map((tr) => tr.id).join(',');
     const editedIds = editedTracks.map((tr) => tr.id).join(',');
-    if (originalIds === editedIds) {
+    const tracksChanged = originalIds !== editedIds;
+    // Normalize both sides so trailing space / undefined don't flag phantom edits.
+    const propsChanged =
+      name !== playlist.name.trim() ||
+      comment !== (playlist.comment ?? '') ||
+      editedPublic !== !!playlist.public;
+
+    if (!tracksChanged && !propsChanged) {
       setEditing(false);
       setEditedTracks([]);
       return;
@@ -202,36 +316,71 @@ export function PlaylistDetailScreen() {
     setSaving(true);
     processingOverlayStore.getState().show(t('saving'));
     try {
-      const success = await updatePlaylistOrder(
-        id,
-        playlist.name,
-        editedTracks.map((tr) => tr.id),
-      );
-      if (!success) {
+      // 1. Track order/membership (full replace). Stay in edit mode on failure.
+      if (tracksChanged) {
+        const replaceOk = await updatePlaylistOrder(
+          id,
+          name,
+          editedTracks.map((tr) => tr.id),
+        );
+        if (!replaceOk) {
+          processingOverlayStore.getState().showError(t('failedToSavePlaylist'));
+          setSaving(false);
+          return;
+        }
+        if (id in musicCacheStore.getState().cachedItems) {
+          syncCachedPlaylistTracks(id, editedTracks.map((tr) => tr.id));
+        }
+      }
+
+      // 2. Properties. Run AFTER the replace so it re-asserts name/comment/public
+      //    (some servers reset those when createPlaylist replaces the tracks).
+      let detailsOk = true;
+      if (tracksChanged || propsChanged) {
+        detailsOk = await updatePlaylistDetails(id, {
+          name,
+          comment,
+          public: editedPublic,
+        });
+      }
+
+      // Nothing persisted (only props were requested and they failed) — stay in
+      // edit mode so the user can retry without losing their input.
+      if (!detailsOk && !tracksChanged) {
         processingOverlayStore.getState().showError(t('failedToSavePlaylist'));
         setSaving(false);
         return;
       }
 
-      if (id in musicCacheStore.getState().cachedItems) {
-        syncCachedPlaylistTracks(id, editedTracks.map((tr) => tr.id));
-      }
-
+      // 3. Reconcile from server truth; patch the library list from the refetched
+      //    values so it reflects reality even on a partial (tracks-ok/props-failed) save.
       const fresh = await fetchPlaylist(id);
       if (fresh?.id) {
         await ensureCached(fresh.id);
       }
-      if (fresh) setPlaylist(fresh);
+      if (fresh) {
+        setPlaylist(fresh);
+        playlistLibraryStore.getState().patchPlaylistMetadata(id, {
+          name: fresh.name,
+          comment: fresh.comment,
+          public: fresh.public,
+        });
+      }
 
       setEditing(false);
       setEditedTracks([]);
-      processingOverlayStore.getState().showSuccess(t('playlistSaved'));
+      if (detailsOk) {
+        processingOverlayStore.getState().showSuccess(t('playlistSaved'));
+      } else {
+        // Tracks were replaced but the property write failed.
+        processingOverlayStore.getState().showError(t('playlistTracksSavedPropsFailed'));
+      }
     } catch {
       processingOverlayStore.getState().showError(t('failedToSavePlaylist'));
     } finally {
       setSaving(false);
     }
-  }, [playlist, id, tracks, editedTracks, fetchPlaylist]);
+  }, [playlist, id, tracks, editedTracks, editedPublic, fetchPlaylist, t]);
 
   /* ---- Header ---- */
 
@@ -270,7 +419,7 @@ export function PlaylistDetailScreen() {
         headerLeft: undefined,
         headerRight: () => (
           <View style={styles.headerRight}>
-            {!offlineMode && (
+            {canEdit && (
               <Pressable onPress={handleStartEdit} hitSlop={8} style={styles.headerIcon}>
                 <Ionicons name="pencil-outline" size={22} color={colors.textPrimary} />
               </Pressable>
@@ -295,6 +444,7 @@ export function PlaylistDetailScreen() {
     editing,
     saving,
     offlineMode,
+    canEdit,
     handleStartEdit,
     handleCancelEdit,
     handleSave,
@@ -364,17 +514,54 @@ export function PlaylistDetailScreen() {
           </View>
         </View>
         <View style={styles.info}>
-          <MarqueeText style={[styles.playlistName, { color: colors.textPrimary }]}>
-            {playlist.name}
-          </MarqueeText>
+          {editing ? (
+            <PlaylistEditHeader
+              colors={colors}
+              initialName={playlist.name}
+              initialComment={playlist.comment ?? ''}
+              isPublic={editedPublic}
+              onChangePublic={setEditedPublic}
+              nameRef={nameRef}
+              commentRef={commentRef}
+              t={t}
+            />
+          ) : (
+            <MarqueeText style={[styles.playlistName, { color: colors.textPrimary }]}>
+              {playlist.name}
+            </MarqueeText>
+          )}
           <View style={styles.subtitleRow}>
             <View style={styles.subtitleText}>
-              {playlist.owner && (
-                <Text style={[styles.ownerName, { color: colors.textSecondary }]}>
-                  {t('byOwner', { owner: playlist.owner })}
-                </Text>
-              )}
-              {playlist.comment ? (
+              {!editing &&
+                (!isOwn ? (
+                  <View style={styles.sharedBadge}>
+                    <Ionicons name="people-outline" size={13} color={colors.primary} />
+                    <Text style={[styles.sharedBadgeText, { color: colors.primary }]}>
+                      {t('sharedByOwner', { owner: playlist.owner })}
+                    </Text>
+                  </View>
+                ) : typeof playlist.public === 'boolean' ? (
+                  // Owner's own playlist: show its current visibility so it's
+                  // clear without opening edit mode. Only when the server
+                  // actually reported `public` — never guess "Private".
+                  <View style={styles.sharedBadge}>
+                    <Ionicons
+                      name={playlist.public ? 'globe-outline' : 'lock-closed-outline'}
+                      size={13}
+                      color={colors.primary}
+                    />
+                    <Text style={[styles.sharedBadgeText, { color: colors.primary }]}>
+                      {playlist.public ? t('publicPlaylist') : t('privatePlaylist')}
+                    </Text>
+                  </View>
+                ) : (
+                  playlist.owner && (
+                    <Text style={[styles.ownerName, { color: colors.textSecondary }]}>
+                      {t('byOwner', { owner: playlist.owner })}
+                    </Text>
+                  )
+                ))}
+              {!editing && playlist.comment ? (
                 <Text style={[styles.comment, { color: colors.textSecondary }]}>
                   {playlist.comment}
                 </Text>
@@ -411,7 +598,7 @@ export function PlaylistDetailScreen() {
         <View style={styles.trackListSpacer} />
       </View>
     );
-  }, [playlist, colors, tracks, editing, editedTracks, t]);
+  }, [playlist, colors, tracks, editing, editedTracks, editedPublic, isOwn, t]);
 
   const listEmpty = useMemo(
     () => (
@@ -463,7 +650,7 @@ export function PlaylistDetailScreen() {
     <>
       {Platform.OS === 'ios' && !editing && playlist && id && (
         <Stack.Toolbar placement="right">
-          {!offlineMode && (
+          {canEdit && (
             <Stack.Toolbar.Button icon="pencil" onPress={handleStartEdit} />
           )}
           {downloadStatus === 'none' ? (
@@ -504,6 +691,7 @@ export function PlaylistDetailScreen() {
           onScrollBeginDrag={closeOpenRow}
           ListHeaderComponent={listHeader}
           ListEmptyComponent={listEmpty}
+          keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
           contentContainerStyle={listContentStyle}
         />
@@ -608,6 +796,49 @@ const styles = StyleSheet.create({
     fontSize: 14,
     marginTop: 6,
     fontStyle: 'italic',
+  },
+  sharedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 4,
+  },
+  sharedBadgeText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  editHeaderForm: {
+    marginBottom: 4,
+  },
+  editInput: {
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 16,
+    marginBottom: 10,
+  },
+  editInputMultiline: {
+    minHeight: 68,
+    textAlignVertical: 'top',
+  },
+  publicRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 6,
+    gap: 12,
+  },
+  publicText: {
+    flex: 1,
+  },
+  publicLabel: {
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  publicHint: {
+    fontSize: 12,
+    marginTop: 2,
   },
   meta: {
     flexDirection: 'row',

@@ -600,6 +600,33 @@ describe('API wrapper functions', () => {
     expect(result).toBe(false);
   });
 
+  it('updatePlaylistDetails passes name/comment/public to api.updatePlaylist', async () => {
+    const { default: SubsonicAPI } = require('subsonic-api');
+    SubsonicAPI.prototype.updatePlaylist = jest.fn().mockResolvedValue(undefined);
+    const { updatePlaylistDetails, getApi } = require('../subsonicService');
+    getApi();
+    const result = await updatePlaylistDetails('p1', {
+      name: 'New Name',
+      comment: 'desc',
+      public: true,
+    });
+    expect(result).toBe(true);
+    expect(SubsonicAPI.prototype.updatePlaylist).toHaveBeenCalledWith({
+      playlistId: 'p1',
+      name: 'New Name',
+      comment: 'desc',
+      public: true,
+    });
+  });
+
+  it('updatePlaylistDetails returns false on failure', async () => {
+    const { default: SubsonicAPI } = require('subsonic-api');
+    SubsonicAPI.prototype.updatePlaylist = jest.fn().mockRejectedValue(new Error('fail'));
+    const { updatePlaylistDetails, getApi } = require('../subsonicService');
+    getApi();
+    expect(await updatePlaylistDetails('p1', { name: 'x' })).toBe(false);
+  });
+
   it('getScanStatus returns null when no API', async () => {
     mockAuthStore.getState.mockReturnValue({ isLoggedIn: false } as any);
     const { getScanStatus } = require('../subsonicService');

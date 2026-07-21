@@ -45,6 +45,15 @@ export interface PlaylistLibraryState {
   fetchAllPlaylists: () => Promise<void>;
   /** Remove a single playlist from the library by ID. */
   removePlaylist: (id: string) => void;
+  /**
+   * Patch a single playlist's editable metadata in place (after an edit), so
+   * the library list reflects the change without a full re-sync. No-op if the
+   * id isn't present.
+   */
+  patchPlaylistMetadata: (
+    id: string,
+    fields: { name?: string; comment?: string; public?: boolean },
+  ) => void;
   /** Clear all playlist data */
   clearPlaylists: () => void;
 }
@@ -100,6 +109,23 @@ export const playlistLibraryStore = create<PlaylistLibraryState>()(
         set((state) => ({
           playlists: state.playlists.filter((p) => p.id !== id),
         })),
+
+      patchPlaylistMetadata: (id, fields) =>
+        set((state) => {
+          if (!state.playlists.some((p) => p.id === id)) return {};
+          return {
+            playlists: state.playlists.map((p) =>
+              p.id === id
+                ? {
+                    ...p,
+                    ...(fields.name !== undefined ? { name: fields.name } : {}),
+                    ...(fields.comment !== undefined ? { comment: fields.comment } : {}),
+                    ...(fields.public !== undefined ? { public: fields.public } : {}),
+                  }
+                : p,
+            ),
+          };
+        }),
 
       clearPlaylists: () =>
         set({

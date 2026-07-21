@@ -62,6 +62,47 @@ describe('playlistLibraryStore', () => {
     });
   });
 
+  describe('patchPlaylistMetadata', () => {
+    it('patches name/comment/public in place', () => {
+      playlistLibraryStore.setState({
+        playlists: [
+          { id: 'p1', name: 'Old', comment: 'c', public: false } as any,
+          makePlaylist('p2', 'B'),
+        ],
+      });
+      playlistLibraryStore
+        .getState()
+        .patchPlaylistMetadata('p1', { name: 'New', comment: 'd', public: true });
+      const [p1, p2] = playlistLibraryStore.getState().playlists as any[];
+      expect(p1).toMatchObject({ id: 'p1', name: 'New', comment: 'd', public: true });
+      expect(p2).toEqual(makePlaylist('p2', 'B'));
+    });
+
+    it('only patches provided fields', () => {
+      playlistLibraryStore.setState({
+        playlists: [{ id: 'p1', name: 'Old', comment: 'c', public: true } as any],
+      });
+      playlistLibraryStore.getState().patchPlaylistMetadata('p1', { name: 'New' });
+      const [p1] = playlistLibraryStore.getState().playlists as any[];
+      expect(p1).toMatchObject({ name: 'New', comment: 'c', public: true });
+    });
+
+    it('can clear a comment with an empty string', () => {
+      playlistLibraryStore.setState({
+        playlists: [{ id: 'p1', name: 'A', comment: 'c' } as any],
+      });
+      playlistLibraryStore.getState().patchPlaylistMetadata('p1', { comment: '' });
+      expect((playlistLibraryStore.getState().playlists[0] as any).comment).toBe('');
+    });
+
+    it('no-ops (same reference) for a non-existing id', () => {
+      const before = [makePlaylist('p1', 'A')];
+      playlistLibraryStore.setState({ playlists: before });
+      playlistLibraryStore.getState().patchPlaylistMetadata('nope', { name: 'X' });
+      expect(playlistLibraryStore.getState().playlists).toBe(before);
+    });
+  });
+
   describe('clearPlaylists', () => {
     it('resets all state', () => {
       playlistLibraryStore.setState({
