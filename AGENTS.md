@@ -270,6 +270,8 @@ Save every non-trivial plan to `plans/` (gitignored) before implementation begin
 
 Short, factual subject lines. **No** preamble, recap, ceremonial summaries. **No** mentions of test counts, coverage %, TS/lint status unless the commit is specifically about those. **No** attribution trailers — `Co-Authored-By`, `Signed-off-by`, "Generated with", "🤖", tool credits — ever, in any commit, full stop. Only commit when explicitly asked.
 
+**Closing issues:** to close a GitHub issue, put `Closes #N` **in the commit message** — it auto-closes when the commit is pushed. This is the ONLY way to close an issue. **Never** run `gh issue close` manually. When the user says "close the ticket with the commit message" (or "close #N with the commit"), they mean literally add `Closes #N` to the commit message — not close it by hand. "Commit" still means commit locally and stop (never push unless told); the issue closes later when the commit is pushed, which is fine — do not manually close it in the meantime.
+
 ### Code search
 
 Prefer Symdex MCP server (when available) over Glob/Grep for symbol lookup, file outlines, call graphs, and full-text search across the indexed repo. Fall back to filesystem search when Symdex misses or for content outside the index (`node_modules/`, etc.).
