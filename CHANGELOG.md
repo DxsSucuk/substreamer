@@ -1,5 +1,12 @@
 # Changelog
 
+## [8.0.89] - 2026-07-21
+
+- docs(agents): close issues via "Closes #N" in the commit, never gh issue close
+- ci: update coverage badge [skip ci]
+- feat(playlist): edit name, description & public/private in edit mode
+- feat(search): recent searches on the empty search screen
+- ci: update coverage badge [skip ci]
 ## [8.0.88] - 2026-07-20
 
 - ci: update coverage badge [skip ci]
