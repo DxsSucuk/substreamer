@@ -5,3 +5,4 @@ export * from './albums';
 export * from './songs';
 export * from './artists';
 export * from './playlists';
+export * from './search';

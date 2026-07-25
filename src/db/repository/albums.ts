@@ -25,7 +25,7 @@ export interface AlbumListRow {
   user_rating: number | null;
 }
 
-const ALBUM_LIST_COLS =
+export const ALBUM_LIST_COLS =
   '"id", "name", "display_artist", "cover_art", "year", "sort_title", "starred", "user_rating"';
 
 export function upsertAlbums(

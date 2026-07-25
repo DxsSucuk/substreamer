@@ -13,6 +13,7 @@ import {
 } from '../playlists';
 import { countSongs, listSongs, listSongsByAlbum, upsertSongs } from '../songs';
 import { keysetPageBefore } from '../core';
+import { searchAlbums, searchArtists, searchSongs } from '../search';
 
 const db = () => getDb()!;
 
@@ -241,5 +242,35 @@ describe('bidirectional keyset paging', () => {
     });
     expect(back.rows.map((r) => r.title)).toEqual(['Apple', 'Boat']); // ascending
     expect(back.prevCursor).toBeNull(); // reached the start
+  });
+});
+
+describe('search (tiered candidate generation)', () => {
+  it('matches exact / prefix / infix over the normalized norm_* columns', async () => {
+    await upsertSongs(db(), [
+      song('s1', 'Hey Jude', { artist: 'The Beatles' }),
+      song('s2', 'Hey There Delilah', { artist: 'Plain White Ts' }),
+      song('s3', 'Jude Law Biography', { artist: 'Someone' }),
+    ]);
+
+    // exact norm_title
+    expect((await searchSongs(db(), 'hey jude', ['hey', 'jude'], [])).map((r) => r.id)).toContain('s1');
+    // prefix 'hey' → both hey* titles
+    expect(
+      (await searchSongs(db(), 'hey', ['hey'], [])).map((r) => r.title).sort(),
+    ).toEqual(['Hey Jude', 'Hey There Delilah']);
+    // infix token 'jude' → titles containing jude
+    expect(
+      (await searchSongs(db(), 'jude', ['jude'], [])).map((r) => r.title).sort(),
+    ).toEqual(['Hey Jude', 'Jude Law Biography']);
+    // empty query short-circuits
+    expect(await searchSongs(db(), '', [], [])).toEqual([]);
+  });
+
+  it('searches albums + artists over their norm columns', async () => {
+    await upsertAlbums(db(), [album('al1', 'Abbey Road'), album('al2', 'Let It Be')]);
+    await upsertArtists(db(), [artist('ar1', 'Abba'), artist('ar2', 'Beatles')]);
+    expect((await searchAlbums(db(), 'abbey', ['abbey'], [])).map((r) => r.name)).toEqual(['Abbey Road']);
+    expect((await searchArtists(db(), 'abba', ['abba'], [])).map((r) => r.name)).toEqual(['Abba']);
   });
 });

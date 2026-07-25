@@ -28,7 +28,7 @@ export interface SongListRow {
   user_rating: number | null;
 }
 
-const SONG_LIST_COLS =
+export const SONG_LIST_COLS =
   '"id", "title", "artist", "album", "album_id", "cover_art", "duration", "track", ' +
   '"disc_number", "sort_title", "starred", "user_rating"';
 
