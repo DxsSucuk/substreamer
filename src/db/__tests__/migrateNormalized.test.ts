@@ -1,0 +1,69 @@
+import type { AlbumID3, Child } from 'subsonic-api';
+
+import { getDb } from '../../store/persistence/db';
+import { ensureNormalizedSchema } from '../createNormalizedTables';
+import { migrateBlobsToNormalized } from '../migrateNormalized';
+import { countAlbums, listAlbums } from '../repository/albums';
+import { countSongs } from '../repository/songs';
+
+const db = () => getDb()!;
+
+const seedAlbum = (id: string, a: Partial<AlbumID3>) =>
+  db().runSync('INSERT OR REPLACE INTO library_albums (id, sortKey, raw_json) VALUES (?, ?, ?)', [
+    id,
+    (a.name ?? id).toLowerCase(),
+    JSON.stringify({ id, name: id, created: '2020-01-01', duration: 1, songCount: 1, ...a }),
+  ]);
+
+const seedSong = (id: string, albumId: string, c: Partial<Child>) =>
+  db().runSync('INSERT OR REPLACE INTO song_index (id, albumId, raw_json) VALUES (?, ?, ?)', [
+    id,
+    albumId,
+    JSON.stringify({ id, albumId, title: id, isDir: false, ...c }),
+  ]);
+
+beforeAll(() => ensureNormalizedSchema(db()));
+beforeEach(() => {
+  for (const t of ['library_albums', 'song_index', 'albums', 'songs']) {
+    db().runSync(`DELETE FROM ${t}`);
+  }
+});
+
+describe('migrateBlobsToNormalized', () => {
+  it('migrates album + song blobs into the normalized tables with children', async () => {
+    seedAlbum('a1', { name: 'Alpha', genres: ['Rock', 'Pop'] });
+    seedAlbum('a2', { name: 'Bravo' });
+    seedSong('s1', 'a1', { title: 'Track One', genres: ['Rock'] });
+    seedSong('s2', 'a1', { title: 'Track Two' });
+
+    const result = await migrateBlobsToNormalized(db());
+
+    expect(result.albums).toEqual({ source: 2, migrated: 2, skipped: 0 });
+    expect(result.songs).toEqual({ source: 2, migrated: 2, skipped: 0 });
+    expect(await countAlbums(db())).toBe(2);
+    expect(await countSongs(db())).toBe(2);
+
+    const genres = db().getAllSync<{ name: string }>(
+      "SELECT name FROM album_genres WHERE album_id='a1' ORDER BY pos",
+    );
+    expect(genres.map((g) => g.name)).toEqual(['Rock', 'Pop']);
+
+    const page = await listAlbums(db(), { limit: 10 });
+    expect(page.rows.map((r) => r.name)).toEqual(['Alpha', 'Bravo']);
+  });
+
+  it('skips rows with no raw_json and is re-runnable (idempotent)', async () => {
+    seedAlbum('a1', { name: 'Alpha' });
+    db().runSync("INSERT INTO song_index (id, albumId, raw_json) VALUES ('s0', 'a1', NULL)");
+    seedSong('s1', 'a1', { title: 'Good' });
+
+    const first = await migrateBlobsToNormalized(db());
+    expect(first.songs).toEqual({ source: 2, migrated: 1, skipped: 1 });
+
+    // second run must not duplicate
+    const second = await migrateBlobsToNormalized(db());
+    expect(second.albums.migrated).toBe(1);
+    expect(await countAlbums(db())).toBe(1);
+    expect(await countSongs(db())).toBe(1);
+  });
+});

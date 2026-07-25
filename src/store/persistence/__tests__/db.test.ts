@@ -46,12 +46,13 @@ describe('persistence/db (happy path)', () => {
     expect(mockExecuteSync).toHaveBeenCalledWith('SELECT 42;');
   });
 
-  it('applies PRAGMAs in the documented order', () => {
+  it('applies PRAGMAs in the documented order (incl. the boot WAL fold)', () => {
     const pragmaSets = mockExecuteSync.mock.calls
       .map((c) => c[0] as string)
-      .filter((sql) => sql.startsWith('PRAGMA') && sql.includes('='));
+      .filter((sql) => sql.startsWith('PRAGMA') && (sql.includes('=') || sql.includes('wal_checkpoint')));
     expect(pragmaSets).toEqual([
       'PRAGMA journal_mode = WAL;',
+      'PRAGMA wal_checkpoint(TRUNCATE);',
       'PRAGMA synchronous = NORMAL;',
       'PRAGMA foreign_keys = ON;',
       'PRAGMA busy_timeout = 5000;',

@@ -65,6 +65,12 @@ function makeDb(bs: Database.Database, dbPath: string): DB {
   const dirtyTables = new Set<string>();
 
   const run = (query: string, params?: Scalar[]): QueryResult => {
+    // better-sqlite3 rejects transaction-control statements via prepared
+    // statements (it wants exec()) — route BEGIN/COMMIT/ROLLBACK through exec().
+    if (/^\s*(BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE|END)\b/i.test(query)) {
+      bs.exec(query);
+      return { rows: [], rowsAffected: 0 };
+    }
     const stmt = bs.prepare(query);
     const args = coerceParams(params);
     if (stmt.reader) {

@@ -27,6 +27,9 @@ module.exports = {
       ],
       moduleNameMapper: {
         '^@/(.*)$': '<rootDir>/src/$1',
+        // expo-sqlite is removed (op-SQLite owns the DB); keep legacy suites that
+        // still jest.mock('expo-sqlite') resolvable via a stub (see the stub file).
+        '^expo-sqlite$': '<rootDir>/src/test-utils/expoSqliteStub.ts',
         '^.+/i18n/i18n$': '<rootDir>/src/test-utils/i18nMock.ts',
         // SDK 56 vector-icons migration: redirect every
         // `@react-native-vector-icons/*/static` import to the shared stub.
@@ -47,6 +50,9 @@ module.exports = {
       ],
       moduleNameMapper: {
         '^@/(.*)$': '<rootDir>/src/$1',
+        // expo-sqlite is removed (op-SQLite owns the DB); keep legacy suites that
+        // still jest.mock('expo-sqlite') resolvable via a stub (see the stub file).
+        '^expo-sqlite$': '<rootDir>/src/test-utils/expoSqliteStub.ts',
         '^.+/i18n/i18n$': '<rootDir>/src/test-utils/i18nMock.ts',
         // SDK 56 vector-icons migration: redirect every
         // `@react-native-vector-icons/*/static` import to the shared stub.

@@ -72,7 +72,6 @@
       "./plugins/fix-jvm-target",
       "./plugins/large-heap",
       "./plugins/set-gradle-version",
-      "expo-sqlite",
       "./modules/expo-ssl-trust/plugin",
       "./modules/expo-backup-exclusions/plugin",
       [

@@ -1,32 +1,47 @@
 /**
- * DEV-only Phase-0 spike runner. Reachable from Settings → Developer → "DB spikes"
- * (dev options must be enabled). Runs the persistence-rebuild de-risking spikes and
- * shows their output inline (shareable as a text file). Delete with `dbSpikes.ts`
- * and the Spike C screen once Phase 0 exits.
+ * DEV-only Phase-0/2 spike runner. Reachable from Settings → Developer → "DB spikes"
+ * (dev options must be enabled). Pick a spike from the dropdown, Run it, and read
+ * the output (shareable as a text file). Delete with `dbSpikes.ts` + the Spike C
+ * screen once the persistence rebuild is done.
  */
 import Ionicons from '@react-native-vector-icons/ionicons/static';
 import { File, Paths } from 'expo-file-system';
 import { useRouter } from 'expo-router';
-import { HeaderHeightContext } from 'expo-router/react-navigation';
 import { shareAsync } from 'expo-sharing';
-import { useCallback, useContext, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { BottomChrome } from '../components/BottomChrome';
 import { GradientBackground } from '../components/GradientBackground';
-import { runSpikeA, runSpikeB } from '../db/testing/dbSpikes';
+import { runSpikeA, runSpikeB, runSpikeD } from '../db/testing/dbSpikes';
 import { useTheme } from '../hooks/useTheme';
 import type { ThemeColors } from '../constants/theme';
 import type { IoniconsName } from '../utils/iconNames';
 
-function SpikeButton({
-  label,
+type Runner = (log: (message: string) => void) => Promise<void>;
+type SpikeKey = 'A' | 'B' | 'C' | 'D';
+
+interface SpikeDef {
+  key: SpikeKey;
+  label: string;
+  icon: IoniconsName;
+  run?: Runner; // a loggable spike
+  nav?: string; // or a screen to open (Spike C is interactive)
+}
+
+const SPIKES: SpikeDef[] = [
+  { key: 'D', label: 'D · migrate + validate', icon: 'git-branch-outline', run: runSpikeD },
+  { key: 'A', label: 'A · open existing DB', icon: 'folder-open-outline', run: runSpikeA },
+  { key: 'B', label: 'B · contention + reactive', icon: 'pulse-outline', run: runSpikeB },
+  { key: 'C', label: 'C · FlashList keyset (UI)', icon: 'list-outline', nav: '/db-spike-c' },
+];
+
+function IconBtn({
   icon,
   onPress,
   disabled,
   colors,
 }: {
-  label: string;
   icon: IoniconsName;
   onPress: () => void;
   disabled?: boolean;
@@ -37,14 +52,13 @@ function SpikeButton({
       onPress={onPress}
       disabled={disabled}
       style={({ pressed }) => [
-        styles.button,
+        styles.iconBtn,
         { borderColor: colors.border, backgroundColor: colors.card },
         pressed && styles.pressed,
         disabled && styles.disabled,
       ]}
     >
       <Ionicons name={icon} size={18} color={colors.primary} />
-      <Text style={[styles.buttonText, { color: colors.primary }]}>{label}</Text>
     </Pressable>
   );
 }
@@ -52,17 +66,18 @@ function SpikeButton({
 export function DbSpikesScreen() {
   const { colors } = useTheme();
   const router = useRouter();
-  const headerHeight = useContext(HeaderHeightContext) ?? 0;
   const [lines, setLines] = useState<string[]>([]);
   const [running, setRunning] = useState(false);
+  const [selectedKey, setSelectedKey] = useState<SpikeKey>('D');
+  const [menuOpen, setMenuOpen] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
 
-  const log = useCallback((message: string) => {
-    setLines((prev) => [...prev, message]);
-  }, []);
+  const selected = useMemo(() => SPIKES.find((s) => s.key === selectedKey)!, [selectedKey]);
+
+  const log = useCallback((message: string) => setLines((prev) => [...prev, message]), []);
 
   const run = useCallback(
-    async (fn: (l: (m: string) => void) => Promise<void>) => {
+    async (fn: Runner) => {
       if (running) return;
       setRunning(true);
       try {
@@ -77,8 +92,13 @@ export function DbSpikesScreen() {
     [running, log],
   );
 
-  const clear = useCallback(() => setLines([]), []);
+  const onRun = useCallback(() => {
+    setMenuOpen(false);
+    if (selected.nav) router.push(selected.nav as never);
+    else if (selected.run) void run(selected.run);
+  }, [selected, router, run]);
 
+  const clear = useCallback(() => setLines([]), []);
   const share = useCallback(async () => {
     const file = new File(Paths.document, 'db-spikes.log');
     file.write(lines.join('\n'));
@@ -87,27 +107,70 @@ export function DbSpikesScreen() {
 
   return (
     <GradientBackground>
-      {/* Fixed control bar — stays put so Share/Clear never scroll out of reach. */}
-      <View style={[styles.controls, { paddingTop: headerHeight + 12, borderBottomColor: colors.border }]}>
-        <View style={styles.buttonRow}>
-          <SpikeButton label="Run Spike A" icon="folder-open-outline" onPress={() => run(runSpikeA)} disabled={running} colors={colors} />
-          <SpikeButton label="Run Spike B" icon="pulse-outline" onPress={() => run(runSpikeB)} disabled={running} colors={colors} />
-        </View>
-        <View style={styles.buttonRow}>
-          <SpikeButton label="Spike C (UI)" icon="list-outline" onPress={() => router.push('/db-spike-c' as never)} disabled={running} colors={colors} />
-          <SpikeButton label="Share" icon="share-outline" onPress={share} disabled={lines.length === 0} colors={colors} />
-          <SpikeButton label="Clear" icon="trash-outline" onPress={clear} disabled={lines.length === 0 || running} colors={colors} />
-        </View>
-        {running && (
-          <View style={styles.runningRow}>
-            <ActivityIndicator color={colors.primary} />
-            <Text style={[styles.runningText, { color: colors.textSecondary }]}>running…</Text>
+      {/* Compact control bar pinned to the top (GradientBackground already offsets
+          the header, so no header padding here). Results get the rest of the screen. */}
+      <View style={[styles.controls, { borderBottomColor: colors.border }]}>
+        {/* Full-width dropdown so the option label is fully readable. */}
+        <Pressable
+          onPress={() => setMenuOpen((o) => !o)}
+          style={[styles.dropdown, { borderColor: colors.border, backgroundColor: colors.card }]}
+        >
+          <Ionicons name={selected.icon} size={16} color={colors.primary} />
+          <Text style={[styles.dropdownText, { color: colors.textPrimary }]} numberOfLines={1}>
+            {selected.label}
+          </Text>
+          <Ionicons name={menuOpen ? 'chevron-up' : 'chevron-down'} size={16} color={colors.textSecondary} />
+        </Pressable>
+
+        {menuOpen && (
+          <View style={[styles.menu, { borderColor: colors.border, backgroundColor: colors.card }]}>
+            {SPIKES.map((s) => {
+              const active = s.key === selectedKey;
+              return (
+                <Pressable
+                  key={s.key}
+                  onPress={() => {
+                    setSelectedKey(s.key);
+                    setMenuOpen(false);
+                  }}
+                  style={({ pressed }) => [styles.menuItem, pressed && styles.pressed]}
+                >
+                  <Ionicons name={s.icon} size={16} color={active ? colors.primary : colors.textSecondary} />
+                  <Text style={[styles.menuText, { color: active ? colors.primary : colors.textPrimary }]}>
+                    {s.label}
+                  </Text>
+                  {active && <Ionicons name="checkmark" size={16} color={colors.primary} />}
+                </Pressable>
+              );
+            })}
           </View>
         )}
+
+        {/* Actions row, under the dropdown. */}
+        <View style={styles.controlRow}>
+          <Pressable
+            onPress={onRun}
+            disabled={running}
+            style={({ pressed }) => [
+              styles.runBtn,
+              { backgroundColor: colors.primary },
+              pressed && styles.pressed,
+              running && styles.disabled,
+            ]}
+          >
+            {running ? (
+              <ActivityIndicator size="small" color={colors.background} />
+            ) : (
+              <Ionicons name={selected.nav ? 'open-outline' : 'play'} size={16} color={colors.background} />
+            )}
+            <Text style={[styles.runText, { color: colors.background }]}>{selected.nav ? 'Open' : 'Run'}</Text>
+          </Pressable>
+          <IconBtn icon="share-outline" onPress={share} disabled={lines.length === 0} colors={colors} />
+          <IconBtn icon="trash-outline" onPress={clear} disabled={lines.length === 0 || running} colors={colors} />
+        </View>
       </View>
 
-      {/* Scrollable log below the fixed bar. Auto-scrolls to the end only while a
-          spike is running, so once it finishes you can scroll the output freely. */}
+      {/* Results — fills the remaining space; auto-scrolls to the end while running. */}
       <ScrollView
         ref={scrollRef}
         style={styles.logScroll}
@@ -119,7 +182,7 @@ export function DbSpikesScreen() {
       >
         {lines.length === 0 ? (
           <Text style={[styles.placeholder, { color: colors.textSecondary }]}>
-            No output yet. Run Spike A (open existing DB) or Spike B (contention + reactive).
+            Pick a spike above and tap Run. Output appears here.
           </Text>
         ) : (
           <View style={[styles.logPanel, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -138,31 +201,50 @@ export function DbSpikesScreen() {
 
 const styles = StyleSheet.create({
   controls: {
-    paddingHorizontal: 16,
-    paddingBottom: 12,
-    gap: 10,
+    paddingTop: 12,
+    paddingHorizontal: 12,
+    paddingBottom: 10,
+    gap: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
+    zIndex: 10,
   },
-  logScroll: { flex: 1 },
-  logContent: { paddingHorizontal: 16, paddingVertical: 12, paddingBottom: 140 },
-  buttonRow: { flexDirection: 'row', gap: 10, flexWrap: 'wrap' },
-  button: {
+  controlRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  dropdown: {
+    height: 46,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 12,
+    paddingHorizontal: 12,
+    borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,
-    flexGrow: 1,
-    justifyContent: 'center',
   },
-  buttonText: { fontSize: 15, fontWeight: '600' },
+  dropdownText: { flex: 1, fontSize: 15, fontWeight: '600' },
+  runBtn: {
+    flex: 1,
+    height: 46,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderRadius: 10,
+  },
+  runText: { fontSize: 15, fontWeight: '700' },
+  iconBtn: {
+    width: 50,
+    height: 46,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  menu: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, overflow: 'hidden' },
+  menuItem: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 12, paddingHorizontal: 12 },
+  menuText: { flex: 1, fontSize: 14 },
   pressed: { opacity: 0.6 },
   disabled: { opacity: 0.4 },
-  runningRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  runningText: { fontSize: 13 },
-  logPanel: { borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, padding: 12, gap: 2 },
+  logScroll: { flex: 1 },
+  logContent: { paddingHorizontal: 12, paddingVertical: 10, paddingBottom: 140 },
+  logPanel: { borderRadius: 10, borderWidth: StyleSheet.hairlineWidth, padding: 12, gap: 2 },
   placeholder: { fontSize: 14, fontStyle: 'italic' },
   logLine: { fontSize: 12, fontFamily: 'monospace', lineHeight: 17 },
 });

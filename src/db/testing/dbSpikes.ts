@@ -73,15 +73,16 @@ function loadOpSqlite(log: Log): OpSqliteModule | null {
   }
 }
 
-/** expo-sqlite's default DB directory — where `openDatabaseSync('substreamer7.db')`
- *  actually put the file. This is the `location` op-SQLite must open in place. */
-function expoSqliteDir(log: Log): string | undefined {
+/** The directory holding substreamer7.db — `<document>/SQLite`. op-SQLite owns it
+ *  now (expo-sqlite removed); mirrors src/db/client.ts's resolveDbLocation. */
+function dbDir(log: Log): string | undefined {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const SQLite = require('expo-sqlite') as { defaultDatabaseDirectory?: string };
-    return SQLite.defaultDatabaseDirectory;
+    const { Paths } = require('expo-file-system') as { Paths: { document: { uri: string } } };
+    const docPath = Paths.document.uri.replace(/^file:\/\//, '').replace(/\/+$/, '');
+    return `${docPath}/SQLite`;
   } catch (e) {
-    log(`[spike] could not read expo-sqlite defaultDatabaseDirectory: ${String(e)}`);
+    log(`[spike] could not resolve DB dir: ${String(e)}`);
     return undefined;
   }
 }
@@ -91,7 +92,7 @@ function expoSqliteDir(log: Log): string | undefined {
 export function openSpikeDb(name: string, log: Log = () => undefined): SpikeDb | null {
   const OP = loadOpSqlite(log);
   if (!OP) return null;
-  const dir = expoSqliteDir(log);
+  const dir = dbDir(log);
   try {
     return OP.open({ name, location: dir });
   } catch (e) {
@@ -110,8 +111,8 @@ export async function runSpikeA(log: Log): Promise<void> {
   const OP = loadOpSqlite(log);
   if (!OP) return;
 
-  const dir = expoSqliteDir(log);
-  log(`expo-sqlite defaultDatabaseDirectory: ${dir ?? '(undefined)'}`);
+  const dir = dbDir(log);
+  log(`DB dir: ${dir ?? "(undefined)"}`);
   log(`op-sqlite IOS_LIBRARY_PATH:  ${OP.IOS_LIBRARY_PATH ?? '(none)'}`);
   log(`op-sqlite IOS_DOCUMENT_PATH: ${OP.IOS_DOCUMENT_PATH ?? '(none)'}`);
   log(`op-sqlite ANDROID_DATABASE_PATH: ${OP.ANDROID_DATABASE_PATH ?? '(none)'}`);
@@ -181,7 +182,7 @@ export async function runSpikeB(log: Log): Promise<void> {
   log('=== Spike B: one-connection contention + reactiveExecute ===');
   const OP = loadOpSqlite(log);
   if (!OP) return;
-  const dir = expoSqliteDir(log);
+  const dir = dbDir(log);
 
   let db: SpikeDb | null = null;
   try {
@@ -291,4 +292,75 @@ export async function runSpikeB(log: Log): Promise<void> {
       /* ignore */
     }
   }
+}
+
+/**
+ * Spike D — run the blob→normalized migration on the REAL app DB and validate it.
+ * Additive + idempotent (creates + populates the normalized tables; never touches
+ * the legacy blob tables), so it's safe to run repeatedly. Reports source vs
+ * migrated counts, keyset read + A–Z seek latency, and EXPLAIN QUERY PLAN (proving
+ * index seeks, not table scans).
+ */
+export async function runSpikeD(log: Log): Promise<void> {
+  log('=== Spike D: normalized migration + validation (REAL DB) ===');
+  // Lazy-require so this dev-only module never pulls the DB/migration/repository
+  // into the app's boot import graph (the db-spikes route is eagerly loaded).
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { getDb } = require('../../store/persistence/db') as typeof import('../../store/persistence/db');
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { migrateBlobsToNormalized } = require('../migrateNormalized') as typeof import('../migrateNormalized');
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { countAlbums } = require('../repository/albums') as typeof import('../repository/albums');
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { countSongs, listSongs } = require('../repository/songs') as typeof import('../repository/songs');
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { getCoercedColumns } = require('../repository/core') as typeof import('../repository/core');
+
+  const db = getDb();
+  if (!db) {
+    log('DB unavailable — cannot run.');
+    return;
+  }
+
+  const srcAlbums = db.getFirstSync<{ n: number }>('SELECT COUNT(*) AS n FROM library_albums')?.n ?? 0;
+  const srcSongs = db.getFirstSync<{ n: number }>('SELECT COUNT(*) AS n FROM song_index')?.n ?? 0;
+  log(`source blobs: library_albums=${srcAlbums}, song_index=${srcSongs}`);
+
+  log('migrating (keyset-paged, chunked)…');
+  const t0 = now();
+  const result = await migrateBlobsToNormalized(db, (m) => log(`  ${m}`));
+  log(`migration done in ${since(t0)}`);
+  log(`  albums: ${result.albums.migrated}/${result.albums.source} migrated, ${result.albums.skipped} skipped`);
+  log(`  songs:  ${result.songs.migrated}/${result.songs.source} migrated, ${result.songs.skipped} skipped`);
+  const coerced = getCoercedColumns();
+  log(`  coerced columns (type↔reality mismatches to fix at mapper): ${coerced.length ? coerced.join(', ') : 'none ✓'}`);
+
+  const nAlbums = await countAlbums(db);
+  const nSongs = await countSongs(db);
+  log(`normalized counts: albums=${nAlbums}, songs=${nSongs}`);
+  log(`  albums match source? ${nAlbums === srcAlbums ? 'YES ✓' : `NO ✗ (${nAlbums} vs ${srcAlbums})`}`);
+  log(`  songs match (source - skipped)? ${nSongs === srcSongs - result.songs.skipped ? 'YES ✓' : `NO ✗ (${nSongs} vs ${srcSongs - result.songs.skipped})`}`);
+
+  // Keyset read latency on the real, populated songs table.
+  const r0 = now();
+  const first = await listSongs(db, { limit: 100 });
+  log(`first keyset page (100 songs) in ${since(r0)} — e.g. "${first.rows[0]?.title ?? '(empty)'}"`);
+  const r1 = now();
+  const seek = await listSongs(db, { letter: 'm', limit: 100 });
+  log(`A–Z seek to 'm' (100 songs) in ${since(r1)} — e.g. "${seek.rows[0]?.title ?? '(none)'}"`);
+
+  // Prove the keyset query uses the (sort_title, id) index rather than scanning.
+  try {
+    const plan = db.getAllSync<{ detail: string }>(
+      'EXPLAIN QUERY PLAN SELECT id, title FROM songs WHERE (sort_title, id) > (?, ?) ORDER BY sort_title, id LIMIT 100',
+      ['m', 'x'],
+    );
+    const detail = plan.map((p) => p.detail).join(' | ');
+    log(`EXPLAIN keyset songs: ${detail}`);
+    log(`  index seek? ${/USING INDEX/i.test(detail) && !/SCAN/i.test(detail) ? 'YES ✓' : 'CHECK ✗ (see plan)'}`);
+  } catch (e) {
+    log(`EXPLAIN failed: ${String(e)}`);
+  }
+
+  log('Spike D done. PASS if counts match + reads are fast (~single-digit ms) + EXPLAIN shows an index seek.');
 }
