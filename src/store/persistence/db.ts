@@ -24,53 +24,11 @@
  * Tests: call `__setDbForTests(fake)` to swap the handle. The single seam
  * replaces four per-module `__setDbForTests` exports.
  */
-import * as SQLite from 'expo-sqlite';
+import { openDbConnection, type InternalDb } from '@/db/client';
 
-/**
- * `RunResult` mirrors `SQLiteRunResult` from expo-sqlite. Existing callers
- * ignore the return value (their TypeScript signature was historically
- * `void`); widening it lets callers that want row-modification counts read
- * them without changing existing call sites.
- */
-interface RunResult {
-  changes: number;
-  lastInsertRowId: number;
-}
-
-export interface InternalDb {
-  getFirstSync<T>(sql: string, params?: readonly unknown[]): T | undefined;
-  getAllSync<T>(sql: string, params?: readonly unknown[]): T[];
-  /**
-   * Async row read. expo-sqlite runs this on a background native thread, so
-   * the SQLite IO does not block the JS thread (unlike `getAllSync`). Used by
-   * the songs-library pre-warm / cold fetch — see `fetchAllSongsByTitleAsync`.
-   */
-  getAllAsync<T>(sql: string, params?: readonly unknown[]): Promise<T[]>;
-  /**
-   * Async single-row read. Like `getAllAsync`, runs on a background native
-   * thread so the SQLite IO does not block the JS thread (unlike
-   * `getFirstSync`). Used for aggregate recalcs on interactive/hot paths.
-   */
-  getFirstAsync<T>(sql: string, params?: readonly unknown[]): Promise<T | null>;
-  runSync(sql: string, params?: readonly unknown[]): RunResult;
-  /**
-   * Async write. Like `getAllAsync`/`getFirstAsync`, expo-sqlite runs this on
-   * a background native thread so the write IO does not block the JS thread
-   * (unlike `runSync`). Used by the async `kvStorage` adapter.
-   */
-  runAsync(sql: string, params?: readonly unknown[]): Promise<RunResult>;
-  execSync(sql: string): void;
-  withTransactionSync(fn: () => void): void;
-  /**
-   * Async transaction. The callback's `runAsync` calls execute on expo-sqlite's
-   * background thread within one transaction, so a multi-statement write
-   * (e.g. DELETE + N INSERTs) is atomic without blocking the JS thread (unlike
-   * `withTransactionSync`).
-   */
-  withTransactionAsync(task: () => Promise<void>): Promise<void>;
-}
-
-const DB_NAME = 'substreamer7.db';
+// The DB surface types (`InternalDb`, `RunResult`) live in the op-SQLite client
+// now; re-export so existing consumers importing them from this module keep working.
+export type { InternalDb, RunResult } from '@/db/client';
 
 let db: InternalDb | null = null;
 let initError: Error | null = null;
@@ -84,53 +42,10 @@ let initError: Error | null = null;
 export const kvFallback = new Map<string, string>();
 
 try {
-  db = SQLite.openDatabaseSync(DB_NAME) as unknown as InternalDb;
-  // PRAGMAs are per-connection. We set them once here on the shared handle;
-  // because expo-sqlite pools connections by filename, every consumer that
-  // calls `openDatabaseSync(DB_NAME)` (not that anyone should after this
-  // refactor) gets a handle backed by the same native connection and sees
-  // these settings.
-  db.execSync('PRAGMA journal_mode = WAL;');
-  // NORMAL matches the long-standing setting for this database; it has
-  // persisted reliably for years. FULL was briefly tried during the
-  // migration-14 bug hunt — the real cause was unrelated (INSERT OR REPLACE
-  // cascade + hydration race), so we reverted.
-  db.execSync('PRAGMA synchronous = NORMAL;');
-  db.execSync('PRAGMA foreign_keys = ON;');
-
-  // ---- Tuning PRAGMAs (per-connection; set once on the shared handle) ----
-  // busy_timeout: wait-and-retry for up to 5s on a locked connection instead of
-  //   failing instantly (default 0). Belt-and-braces against transient locks
-  //   from a WAL checkpoint or any second handle.
-  // cache_size: negative = KiB, so -32000 ≈ 32 MB of page cache (default ~2 MB).
-  //   Keeps song_index's index b-trees hot across a 38k-row bulk upsert and the
-  //   full-table hydration reads.
-  // temp_store = MEMORY (2): keep ORDER BY / temp b-trees in RAM — the songs
-  //   (`ORDER BY lower(title)`) and albums (`ORDER BY sortKey`) hydration sorts.
-  db.execSync('PRAGMA busy_timeout = 5000;');
-  db.execSync('PRAGMA cache_size = -32000;');
-  db.execSync('PRAGMA temp_store = MEMORY;');
-
-  // Validate the tuning PRAGMAs actually applied. They're per-connection and a
-  // silently-ignored one (unsupported build, typo) would degrade quietly, so
-  // read the effective values back once at boot. Raw rows are logged so the
-  // output is robust to column-name assumptions (busy_timeout→`timeout`,
-  // cache_size→`cache_size`, temp_store→`temp_store` where 2=MEMORY).
-  // `console.*` is stripped from release builds — this is a dev/Metro-only
-  // diagnostic, visible on both iOS and Android when running the dev client.
-  try {
-    // eslint-disable-next-line no-console
-    console.log('[db] PRAGMA readback', {
-      busy_timeout: db.getFirstSync('PRAGMA busy_timeout;'),
-      cache_size: db.getFirstSync('PRAGMA cache_size;'),
-      temp_store: db.getFirstSync('PRAGMA temp_store;'),
-      journal_mode: db.getFirstSync('PRAGMA journal_mode;'),
-    });
-  } catch (e) {
-    // eslint-disable-next-line no-console
-    console.warn('[db] PRAGMA readback failed', e);
-  }
-
+  // Open op-SQLite on the existing file, apply PRAGMAs, and log the boot
+  // diagnostic (engine + resolved path). See src/db/client.ts.
+  const conn = openDbConnection();
+  db = conn.db;
   // ---- Schema ----
   // Created in FK-safe order: parents before children. Every CREATE is
   // `IF NOT EXISTS` so a second launch against an existing DB is a no-op.

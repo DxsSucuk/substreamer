@@ -1,5 +1,5 @@
-jest.mock('expo-sqlite', () => ({
-  openDatabaseSync: () => {
+jest.mock('@op-engineering/op-sqlite', () => ({
+  open: () => {
     throw new Error('stores run with per-row persistence disabled');
   },
 }));

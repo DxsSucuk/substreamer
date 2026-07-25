@@ -1,13 +1,14 @@
-// Per-suite mocks re-evaluate the module-scope try/catch in db.ts via
-// jest.isolateModules. Mirrors the pattern established in the previous
-// kvStorage test file.
+// Per-suite mocks re-evaluate the module-scope try/catch in db.ts (which opens
+// via the op-SQLite client) using jest.isolateModules + jest.doMock on
+// '@op-engineering/op-sqlite'. The client applies PRAGMAs and runs schema DDL
+// through op-SQLite's `executeSync`, so a jest.fn() spy on it captures the exact
+// statement sequence the previous expo-sqlite `execSync` spy used to.
+
+const okResult = { rows: [] as Array<Record<string, unknown>>, rowsAffected: 0 };
 
 describe('persistence/db (happy path)', () => {
-  let mockGetFirstSync: jest.Mock;
-  let mockGetAllSync: jest.Mock;
-  let mockRunSync: jest.Mock;
-  let mockExecSync: jest.Mock;
-  let mockWithTransactionSync: jest.Mock;
+  let mockExecuteSync: jest.Mock;
+  let mockExecute: jest.Mock;
   let getDb: typeof import('../db').getDb;
   let __setDbForTests: typeof import('../db').__setDbForTests;
   let isDbHealthy: typeof import('../db').isDbHealthy;
@@ -15,18 +16,14 @@ describe('persistence/db (happy path)', () => {
 
   beforeAll(() => {
     jest.isolateModules(() => {
-      mockGetFirstSync = jest.fn();
-      mockGetAllSync = jest.fn();
-      mockRunSync = jest.fn();
-      mockExecSync = jest.fn();
-      mockWithTransactionSync = jest.fn();
-      jest.doMock('expo-sqlite', () => ({
-        openDatabaseSync: () => ({
-          getFirstSync: mockGetFirstSync,
-          getAllSync: mockGetAllSync,
-          runSync: mockRunSync,
-          execSync: mockExecSync,
-          withTransactionSync: mockWithTransactionSync,
+      mockExecuteSync = jest.fn(() => okResult);
+      mockExecute = jest.fn(async () => okResult);
+      jest.doMock('@op-engineering/op-sqlite', () => ({
+        open: () => ({
+          executeSync: mockExecuteSync,
+          execute: mockExecute,
+          getDbPath: () => ':memory:',
+          close: jest.fn(),
         }),
       }));
       const mod = require('../db');
@@ -42,21 +39,20 @@ describe('persistence/db (happy path)', () => {
     expect(dbInitError).toBeNull();
   });
 
-  it('returns the shared handle from getDb', () => {
+  it('returns a healthy op-SQLite-backed handle from getDb that forwards to executeSync', () => {
     const handle = getDb();
     expect(handle).not.toBeNull();
-    expect(handle?.getFirstSync).toBe(mockGetFirstSync);
-    expect(handle?.runSync).toBe(mockRunSync);
-    expect(handle?.execSync).toBe(mockExecSync);
-    expect(handle?.withTransactionSync).toBe(mockWithTransactionSync);
+    handle?.execSync('SELECT 42;');
+    expect(mockExecuteSync).toHaveBeenCalledWith('SELECT 42;');
   });
 
-  it('applies PRAGMAs in the documented order', () => {
-    const pragmaCalls = mockExecSync.mock.calls
+  it('applies PRAGMAs in the documented order (incl. the WAL sidecar fold)', () => {
+    const pragmaSets = mockExecuteSync.mock.calls
       .map((c) => c[0] as string)
-      .filter((sql) => sql.startsWith('PRAGMA'));
-    expect(pragmaCalls).toEqual([
+      .filter((sql) => sql.startsWith('PRAGMA') && (sql.includes('=') || sql.includes('wal_checkpoint')));
+    expect(pragmaSets).toEqual([
       'PRAGMA journal_mode = WAL;',
+      'PRAGMA wal_checkpoint(TRUNCATE);',
       'PRAGMA synchronous = NORMAL;',
       'PRAGMA foreign_keys = ON;',
       'PRAGMA busy_timeout = 5000;',
@@ -66,7 +62,7 @@ describe('persistence/db (happy path)', () => {
   });
 
   it('creates every persistence table in FK-safe order', () => {
-    const creates = mockExecSync.mock.calls
+    const creates = mockExecuteSync.mock.calls
       .map((c) => c[0] as string)
       .filter((sql) => sql.trim().startsWith('CREATE TABLE'));
     // The order here is load-bearing: cached_items must be created before
@@ -92,9 +88,9 @@ describe('persistence/db (happy path)', () => {
   });
 
   it('reads the tuning PRAGMAs back at boot to validate they applied', () => {
-    const readbacks = mockGetFirstSync.mock.calls
+    const readbacks = mockExecuteSync.mock.calls
       .map((c) => c[0] as string)
-      .filter((sql) => sql.startsWith('PRAGMA'));
+      .filter((sql) => sql.startsWith('PRAGMA') && !sql.includes('=') && !sql.includes('('));
     expect(readbacks).toEqual(
       expect.arrayContaining([
         'PRAGMA busy_timeout;',
@@ -105,7 +101,7 @@ describe('persistence/db (happy path)', () => {
   });
 
   it('creates every expected index', () => {
-    const indexNames = mockExecSync.mock.calls
+    const indexNames = mockExecuteSync.mock.calls
       .map((c) => c[0] as string)
       .filter((sql) => sql.trim().startsWith('CREATE INDEX'))
       .map((sql) => {
@@ -143,7 +139,7 @@ describe('persistence/db (happy path)', () => {
     // exactly what the UPSERT fix in commit 5867ff0 relies on for orphan
     // edges to clean up, and its absence would silently corrupt the
     // refcount-by-COUNT invariant.
-    const cascadeDdl = mockExecSync.mock.calls
+    const cascadeDdl = mockExecuteSync.mock.calls
       .map((c) => c[0] as string)
       .find((sql) => sql.includes('cached_item_songs'));
     expect(cascadeDdl).toMatch(/ON DELETE CASCADE/);
@@ -188,8 +184,8 @@ describe('persistence/db (init failure)', () => {
   beforeAll(() => {
     warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
     jest.isolateModules(() => {
-      jest.doMock('expo-sqlite', () => ({
-        openDatabaseSync: () => {
+      jest.doMock('@op-engineering/op-sqlite', () => ({
+        open: () => {
           throw new Error('OEM ICU/JSSE failure');
         },
       }));
@@ -235,8 +231,8 @@ describe('persistence/db (non-Error throw)', () => {
   beforeAll(() => {
     warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
     jest.isolateModules(() => {
-      jest.doMock('expo-sqlite', () => ({
-        openDatabaseSync: () => {
+      jest.doMock('@op-engineering/op-sqlite', () => ({
+        open: () => {
           // eslint-disable-next-line @typescript-eslint/no-throw-literal
           throw 'string-shaped failure';
         },
