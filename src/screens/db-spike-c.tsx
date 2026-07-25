@@ -37,8 +37,10 @@ export function DbSpikeCScreen() {
   const headerHeight = useContext(HeaderHeightContext) ?? 0;
   const listRef = useRef<FlashListRef<Row>>(null);
   const dbRef = useRef<SpikeDb | null>(null);
-  const cursorRef = useRef<{ sort: string; id: number } | null>(null);
-  const loadingRef = useRef(false);
+  const cursorRef = useRef<{ sort: string; id: number } | null>(null); // last loaded (forward)
+  const firstCursorRef = useRef<{ sort: string; id: number } | null>(null); // first loaded (backward)
+  const loadingMoreRef = useRef(false);
+  const loadingPrevRef = useRef(false);
   const [rows, setRows] = useState<Row[]>([]);
   const [status, setStatus] = useState('initialising…');
   const [ready, setReady] = useState(false);
@@ -78,6 +80,7 @@ export function DbSpikeCScreen() {
         db.executeSync(`SELECT id, sort_title, title FROM s ORDER BY sort_title, id LIMIT ${PAGE}`).rows,
       );
       cursorRef.current = first.length ? { sort: first[first.length - 1].sort_title, id: first[first.length - 1].id } : null;
+      firstCursorRef.current = first.length ? { sort: first[0].sort_title, id: first[0].id } : null;
       setRows(first);
       setReady(true);
       setStatus(`${TARGET.toLocaleString()} rows · keyset window ${PAGE}/page`);
@@ -95,8 +98,8 @@ export function DbSpikeCScreen() {
   const loadMore = useCallback(() => {
     const db = dbRef.current;
     const cur = cursorRef.current;
-    if (!db || !cur || loadingRef.current) return;
-    loadingRef.current = true;
+    if (!db || !cur || loadingMoreRef.current) return;
+    loadingMoreRef.current = true;
     db.execute(
       `SELECT id, sort_title, title FROM s WHERE (sort_title, id) > (?, ?) ORDER BY sort_title, id LIMIT ${PAGE}`,
       [cur.sort, cur.id],
@@ -111,7 +114,33 @@ export function DbSpikeCScreen() {
         }
       })
       .finally(() => {
-        loadingRef.current = false;
+        loadingMoreRef.current = false;
+      });
+  }, []);
+
+  // Backward paging: load the page BEFORE the window on scroll-up. FlashList's
+  // maintainVisibleContentPosition (New Arch, on by default) keeps the scroll
+  // steady as we prepend — this is what makes an A–Z jump scrollable BOTH ways.
+  const loadPrevious = useCallback(() => {
+    const db = dbRef.current;
+    const cur = firstCursorRef.current;
+    if (!db || !cur || loadingPrevRef.current) return;
+    loadingPrevRef.current = true;
+    db.execute(
+      `SELECT id, sort_title, title FROM s WHERE (sort_title, id) < (?, ?) ORDER BY sort_title DESC, id DESC LIMIT ${PAGE}`,
+      [cur.sort, cur.id],
+    )
+      .then((res) => {
+        const prevAsc = mapRows(res.rows).reverse();
+        if (prevAsc.length) {
+          firstCursorRef.current = { sort: prevAsc[0].sort_title, id: prevAsc[0].id };
+          setRows((prev) => prevAsc.concat(prev));
+        } else {
+          firstCursorRef.current = null; // reached the beginning
+        }
+      })
+      .finally(() => {
+        loadingPrevRef.current = false;
       });
   }, []);
 
@@ -125,6 +154,7 @@ export function DbSpikeCScreen() {
       ).rows,
     );
     cursorRef.current = page.length ? { sort: page[page.length - 1].sort_title, id: page[page.length - 1].id } : null;
+    firstCursorRef.current = page.length ? { sort: page[0].sort_title, id: page[0].id } : null;
     setRows(page);
     // scroll to top of the fresh window after the data swap commits
     setTimeout(() => listRef.current?.scrollToIndex({ index: 0, animated: false }), 0);
@@ -162,6 +192,8 @@ export function DbSpikeCScreen() {
           renderItem={renderItem}
           onEndReached={loadMore}
           onEndReachedThreshold={0.6}
+          onStartReached={loadPrevious}
+          onStartReachedThreshold={0.6}
           drawDistance={300}
           contentContainerStyle={styles.listContent}
         />

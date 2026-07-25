@@ -176,6 +176,41 @@ export async function keysetPage<R extends { id: string }>(
   };
 }
 
+/**
+ * One keyset page BEFORE a cursor — for scrolling backward / prepending after an
+ * A–Z jump. Runs the range query descending then reverses to ascending order.
+ * `prevCursor` is the first row's key (to page further back), or null at the start
+ * of the list. Pair with FlashList `onStartReached` + maintainVisibleContentPosition.
+ */
+export async function keysetPageBefore<R extends { id: string }>(
+  db: InternalDb,
+  opts: {
+    table: string;
+    sortCol: string;
+    columns: string;
+    limit: number;
+    before: Cursor;
+    where?: string;
+    sortKeyOf: (row: R) => string;
+  },
+): Promise<{ rows: R[]; prevCursor: Cursor | null }> {
+  const { table, sortCol, columns, limit, before, where, sortKeyOf } = opts;
+  const clauses = [`(${ident(sortCol)}, ${ident('id')}) < (?, ?)`];
+  const params: Value[] = [before.sortKey, before.id];
+  if (where) clauses.unshift(`(${where})`);
+  const sql =
+    `SELECT ${columns} FROM ${ident(table)} WHERE ${clauses.join(' AND ')} ` +
+    `ORDER BY ${ident(sortCol)} DESC, ${ident('id')} DESC LIMIT ?`;
+  const desc = await db.getAllAsync<R>(sql, [...params, limit + 1]);
+  const hasMore = desc.length > limit;
+  const page = (hasMore ? desc.slice(0, limit) : desc).reverse();
+  const first = page.length ? page[0] : null;
+  return {
+    rows: page,
+    prevCursor: hasMore && first ? { sortKey: sortKeyOf(first), id: first.id } : null,
+  };
+}
+
 /** COUNT(*) of a table (optionally filtered) — never loads rows to count. */
 export async function countRows(db: InternalDb, table: string, where?: string): Promise<number> {
   const sql = `SELECT COUNT(*) AS n FROM ${ident(table)}${where ? ` WHERE ${where}` : ''}`;

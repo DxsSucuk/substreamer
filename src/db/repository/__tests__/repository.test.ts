@@ -12,6 +12,7 @@ import {
   upsertPlaylists,
 } from '../playlists';
 import { countSongs, listSongs, listSongsByAlbum, upsertSongs } from '../songs';
+import { keysetPageBefore } from '../core';
 
 const db = () => getDb()!;
 
@@ -215,5 +216,30 @@ describe('playlists repository', () => {
     expect(await listPlaylistSongIds(db(), 'p1')).toEqual(['s3', 's1', 's2']);
     setPlaylistSongs(db(), 'p1', ['s2', 's3']);
     expect(await listPlaylistSongIds(db(), 'p1')).toEqual(['s2', 's3']);
+  });
+});
+
+describe('bidirectional keyset paging', () => {
+  it('pages backward (keysetPageBefore) so an A–Z jump can scroll both ways', async () => {
+    await upsertSongs(
+      db(),
+      ['Apple', 'Boat', 'Car', 'Duck', 'Egg'].map((t, i) => song(`s${i}`, t)),
+    );
+    // forward into the middle of the list
+    const p1 = await listSongs(db(), { limit: 2 }); // Apple, Boat
+    const p2 = await listSongs(db(), { cursor: p1.nextCursor, limit: 2 }); // Car, Duck
+    expect(p2.rows.map((r) => r.title)).toEqual(['Car', 'Duck']);
+
+    // now page BACKWARD from the first row of p2 (before 'Car')
+    const back = await keysetPageBefore<{ id: string; title: string; sort_title: string }>(db(), {
+      table: 'songs',
+      sortCol: 'sort_title',
+      columns: '"id", "title", "sort_title"',
+      limit: 2,
+      before: { sortKey: p2.rows[0].sort_title ?? '', id: p2.rows[0].id },
+      sortKeyOf: (r) => r.sort_title,
+    });
+    expect(back.rows.map((r) => r.title)).toEqual(['Apple', 'Boat']); // ascending
+    expect(back.prevCursor).toBeNull(); // reached the start
   });
 });
