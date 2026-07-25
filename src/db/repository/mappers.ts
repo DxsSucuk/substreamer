@@ -5,7 +5,7 @@
  * `*_year/_month/_day`. Dates are accepted as live `Date` OR ISO string (the
  * migration reads them back from JSON blobs where Dates are serialized to strings).
  */
-import type { AlbumID3, Child } from 'subsonic-api';
+import type { AlbumID3, ArtistID3, ArtistInfo2, Child, Playlist } from 'subsonic-api';
 
 import { metaphoneKey, normalize, normalizeArtist } from '@/services/searchMatch';
 import { getSortKey } from '@/utils/sortHelpers';
@@ -154,3 +154,65 @@ export const albumRecordLabelRows = (a: AlbumID3, id: string): Row[] =>
   (a.recordLabels ?? []).map((rl, pos) => ({ album_id: id, pos, name: rl.name }));
 export const albumDiscTitleRows = (a: AlbumID3, id: string): Row[] =>
   (a.discTitles ?? []).map((dt) => ({ album_id: id, disc: dt.disc, title: dt.title }));
+
+// ── Artists (ArtistID3 + ArtistInfo2) ─────────────────────────────────────────
+
+export function artistRow(a: ArtistID3): Row {
+  return {
+    id: a.id,
+    name: str(a.name),
+    sort_name: str(a.sortName),
+    sort_title: getSortKey(a.name ?? '', a.sortName),
+    cover_art: str(a.coverArt),
+    artist_image_url: str(a.artistImageUrl),
+    album_count: num(a.albumCount),
+    starred: toEpoch(a.starred),
+    user_rating: num(a.userRating),
+    music_brainz_id: str(a.musicBrainzId),
+    norm_name: normalize(a.name),
+    dmeta_name: metaphoneKey(a.name),
+  };
+}
+export const artistRoleRows = (a: ArtistID3, id: string): Row[] =>
+  (a.roles ?? []).map((role, pos) => ({ artist_id: id, pos, role }));
+
+/** Bio/image columns from getArtistInfo2 — a PARTIAL row (id + info fields only)
+ *  so upserting it never clears the base ArtistID3 columns. */
+export function artistInfoRow(id: string, info: ArtistInfo2): Row {
+  return {
+    id,
+    biography: str(info.biography),
+    last_fm_url: str(info.lastFmUrl),
+    image_url_small: str(info.smallImageUrl),
+    image_url_medium: str(info.mediumImageUrl),
+    image_url_large: str(info.largeImageUrl),
+  };
+}
+export const artistSimilarRows = (info: ArtistInfo2, id: string): Row[] =>
+  (info.similarArtist ?? []).map((s, pos) => ({
+    artist_id: id,
+    pos,
+    similar_artist_id: str(s.id),
+    name: str(s.name),
+  }));
+
+// ── Playlists (Playlist) ──────────────────────────────────────────────────────
+
+export function playlistRow(p: Playlist): Row {
+  return {
+    id: p.id,
+    name: str(p.name),
+    comment: str(p.comment),
+    cover_art: str(p.coverArt),
+    created: toEpoch(p.created),
+    changed: toEpoch(p.changed),
+    duration: num(p.duration),
+    owner: str(p.owner),
+    public: toBool(p.public),
+    song_count: num(p.songCount),
+    norm_name: normalize(p.name),
+    dmeta_name: metaphoneKey(p.name),
+  };
+}
+export const playlistAllowedUserRows = (p: Playlist, id: string): Row[] =>
+  (p.allowedUser ?? []).map((username, pos) => ({ playlist_id: id, pos, username }));

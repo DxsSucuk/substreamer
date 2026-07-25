@@ -3,3 +3,5 @@ export * from './core';
 export * from './mappers';
 export * from './albums';
 export * from './songs';
+export * from './artists';
+export * from './playlists';
