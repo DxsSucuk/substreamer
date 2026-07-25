@@ -156,13 +156,10 @@ export function openDbConnection(): DbConnection {
   const raw = open({ name: DB_NAME, location });
 
   raw.executeSync('PRAGMA journal_mode = WAL;');
-  // Fold expo-sqlite's leftover -wal/-shm into the main file on the first
-  // op-SQLite open (no-op if there's nothing pending).
-  try {
-    raw.executeSync('PRAGMA wal_checkpoint(TRUNCATE);');
-  } catch {
-    /* nothing to checkpoint */
-  }
+  // NB: no manual wal_checkpoint here — op-SQLite reads any existing WAL (incl.
+  // expo-sqlite's leftover sidecars) correctly and auto-checkpoints. A per-boot
+  // TRUNCATE checkpoint is unnecessary synchronous boot work (and can block on
+  // busy_timeout), so it's intentionally omitted.
   raw.executeSync('PRAGMA synchronous = NORMAL;');
   raw.executeSync('PRAGMA foreign_keys = ON;');
   raw.executeSync('PRAGMA busy_timeout = 5000;');
