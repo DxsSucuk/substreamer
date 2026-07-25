@@ -24,6 +24,8 @@
   "mbidOverrides": "MBID Overrides",
   "logging": "Logging",
   "loggingSubtitle": "Audio diagnostics, migration history",
+  "dbSpikes": "DB spikes",
+  "dbSpikesSubtitle": "Persistence rebuild Phase-0 benchmarks",
   "metadataCache": "Metadata Cache",
   "migrationLog": "Migration Log",
   "myListening": "My Listening",

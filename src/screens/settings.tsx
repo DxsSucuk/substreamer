@@ -28,6 +28,7 @@ const SETTINGS_LINKS: {
 const DEV_SETTINGS_LINKS: typeof SETTINGS_LINKS = [
   { route: '/file-explorer', labelKey: 'fileExplorer', subtitleKey: 'fileExplorerSubtitle', icon: 'document-text-outline' },
   { route: '/logging', labelKey: 'logging', subtitleKey: 'loggingSubtitle', icon: 'list-outline' },
+  { route: '/db-spikes', labelKey: 'dbSpikes', subtitleKey: 'dbSpikesSubtitle', icon: 'pulse-outline' },
 ];
 
 export function SettingsScreen() {
