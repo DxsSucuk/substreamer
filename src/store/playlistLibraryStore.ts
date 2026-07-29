@@ -6,10 +6,17 @@ import i18n from '../i18n/i18n';
 import { createDebouncedPersistStorage } from './persistence';
 
 import {
+  deletePlaylist,
+  deletePlaylistsNotIn,
+  upsertPlaylists,
+} from '../db/repository/playlists';
+import {
   ensureCoverArtAuth,
   getAllPlaylists,
   type Playlist,
 } from '../services/subsonicService';
+import { getDb } from './persistence/db';
+import { serverInfoStore } from './serverInfoStore';
 
 /**
  * Hook invoked after `fetchAllPlaylists` has successfully replaced the list.
@@ -84,11 +91,24 @@ export const playlistLibraryStore = create<PlaylistLibraryState>()(
           // so we trust the result here.
           const oldPlaylists = get().playlists;
 
-          set({
-            playlists,
-            loading: false,
-            lastFetchedAt: Date.now(),
-          });
+          // Array stays for the ~12 consumers + filters (retired in the search phase).
+          set({ playlists, loading: false });
+          // ALSO mirror into the normalized `playlists` table — the source the keyset
+          // list reads. Upsert the current set + prune server-side deletions (empty set
+          // clears all, which is correct). Best-effort. Bump `lastFetchedAt` AFTER the
+          // write so the keyset list reloads with rows present. Articles match the scroller.
+          try {
+            const db = getDb();
+            if (db) {
+              const articles = serverInfoStore.getState().ignoredArticles ?? undefined;
+              await upsertPlaylists(db, playlists, undefined, articles);
+              await deletePlaylistsNotIn(db, playlists.map((p) => p.id));
+            }
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.warn('[playlistLibraryStore] normalized playlists upsert failed', err);
+          }
+          set({ lastFetchedAt: Date.now() });
 
           if (reconcileHook) {
             try {
@@ -105,12 +125,16 @@ export const playlistLibraryStore = create<PlaylistLibraryState>()(
         }
       },
 
-      removePlaylist: (id) =>
+      removePlaylist: (id) => {
         set((state) => ({
           playlists: state.playlists.filter((p) => p.id !== id),
-        })),
+        }));
+        // Mirror the deletion into the normalized list source (best-effort).
+        const db = getDb();
+        if (db) void deletePlaylist(db, id).catch(() => { /* best-effort */ });
+      },
 
-      patchPlaylistMetadata: (id, fields) =>
+      patchPlaylistMetadata: (id, fields) => {
         set((state) => {
           if (!state.playlists.some((p) => p.id === id)) return {};
           return {
@@ -125,7 +149,16 @@ export const playlistLibraryStore = create<PlaylistLibraryState>()(
                 : p,
             ),
           };
-        }),
+        });
+        // Re-upsert the patched playlist so normalized mirrors the array — a rename
+        // re-derives sort_title/norm_name and the keyset list reorders (best-effort).
+        const patched = get().playlists.find((p) => p.id === id);
+        const db = getDb();
+        if (patched && db) {
+          const articles = serverInfoStore.getState().ignoredArticles ?? undefined;
+          void upsertPlaylists(db, [patched], undefined, articles).catch(() => { /* best-effort */ });
+        }
+      },
 
       clearPlaylists: () =>
         set({

@@ -10,10 +10,30 @@
  * Reads: ASYNC keyset pagination (`WHERE (sort_col, id) > (?, ?)`) off the JS
  * thread — O(log n) seeks, never offset scans, never whole-table loads.
  */
-import type { InternalDb } from '../client';
+import type { BatchCommand, InternalDb } from '../client';
 
 export type Value = string | number | null;
 export type Row = Record<string, Value>;
+
+const nowMs = (): number => {
+  const p = (globalThis as { performance?: { now?: () => number } }).performance;
+  return p && typeof p.now === 'function' ? p.now() : Date.now();
+};
+
+/** Per-chunk timing split, for the dev spikes to see where a bulk write spends its
+ *  time: `deriveMs` = JS-thread work building rows (mappers, incl. norm/dmeta);
+ *  `writeMs` = the off-thread `executeBatch`. */
+export interface ChunkTiming {
+  deriveMs: number;
+  writeMs: number;
+  rows: number;
+}
+let chunkProfiler: ((t: ChunkTiming) => void) | null = null;
+/** Dev/spike-only: observe per-chunk derive-vs-write timing during a bulk upsert.
+ *  Pass null to clear. Zero cost in production (a single null check per chunk). */
+export const setChunkProfiler = (fn: ((t: ChunkTiming) => void) | null): void => {
+  chunkProfiler = fn;
+};
 
 /** A child-table spec: how to derive a parent's child rows from the source object. */
 export interface ChildSpec<T> {
@@ -42,8 +62,8 @@ function coerceBind(table: string, col: string, value: unknown): Value {
   return JSON.stringify(value);
 }
 
-/** INSERT one row with ON CONFLICT(pk) DO UPDATE of every other column. */
-export function upsertRowSync(db: InternalDb, table: string, row: Row, pk = 'id'): void {
+/** Build an `INSERT … ON CONFLICT(pk) DO UPDATE` command tuple (all other cols). */
+function buildUpsertRow(table: string, row: Row, pk = 'id'): BatchCommand {
   const cols = Object.keys(row);
   const placeholders = cols.map(() => '?').join(', ');
   const updates = cols
@@ -53,10 +73,30 @@ export function upsertRowSync(db: InternalDb, table: string, row: Row, pk = 'id'
   const sql =
     `INSERT INTO ${ident(table)} (${cols.map(ident).join(', ')}) VALUES (${placeholders}) ` +
     `ON CONFLICT(${ident(pk)}) DO UPDATE SET ${updates}`;
-  db.runSync(
-    sql,
+  return [sql, cols.map((c) => coerceBind(table, c, row[c]))];
+}
+
+/** Build a plain INSERT command tuple (child tables; parent rows were just cleared). */
+function buildInsertChild(table: string, row: Row): BatchCommand {
+  const cols = Object.keys(row);
+  const placeholders = cols.map(() => '?').join(', ');
+  return [
+    `INSERT INTO ${ident(table)} (${cols.map(ident).join(', ')}) VALUES (${placeholders})`,
     cols.map((c) => coerceBind(table, c, row[c])),
-  );
+  ];
+}
+
+/** Build a DELETE-all-children-of-parent command tuple. */
+const buildDeleteChildren = (table: string, parentCol: string, parentId: string): BatchCommand => [
+  `DELETE FROM ${ident(table)} WHERE ${ident(parentCol)} = ?`,
+  [parentId],
+];
+
+/** INSERT one row with ON CONFLICT(pk) DO UPDATE — SYNC, for the small single-row
+ *  writes that run inside a caller's `withTransactionSync` (e.g. artist bio merge). */
+export function upsertRowSync(db: InternalDb, table: string, row: Row, pk = 'id'): void {
+  const [sql, params] = buildUpsertRow(table, row, pk);
+  db.runSync(sql, params);
 }
 
 /** Replace all child rows for one parent (delete-then-insert) inside the caller's txn. */
@@ -67,24 +107,23 @@ export function replaceChildrenSync(
   parentId: string,
   rows: Row[],
 ): void {
-  db.runSync(`DELETE FROM ${ident(table)} WHERE ${ident(parentCol)} = ?`, [parentId]);
-  for (const row of rows) upsertRowSyncNoConflict(db, table, row);
-}
-
-/** Plain INSERT (child tables have composite PKs; parent rows were just cleared). */
-function upsertRowSyncNoConflict(db: InternalDb, table: string, row: Row): void {
-  const cols = Object.keys(row);
-  const placeholders = cols.map(() => '?').join(', ');
-  db.runSync(
-    `INSERT INTO ${ident(table)} (${cols.map(ident).join(', ')}) VALUES (${placeholders})`,
-    cols.map((c) => coerceBind(table, c, row[c])),
-  );
+  const [dsql, dparams] = buildDeleteChildren(table, parentCol, parentId);
+  db.runSync(dsql, dparams);
+  for (const row of rows) {
+    const [sql, params] = buildInsertChild(table, row);
+    db.runSync(sql, params);
+  }
 }
 
 /**
- * Bulk-upsert entities into `table` + their children, id-sorted, one transaction
- * per chunk. Yields a macrotask between chunks so a large migration/sync never
- * blocks the JS thread for long. `onProgress(done, total)` fires per chunk.
+ * Bulk-upsert entities into `table` + their children, id-sorted, one atomic
+ * `executeBatch` per chunk. Writes are PIPELINED: each chunk's write is kicked off
+ * without awaiting, so the NEXT chunk's row derivation (mappers, incl. norm/dmeta —
+ * JS-thread work) runs concurrently with the previous chunk's write on op-SQLite's
+ * native thread. That hides the write under the derive (the dominant cost), and the
+ * macrotask yield between chunks lets the UI paint between derive bursts. Chunks
+ * still commit in id-sorted order (op-SQLite runs execute FIFO on one thread) and
+ * all writes are awaited before returning. `onProgress(done, total)` fires per chunk.
  */
 export async function bulkUpsert<T>(
   db: InternalDb,
@@ -101,29 +140,45 @@ export async function bulkUpsert<T>(
   const { table, idOf, rowOf, children = [], chunkSize = 500, onProgress } = opts;
   const sorted = [...items].sort((a, b) => (idOf(a) < idOf(b) ? -1 : idOf(a) > idOf(b) ? 1 : 0));
   let done = 0;
+  let prevWrite: Promise<void> = Promise.resolve();
   for (let i = 0; i < sorted.length; i += chunkSize) {
     const chunk = sorted.slice(i, i + chunkSize);
-    db.withTransactionSync(() => {
-      for (const item of chunk) {
-        const id = idOf(item);
-        upsertRowSync(db, table, rowOf(item));
-        for (const spec of children) {
-          replaceChildrenSync(db, spec.table, spec.parentCol, id, spec.rows(item, id));
-        }
+    // Derive: build every statement for the chunk (JS-thread work). This overlaps
+    // the previous chunk's write, which is still running on the native thread.
+    const d0 = nowMs();
+    const commands: BatchCommand[] = [];
+    for (const item of chunk) {
+      const id = idOf(item);
+      commands.push(buildUpsertRow(table, rowOf(item)));
+      for (const spec of children) {
+        commands.push(buildDeleteChildren(spec.table, spec.parentCol, id));
+        for (const cr of spec.rows(item, id)) commands.push(buildInsertChild(spec.table, cr));
       }
-    });
+    }
+    const deriveMs = nowMs() - d0;
+    // Drain the previous write (usually already finished, hidden under the derive
+    // above) — `writeMs` is the EXPOSED tail past that overlap — then kick off this
+    // chunk's write WITHOUT awaiting so the next derive can overlap it.
+    const w0 = nowMs();
+    await prevWrite;
+    const writeMs = nowMs() - w0;
+    prevWrite = db.runBatchAsync(commands);
     done += chunk.length;
+    chunkProfiler?.({ deriveMs, writeMs, rows: chunk.length });
     onProgress?.(done, sorted.length);
-    // yield to the JS thread between chunks
+    // Yield a macrotask so the UI can paint; the write keeps running meanwhile.
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
+  await prevWrite; // ensure the final chunk is committed before returning
   return done;
 }
 
-/** Opaque keyset cursor: the last row's (sortKey, id). */
+/** Opaque keyset cursor: the last row's (sortKey, [sortKey2], id). */
 export interface Cursor {
   sortKey: string;
   id: string;
+  /** Secondary sort key for a compound keyset (e.g. albums sorted artist-then-title). */
+  sortKey2?: string;
 }
 
 export interface Page<R> {
@@ -141,29 +196,39 @@ export async function keysetPage<R extends { id: string }>(
   opts: {
     table: string;
     sortCol: string;
-    columns: string; // pre-joined projection, must include the sort col + id
+    /** Optional secondary sort column for a compound keyset (ordered before id). */
+    sortCol2?: string;
+    columns: string; // pre-joined projection, must include the sort col(s) + id
     limit: number;
     cursor?: Cursor | null;
     letter?: string | null;
     where?: string; // extra predicate, ANDed (e.g. "starred IS NOT NULL")
     sortKeyOf: (row: R) => string;
+    sortKey2Of?: (row: R) => string;
   },
 ): Promise<Page<R>> {
-  const { table, sortCol, columns, limit, cursor, letter, where, sortKeyOf } = opts;
+  const { table, sortCol, sortCol2, columns, limit, cursor, letter, where, sortKeyOf, sortKey2Of } = opts;
   const clauses: string[] = [];
   const params: Value[] = [];
   if (where) clauses.push(`(${where})`);
   if (cursor) {
-    clauses.push(`(${ident(sortCol)}, ${ident('id')}) > (?, ?)`);
-    params.push(cursor.sortKey, cursor.id);
+    if (sortCol2) {
+      clauses.push(`(${ident(sortCol)}, ${ident(sortCol2)}, ${ident('id')}) > (?, ?, ?)`);
+      params.push(cursor.sortKey, cursor.sortKey2 ?? '', cursor.id);
+    } else {
+      clauses.push(`(${ident(sortCol)}, ${ident('id')}) > (?, ?)`);
+      params.push(cursor.sortKey, cursor.id);
+    }
   } else if (letter != null) {
+    // Seek on the PRIMARY sort column only (the A–Z section boundary).
     clauses.push(`${ident(sortCol)} >= ?`);
     params.push(letter.toLowerCase());
   }
   const whereSql = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-  const sql =
-    `SELECT ${columns} FROM ${ident(table)} ${whereSql} ` +
-    `ORDER BY ${ident(sortCol)}, ${ident('id')} LIMIT ?`;
+  const order = sortCol2
+    ? `${ident(sortCol)}, ${ident(sortCol2)}, ${ident('id')}`
+    : `${ident(sortCol)}, ${ident('id')}`;
+  const sql = `SELECT ${columns} FROM ${ident(table)} ${whereSql} ORDER BY ${order} LIMIT ?`;
   // Fetch one extra row as lookahead so a page that happens to be exactly `limit`
   // rows can be told apart from a page that has more after it.
   const rows = await db.getAllAsync<R>(sql, [...params, limit + 1]);
@@ -172,7 +237,9 @@ export async function keysetPage<R extends { id: string }>(
   const last = hasMore ? page[page.length - 1] : null;
   return {
     rows: page,
-    nextCursor: last ? { sortKey: sortKeyOf(last), id: last.id } : null,
+    nextCursor: last
+      ? { sortKey: sortKeyOf(last), id: last.id, sortKey2: sortKey2Of?.(last) }
+      : null,
   };
 }
 
@@ -187,27 +254,35 @@ export async function keysetPageBefore<R extends { id: string }>(
   opts: {
     table: string;
     sortCol: string;
+    sortCol2?: string;
     columns: string;
     limit: number;
     before: Cursor;
     where?: string;
     sortKeyOf: (row: R) => string;
+    sortKey2Of?: (row: R) => string;
   },
 ): Promise<{ rows: R[]; prevCursor: Cursor | null }> {
-  const { table, sortCol, columns, limit, before, where, sortKeyOf } = opts;
-  const clauses = [`(${ident(sortCol)}, ${ident('id')}) < (?, ?)`];
-  const params: Value[] = [before.sortKey, before.id];
+  const { table, sortCol, sortCol2, columns, limit, before, where, sortKeyOf, sortKey2Of } = opts;
+  const clauses = sortCol2
+    ? [`(${ident(sortCol)}, ${ident(sortCol2)}, ${ident('id')}) < (?, ?, ?)`]
+    : [`(${ident(sortCol)}, ${ident('id')}) < (?, ?)`];
+  const params: Value[] = sortCol2
+    ? [before.sortKey, before.sortKey2 ?? '', before.id]
+    : [before.sortKey, before.id];
   if (where) clauses.unshift(`(${where})`);
-  const sql =
-    `SELECT ${columns} FROM ${ident(table)} WHERE ${clauses.join(' AND ')} ` +
-    `ORDER BY ${ident(sortCol)} DESC, ${ident('id')} DESC LIMIT ?`;
+  const order = sortCol2
+    ? `${ident(sortCol)} DESC, ${ident(sortCol2)} DESC, ${ident('id')} DESC`
+    : `${ident(sortCol)} DESC, ${ident('id')} DESC`;
+  const sql = `SELECT ${columns} FROM ${ident(table)} WHERE ${clauses.join(' AND ')} ORDER BY ${order} LIMIT ?`;
   const desc = await db.getAllAsync<R>(sql, [...params, limit + 1]);
   const hasMore = desc.length > limit;
   const page = (hasMore ? desc.slice(0, limit) : desc).reverse();
   const first = page.length ? page[0] : null;
   return {
     rows: page,
-    prevCursor: hasMore && first ? { sortKey: sortKeyOf(first), id: first.id } : null,
+    prevCursor:
+      hasMore && first ? { sortKey: sortKeyOf(first), id: first.id, sortKey2: sortKey2Of?.(first) } : null,
   };
 }
 

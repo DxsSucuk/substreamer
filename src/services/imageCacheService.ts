@@ -475,6 +475,7 @@ async function purgeCoverArtRows(coverArtId: string): Promise<{ files: number }>
     return { files: 0 };
   }
   const result = await deleteCachedImagesForCoverArt(coverArtId);
+  let filesDeleted = 0;
   try {
     const subDir = new Directory(ensureCacheDir(), coverArtPathKey(coverArtId));
     if (subDir.exists) {
@@ -482,7 +483,10 @@ async function purgeCoverArtRows(coverArtId: string): Promise<{ files: number }>
         for (const ext of EXTENSIONS) {
           const file = new File(subDir, `${size}${ext}`);
           if (file.exists) {
-            try { file.delete(); } catch { /* best-effort */ }
+            try {
+              file.delete();
+              filesDeleted += 1;
+            } catch { /* best-effort */ }
           }
         }
       }
@@ -490,6 +494,9 @@ async function purgeCoverArtRows(coverArtId: string): Promise<{ files: number }>
   } catch {
     /* best-effort — DB is the source of truth */
   }
+  // [file-delete] purge removes rows THEN files, so it can't leave a phantom
+  // (row without file); logged for the delete-audit trail.
+  logImageCache(`file-delete purge id=${coverArtId} rows=${result.count} files=${filesDeleted}`);
   variantFailureCount.delete(coverArtId);
   return { files: result.count };
 }
@@ -799,6 +806,7 @@ export async function reconcileImageCache(source: string = 'auto'): Promise<void
       // for it, so delete it (off-thread) here — Pass 2 then drops any
       // stale DB row (the zero size is recorded in fileMap above).
       if (entry.size === 0) {
+        logImageCache(`file-delete reconcile-zero-byte id=${coverArtId} file=${name}`);
         void deleteFileAsync(new File(subDir, name).uri);
         continue;
       }
@@ -1417,7 +1425,17 @@ async function downloadAndCacheImage(coverArtId: string): Promise<void> {
   if (!subDir.exists) subDir.create();
 
   let source600Uri = await resolveCachedImageUri(coverArtId, SOURCE_SIZE);
-  const sourceWasCached = source600Uri != null;
+  let sourceWasCached = source600Uri != null;
+  // The resolver is DB-authoritative (no FS check), so a 600 row whose file is gone
+  // makes every variant resize fail and trips the 3-strike purge, spamming errors.
+  // Verify the source actually exists; if the row is stale, drop it and re-download
+  // — a silent self-heal (proven to catch real stale rows in the diagnostic log).
+  if (source600Uri && !(await existsAsync(source600Uri))) {
+    logImageCache(`downloadAndCacheImage id=${coverArtId} source-row-without-file re-download`);
+    await deleteCachedImageVariant(coverArtId, SOURCE_SIZE);
+    source600Uri = null;
+    sourceWasCached = false;
+  }
   if (!source600Uri) {
     source600Uri = await downloadSourceImage(coverArtId, subDir);
     if (!source600Uri) {
@@ -1581,6 +1599,9 @@ async function downloadSourceImage(
 
     const dest = new File(subDir, fileName);
     if (await existsAsync(dest.uri)) {
+      // Old source deleted right before the new one is moved in. If the move
+      // then fails, the row (written later) is never updated → a phantom window.
+      logImageCache(`file-delete source-replace id=${coverArtId} file=${fileName}`);
       try { await deleteFileAsync(dest.uri); } catch { /* best-effort */ }
     }
     await tmpFile.move(dest);
@@ -1661,6 +1682,7 @@ async function generateResizedVariant(
     const fileBytes = tmpFile.size;
 
     if (await existsAsync(dest.uri)) {
+      logImageCache(`file-delete variant-replace id=${coverArtId} file=${fileName}`);
       try { await deleteFileAsync(dest.uri); } catch { /* best-effort */ }
     }
     await tmpFile.move(dest);
@@ -1919,6 +1941,10 @@ async function teardownImageCacheState({ reinit }: { reinit: boolean }): Promise
     // (this runs on logout + clear-cache). Awaited so the `reinit` recreate
     // below only runs after the delete completes (no recreate-vs-delete race).
     const dirUri = new Directory(Paths.document, 'image-cache').uri;
+    // Whole-tree wipe (logout / clear-cache). If this succeeds but the row
+    // truncate below fails, EVERY cover becomes a phantom — the prime suspect
+    // for mass "row without file" drift, so it's logged loudly.
+    logImageCache(`file-delete teardown-wipe reinit=${reinit} — deleting entire image-cache dir`);
     await deleteDirectoryAsync(dirUri);
   } catch { /* best-effort */ }
   // Await the SQL truncate so a caller that repopulates right after (e.g. the

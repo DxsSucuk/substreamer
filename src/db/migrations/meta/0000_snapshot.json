@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "d537b884-1f38-4413-b931-e1b4f22667da",
+  "id": "a8e5edcc-65cc-48ab-a36a-9e9ee189aa9f",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "album_artists": {
@@ -465,6 +465,13 @@
           "notNull": false,
           "autoincrement": false
         },
+        "sort_artist": {
+          "name": "sort_artist",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "is_compilation": {
           "name": "is_compilation",
           "type": "integer",
@@ -521,6 +528,41 @@
           "notNull": false,
           "autoincrement": false
         },
+        "notes": {
+          "name": "notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "last_fm_url": {
+          "name": "last_fm_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "image_url_small": {
+          "name": "image_url_small",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "image_url_medium": {
+          "name": "image_url_medium",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "image_url_large": {
+          "name": "image_url_large",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "norm_name": {
           "name": "norm_name",
           "type": "text",
@@ -562,7 +604,7 @@
         "idx_albums_artist_sort": {
           "name": "idx_albums_artist_sort",
           "columns": [
-            "display_artist",
+            "sort_artist",
             "sort_title",
             "id"
           ],
@@ -1081,6 +1123,13 @@
           "notNull": false,
           "autoincrement": false
         },
+        "sort_title": {
+          "name": "sort_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "norm_name": {
           "name": "norm_name",
           "type": "text",
@@ -1097,10 +1146,10 @@
         }
       },
       "indexes": {
-        "idx_playlists_sort": {
-          "name": "idx_playlists_sort",
+        "idx_playlists_sort_title": {
+          "name": "idx_playlists_sort_title",
           "columns": [
-            "name",
+            "sort_title",
             "id"
           ],
           "isUnique": false
@@ -1673,6 +1722,13 @@
           "notNull": false,
           "autoincrement": false
         },
+        "sort_artist": {
+          "name": "sort_artist",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "music_brainz_id": {
           "name": "music_brainz_id",
           "type": "text",
@@ -1696,6 +1752,34 @@
         },
         "is_video": {
           "name": "is_video",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "is_dir": {
+          "name": "is_dir",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "parent": {
+          "name": "parent",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "original_width": {
+          "name": "original_width",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "original_height": {
+          "name": "original_height",
           "type": "integer",
           "primaryKey": false,
           "notNull": false,
@@ -1776,6 +1860,15 @@
         "idx_songs_sort": {
           "name": "idx_songs_sort",
           "columns": [
+            "sort_title",
+            "id"
+          ],
+          "isUnique": false
+        },
+        "idx_songs_artist_sort": {
+          "name": "idx_songs_artist_sort",
+          "columns": [
+            "sort_artist",
             "sort_title",
             "id"
           ],

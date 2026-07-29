@@ -57,6 +57,18 @@ export interface AlbumListViewProps {
   scrollToTopTrigger?: string;
   /** Extra top padding so content starts below a floating header but scrolls behind it */
   contentInsetTop?: number;
+  // ── Keyset paging (bounded window from the normalized DB) — optional; array-based
+  //    consumers omit these and behave exactly as before. ──
+  /** Near the end → load + append the next keyset page. */
+  onEndReached?: () => void;
+  /** Near the top → load + prepend the previous keyset page (after an A-Z jump). */
+  onStartReached?: () => void;
+  /** A-Z tap seeks via the DB (replace the window) instead of scrolling within the
+   *  loaded array. When set, the list also scrolls to the top on `scrollToTopTrigger`. */
+  onSeekLetter?: (letter: string) => void;
+  /** The full set of active alphabet letters — the loaded window can't reveal them
+   *  all, so the screen supplies it. Falls back to computing from `albums`. */
+  activeLetters?: Set<string>;
 }
 
 export function AlbumListView({
@@ -72,6 +84,10 @@ export function AlbumListView({
   showAlphabetScroller = false,
   scrollToTopTrigger,
   contentInsetTop = 0,
+  onEndReached,
+  onStartReached,
+  onSeekLetter,
+  activeLetters: activeLettersProp,
 }: AlbumListViewProps) {
   const { t } = useTranslation();
   const { colors } = useTheme();
@@ -143,13 +159,22 @@ export function AlbumListView({
     [albumSortOrder, ignoredArticles],
   );
 
-  const activeLetters = useMemo(() => {
+  const computedLetters = useMemo(() => {
     if (!scrollerVisible) return new Set<string>();
     return new Set(albums.map((a) => getLetter(a)));
   }, [albums, scrollerVisible, getLetter]);
+  // In keyset mode the window can't reveal every letter, so the screen supplies the
+  // full active set; otherwise compute it from the (whole) array.
+  const activeLetters = activeLettersProp ?? computedLetters;
 
   const handleLetterChange = useCallback(
     (letter: string) => {
+      // Keyset mode: seek via the DB (screen replaces the window). Array mode:
+      // scroll to the matching index within the loaded array.
+      if (onSeekLetter) {
+        onSeekLetter(letter);
+        return;
+      }
       const idx = albums.findIndex((a) => {
         const first = getLetter(a);
         return letter === '#' ? first === '#' : first === letter;
@@ -158,7 +183,7 @@ export function AlbumListView({
         listRef.current?.scrollToIndex({ index: idx, animated: false });
       }
     },
-    [albums, getLetter]
+    [albums, getLetter, onSeekLetter]
   );
 
   if (loading && albums.length === 0) {
@@ -226,6 +251,10 @@ export function AlbumListView({
           ) : undefined
         }
         drawDistance={300}
+        onEndReached={onEndReached}
+        onEndReachedThreshold={0.6}
+        onStartReached={onStartReached}
+        onStartReachedThreshold={0.6}
         ListEmptyComponent={EmptyComponent}
       />
       {scrollerVisible && (

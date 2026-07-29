@@ -64,7 +64,9 @@ describe('persistence/db (happy path)', () => {
   it('creates every persistence table in FK-safe order', () => {
     const creates = mockExecuteSync.mock.calls
       .map((c) => c[0] as string)
-      .filter((sql) => sql.trim().startsWith('CREATE TABLE'));
+      // Legacy tables only — the normalized model's generated DDL uses backtick-
+      // quoted names and is validated by the repository/DDL tests, not here.
+      .filter((sql) => sql.trim().startsWith('CREATE TABLE') && !sql.includes('`'));
     // The order here is load-bearing: cached_items must be created before
     // cached_item_songs so the FOREIGN KEY clause resolves.
     const tableNames = creates.map((sql) => {
@@ -103,7 +105,8 @@ describe('persistence/db (happy path)', () => {
   it('creates every expected index', () => {
     const indexNames = mockExecuteSync.mock.calls
       .map((c) => c[0] as string)
-      .filter((sql) => sql.trim().startsWith('CREATE INDEX'))
+      // Legacy indexes only — the normalized model's generated DDL uses backticks.
+      .filter((sql) => sql.trim().startsWith('CREATE INDEX') && !sql.includes('`'))
       .map((sql) => {
         const match = sql.match(/CREATE INDEX IF NOT EXISTS (\w+)/);
         return match?.[1];
@@ -155,6 +158,7 @@ describe('persistence/db (happy path)', () => {
         getFirstAsync: jest.fn(),
         runSync: jest.fn(),
         runAsync: jest.fn(),
+        runBatchAsync: jest.fn(),
         execSync: jest.fn(),
         withTransactionSync: jest.fn(),
         withTransactionAsync: jest.fn(),

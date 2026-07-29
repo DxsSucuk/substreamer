@@ -67,6 +67,7 @@ CREATE TABLE `albums` (
 	`music_brainz_id` text,
 	`sort_name` text,
 	`sort_title` text,
+	`sort_artist` text,
 	`is_compilation` integer,
 	`explicit_status` text,
 	`original_release_year` integer,
@@ -75,6 +76,11 @@ CREATE TABLE `albums` (
 	`release_year` integer,
 	`release_month` integer,
 	`release_day` integer,
+	`notes` text,
+	`last_fm_url` text,
+	`image_url_small` text,
+	`image_url_medium` text,
+	`image_url_large` text,
 	`norm_name` text,
 	`norm_artist` text,
 	`dmeta_name` text,
@@ -82,7 +88,7 @@ CREATE TABLE `albums` (
 );
 --> statement-breakpoint
 CREATE INDEX `idx_albums_sort` ON `albums` (`sort_title`,`id`);--> statement-breakpoint
-CREATE INDEX `idx_albums_artist_sort` ON `albums` (`display_artist`,`sort_title`,`id`);--> statement-breakpoint
+CREATE INDEX `idx_albums_artist_sort` ON `albums` (`sort_artist`,`sort_title`,`id`);--> statement-breakpoint
 CREATE INDEX `idx_albums_artist` ON `albums` (`artist_id`);--> statement-breakpoint
 CREATE INDEX `idx_albums_starred` ON `albums` (`starred`,`sort_title`,`id`) WHERE "albums"."starred" IS NOT NULL;--> statement-breakpoint
 CREATE INDEX `idx_albums_created` ON `albums` (`created`);--> statement-breakpoint
@@ -158,11 +164,12 @@ CREATE TABLE `playlists` (
 	`owner` text,
 	`public` integer,
 	`song_count` integer,
+	`sort_title` text,
 	`norm_name` text,
 	`dmeta_name` text
 );
 --> statement-breakpoint
-CREATE INDEX `idx_playlists_sort` ON `playlists` (`name`,`id`);--> statement-breakpoint
+CREATE INDEX `idx_playlists_sort_title` ON `playlists` (`sort_title`,`id`);--> statement-breakpoint
 CREATE INDEX `idx_playlists_norm_name` ON `playlists` (`norm_name`);--> statement-breakpoint
 CREATE TABLE `song_album_artists` (
 	`song_id` text NOT NULL,
@@ -246,10 +253,15 @@ CREATE TABLE `songs` (
 	`comment` text,
 	`sort_name` text,
 	`sort_title` text,
+	`sort_artist` text,
 	`music_brainz_id` text,
 	`explicit_status` text,
 	`bookmark_position` integer,
 	`is_video` integer,
+	`is_dir` integer,
+	`parent` text,
+	`original_width` integer,
+	`original_height` integer,
 	`rg_track_gain` real,
 	`rg_album_gain` real,
 	`rg_track_peak` real,
@@ -263,6 +275,7 @@ CREATE TABLE `songs` (
 );
 --> statement-breakpoint
 CREATE INDEX `idx_songs_sort` ON `songs` (`sort_title`,`id`);--> statement-breakpoint
+CREATE INDEX `idx_songs_artist_sort` ON `songs` (`sort_artist`,`sort_title`,`id`);--> statement-breakpoint
 CREATE INDEX `idx_songs_album` ON `songs` (`album_id`);--> statement-breakpoint
 CREATE INDEX `idx_songs_artist` ON `songs` (`artist_id`);--> statement-breakpoint
 CREATE INDEX `idx_songs_starred` ON `songs` (`starred`,`sort_title`,`id`) WHERE "songs"."starred" IS NOT NULL;--> statement-breakpoint

@@ -13,6 +13,8 @@
  * `userRating` so ratings reconcile without parsing every blob).
  */
 import type { AlbumID3 } from '../../services/subsonicService';
+import { deleteAlbums } from '../../db/repository/albums';
+import { writeAlbumsToNormalized } from '../../db/normalizedSyncWriter';
 import { normalize, normalizeArtist, metaphoneKey } from '../../services/searchMatch';
 
 import { getDb, serializeDbWrite } from './db';
@@ -63,6 +65,7 @@ function createdToEpoch(created: AlbumID3['created'] | undefined): number | null
 export async function upsertLibraryAlbumsAsync(
   albums: readonly AlbumID3[],
   sortKeyFor: LibraryAlbumSortKeyFn,
+  opts?: { syncNormalized?: boolean },
 ): Promise<void> {
   const db = getDb();
   if (db === null || albums.length === 0) return;
@@ -103,6 +106,17 @@ export async function upsertLibraryAlbumsAsync(
     // eslint-disable-next-line no-console
     console.warn('[libraryAlbumsTable] upsertLibraryAlbumsAsync failed', e);
   }
+  // Dual-write the normalized `albums` table so the incremental sync (pager resume,
+  // scan-added albums) keeps the keyset list current — not just `forceFullResync`.
+  // A SEPARATE serialized slot (not nested in the blob txn above): `writeAlbumsToNormalized`
+  // → `upsertAlbums` runs an `executeBatch` (its own implicit txn), which must not open
+  // inside the blob's explicit BEGIN. The mutex runs slots strictly sequentially, so the
+  // blob COMMIT lands before the batch BEGIN. Best-effort (swallows its own errors).
+  // `applyLocalPlay` opts out (a play-count bump would churn the child tables for a value
+  // the list doesn't render).
+  if (opts?.syncNormalized !== false) {
+    await serializeLibraryAlbumWrite(() => writeAlbumsToNormalized(db, valid));
+  }
 }
 
 /** Album rows parsed per macrotask yield. Each `AlbumID3` blob is small
@@ -142,6 +156,25 @@ export async function hydrateLibraryAlbumsAsync(): Promise<AlbumID3[]> {
 
 /** Total `library_albums` row count (async — background thread). The pager's
  *  resume offset + the startup "needs full fetch?" gate read this. */
+/**
+ * Sum of every album's `songCount` — the expected total songs, used to map the
+ * resumable `songSyncCursor` (songs fetched, in album-list order) to a position in
+ * the album list for the sync progress bar. Reads the persisted album list, so it's
+ * resume-stable.
+ */
+export async function sumAlbumSongCountsAsync(): Promise<number> {
+  const db = getDb();
+  if (db === null) return 0;
+  try {
+    const row = await db.getFirstAsync<{ n: number | null }>(
+      "SELECT SUM(json_extract(raw_json, '$.songCount')) AS n FROM library_albums",
+    );
+    return row?.n ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
 export async function countLibraryAlbumsAsync(): Promise<number> {
   const db = getDb();
   if (db === null) return 0;
@@ -169,6 +202,10 @@ export async function deleteLibraryAlbumsAsync(ids: readonly string[]): Promise<
         }
       }),
     );
+    // Mirror the removal into normalized `albums` (children cascade via FK) so a
+    // server-deleted album doesn't ghost in the keyset list now that incremental
+    // adds land in normalized. Separate serialized slot (avoids txn nesting).
+    await serializeLibraryAlbumWrite(() => deleteAlbums(db, [...ids]));
   } catch (e) {
     // eslint-disable-next-line no-console
     console.warn('[libraryAlbumsTable] deleteLibraryAlbumsAsync failed', e);

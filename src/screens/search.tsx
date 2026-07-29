@@ -1,7 +1,8 @@
 import { useRouter } from 'expo-router';
 import { useIsFocused } from "expo-router/react-navigation";
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   SectionList,
   StyleSheet,
   Text,
@@ -72,6 +73,19 @@ export function SearchScreen() {
     store.setHideDownloaded(false);
     store.setHideFavorites(false);
   }, [isFocused]);
+
+  // Re-run the active search when offline/online mode flips. `searchLibrary` routes
+  // on the mode (offline = downloaded-only, no artists; online = full library +
+  // server), so a stale result set from the other mode must be replaced without the
+  // user having to re-type. Skip the mount pass (didModeMount) and empty queries.
+  const didModeMount = useRef(false);
+  useEffect(() => {
+    if (!didModeMount.current) {
+      didModeMount.current = true;
+      return;
+    }
+    if (searchStore.getState().query.trim()) void performSearch();
+  }, [offlineMode, performSearch]);
 
   const downloadedOnly = filterBarStore((s) => s.downloadedOnly);
   const favoritesOnly = filterBarStore((s) => s.favoritesOnly);
@@ -230,6 +244,22 @@ export function SearchScreen() {
     );
   }
 
+  // Query present, a search/refresh in flight with nothing to show yet — a spinner
+  // instead of a blank screen (covers the first search AND an offline↔online switch
+  // that has no prior results). Was: blank until results popped in.
+  if (loading && !hasResults) {
+    return (
+      <View style={[styles.container, { paddingTop: headerHeight }]}>
+        <View style={styles.loadingCentered}>
+          <ActivityIndicator size="small" color={colors.primary} />
+          <Text style={[styles.loadingText, { color: colors.textSecondary }]}>
+            {t('searching')}
+          </Text>
+        </View>
+      </View>
+    );
+  }
+
   // Query present, no results, not mid-search: no-results placeholder.
   if (!hasResults && !loading) {
     return (
@@ -245,6 +275,26 @@ export function SearchScreen() {
 
   return (
     <View style={styles.container}>
+      {/* A refresh in flight while previous results stay visible — e.g. flipping
+          offline↔online, or a new keystroke. A top strip so the user sees the
+          results are being updated rather than the screen sitting silently. */}
+      {loading && (
+        <View
+          style={[
+            styles.loadingStrip,
+            {
+              top: headerHeight,
+              backgroundColor: colors.background,
+              borderBottomColor: colors.border,
+            },
+          ]}
+        >
+          <ActivityIndicator size="small" color={colors.primary} />
+          <Text style={[styles.loadingStripText, { color: colors.textSecondary }]}>
+            {t('searching')}
+          </Text>
+        </View>
+      )}
       <SectionList
         sections={sections}
         renderItem={renderItem}
@@ -273,6 +323,31 @@ const styles = StyleSheet.create({
   listContent: {
     padding: 16,
     paddingBottom: 32,
+  },
+  loadingCentered: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  loadingText: {
+    fontSize: 14,
+  },
+  loadingStrip: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    zIndex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  loadingStripText: {
+    fontSize: 13,
   },
   sectionTitle: {
     fontSize: 12,

@@ -2,13 +2,17 @@ jest.mock('../persistence/kvStorage', () => require('../persistence/__mocks__/kv
 jest.mock('../../services/subsonicService');
 
 import { ensureCoverArtAuth, getAllPlaylists } from '../../services/subsonicService';
+import { countPlaylists } from '../../db/repository/playlists';
 import { playlistLibraryStore } from '../playlistLibraryStore';
+import { getDb } from '../persistence/db';
 
 const mockGetAllPlaylists = getAllPlaylists as jest.MockedFunction<typeof getAllPlaylists>;
+const tick = () => new Promise((r) => setTimeout(r, 0));
 
 beforeEach(() => {
   jest.clearAllMocks();
   playlistLibraryStore.setState({ playlists: [], loading: false, error: null, lastFetchedAt: null });
+  getDb()?.runSync('DELETE FROM playlists');
 });
 
 const makePlaylist = (id: string, name: string) => ({ id, name } as any);
@@ -25,6 +29,28 @@ describe('playlistLibraryStore', () => {
       expect(state.playlists).toHaveLength(1);
       expect(state.loading).toBe(false);
       expect(state.lastFetchedAt).toBeGreaterThan(0);
+    });
+
+    it('dual-writes the normalized table and prunes server-side deletions', async () => {
+      const db = getDb()!;
+      mockGetAllPlaylists.mockResolvedValue([makePlaylist('p1', 'Chill'), makePlaylist('p2', 'Bangers')]);
+      await playlistLibraryStore.getState().fetchAllPlaylists();
+      expect(playlistLibraryStore.getState().playlists).toHaveLength(2); // array kept
+      expect(await countPlaylists(db)).toBe(2); // normalized populated
+
+      // a later fetch with p2 removed prunes it from normalized
+      mockGetAllPlaylists.mockResolvedValue([makePlaylist('p1', 'Chill')]);
+      await playlistLibraryStore.getState().fetchAllPlaylists();
+      expect(await countPlaylists(db)).toBe(1);
+    });
+
+    it('removePlaylist deletes the normalized row', async () => {
+      const db = getDb()!;
+      mockGetAllPlaylists.mockResolvedValue([makePlaylist('p1', 'Chill'), makePlaylist('p2', 'Bangers')]);
+      await playlistLibraryStore.getState().fetchAllPlaylists();
+      playlistLibraryStore.getState().removePlaylist('p1');
+      await tick(); // the normalized delete is fire-and-forget
+      expect(await countPlaylists(db)).toBe(1);
     });
 
     it('prevents duplicate fetches', async () => {

@@ -3,6 +3,7 @@ const mockRefreshAll = jest.fn(() => Promise.resolve());
 const mockRefreshAllIfDue = jest.fn((_ms: number) => Promise.resolve(true));
 const mockRefreshRecentlyPlayed = jest.fn(() => Promise.resolve());
 const mockFetchAllAlbums = jest.fn(() => Promise.resolve());
+const mockRunNormalizedLibrarySync = jest.fn((_opts?: unknown) => Promise.resolve());
 const mockUpsertAlbums = jest.fn();
 const mockFetchAllArtists = jest.fn(() => Promise.resolve());
 const mockFetchAllPlaylists = jest.fn(() => Promise.resolve());
@@ -76,6 +77,7 @@ const mockDeleteLibraryAlbums = jest.fn((_ids: readonly string[]) => Promise.res
 jest.mock('../../store/persistence/libraryAlbumsTable', () => ({
   __esModule: true,
   countLibraryAlbumsAsync: () => Promise.resolve(libraryTableState.rowCount),
+  sumAlbumSongCountsAsync: () => Promise.resolve(libraryTableState.rowCount * 10),
   deleteLibraryAlbumsAsync: (ids: readonly string[]) => mockDeleteLibraryAlbums(ids),
 }));
 
@@ -235,6 +237,9 @@ jest.mock('../../utils/stringHelpers', () => {
 // subsonicService uses the shared __mocks__ automock. We opt into it here and
 // reach for `fetchServerInfo` via the imported namespace.
 jest.mock('../subsonicService');
+jest.mock('../normalizedLibrarySync', () => ({
+  runNormalizedLibrarySync: (opts?: unknown) => mockRunNormalizedLibrarySync(opts),
+}));
 
 // Poly-fill requestIdleCallback so the deferred-prefetch block runs in tests.
 (globalThis as any).requestIdleCallback = (cb: () => void) => cb();
@@ -848,7 +853,7 @@ describe('dataSyncService — syncSongLibrary', () => {
     mockSongs.mockResolvedValueOnce([{ id: 's1', albumId: 'a1' }, { id: 's2', albumId: 'a1' }]);
     mockSongs.mockResolvedValueOnce([]); // end of results
     await syncSongLibrary();
-    expect(mockSongs).toHaveBeenCalledWith(5000, 0);
+    expect(mockSongs).toHaveBeenCalledWith(1000, 0);
     expect(syncStatusStore.getState().songSyncStrategy).toBe('search3');
     expect(syncStatusStore.getState().songSyncComplete).toBe(true);
     expect(mockFetchAlbum).not.toHaveBeenCalled(); // no per-album walk
@@ -1082,25 +1087,23 @@ describe('dataSyncService — detectChanges', () => {
 });
 
 describe('dataSyncService — forceFullResync', () => {
-  it('bumps generation, clears stores, and refetches library', async () => {
-    albumLibraryState.albums = [{ id: 'a1' }];
-    mockDetailState.albums = { a1: { album: { id: 'a1' }, retrievedAt: 1 } };
-    syncStatusStore.setState({ detailSyncPhase: 'syncing', detailSyncTotal: 50 });
+  it('bumps generation and runs the normalized library sync (full), not the legacy fetch', async () => {
     const beforeGen = syncStatusStore.getState().generation;
 
     await forceFullResync();
 
     expect(syncStatusStore.getState().generation).toBe(beforeGen + 1);
-    expect(syncStatusStore.getState().detailSyncPhase).toBe('idle');
-    expect(mockFetchAllAlbums).toHaveBeenCalled();
+    expect(mockRunNormalizedLibrarySync).toHaveBeenCalledWith({ full: true });
+    // The legacy blob-writing album fetch must NOT run — normalized is the sole writer.
+    expect(mockFetchAllAlbums).not.toHaveBeenCalled();
   });
 
-  it('clears local caches even when offline (no network call)', async () => {
+  it('bumps generation but skips the network sync when offline', async () => {
     offlineState.offline = true;
     const beforeGen = syncStatusStore.getState().generation;
     await forceFullResync();
     expect(syncStatusStore.getState().generation).toBe(beforeGen + 1);
-    expect(mockFetchAllAlbums).not.toHaveBeenCalled();
+    expect(mockRunNormalizedLibrarySync).not.toHaveBeenCalled();
   });
 });
 

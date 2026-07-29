@@ -1,5 +1,5 @@
 import Ionicons from '@react-native-vector-icons/ionicons/static';
-import { useCallback } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
@@ -7,6 +7,9 @@ import { useTheme } from '../../hooks/useTheme';
 import { useThemedAlert } from '../../hooks/useThemedAlert';
 import { settingsStyles } from '../../styles/settingsStyles';
 import { cancelAllSyncs, forceFullResync, resumeSync } from '../../services/dataSyncService';
+import { countAlbums } from '../../db/repository/albums';
+import { countSongs } from '../../db/repository/songs';
+import { getDb } from '../../store/persistence/db';
 import { albumLibraryStore } from '../../store/albumLibraryStore';
 import { offlineModeStore } from '../../store/offlineModeStore';
 import { songIndexStore } from '../../store/songIndexStore';
@@ -29,6 +32,46 @@ export function LibrarySyncCard() {
   const songSyncPhase = syncStatusStore((s) => s.detailSyncPhase);
   const librarySyncComplete = syncStatusStore((s) => s.librarySyncComplete);
   const songSyncComplete = syncStatusStore((s) => s.songSyncComplete);
+  const migPhase = syncStatusStore((s) => s.normalizedMigrationPhase);
+  const migDone = syncStatusStore((s) => s.normalizedMigrationDone);
+  const migTotal = syncStatusStore((s) => s.normalizedMigrationTotal);
+  const albumsProcessed = syncStatusStore((s) => s.detailSyncCompleted);
+  const albumsTotal = syncStatusStore((s) => s.detailSyncTotal);
+  const songSyncFinalizing = syncStatusStore((s) => s.songSyncFinalizing);
+
+  // One-time blob→normalized migration progress (bar + % + counts on the card).
+  const isMigrating = migPhase === 'migrating';
+  const migPct = migTotal > 0 ? Math.min(100, Math.floor((migDone / migTotal) * 100)) : 0;
+
+  // Song-sync progress = albums-whose-songs-we-have / total-albums.
+  const songSyncPct = albumsTotal > 0 ? Math.min(100, Math.floor((albumsProcessed / albumsTotal) * 100)) : 0;
+
+  // Counts reflect the NORMALIZED model (the target-state sync's output), refreshed
+  // as the sync progresses — not the legacy blob-backed stores. Fall back to the
+  // blob counts until the first query resolves.
+  const [normAlbums, setNormAlbums] = useState<number | null>(null);
+  const [normSongs, setNormSongs] = useState<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const db = getDb();
+    if (!db) return undefined;
+    void (async () => {
+      try {
+        const [a, s] = await Promise.all([countAlbums(db), countSongs(db)]);
+        if (!cancelled) {
+          setNormAlbums(a);
+          setNormSongs(s);
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [albumsProcessed, albumsTotal, songSyncComplete, librarySyncComplete]);
+  const displayAlbums = normAlbums ?? librarySize;
+  const displaySongs = normSongs ?? songIndexSize;
 
   // A sync is actively running when either the album-list fetch or the song
   // fetch is in progress.
@@ -99,11 +142,11 @@ export function LibrarySyncCard() {
       <View style={[settingsStyles.card, settingsStyles.cardPadded, { backgroundColor: colors.card }]}>
         <View style={[settingsStyles.infoRow, { borderBottomColor: colors.border }]}>
           <Text style={[settingsStyles.infoLabel, { color: colors.textPrimary }]}>{t('albums')}</Text>
-          <Text style={[settingsStyles.infoValue, { color: colors.textSecondary }]}>{librarySize}</Text>
+          <Text style={[settingsStyles.infoValue, { color: colors.textSecondary }]}>{displayAlbums}</Text>
         </View>
         <View style={[settingsStyles.infoRow, { borderBottomColor: colors.border }]}>
           <Text style={[settingsStyles.infoLabel, { color: colors.textPrimary }]}>{t('songs')}</Text>
-          <Text style={[settingsStyles.infoValue, { color: colors.textSecondary }]}>{songIndexSize}</Text>
+          <Text style={[settingsStyles.infoValue, { color: colors.textSecondary }]}>{displaySongs}</Text>
         </View>
         <View style={[settingsStyles.infoRow, { borderBottomColor: colors.border }]}>
           <Text style={[settingsStyles.infoLabel, { color: colors.textPrimary }]}>{t('lastFetched')}</Text>
@@ -112,7 +155,48 @@ export function LibrarySyncCard() {
           </Text>
         </View>
 
-        {isSyncing && stageText != null && (
+        {isMigrating && (
+          <View style={styles.progressBlock}>
+            <View style={styles.statusRow}>
+              <ActivityIndicator size="small" color={colors.primary} />
+              <Text style={[styles.statusText, { color: colors.textSecondary, flex: 1 }]}>
+                {t('upgradingLibraryCard')}
+              </Text>
+              <Text style={[styles.statusPct, { color: colors.textPrimary }]}>{migPct}%</Text>
+            </View>
+            <View style={[styles.progressTrack, { backgroundColor: colors.border }]}>
+              <View style={[styles.progressFill, { backgroundColor: colors.primary, width: `${migPct}%` }]} />
+            </View>
+          </View>
+        )}
+
+        {!isMigrating && isSyncing && (albumsTotal > 0 || songSyncFinalizing) && (
+          <View style={styles.progressBlock}>
+            <View style={styles.statusRow}>
+              <ActivityIndicator size="small" color={colors.primary} />
+              <Text style={[styles.statusText, { color: colors.textSecondary, flex: 1 }]}>
+                {songSyncFinalizing ? t('finalizingLibrary') : stageText}
+              </Text>
+              <Text style={[styles.statusPct, { color: colors.textPrimary }]}>
+                {songSyncFinalizing ? 100 : songSyncPct}%
+              </Text>
+            </View>
+            <View style={[styles.progressTrack, { backgroundColor: colors.border }]}>
+              <View
+                style={[
+                  styles.progressFill,
+                  { backgroundColor: colors.primary, width: `${songSyncFinalizing ? 100 : songSyncPct}%` },
+                ]}
+              />
+            </View>
+            <Text style={[styles.progressCounts, { color: colors.textSecondary }]}>
+              {albumsProcessed} / {albumsTotal} {t('albums').toLowerCase()}
+            </Text>
+          </View>
+        )}
+
+        {/* Indeterminate fallback (e.g. the album-LIST fetch, before songs). */}
+        {!isMigrating && isSyncing && albumsTotal === 0 && !songSyncFinalizing && stageText != null && (
           <View style={styles.statusRow}>
             <ActivityIndicator size="small" color={colors.primary} />
             <Text style={[styles.statusText, { color: colors.textSecondary }]}>{stageText}</Text>
@@ -159,5 +243,27 @@ const styles = StyleSheet.create({
   statusText: {
     fontSize: 14,
     fontWeight: '500',
+  },
+  progressBlock: {
+    paddingBottom: 8,
+  },
+  statusPct: {
+    fontSize: 14,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  progressTrack: {
+    height: 6,
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    borderRadius: 3,
+  },
+  progressCounts: {
+    fontSize: 12,
+    marginTop: 6,
+    fontVariant: ['tabular-nums'],
   },
 });

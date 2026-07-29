@@ -6,20 +6,21 @@
  */
 import Ionicons from '@react-native-vector-icons/ionicons/static';
 import { File, Paths } from 'expo-file-system';
-import { useRouter } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import { shareAsync } from 'expo-sharing';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BottomChrome } from '../components/BottomChrome';
 import { GradientBackground } from '../components/GradientBackground';
-import { runSpikeA, runSpikeB, runSpikeD } from '../db/testing/dbSpikes';
+import { runSpikeA, runSpikeB, runSpikeD, runSpikeE, runSpikeF, runSpikeG, runSpikeH } from '../db/testing/dbSpikes';
 import { useTheme } from '../hooks/useTheme';
 import type { ThemeColors } from '../constants/theme';
 import type { IoniconsName } from '../utils/iconNames';
 
 type Runner = (log: (message: string) => void) => Promise<void>;
-type SpikeKey = 'A' | 'B' | 'C' | 'D';
+type SpikeKey = 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H';
 
 interface SpikeDef {
   key: SpikeKey;
@@ -30,7 +31,11 @@ interface SpikeDef {
 }
 
 const SPIKES: SpikeDef[] = [
-  { key: 'D', label: 'D · migrate + validate', icon: 'git-branch-outline', run: runSpikeD },
+  { key: 'D', label: 'D · migrate cold + timed', icon: 'git-branch-outline', run: runSpikeD },
+  { key: 'E', label: 'E · remote sync timing', icon: 'cloud-download-outline', run: runSpikeE },
+  { key: 'F', label: 'F · search-derive split', icon: 'search-outline', run: runSpikeF },
+  { key: 'G', label: 'G · infix LIKE vs scale', icon: 'speedometer-outline', run: runSpikeG },
+  { key: 'H', label: 'H · reset normalized (boot-migrate test)', icon: 'refresh-outline', run: runSpikeH },
   { key: 'A', label: 'A · open existing DB', icon: 'folder-open-outline', run: runSpikeA },
   { key: 'B', label: 'B · contention + reactive', icon: 'pulse-outline', run: runSpikeB },
   { key: 'C', label: 'C · FlashList keyset (UI)', icon: 'list-outline', nav: '/db-spike-c' },
@@ -66,6 +71,7 @@ function IconBtn({
 export function DbSpikesScreen() {
   const { colors } = useTheme();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [lines, setLines] = useState<string[]>([]);
   const [running, setRunning] = useState(false);
   const [selectedKey, setSelectedKey] = useState<SpikeKey>('D');
@@ -106,21 +112,26 @@ export function DbSpikesScreen() {
   }, [lines]);
 
   return (
-    <GradientBackground>
-      {/* Compact control bar pinned to the top (GradientBackground already offsets
-          the header, so no header padding here). Results get the rest of the screen. */}
-      <View style={[styles.controls, { borderBottomColor: colors.border }]}>
-        {/* Full-width dropdown so the option label is fully readable. */}
-        <Pressable
-          onPress={() => setMenuOpen((o) => !o)}
-          style={[styles.dropdown, { borderColor: colors.border, backgroundColor: colors.card }]}
-        >
-          <Ionicons name={selected.icon} size={16} color={colors.primary} />
-          <Text style={[styles.dropdownText, { color: colors.textPrimary }]} numberOfLines={1}>
-            {selected.label}
-          </Text>
-          <Ionicons name={menuOpen ? 'chevron-up' : 'chevron-down'} size={16} color={colors.textSecondary} />
-        </Pressable>
+    <GradientBackground scrollable>
+      {/* Dev screen: hide the nav header entirely so the controls sit at the very
+          top (no reserved header band) and the results get the rest of the screen. */}
+      <Stack.Screen options={{ headerShown: false }} />
+      {/* Compact control bar pinned to the safe-area top. */}
+      <View style={[styles.controls, { paddingTop: insets.top + 8, borderBottomColor: colors.border }]}>
+        {/* Row 1: back + the selection dropdown (flexes to stay readable). */}
+        <View style={styles.controlRow}>
+          <IconBtn icon="chevron-back" onPress={() => router.back()} colors={colors} />
+          <Pressable
+            onPress={() => setMenuOpen((o) => !o)}
+            style={[styles.dropdown, { flex: 1, borderColor: colors.border, backgroundColor: colors.card }]}
+          >
+            <Ionicons name={selected.icon} size={16} color={colors.primary} />
+            <Text style={[styles.dropdownText, { color: colors.textPrimary }]} numberOfLines={1}>
+              {selected.label}
+            </Text>
+            <Ionicons name={menuOpen ? 'chevron-up' : 'chevron-down'} size={16} color={colors.textSecondary} />
+          </Pressable>
+        </View>
 
         {menuOpen && (
           <View style={[styles.menu, { borderColor: colors.border, backgroundColor: colors.card }]}>
@@ -201,7 +212,7 @@ export function DbSpikesScreen() {
 
 const styles = StyleSheet.create({
   controls: {
-    paddingTop: 12,
+    // paddingTop is applied inline from the safe-area inset (header is hidden).
     paddingHorizontal: 12,
     paddingBottom: 10,
     gap: 8,

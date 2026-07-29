@@ -4,21 +4,23 @@ jest.mock('../imageCacheService', () => ({
   ensureCached: jest.fn().mockResolvedValue(undefined),
   prefetchCoverArt: jest.fn(),
 }));
-jest.mock('../../store/persistence/searchIndexQueries');
+// The full-library candidate layer is the repository search module. Mock it so the
+// routing / ranking / result-mapping logic under test is isolated from the candidate
+// SQL (which has its own real-DB tests in repository.test.ts). The OFFLINE path reads
+// the REAL repository/albums + repository/playlists against the seeded better-sqlite3
+// DB (those modules are NOT mocked).
+jest.mock('../../db/repository/search');
 
 import { ensureCoverArtAuth, search3 } from '../subsonicService';
-import { albumLibraryStore } from '../../store/albumLibraryStore';
-import { artistLibraryStore } from '../../store/artistLibraryStore';
 import { musicCacheStore } from '../../store/musicCacheStore';
-import { playlistLibraryStore } from '../../store/playlistLibraryStore';
 import { offlineModeStore } from '../../store/offlineModeStore';
 import { syncStatusStore } from '../../store/syncStatusStore';
 import { connectivityStore } from '../../store/connectivityStore';
-import {
-  querySongCandidates,
-  queryAlbumCandidates,
-  hasLocalLibraryRows,
-} from '../../store/persistence/searchIndexQueries';
+import { getDb } from '../../store/persistence/db';
+import { ensureNormalizedSchema } from '../../db/createNormalizedTables';
+import { upsertAlbums } from '../../db/repository/albums';
+import { upsertPlaylists } from '../../db/repository/playlists';
+import { hasLocalCorpus, searchAlbums, searchArtists, searchSongs } from '../../db/repository/search';
 import {
   performOnlineSearch,
   performOfflineSearch,
@@ -30,15 +32,30 @@ import {
 
 const mockSearch3 = search3 as jest.MockedFunction<typeof search3>;
 const mockEnsureCoverArtAuth = ensureCoverArtAuth as jest.MockedFunction<typeof ensureCoverArtAuth>;
-const mockQuerySongs = querySongCandidates as jest.MockedFunction<typeof querySongCandidates>;
-const mockQueryAlbums = queryAlbumCandidates as jest.MockedFunction<typeof queryAlbumCandidates>;
-const mockHasLocalRows = hasLocalLibraryRows as jest.MockedFunction<typeof hasLocalLibraryRows>;
+const mockSearchSongs = searchSongs as jest.MockedFunction<typeof searchSongs>;
+const mockSearchAlbums = searchAlbums as jest.MockedFunction<typeof searchAlbums>;
+const mockSearchArtists = searchArtists as jest.MockedFunction<typeof searchArtists>;
+const mockHasLocalCorpus = hasLocalCorpus as jest.MockedFunction<typeof hasLocalCorpus>;
+
+const db = () => getDb()!;
+
+/** Valid AlbumID3 for seeding the normalized `albums` table (offline path). */
+const albumFixture = (id: string, name: string, extra: Record<string, unknown> = {}) =>
+  ({ id, name, created: new Date('2020-01-01'), duration: 100, songCount: 10, ...extra }) as never;
+/** Valid Playlist for seeding the normalized `playlists` table (offline path). */
+const playlistFixture = (id: string, name: string, extra: Record<string, unknown> = {}) =>
+  ({
+    id,
+    name,
+    created: new Date('2020-01-01'),
+    changed: new Date('2020-01-01'),
+    duration: 1000,
+    songCount: 5,
+    ...extra,
+  }) as never;
 
 function resetStores() {
   musicCacheStore.setState({ cachedItems: {}, cachedSongs: {} } as any);
-  albumLibraryStore.setState({ albums: [] });
-  artistLibraryStore.setState({ artists: [] } as any);
-  playlistLibraryStore.setState({ playlists: [] });
 }
 
 /**
@@ -86,9 +103,18 @@ function seedCache(
   musicCacheStore.setState({ cachedItems, cachedSongs } as any);
 }
 
+beforeAll(() => ensureNormalizedSchema(db()));
+
 beforeEach(() => {
   jest.clearAllMocks();
   resetStores();
+  for (const t of ['albums', 'playlists', 'songs', 'artists']) db().runSync(`DELETE FROM ${t}`);
+  // Auto-mocked candidate fns default to undefined; give them empty resolutions so
+  // the ranking maps run. Individual tests override.
+  mockSearchSongs.mockResolvedValue([]);
+  mockSearchAlbums.mockResolvedValue([]);
+  mockSearchArtists.mockResolvedValue([]);
+  mockHasLocalCorpus.mockResolvedValue(true);
 });
 
 describe('performOnlineSearch', () => {
@@ -116,9 +142,7 @@ describe('performOnlineSearch', () => {
 describe('performOfflineSearch', () => {
   it('searches cached albums by name', async () => {
     seedCache({ a1: { name: 'Test Album', tracks: [] } });
-    albumLibraryStore.setState({
-      albums: [{ id: 'a1', name: 'Test Album', artist: 'Artist' }] as any,
-    });
+    await upsertAlbums(db(), [albumFixture('a1', 'Test Album', { artist: 'Artist' })]);
 
     const result = await performOfflineSearch('test');
 
@@ -128,30 +152,33 @@ describe('performOfflineSearch', () => {
 
   it('searches cached albums by artist name', async () => {
     seedCache({ a1: { name: 'Album', tracks: [] } });
-    albumLibraryStore.setState({
-      albums: [{ id: 'a1', name: 'Album', artist: 'Radiohead' }] as any,
-    });
+    await upsertAlbums(db(), [albumFixture('a1', 'Album', { artist: 'Radiohead' })]);
 
     expect((await performOfflineSearch('radiohead')).albums).toHaveLength(1);
   });
 
   it('excludes non-cached albums', async () => {
-    albumLibraryStore.setState({
-      albums: [{ id: 'a1', name: 'Test Album', artist: 'Artist' }] as any,
-    });
+    // Album exists in the library but is NOT downloaded (no cached item) → excluded.
+    await upsertAlbums(db(), [albumFixture('a1', 'Test Album', { artist: 'Artist' })]);
 
     expect((await performOfflineSearch('test')).albums).toHaveLength(0);
   });
 
   it('includes cached playlists as album-shaped results', async () => {
     seedCache({ p1: { name: 'My Playlist', tracks: [] } });
-    playlistLibraryStore.setState({
-      playlists: [
-        { id: 'p1', name: 'My Playlist', owner: 'user', coverArt: 'c1', songCount: 5, duration: 1000, created: '2024-01-01' },
-      ] as any,
-    });
+    await upsertPlaylists(db(), [
+      playlistFixture('p1', 'My Playlist', { owner: 'user', coverArt: 'c1' }),
+    ]);
 
     expect((await performOfflineSearch('my')).albums.some((a) => a.id === 'p1')).toBe(true);
+  });
+
+  it('preserves the playlist owner on the album-shaped result artist line', async () => {
+    seedCache({ p1: { name: 'My Playlist', tracks: [] } });
+    await upsertPlaylists(db(), [playlistFixture('p1', 'My Playlist', { owner: 'dave' })]);
+
+    const hit = (await performOfflineSearch('my')).albums.find((a) => a.id === 'p1');
+    expect(hit?.artist).toBe('dave');
   });
 
   it('searches cached songs by title', async () => {
@@ -236,9 +263,7 @@ describe('performOfflineSearch', () => {
     seedCache({
       a1: { name: 'Album', tracks: [{ id: 't1', title: 'Song', artist: 'Artist', duration: 200 }] },
     });
-    albumLibraryStore.setState({
-      albums: [{ id: 'a1', name: 'Album', artist: 'Artist' }] as any,
-    });
+    await upsertAlbums(db(), [albumFixture('a1', 'Album', { artist: 'Artist' })]);
 
     const result = await performOfflineSearch('zzzznotfound');
     expect(result.albums).toHaveLength(0);
@@ -247,9 +272,7 @@ describe('performOfflineSearch', () => {
 
   it('handles album with undefined artist gracefully', async () => {
     seedCache({ a1: { name: 'Album', tracks: [] } });
-    albumLibraryStore.setState({
-      albums: [{ id: 'a1', name: 'Album' }] as any,
-    });
+    await upsertAlbums(db(), [albumFixture('a1', 'Album')]);
 
     expect((await performOfflineSearch('someartist')).albums).toHaveLength(0);
   });
@@ -352,23 +375,22 @@ describe('getOfflineSongsByGenre', () => {
 });
 
 describe('searchLibrary — data-state routing', () => {
+  // Lean SongListRow shape — searchFullLibraryScored ranks r.title/r.artist and maps
+  // the row to a Child via songListRowToChild.
   const localSong = (id: string, title = 'Test Song') =>
-    ({ id, albumId: 'a1', title, artist: 'A', duration: 200 }) as any;
+    ({ id, album_id: 'a1', title, artist: 'A', duration: 200 }) as any;
 
   beforeEach(() => {
     // Sane online + fully-synced + reachable defaults; each test overrides.
     offlineModeStore.setState({ offlineMode: false });
     syncStatusStore.setState({ librarySyncComplete: true, songSyncComplete: true });
     connectivityStore.setState({ hasConnection: true, isServerReachable: true });
-    mockHasLocalRows.mockResolvedValue(true);
-    mockQuerySongs.mockResolvedValue([]);
-    mockQueryAlbums.mockResolvedValue([]);
   });
 
   it('empty query short-circuits to empty with no queries', async () => {
     const res = await searchLibrary('   ');
     expect(res).toEqual({ albums: [], artists: [], songs: [] });
-    expect(mockHasLocalRows).not.toHaveBeenCalled();
+    expect(mockHasLocalCorpus).not.toHaveBeenCalled();
     expect(mockSearch3).not.toHaveBeenCalled();
   });
 
@@ -380,11 +402,11 @@ describe('searchLibrary — data-state routing', () => {
     const res = await searchLibrary('freak on a leash');
     expect(res.songs.map((s) => s.id)).toContain('t1');
     expect(mockSearch3).not.toHaveBeenCalled();
-    expect(mockQuerySongs).not.toHaveBeenCalled();
+    expect(mockSearchSongs).not.toHaveBeenCalled();
   });
 
   it('online + fully synced + confident local hit → local authoritative, no server', async () => {
-    mockQuerySongs.mockResolvedValue([localSong('s1')]);
+    mockSearchSongs.mockResolvedValue([localSong('s1')]);
     const res = await searchLibrary('test song');
     expect(res.songs.map((s) => s.id)).toEqual(['s1']);
     expect(mockSearch3).not.toHaveBeenCalled();
@@ -393,21 +415,17 @@ describe('searchLibrary — data-state routing', () => {
   it('returns matching ARTISTS from the synced artist library (search3 parity)', async () => {
     // Regression: local search used to hardcode artists:[] — "pearl" showed
     // albums + songs but never the Pearl Jam artist row.
-    artistLibraryStore.setState({
-      artists: [
-        { id: 'ar1', name: 'Pearl Jam', albumCount: 57 },
-        { id: 'ar2', name: 'Metallica', albumCount: 12 },
-      ],
-    } as any);
-    mockQuerySongs.mockResolvedValue([]);
-    mockQueryAlbums.mockResolvedValue([]);
+    mockSearchArtists.mockResolvedValue([
+      { id: 'ar1', name: 'Pearl Jam', album_count: 57, cover_art: null, sort_title: 'pearl jam', starred: null, user_rating: null },
+      { id: 'ar2', name: 'Metallica', album_count: 12, cover_art: null, sort_title: 'metallica', starred: null, user_rating: null },
+    ]);
     const res = await searchLibrary('pearl');
     expect(res.artists.map((a) => a.id)).toEqual(['ar1']);
     expect(mockSearch3).not.toHaveBeenCalled();
   });
 
   it('online + fully synced + weak/empty local hit → local only, NEVER the server (no blocking)', async () => {
-    mockQuerySongs.mockResolvedValue([]); // nothing local
+    mockSearchSongs.mockResolvedValue([]); // nothing local
     const res = await searchLibrary('test song');
     // Fully synced ⇒ local is complete; an interactive search must not block on
     // the network for a weak hit.
@@ -417,7 +435,7 @@ describe('searchLibrary — data-state routing', () => {
 
   it('online + partially synced + reachable → local-first MERGED with server', async () => {
     syncStatusStore.setState({ librarySyncComplete: false, songSyncComplete: false });
-    mockQuerySongs.mockResolvedValue([localSong('loc')]);
+    mockSearchSongs.mockResolvedValue([localSong('loc')]);
     mockSearch3.mockResolvedValue({ albums: [], artists: [], songs: [{ id: 'srv', title: 'Server' }] } as any);
     const res = await searchLibrary('test song');
     expect(mockSearch3).toHaveBeenCalled();
@@ -426,7 +444,7 @@ describe('searchLibrary — data-state routing', () => {
 
   it('online + partially synced → surfaces local via onLocalResults BEFORE merging the server', async () => {
     syncStatusStore.setState({ librarySyncComplete: false, songSyncComplete: false });
-    mockQuerySongs.mockResolvedValue([localSong('loc')]);
+    mockSearchSongs.mockResolvedValue([localSong('loc')]);
     mockSearch3.mockResolvedValue({ albums: [], artists: [], songs: [{ id: 'srv', title: 'Server' }] } as any);
     const surfaced: string[][] = [];
     const res = await searchLibrary('test song', {
@@ -439,23 +457,23 @@ describe('searchLibrary — data-state routing', () => {
   it('online + partially synced + unreachable → local only, no server', async () => {
     syncStatusStore.setState({ librarySyncComplete: false, songSyncComplete: false });
     connectivityStore.setState({ hasConnection: false, isServerReachable: false });
-    mockQuerySongs.mockResolvedValue([localSong('loc')]);
+    mockSearchSongs.mockResolvedValue([localSong('loc')]);
     const res = await searchLibrary('test song');
     expect(mockSearch3).not.toHaveBeenCalled();
     expect(res.songs.map((s) => s.id)).toEqual(['loc']);
   });
 
   it('online + no local corpus + reachable → straight to the server', async () => {
-    mockHasLocalRows.mockResolvedValue(false);
+    mockHasLocalCorpus.mockResolvedValue(false);
     mockSearch3.mockResolvedValue({ albums: [], artists: [], songs: [{ id: 'srv', title: 'S' }] } as any);
     const res = await searchLibrary('anything');
     expect(mockSearch3).toHaveBeenCalled();
     expect(res.songs.map((s) => s.id)).toEqual(['srv']);
-    expect(mockQuerySongs).not.toHaveBeenCalled();
+    expect(mockSearchSongs).not.toHaveBeenCalled();
   });
 
   it('online + no local corpus + unreachable → empty (no hang)', async () => {
-    mockHasLocalRows.mockResolvedValue(false);
+    mockHasLocalCorpus.mockResolvedValue(false);
     connectivityStore.setState({ hasConnection: false, isServerReachable: false });
     const res = await searchLibrary('anything');
     expect(mockSearch3).not.toHaveBeenCalled();
@@ -464,22 +482,24 @@ describe('searchLibrary — data-state routing', () => {
 });
 
 describe('findAlbum (voice album intent)', () => {
+  // Lean AlbumListRow shape — findAlbum scores r.name/r.display_artist and maps the
+  // winner to an AlbumID3 via albumListRowToAlbumID3.
   it('prefers the album by the given artist among same-named albums', async () => {
-    mockQueryAlbums.mockResolvedValue([
-      { id: 'a-x', name: 'Ten', artist: 'Somebody Else' },
-      { id: 'a-pj', name: 'Ten', artist: 'Pearl Jam' },
+    mockSearchAlbums.mockResolvedValue([
+      { id: 'a-x', name: 'Ten', display_artist: 'Somebody Else' },
+      { id: 'a-pj', name: 'Ten', display_artist: 'Pearl Jam' },
     ] as any);
     // "Ten by Pearl Jam" must pick Pearl Jam's Ten, not the other "Ten".
     expect((await findAlbum('Ten', 'Pearl Jam'))?.id).toBe('a-pj');
   });
 
   it('returns null when there are no candidates', async () => {
-    mockQueryAlbums.mockResolvedValue([]);
+    mockSearchAlbums.mockResolvedValue([]);
     expect(await findAlbum('Nonexistent', 'Nobody')).toBeNull();
   });
 
   it('matches on name alone when no artist is given', async () => {
-    mockQueryAlbums.mockResolvedValue([{ id: 'a1', name: 'Ten', artist: 'Pearl Jam' }] as any);
+    mockSearchAlbums.mockResolvedValue([{ id: 'a1', name: 'Ten', display_artist: 'Pearl Jam' }] as any);
     expect((await findAlbum('Ten'))?.id).toBe('a1');
   });
 });
@@ -489,14 +509,12 @@ describe('findArtistSongs (voice artist intent)', () => {
     offlineModeStore.setState({ offlineMode: false });
     syncStatusStore.setState({ librarySyncComplete: true, songSyncComplete: true });
     connectivityStore.setState({ hasConnection: true, isServerReachable: true });
-    mockHasLocalRows.mockResolvedValue(true);
-    mockQueryAlbums.mockResolvedValue([]);
   });
 
   it('keeps songs whose ARTIST confidently matches, drops title-only noise', async () => {
-    mockQuerySongs.mockResolvedValue([
-      { id: 's1', albumId: 'a1', title: 'Blind', artist: 'Korn' },
-      { id: 's2', albumId: 'a2', title: 'Korn Tribute', artist: 'Cover Band' },
+    mockSearchSongs.mockResolvedValue([
+      { id: 's1', album_id: 'a1', title: 'Blind', artist: 'Korn' },
+      { id: 's2', album_id: 'a2', title: 'Korn Tribute', artist: 'Cover Band' },
     ] as any);
     const songs = await findArtistSongs('Korn');
     expect(songs.map((s) => s.id)).toEqual(['s1']);

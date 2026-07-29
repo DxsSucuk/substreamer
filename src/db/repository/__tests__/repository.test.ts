@@ -2,16 +2,45 @@ import type { AlbumID3, ArtistID3, Child, Playlist } from 'subsonic-api';
 
 import { getDb } from '../../../store/persistence/db';
 import { ensureNormalizedSchema } from '../../createNormalizedTables';
-import { countAlbums, getAlbum, listAlbums, upsertAlbums } from '../albums';
-import { countArtists, getArtist, listArtists, upsertArtistInfo, upsertArtists } from '../artists';
+import {
+  albumCursorOf,
+  countAlbums,
+  getAlbum,
+  listAlbums,
+  listAlbumsBefore,
+  upsertAlbumInfo,
+  upsertAlbums,
+} from '../albums';
+import {
+  artistCursorOf,
+  artistListRowToArtistID3,
+  countArtists,
+  getArtist,
+  listArtists,
+  listArtistsBefore,
+  upsertArtistInfo,
+  upsertArtists,
+} from '../artists';
 import {
   countPlaylists,
+  deletePlaylist,
+  deletePlaylistsNotIn,
   listPlaylistSongIds,
   listPlaylists,
+  listPlaylistsBefore,
+  playlistCursorOf,
+  playlistListRowToPlaylist,
   setPlaylistSongs,
   upsertPlaylists,
 } from '../playlists';
-import { countSongs, listSongs, listSongsByAlbum, upsertSongs } from '../songs';
+import {
+  countSongs,
+  listSongs,
+  listSongsBefore,
+  listSongsByAlbum,
+  songCursorOf,
+  upsertSongs,
+} from '../songs';
 import { keysetPageBefore } from '../core';
 import { searchAlbums, searchArtists, searchSongs } from '../search';
 
@@ -105,6 +134,38 @@ describe('albums repository', () => {
     expect(fav.rows.map((r) => r.name)).toEqual(['Mango']);
   });
 
+  it('sorts by artist (compound key) — groups by artist then album title, both directions', async () => {
+    await upsertAlbums(db(), [
+      album('a1', 'Revolver', { artist: 'The Beatles' }),
+      album('a2', 'Abbey Road', { artist: 'The Beatles' }),
+      album('a3', 'Waterloo', { artist: 'ABBA' }),
+      album('a4', 'Arrival', { artist: 'ABBA' }),
+    ]);
+    // "The" is stripped → ABBA (abba) before Beatles (beatles); within each
+    // artist, albums order by title.
+    const full = await listAlbums(db(), { limit: 10, sortOrder: 'artist' });
+    expect(full.rows.map((r) => r.name)).toEqual(['Arrival', 'Waterloo', 'Abbey Road', 'Revolver']);
+
+    // forward paging keeps the same order across the page boundary
+    const p1 = await listAlbums(db(), { limit: 2, sortOrder: 'artist' });
+    expect(p1.rows.map((r) => r.name)).toEqual(['Arrival', 'Waterloo']);
+    const p2 = await listAlbums(db(), { cursor: p1.nextCursor, limit: 2, sortOrder: 'artist' });
+    expect(p2.rows.map((r) => r.name)).toEqual(['Abbey Road', 'Revolver']);
+    expect(p2.nextCursor).toBeNull();
+
+    // backward paging from the first row of p2 recovers p1
+    const back = await listAlbumsBefore(db(), {
+      before: albumCursorOf(p2.rows[0], 'artist'),
+      limit: 2,
+      sortOrder: 'artist',
+    });
+    expect(back.rows.map((r) => r.name)).toEqual(['Arrival', 'Waterloo']);
+
+    // A–Z seek on the artist primary key ('a' → ABBA albums first)
+    const fromA = await listAlbums(db(), { letter: 'a', limit: 10, sortOrder: 'artist' });
+    expect(fromA.rows.map((r) => r.name)).toEqual(['Arrival', 'Waterloo', 'Abbey Road', 'Revolver']);
+  });
+
   it('re-upsert replaces children without duplicating', async () => {
     await upsertAlbums(db(), [album('a1', 'Alpha', { genres: ['Rock'] })]);
     await upsertAlbums(db(), [album('a1', 'Alpha', { genres: ['Jazz', 'Blues'] })]);
@@ -138,6 +199,44 @@ describe('songs repository', () => {
     expect(page.rows.map((r) => r.title)).toEqual(['Ache', 'Zed']);
     const byAlbum = await listSongsByAlbum(db(), 'a1');
     expect(byAlbum.map((r) => r.title)).toEqual(['Ache', 'Zed']);
+  });
+
+  it('sorts by artist (compound key) — groups by artist then title, both directions', async () => {
+    await upsertSongs(db(), [
+      song('s1', 'Yesterday', { artist: 'The Beatles' }),
+      song('s2', 'Come Together', { artist: 'The Beatles' }),
+      song('s3', 'Dancing Queen', { artist: 'ABBA' }),
+      song('s4', 'Mamma Mia', { artist: 'ABBA' }),
+    ]);
+    // title mode: flat A–Z by song title
+    const byTitle = await listSongs(db(), { limit: 10, sortOrder: 'title' });
+    expect(byTitle.rows.map((r) => r.title)).toEqual([
+      'Come Together',
+      'Dancing Queen',
+      'Mamma Mia',
+      'Yesterday',
+    ]);
+
+    // artist mode: "The" stripped → ABBA before Beatles; within artist, by title
+    const byArtist = await listSongs(db(), { limit: 10, sortOrder: 'artist' });
+    expect(byArtist.rows.map((r) => r.title)).toEqual([
+      'Dancing Queen',
+      'Mamma Mia',
+      'Come Together',
+      'Yesterday',
+    ]);
+
+    // forward paging across the boundary, then backward recovers the first page
+    const p1 = await listSongs(db(), { limit: 2, sortOrder: 'artist' });
+    expect(p1.rows.map((r) => r.title)).toEqual(['Dancing Queen', 'Mamma Mia']);
+    const p2 = await listSongs(db(), { cursor: p1.nextCursor, limit: 2, sortOrder: 'artist' });
+    expect(p2.rows.map((r) => r.title)).toEqual(['Come Together', 'Yesterday']);
+    const back = await listSongsBefore(db(), {
+      before: songCursorOf(p2.rows[0], 'artist'),
+      limit: 2,
+      sortOrder: 'artist',
+    });
+    expect(back.rows.map((r) => r.title)).toEqual(['Dancing Queen', 'Mamma Mia']);
   });
 
   it('flattens ReplayGain and stores child genres', async () => {
@@ -194,21 +293,72 @@ describe('artists repository', () => {
     const fav = await listArtists(db(), { limit: 10, starredOnly: true });
     expect(fav.rows.map((r) => r.name)).toEqual(['ABBA']);
   });
+
+  it('strips articles in the sort key and pages backward', async () => {
+    await upsertArtists(db(), [
+      artist('ar1', 'The Beatles'),
+      artist('ar2', 'ABBA'),
+      artist('ar3', 'Zombies'),
+    ]);
+    // "The" stripped → ABBA (abba), Beatles (beatles), Zombies (zombies)
+    const p1 = await listArtists(db(), { limit: 2 });
+    expect(p1.rows.map((r) => r.name)).toEqual(['ABBA', 'The Beatles']);
+    const p2 = await listArtists(db(), { cursor: p1.nextCursor, limit: 2 });
+    expect(p2.rows.map((r) => r.name)).toEqual(['Zombies']);
+    // backward from the first row of p2 recovers p1
+    const back = await listArtistsBefore(db(), { before: artistCursorOf(p2.rows[0]), limit: 2 });
+    expect(back.rows.map((r) => r.name)).toEqual(['ABBA', 'The Beatles']);
+  });
+
+  it('maps a lean row to ArtistID3 (fields the row/card render)', async () => {
+    await upsertArtists(db(), [artist('ar1', 'Radiohead', { coverArt: 'c1', albumCount: 9 })]);
+    const page = await listArtists(db(), { limit: 1 });
+    const a = artistListRowToArtistID3(page.rows[0]);
+    expect(a).toMatchObject({ id: 'ar1', name: 'Radiohead', coverArt: 'c1', albumCount: 9 });
+  });
 });
 
 describe('playlists repository', () => {
-  it('upserts rows + allowed users, lists by name, counts', async () => {
+  it('upserts rows + allowed users, article-stripped A–Z, letter seek, counts', async () => {
     await upsertPlaylists(db(), [
-      playlist('p1', 'Chill', { allowedUser: ['alice', 'bob'], owner: 'me' }),
+      playlist('p1', 'Chill', { allowedUser: ['alice', 'bob'], owner: 'me', duration: 120, songCount: 5 }),
       playlist('p2', 'Bangers'),
+      playlist('p3', 'The Best Of'), // "The" stripped → sorts under B (between Bangers and Chill)
     ]);
-    expect(await countPlaylists(db())).toBe(2);
+    expect(await countPlaylists(db())).toBe(3);
     const users = db().getAllSync<{ username: string }>(
       "SELECT username FROM playlist_allowed_users WHERE playlist_id='p1' ORDER BY pos",
     );
     expect(users.map((u) => u.username)).toEqual(['alice', 'bob']);
+    // article-stripped: bangers, best of, chill
     const page = await listPlaylists(db(), { limit: 10 });
-    expect(page.rows.map((r) => r.name)).toEqual(['Bangers', 'Chill']);
+    expect(page.rows.map((r) => r.name)).toEqual(['Bangers', 'The Best Of', 'Chill']);
+    // lean projection carries duration (rendered by the row/card)
+    const chill = page.rows.find((r) => r.name === 'Chill');
+    expect(playlistListRowToPlaylist(chill!)).toMatchObject({ name: 'Chill', duration: 120, songCount: 5 });
+    // A–Z letter seek on 'c'
+    const fromC = await listPlaylists(db(), { letter: 'c', limit: 10 });
+    expect(fromC.rows.map((r) => r.name)).toEqual(['Chill']);
+  });
+
+  it('pages backward and prunes/deletes', async () => {
+    await upsertPlaylists(db(), [
+      playlist('p1', 'Alpha'),
+      playlist('p2', 'Bravo'),
+      playlist('p3', 'Charlie'),
+    ]);
+    const p1 = await listPlaylists(db(), { limit: 2 });
+    const p2 = await listPlaylists(db(), { cursor: p1.nextCursor, limit: 2 });
+    expect(p2.rows.map((r) => r.name)).toEqual(['Charlie']);
+    const back = await listPlaylistsBefore(db(), { before: playlistCursorOf(p2.rows[0]), limit: 2 });
+    expect(back.rows.map((r) => r.name)).toEqual(['Alpha', 'Bravo']);
+
+    await deletePlaylist(db(), 'p2');
+    expect(await countPlaylists(db())).toBe(2);
+    // prune keeps only the given ids
+    await deletePlaylistsNotIn(db(), ['p1']);
+    const rest = await listPlaylists(db(), { limit: 10 });
+    expect(rest.rows.map((r) => r.name)).toEqual(['Alpha']);
   });
 
   it('sets + reads ordered song membership (replace preserves order)', async () => {
@@ -272,5 +422,35 @@ describe('search (tiered candidate generation)', () => {
     await upsertArtists(db(), [artist('ar1', 'Abba'), artist('ar2', 'Beatles')]);
     expect((await searchAlbums(db(), 'abbey', ['abbey'], [])).map((r) => r.name)).toEqual(['Abbey Road']);
     expect((await searchArtists(db(), 'abba', ['abba'], [])).map((r) => r.name)).toEqual(['Abba']);
+  });
+});
+
+describe('schema completeness (all typed metadata captured)', () => {
+  it('stores the Child video/folder fields (parent, originalWidth/Height, isDir)', async () => {
+    await upsertSongs(db(), [
+      song('v1', 'Clip', { parent: 'folder9', originalWidth: 1920, originalHeight: 1080, isDir: false, isVideo: true }),
+    ]);
+    const row = db().getFirstSync<{
+      parent: string; original_width: number; original_height: number; is_dir: number; is_video: number;
+    }>('SELECT parent, original_width, original_height, is_dir, is_video FROM songs WHERE id = ?', ['v1']);
+    expect(row).toEqual({ parent: 'folder9', original_width: 1920, original_height: 1080, is_dir: 0, is_video: 1 });
+  });
+
+  it('merges AlbumInfo (getAlbumInfo2) without clobbering base album fields', async () => {
+    await upsertAlbums(db(), [album('al9', 'Kind of Blue', { artist: 'Miles Davis' })]);
+    upsertAlbumInfo(db(), 'al9', {
+      notes: 'A landmark album.',
+      lastFmUrl: 'https://last.fm/al9',
+      smallImageUrl: 's.jpg',
+      mediumImageUrl: 'm.jpg',
+      largeImageUrl: 'l.jpg',
+    });
+    const row = (await getAlbum(db(), 'al9')) as Record<string, unknown>;
+    expect(row.notes).toBe('A landmark album.');
+    expect(row.last_fm_url).toBe('https://last.fm/al9');
+    expect(row.image_url_large).toBe('l.jpg');
+    // base fields survive the partial info upsert
+    expect(row.name).toBe('Kind of Blue');
+    expect(row.artist).toBe('Miles Davis');
   });
 });

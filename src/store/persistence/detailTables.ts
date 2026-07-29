@@ -5,6 +5,7 @@
  */
 import type { AlbumWithSongsID3, Child } from '../../services/subsonicService';
 import { normalize, normalizeArtist, metaphoneKey } from '../../services/searchMatch';
+import { writeAlbumDetailToNormalized, writeSongsToNormalized } from '../../db/normalizedSyncWriter';
 
 import { getDb, serializeDbWrite } from './db';
 
@@ -102,6 +103,7 @@ export function upsertAlbumDetail(id: string, album: AlbumWithSongsID3, retrieve
   } catch {
     /* dropped */
   }
+  void serializeSongIndexWrite(() => writeAlbumDetailToNormalized(db, album));
 }
 
 /**
@@ -127,6 +129,9 @@ export async function upsertAlbumDetailAsync(
   } catch {
     /* dropped */
   }
+  // Dual-write the album row + its songs into the normalized tables (serialized on
+  // the shared mutex so its transaction never overlaps a blob-write transaction).
+  await serializeSongIndexWrite(() => writeAlbumDetailToNormalized(db, album));
 }
 
 /** Remove a single album detail row AND the associated song_index rows. */
@@ -206,6 +211,7 @@ export function upsertSongsForAlbum(albumId: string, songs: Child[]): void {
   } catch {
     /* dropped */
   }
+  void serializeSongIndexWrite(() => writeSongsToNormalized(db, songs));
 }
 
 /**
@@ -264,6 +270,7 @@ export async function upsertSongsForAlbumAsync(albumId: string, songs: Child[]):
     // eslint-disable-next-line no-console
     console.warn('[detailTables] upsertSongsForAlbumAsync failed albumId=' + albumId, e);
   }
+  await serializeSongIndexWrite(() => writeSongsToNormalized(db, songs));
 }
 
 /**
@@ -392,6 +399,10 @@ export async function bulkUpsertSongs(songs: readonly Child[]): Promise<number> 
     console.warn('[detailTables] bulkUpsertSongs failed', e);
     return 0;
   }
+  // NB: NO inline normalized dual-write on this bulk fast-sync path. Deriving norm/
+  // dmeta for every page here doubles the JS-thread work and holding pages for a
+  // deferred write would blow memory at 200k. The normalized tables are populated
+  // off this critical path by the background drift migration instead.
   return valid.length;
 }
 
@@ -423,6 +434,25 @@ export async function countSongIndexAsync(): Promise<number> {
   try {
     const row = await db.getFirstAsync<{ c: number }>('SELECT COUNT(*) AS c FROM song_index;');
     return row?.c ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Count of DISTINCT albums with at least one row in `song_index` — the
+ * "albums whose songs we have processed" numerator for song-sync progress
+ * (over the total album count). Uses the `albumId` index (no table scan).
+ * Resumable by nature: derived from the persisted `song_index`, not memory.
+ */
+export async function countAlbumsWithSongsAsync(): Promise<number> {
+  const db = getDb();
+  if (db === null) return 0;
+  try {
+    const row = await db.getFirstAsync<{ n: number }>(
+      'SELECT COUNT(DISTINCT albumId) AS n FROM song_index;',
+    );
+    return row?.n ?? 0;
   } catch {
     return 0;
   }

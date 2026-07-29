@@ -56,6 +56,17 @@ export interface PlaylistListViewProps {
   scrollToTopTrigger?: string;
   /** Extra top padding so content starts below a floating header but scrolls behind it */
   contentInsetTop?: number;
+  // ── Keyset paging (bounded window from the normalized DB) — optional; array-based
+  //    consumers omit these and behave exactly as before. ──
+  /** Near the end → load + append the next keyset page. */
+  onEndReached?: () => void;
+  /** Near the top → load + prepend the previous keyset page (after an A-Z jump). */
+  onStartReached?: () => void;
+  /** A-Z tap seeks via the DB (replace the window) instead of scrolling the array. */
+  onSeekLetter?: (letter: string) => void;
+  /** The full set of active alphabet letters — the loaded window can't reveal them
+   *  all, so the screen supplies it. Falls back to computing from `playlists`. */
+  activeLetters?: Set<string>;
 }
 
 export function PlaylistListView({
@@ -71,6 +82,10 @@ export function PlaylistListView({
   emptyIcon = 'list-outline',
   scrollToTopTrigger,
   contentInsetTop = 0,
+  onEndReached,
+  onStartReached,
+  onSeekLetter,
+  activeLetters: activeLettersProp,
 }: PlaylistListViewProps) {
   const { t } = useTranslation();
   const { colors } = useTheme();
@@ -131,15 +146,24 @@ export function PlaylistListView({
   const scrollerVisible = showAlphabetScroller && playlists.length > 0;
   const ignoredArticles = serverInfoStore((s) => s.ignoredArticles);
 
-  const activeLetters = useMemo(() => {
+  const computedLetters = useMemo(() => {
     if (!scrollerVisible) return new Set<string>();
     return new Set(
       playlists.map((p) => getSortFirstLetter(p.name, undefined, ignoredArticles ?? undefined)),
     );
   }, [playlists, scrollerVisible, ignoredArticles]);
+  // In keyset mode the window can't reveal every letter, so the screen supplies the
+  // full active set; otherwise compute it from the (whole) array.
+  const activeLetters = activeLettersProp ?? computedLetters;
 
   const handleLetterChange = useCallback(
     (letter: string) => {
+      // Keyset mode: seek via the DB (screen replaces the window). Array mode:
+      // scroll to the matching index within the loaded array.
+      if (onSeekLetter) {
+        onSeekLetter(letter);
+        return;
+      }
       const idx = playlists.findIndex((p) => {
         const first = getSortFirstLetter(p.name, undefined, ignoredArticles ?? undefined);
         if (letter === '#') return first === '#';
@@ -149,7 +173,7 @@ export function PlaylistListView({
         listRef.current?.scrollToIndex({ index: idx, animated: false });
       }
     },
-    [playlists, ignoredArticles],
+    [playlists, ignoredArticles, onSeekLetter],
   );
 
   if (loading && playlists.length === 0) {
@@ -217,6 +241,10 @@ export function PlaylistListView({
           ) : undefined
         }
         drawDistance={300}
+        onEndReached={onEndReached}
+        onEndReachedThreshold={0.6}
+        onStartReached={onStartReached}
+        onStartReachedThreshold={0.6}
         ListEmptyComponent={EmptyComponent}
       />
       {scrollerVisible && (

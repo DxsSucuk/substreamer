@@ -4,6 +4,8 @@ import { getDb } from '../../store/persistence/db';
 import { ensureNormalizedSchema } from '../createNormalizedTables';
 import { migrateBlobsToNormalized } from '../migrateNormalized';
 import { countAlbums, listAlbums } from '../repository/albums';
+import { countArtists } from '../repository/artists';
+import { countPlaylists, listPlaylistSongIds } from '../repository/playlists';
 import { countSongs } from '../repository/songs';
 
 const db = () => getDb()!;
@@ -22,10 +24,24 @@ const seedSong = (id: string, albumId: string, c: Partial<Child>) =>
     JSON.stringify({ id, albumId, title: id, isDir: false, ...c }),
   ]);
 
+const putKv = (key: string, state: unknown) =>
+  db().runSync('INSERT OR REPLACE INTO storage (key, value) VALUES (?, ?)', [
+    key,
+    JSON.stringify({ state, version: 0 }),
+  ]);
+
 beforeAll(() => ensureNormalizedSchema(db()));
 beforeEach(() => {
-  for (const t of ['library_albums', 'song_index', 'albums', 'songs']) {
+  for (const t of ['library_albums', 'song_index', 'albums', 'songs', 'artists', 'playlists', 'playlist_songs']) {
     db().runSync(`DELETE FROM ${t}`);
+  }
+  for (const k of [
+    'substreamer-artist-library',
+    'substreamer-artist-details',
+    'substreamer-playlist-library',
+    'substreamer-playlist-details',
+  ]) {
+    db().runSync('DELETE FROM storage WHERE key = ?', [k]);
   }
 });
 
@@ -65,5 +81,34 @@ describe('migrateBlobsToNormalized', () => {
     expect(second.albums.migrated).toBe(1);
     expect(await countAlbums(db())).toBe(1);
     expect(await countSongs(db())).toBe(1);
+  });
+
+  it('migrates artists + playlists (rows + song membership) from the persisted KV blobs', async () => {
+    putKv('substreamer-artist-library', {
+      artists: [
+        { id: 'ar1', name: 'Alpha Artist' },
+        { id: 'ar2', name: 'Bravo Artist' },
+      ],
+    });
+    putKv('substreamer-playlist-library', { playlists: [{ id: 'pl1', name: 'My Mix' }] });
+    putKv('substreamer-playlist-details', {
+      playlists: {
+        pl1: { playlist: { id: 'pl1', name: 'My Mix', entry: [{ id: 's1' }, { id: 's2' }] } },
+      },
+    });
+
+    const result = await migrateBlobsToNormalized(db());
+
+    expect(result.artists.migrated).toBe(2);
+    expect(result.playlists.migrated).toBe(1);
+    expect(await countArtists(db())).toBe(2);
+    expect(await countPlaylists(db())).toBe(1);
+    expect(await listPlaylistSongIds(db(), 'pl1')).toEqual(['s1', 's2']);
+  });
+
+  it('handles absent artist/playlist KV gracefully (0 migrated, no throw)', async () => {
+    const result = await migrateBlobsToNormalized(db());
+    expect(result.artists).toEqual({ source: 0, migrated: 0, skipped: 0 });
+    expect(result.playlists).toEqual({ source: 0, migrated: 0, skipped: 0 });
   });
 });

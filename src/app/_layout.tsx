@@ -64,6 +64,7 @@ import {
   onStartup,
   recoverStalledSync,
 } from '../services/dataSyncService';
+import { runNormalizedMigrationIfNeeded } from '../services/normalizedMigrationService';
 import { useLibrarySyncBackgroundNotification } from '../hooks/useLibrarySyncBackgroundNotification';
 import { useLibrarySyncKeepAwake } from '../hooks/useLibrarySyncKeepAwake';
 import {
@@ -264,6 +265,15 @@ async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
   // the awaited image/music cache init, so it still won't race their SQLite
   // setup).
   idleStage('deferredDataSyncInit', () => deferredDataSyncInit());
+  if (getCancelled()) return;
+
+  // One-time blob→normalized migration — DISABLED while evaluating the target-state
+  // normalized library sync (`runNormalizedLibrarySync`, wired to forceFullResync),
+  // which is the sole writer of the normalized model. Running the drift-migration
+  // too would be the old+new models populating in parallel. Re-enable once we settle
+  // the transition strategy (migrate-existing-blobs vs sync-only).
+  // idleStage('normalizedMigration', () => runNormalizedMigrationIfNeeded());
+  void runNormalizedMigrationIfNeeded; // keep the import referenced while disabled
   if (getCancelled()) return;
 
   // Build the songs-library list once, now that the startup data-load/refresh

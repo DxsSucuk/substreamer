@@ -72,6 +72,7 @@
       "./plugins/fix-jvm-target",
       "./plugins/large-heap",
       "./plugins/set-gradle-version",
+      "./plugins/with-disable-sync-mount-props-override",
       "./modules/expo-ssl-trust/plugin",
       "./modules/expo-backup-exclusions/plugin",
       [

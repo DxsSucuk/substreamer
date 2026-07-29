@@ -45,6 +45,11 @@ import {
   applyLocalPlay,
   registerPlayerPlayStatListener,
 } from '../playStatsService';
+import { getDb } from '../../store/persistence/db';
+import { upsertAlbums } from '../../db/repository/albums';
+import { upsertSongs } from '../../db/repository/songs';
+
+const tick = () => new Promise((r) => setTimeout(r, 0));
 
 beforeEach(() => {
   mockAlbumDetailApply.mockClear();
@@ -101,6 +106,25 @@ describe('playStatsService.applyLocalPlay', () => {
     expect(mockPlaylistDetailApply).toHaveBeenCalledWith('song-42', expect.any(String));
     expect(mockAlbumLibraryApply).toHaveBeenCalledWith('album-7', expect.any(String));
     expect(mockApplyLocalPlayToPlayer).toHaveBeenCalledWith('song-42', expect.any(String));
+  });
+
+  it('bumps the normalized song + album play_count so detail/player stay current', async () => {
+    const db = getDb()!;
+    db.runSync('DELETE FROM songs');
+    db.runSync('DELETE FROM albums');
+    await upsertSongs(db, [{ id: 's9', title: 'T', albumId: 'al9', playCount: 2 } as unknown as Child]);
+    await upsertAlbums(db, [{ id: 'al9', name: 'A', playCount: 5 } as never]);
+
+    applyLocalPlay({ id: 's9', title: 'T', albumId: 'al9' } as Child);
+    await tick(); // normalized bumps are fire-and-forget
+
+    const song = db.getFirstSync<{ play_count: number; played: string }>(
+      "SELECT play_count, played FROM songs WHERE id='s9'",
+    );
+    const album = db.getFirstSync<{ play_count: number }>("SELECT play_count FROM albums WHERE id='al9'");
+    expect(song?.play_count).toBe(3); // 2 + 1
+    expect(typeof song?.played).toBe('string');
+    expect(album?.play_count).toBe(6); // 5 + 1
   });
 
   it('passes undefined albumId through to the per-store actions when the song has no album', () => {

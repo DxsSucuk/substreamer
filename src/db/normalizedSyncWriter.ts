@@ -1,0 +1,58 @@
+/**
+ * Dual-write bridge. As the library sync + detail fetches land data in the legacy
+ * blob tables (`library_albums`, `song_index`, `album_details`), these ALSO upsert it
+ * into the normalized tables so the new model stays fresh — not merely seeded by the
+ * one-time migration. A re-sync therefore keeps normalized in step (which is also why
+ * the migration's drift check settles to a no-op).
+ *
+ * BEST-EFFORT: a normalized-write failure must NEVER break the blob write or the
+ * sync — every call is wrapped, logged, and swallowed. Bounded memory: it reuses the
+ * same page array the blob write already holds; the repository chunks + writes off
+ * the JS thread. Once consumers read from the normalized tables and the blob tables
+ * are dropped, the blob writes go away and these become the sole writes.
+ */
+import type { AlbumID3, AlbumWithSongsID3, Child } from 'subsonic-api';
+
+import type { InternalDb } from './client';
+import { upsertAlbums } from './repository/albums';
+import { upsertSongs } from './repository/songs';
+import { getSortArticles } from './sortArticles';
+
+const warn = (where: string, e: unknown): void => {
+  // eslint-disable-next-line no-console
+  console.warn(`[normalizedSyncWriter] ${where} failed`, e);
+};
+
+/** Effective ignored-article list (server's, else local default) for sort keys —
+ *  read from the dependency-free mirror to avoid a store-import require cycle. */
+const articles = (): readonly string[] | undefined => getSortArticles();
+
+/** Album-list / incremental album pages → the `albums` table (+ children). */
+export async function writeAlbumsToNormalized(db: InternalDb, albums: readonly AlbumID3[]): Promise<void> {
+  if (albums.length === 0) return;
+  try {
+    await upsertAlbums(db, albums as AlbumID3[], undefined, articles());
+  } catch (e) {
+    warn('writeAlbums', e);
+  }
+}
+
+/** Song pages (fast-path sync, album-referenced) → the `songs` table (+ children). */
+export async function writeSongsToNormalized(db: InternalDb, songs: readonly Child[]): Promise<void> {
+  if (songs.length === 0) return;
+  try {
+    await upsertSongs(db, songs as Child[], undefined, articles());
+  } catch (e) {
+    warn('writeSongs', e);
+  }
+}
+
+/** Album detail (`getAlbum` → AlbumWithSongsID3): the album row + its songs. */
+export async function writeAlbumDetailToNormalized(db: InternalDb, album: AlbumWithSongsID3): Promise<void> {
+  try {
+    await upsertAlbums(db, [album], undefined, articles());
+    if (album.song && album.song.length > 0) await upsertSongs(db, album.song, undefined, articles());
+  } catch (e) {
+    warn('writeAlbumDetail', e);
+  }
+}

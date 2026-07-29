@@ -36,6 +36,7 @@ import { minDelay } from '../utils/stringHelpers';
 import {
   countLibraryAlbumsAsync,
   deleteLibraryAlbumsAsync,
+  sumAlbumSongCountsAsync,
 } from '../store/persistence/libraryAlbumsTable';
 import {
   bulkUpsertSongs,
@@ -45,6 +46,7 @@ import {
 import { songIndexStore } from '../store/songIndexStore';
 import { songLibraryStore } from '../store/songLibraryStore';
 import { registerMusicCacheOnAlbumReferencedHook, syncCachedItemTracks } from './musicCacheService';
+import { runNormalizedLibrarySync } from './normalizedLibrarySync';
 import { fetchScanStatus, registerScanCompletedHook } from './scanService';
 import { registerScrobbleBatchCompletedHook } from './scrobbleService';
 import { canUserScan } from './serverCapabilityService';
@@ -108,6 +110,7 @@ async function maybeSeedSongSyncComplete(): Promise<void> {
 export type PullToRefreshScope =
   | 'home'
   | 'albums'
+  | 'songs'
   | 'artists'
   | 'playlists'
   | 'favorites'
@@ -120,7 +123,7 @@ export type PullToRefreshScope =
  */
 function isSubsetOf(a: SyncScope, b: SyncScope): boolean {
   if (a === b) return true;
-  if (b === 'all') return a === 'home' || a === 'albums' || a === 'artists'
+  if (b === 'all') return a === 'home' || a === 'albums' || a === 'songs' || a === 'artists'
     || a === 'playlists' || a === 'favorites' || a === 'genres';
   return false;
 }
@@ -134,12 +137,14 @@ async function performScope(scope: SyncScope): Promise<void> {
       await albumListsStore.getState().refreshAll();
       return;
     case 'albums':
-      // Pull-to-refresh. If the initial paginated list fetch never finished,
-      // resume it (fetchAllAlbums picks up from COUNT(*)). Once the library is
-      // fully fetched, a full re-download would be wasteful at scale — instead
-      // run the cheap incremental change-detection (newest-album probe) which
-      // ingests server-added albums and fires the detail walk. (Server-side
-      // removals / bulk metadata rewrites are handled by the explicit
+    case 'songs':
+      // Pull-to-refresh (albums AND the songs tab — one library). If the initial
+      // paginated list fetch never finished, resume it (fetchAllAlbums picks up
+      // from COUNT(*)). Once the library is fully fetched, a full re-download would
+      // be wasteful at scale — instead run the cheap incremental change-detection
+      // (newest-album probe) which ingests server-added albums and fires the detail
+      // walk (dual-writing the changed albums' songs into the normalized table).
+      // (Server-side removals / bulk metadata rewrites are handled by the explicit
       // Settings → Sync Library force-resync.)
       if (!syncStatusStore.getState().librarySyncComplete) {
         await albumLibraryStore.getState().fetchAllAlbums();
@@ -770,24 +775,13 @@ export function reconcileAlbumLibrary(
  */
 export async function forceFullResync(): Promise<void> {
   cancelAllSyncs('force-resync');
-  // Reset orchestration state so the banner starts clean + re-probe capability.
-  syncStatusStore.getState().resetSongSync();
+  // Target-state resync: populate ONLY the normalized model (single writer, bounded
+  // memory). Re-probe transport. The normalized sync clears + repopulates the
+  // normalized tables itself (`full`); the legacy blob tables + in-memory stores are
+  // intentionally left as-is (the read UI still hydrates from them until Phase 3).
   syncStatusStore.getState().setSyncStrategy(null);
-  // Clear all cached data. `albumDetailStore.clearAlbums` cascades to
-  // `songIndexStore` via the `clearDetailTables` helper. `albumLibraryStore.
-  // clearAlbums` resets the album-list markers (cursor/complete).
-  await albumDetailStore.getState().clearAlbums();
-  await albumLibraryStore.getState().clearAlbums();
-
-  if (offlineModeStore.getState().offlineMode) {
-    // Offline: we've cleared local caches. On reconnect, `onOnlineResume`
-    // will refetch. Exit early — no point attempting a network call.
-    return;
-  }
-
-  // Refetch the album list, then the song list.
-  await albumLibraryStore.getState().fetchAllAlbums();
-  await syncSongLibrary();
+  if (offlineModeStore.getState().offlineMode) return;
+  await runNormalizedLibrarySync({ full: true });
 }
 
 /**
@@ -948,13 +942,17 @@ async function runDetectChanges(): Promise<{
  * Honors `offlineModeStore.offlineMode` (bails early) and the generation
  * counter on `syncStatusStore` (stale workers exit).
  */
-/** Fast-path song page size. Sync time is flat across 2.5k/5k/20k, so the
- *  bottleneck is total-song work (network transfer + JSON parse + insert +
- *  in-memory rebuild), NOT round-trips. 5k keeps the counter ticking a handful
- *  of times without extra round-trips mattering. */
-const SEARCH3_SONG_PAGE = 5000;
-/** Infinite-loop backstop for the fast song loop. */
-const SONG_PAGE_CEILING = 20000;
+/** Fast-path song page size. Sync time is dominated by per-song work (network
+ *  transfer + JSON parse + insert + in-memory rebuild), NOT round-trips — so a
+ *  smaller page costs little time while bounding peak memory to one page of
+ *  transient parsed objects (helps on huge libraries) and keeping the progress
+ *  counter ticking. Right-sized down from 5k; tune via the remote-sync spike (E). */
+const SEARCH3_SONG_PAGE = 1000;
+/** Infinite-loop backstop for the fast song loop. A sane song cap (roughly a 500k-
+ *  album library's worth, well beyond any real library) over the page size, so it
+ *  stays correct if the page size changes. */
+const MAX_SONGS = 5_000_000;
+const SONG_PAGE_CEILING = Math.ceil(MAX_SONGS / SEARCH3_SONG_PAGE);
 
 /**
  * Populate `song_index` (the flat Songs list) — the second sync step after the
@@ -1011,8 +1009,17 @@ async function doSongSync(): Promise<void> {
   // --- FAST path: paged search3 songs → bulk-upsert song_index ---
   syncStatusStore.getState().setSongSyncStrategy('search3');
   syncStatusStore.getState().setDetailSyncPhase('syncing');
-  syncStatusStore.getState().setDetailSyncTotal(0); // indeterminate (no per-album count)
+  // Progress = "which album we're up to" / total albums. search3 returns songs in
+  // album-list order, so the resumable `songSyncCursor` (songs fetched) maps to a
+  // position in the album list via the cumulative song total. Monotonic + smooth +
+  // resume-stable, with no per-page query or in-memory tracking.
+  const totalAlbums = await countLibraryAlbumsAsync();
+  const totalSongs = await sumAlbumSongCountsAsync();
+  const albumsUpTo = (songsFetched: number): number =>
+    totalSongs > 0 ? Math.min(totalAlbums, Math.round((songsFetched / totalSongs) * totalAlbums)) : 0;
+  syncStatusStore.getState().setDetailSyncTotal(totalAlbums);
   let offset = syncStatusStore.getState().songSyncCursor;
+  syncStatusStore.getState().setDetailSyncCompleted(albumsUpTo(offset));
   let firstPage = offset === 0;
   let pageCount = 0;
   // eslint-disable-next-line no-constant-condition
@@ -1045,11 +1052,21 @@ async function doSongSync(): Promise<void> {
     // which double-counts when a re-sync upserts songs already in the table.
     // eslint-disable-next-line no-await-in-loop
     await songIndexStore.getState().refreshCountFromDb();
+    // Album-position progress — pure arithmetic on the persisted cursor (no query),
+    // so it updates smoothly every page.
+    syncStatusStore.getState().setDetailSyncCompleted(albumsUpTo(offset));
     if ((pageCount += 1) > SONG_PAGE_CEILING) break;
     // eslint-disable-next-line no-await-in-loop
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   }
   if (genChanged()) return;
+  // Fetch done → 100%. The in-memory index rebuild below blocks the JS thread for
+  // seconds on a big library, so flag "finalizing" AND yield a frame first so the
+  // "Finalizing…" state actually paints instead of a stuck-looking spinner.
+  // (rebuildFromDb goes away entirely in the songs read-cutover.)
+  syncStatusStore.getState().setDetailSyncCompleted(totalAlbums);
+  syncStatusStore.getState().setSongSyncFinalizing(true);
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
   await songLibraryStore.getState().rebuildFromDb();
   syncStatusStore.getState().markSongSyncComplete();
 }

@@ -76,12 +76,17 @@ function titleSortKeyFor(a: AlbumID3): string {
 
 /** Basic-path page size. `getAlbumList2.size` is spec-capped at 500. */
 const PAGE_SIZE = 500;
-/** Fast-path (paged `search3`) page size. `search3.albumCount` is uncapped, so a
- *  large chunk minimizes round-trips while bounding memory to one page. */
-const SEARCH3_PAGE = 10000;
+/** Fast-path (paged `search3`) page size. `search3.albumCount` is uncapped, but a
+ *  smaller page bounds peak memory (fewer transient parsed objects per fetch) and
+ *  is safer on servers that choke on a 10k `search3` — at a negligible cost in
+ *  extra round-trips (sync time is dominated by per-item work, not round-trips).
+ *  Right-sized down from 10k; tune via the remote-sync spike (E). */
+const SEARCH3_PAGE = 1000;
 /** Infinite-loop backstop: a server that ignores `offset` and never returns an
- *  empty page can't run past this. */
-const PAGE_CEILING = 4000;
+ *  empty page can't run past this. Expressed as a sane album cap (well beyond any
+ *  real library) over the page size, so it stays correct if the page size changes. */
+const MAX_ALBUMS = 500_000;
+const PAGE_CEILING = Math.ceil(MAX_ALBUMS / SEARCH3_PAGE);
 /** The legacy KV blob the album list used before it became row-based. Seeded
  *  into `library_albums` once on upgrade, then deleted. */
 const LEGACY_BLOB_KEY = 'substreamer-album-library';
@@ -369,9 +374,11 @@ export const albumLibraryStore = create<AlbumLibraryState>()((set, get) => ({
     const nextAlbum: AlbumID3 = bumpPlayStats(oldAlbum, now);
     const nextAlbums = current.map((a, i) => (i === idx ? nextAlbum : a));
     set({ albums: nextAlbums });
-    // Persist the bumped album — play stats now survive restart (with the blob
-    // they were commonly lost).
-    void upsertLibraryAlbumsAsync([nextAlbum], titleSortKeyFor);
+    // Persist the bumped album to the blob — play stats survive restart. Skip the
+    // FULL normalized dual-write here (it would DELETE+reinsert the album's child
+    // tables just to bump a scalar). The normalized play stats are kept current by a
+    // TARGETED scalar UPDATE in playStatsService.applyLocalPlay (bumpAlbumPlayStats).
+    void upsertLibraryAlbumsAsync([nextAlbum], titleSortKeyFor, { syncNormalized: false });
   },
 
   clearAlbums: async () => {

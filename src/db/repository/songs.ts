@@ -10,7 +10,7 @@ import {
   songMoodRows,
   songRow,
 } from './mappers';
-import { bulkUpsert, countRows, keysetPage, type Cursor, type Page } from './core';
+import { bulkUpsert, countRows, keysetPage, keysetPageBefore, type Cursor, type Page } from './core';
 
 /** Lean projection for list rendering (the columns a song row needs). */
 export interface SongListRow {
@@ -24,25 +24,49 @@ export interface SongListRow {
   track: number | null;
   disc_number: number | null;
   sort_title: string | null;
+  sort_artist: string | null;
   starred: number | null;
   user_rating: number | null;
 }
 
 export const SONG_LIST_COLS =
   '"id", "title", "artist", "album", "album_id", "cover_art", "duration", "track", ' +
-  '"disc_number", "sort_title", "starred", "user_rating"';
+  '"disc_number", "sort_title", "sort_artist", "starred", "user_rating"';
+
+export type SongSortOrder = 'title' | 'artist';
+
+/** Adapt a lean list row to the `Child` shape the row/card components + playback
+ *  expect. Only the fields those consumers read are populated; the stream URL is
+ *  built from `id` alone, so the lean projection is sufficient to play a track. */
+export function songListRowToChild(r: SongListRow): Child {
+  return {
+    id: r.id,
+    title: r.title ?? '',
+    artist: r.artist ?? undefined,
+    album: r.album ?? undefined,
+    albumId: r.album_id ?? undefined,
+    coverArt: r.cover_art ?? undefined,
+    duration: r.duration ?? 0,
+    track: r.track ?? undefined,
+    discNumber: r.disc_number ?? undefined,
+    userRating: r.user_rating ?? undefined,
+    starred: r.starred ? new Date(r.starred) : undefined,
+    isDir: false,
+  } as Child;
+}
 
 export function upsertSongs(
   db: InternalDb,
   songs: Child[],
   onProgress?: (done: number, total: number) => void,
+  articles?: readonly string[],
 ): Promise<number> {
   return bulkUpsert(
     db,
     {
       table: 'songs',
       idOf: (c) => c.id,
-      rowOf: songRow,
+      rowOf: (c) => songRow(c, articles),
       children: [
         { table: 'song_genres', parentCol: 'song_id', rows: songGenreRows },
         { table: 'song_artists', parentCol: 'song_id', rows: songArtistRows },
@@ -56,20 +80,60 @@ export function upsertSongs(
   );
 }
 
+/** Sort by artist uses the compound key (sort_artist, sort_title, id); sort by
+ *  title is the plain (sort_title, id) key. The A–Z scroller seeks on the primary
+ *  column either way. Mirrors the album repository. */
+function songSortCols(sortOrder?: SongSortOrder) {
+  const byArtist = sortOrder === 'artist';
+  return {
+    sortCol: byArtist ? 'sort_artist' : 'sort_title',
+    sortCol2: byArtist ? 'sort_title' : undefined,
+    sortKeyOf: (r: SongListRow) => (byArtist ? r.sort_artist : r.sort_title) ?? '',
+    sortKey2Of: byArtist ? (r: SongListRow) => r.sort_title ?? '' : undefined,
+  };
+}
+
+/** Build the keyset cursor for a song row under the active sort order — used by the
+ *  screen to seed a backward page from the first loaded row. */
+export function songCursorOf(r: SongListRow, sortOrder?: SongSortOrder): Cursor {
+  return sortOrder === 'artist'
+    ? { sortKey: r.sort_artist ?? '', sortKey2: r.sort_title ?? '', id: r.id }
+    : { sortKey: r.sort_title ?? '', id: r.id };
+}
+
 /** Full A–Z keyset browse of the song library (the big list that used to OOM). */
 export function listSongs(
   db: InternalDb,
-  opts: { cursor?: Cursor | null; letter?: string | null; limit: number; starredOnly?: boolean },
+  opts: {
+    cursor?: Cursor | null;
+    letter?: string | null;
+    limit: number;
+    starredOnly?: boolean;
+    sortOrder?: SongSortOrder;
+  },
 ): Promise<Page<SongListRow>> {
   return keysetPage<SongListRow>(db, {
     table: 'songs',
-    sortCol: 'sort_title',
     columns: SONG_LIST_COLS,
     limit: opts.limit,
     cursor: opts.cursor,
     letter: opts.letter,
     where: opts.starredOnly ? 'starred IS NOT NULL' : undefined,
-    sortKeyOf: (r) => r.sort_title ?? '',
+    ...songSortCols(opts.sortOrder),
+  });
+}
+
+export function listSongsBefore(
+  db: InternalDb,
+  opts: { before: Cursor; limit: number; starredOnly?: boolean; sortOrder?: SongSortOrder },
+): Promise<{ rows: SongListRow[]; prevCursor: Cursor | null }> {
+  return keysetPageBefore<SongListRow>(db, {
+    table: 'songs',
+    columns: SONG_LIST_COLS,
+    limit: opts.limit,
+    before: opts.before,
+    where: opts.starredOnly ? 'starred IS NOT NULL' : undefined,
+    ...songSortCols(opts.sortOrder),
   });
 }
 
@@ -82,3 +146,19 @@ export const listSongsByAlbum = (db: InternalDb, albumId: string): Promise<SongL
 
 export const countSongs = (db: InternalDb, starredOnly = false): Promise<number> =>
   countRows(db, 'songs', starredOnly ? 'starred IS NOT NULL' : undefined);
+
+/** Eager +1 play-count + last-played for a just-scrobbled song — a TARGETED scalar
+ *  UPDATE (no child-table churn) so normalized play stats stay current for the detail
+ *  screens / player. Relative increment mirrors the store bumps; a full resync
+ *  overwrites with the server value. No-op if the song isn't in the table yet. */
+export const bumpSongPlayStats = (db: InternalDb, id: string, played: string): Promise<unknown> =>
+  db.runAsync(
+    'UPDATE songs SET play_count = COALESCE(play_count, 0) + 1, played = ? WHERE id = ?',
+    [played, id],
+  );
+
+/** Distinct albums that have at least one song — the "albums whose songs we have"
+ *  numerator for sync progress (over the total album count). Index-backed by
+ *  `idx_songs_album`; derived from the persisted table, so it's resume-stable. */
+export const countSongAlbums = async (db: InternalDb): Promise<number> =>
+  (await db.getFirstAsync<{ n: number }>('SELECT COUNT(DISTINCT album_id) AS n FROM songs'))?.n ?? 0;

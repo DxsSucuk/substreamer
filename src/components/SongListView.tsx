@@ -18,16 +18,13 @@ import { AlphabetScroller } from './AlphabetScroller';
 import { EmptyState } from './EmptyState';
 import { type IoniconsName } from '../utils/iconNames';
 import { InsetRefreshSpacer } from './InsetRefreshSpacer';
+import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
+import { serverInfoStore } from '../store/serverInfoStore';
 import type { Child } from '../services/subsonicService';
+import { getSortFirstLetter } from '../utils/sortHelpers';
 import { SongCard } from './SongCard';
 import { closeOpenRow } from './SwipeableRow';
 import { TrackRow } from './TrackRow';
-
-/** First letter of `title` upper-cased and bucketed into A–Z or '#'. */
-function songLetter(song: Child): string {
-  const ch = (song.title ?? '').charAt(0).toUpperCase();
-  return /[A-Z]/.test(ch) ? ch : '#';
-}
 
 export type SongLayout = 'list' | 'grid';
 
@@ -64,6 +61,18 @@ export interface SongListViewProps {
   showAlphabetScroller?: boolean;
   /** Tap handler override. Defaults to `playTrack(song, songs)`. */
   onSongPress?: (song: Child) => void;
+  // ── Keyset paging (bounded window from the normalized DB) — optional; array-based
+  //    consumers omit these and behave exactly as before. ──
+  /** Near the end → load + append the next keyset page. */
+  onEndReached?: () => void;
+  /** Near the top → load + prepend the previous keyset page (after an A-Z jump). */
+  onStartReached?: () => void;
+  /** A-Z tap seeks via the DB (replace the window) instead of scrolling within the
+   *  loaded array. */
+  onSeekLetter?: (letter: string) => void;
+  /** The full set of active alphabet letters — the loaded window can't reveal them
+   *  all, so the screen supplies it. Falls back to computing from `songs`. */
+  activeLetters?: Set<string>;
 }
 
 export function SongListView({
@@ -81,6 +90,10 @@ export function SongListView({
   listHeaderExtra,
   showAlphabetScroller = false,
   onSongPress,
+  onEndReached,
+  onStartReached,
+  onSeekLetter,
+  activeLetters: activeLettersProp,
 }: SongListViewProps) {
   const { t } = useTranslation();
   const { colors } = useTheme();
@@ -139,20 +152,42 @@ export function SongListView({
 
   /* ---- Alphabet scroller support ---- */
   const scrollerVisible = showAlphabetScroller && songs.length > 0;
+  const songSortOrder = layoutPreferencesStore((s) => s.songSortOrder);
+  const ignoredArticles = serverInfoStore((s) => s.ignoredArticles);
 
-  const activeLetters = useMemo(() => {
+  /** Compute the scroller letter for a song, mirroring the article-stripped sort
+   *  key stored in the DB (`sort_title` / `sort_artist`) so the section letter is
+   *  coherent with where the song actually sorts. */
+  const getLetter = useCallback(
+    (s: Child): string =>
+      songSortOrder === 'artist'
+        ? getSortFirstLetter(s.artist ?? s.title ?? '', undefined, ignoredArticles ?? undefined)
+        : getSortFirstLetter(s.title ?? '', s.sortName, ignoredArticles ?? undefined),
+    [songSortOrder, ignoredArticles],
+  );
+
+  const computedLetters = useMemo(() => {
     if (!scrollerVisible) return new Set<string>();
-    return new Set(songs.map(songLetter));
-  }, [songs, scrollerVisible]);
+    return new Set(songs.map(getLetter));
+  }, [songs, scrollerVisible, getLetter]);
+  // In keyset mode the window can't reveal every letter, so the screen supplies the
+  // full active set; otherwise compute it from the (whole) array.
+  const activeLetters = activeLettersProp ?? computedLetters;
 
   const handleLetterChange = useCallback(
     (letter: string) => {
-      const idx = songs.findIndex((s) => songLetter(s) === letter);
+      // Keyset mode: seek via the DB (screen replaces the window). Array mode:
+      // scroll to the matching index within the loaded array.
+      if (onSeekLetter) {
+        onSeekLetter(letter);
+        return;
+      }
+      const idx = songs.findIndex((s) => getLetter(s) === letter);
       if (idx >= 0) {
         listRef.current?.scrollToIndex({ index: idx, animated: false });
       }
     },
-    [songs],
+    [songs, getLetter, onSeekLetter],
   );
 
   const keyExtractor = useCallback((item: Child) => item.id, []);
@@ -238,6 +273,10 @@ export function SongListView({
           ) : undefined
         }
         drawDistance={300}
+        onEndReached={onEndReached}
+        onEndReachedThreshold={0.6}
+        onStartReached={onStartReached}
+        onStartReachedThreshold={0.6}
         ListEmptyComponent={EmptyComponent}
       />
       {scrollerVisible && (

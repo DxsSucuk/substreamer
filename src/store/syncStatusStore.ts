@@ -7,6 +7,7 @@ import { kvStorage } from './persistence';
 export type SyncScope =
   | 'home'
   | 'albums'
+  | 'songs'
   | 'artists'
   | 'playlists'
   | 'favorites'
@@ -92,6 +93,19 @@ export interface SyncStatusState extends LastKnownMarkers {
   songSyncCursor: number;
   /** True once every song has been fetched into `song_index`. Startup gate. */
   songSyncComplete: boolean;
+  /** EPHEMERAL — the fetch loop finished and the in-memory index is rebuilding
+   *  (`rebuildFromDb`), which can take seconds. Drives a "Finalizing…" label so the
+   *  100%-then-spinner window doesn't read as stuck. Not persisted. */
+  songSyncFinalizing: boolean;
+
+  // --- Normalized-model migration (one-time blob→normalized upgrade) ---
+  /** Whether the background blob→normalized migration is running now — drives the
+   *  "Upgrading library…" banner/card progress. EPHEMERAL (recomputed each launch);
+   *  the one-time completion flag lives in kvStorage, not here. */
+  normalizedMigrationPhase: 'idle' | 'migrating';
+  /** Rows migrated so far (albums + songs) and the total, for the progress bar/%. */
+  normalizedMigrationDone: number;
+  normalizedMigrationTotal: number;
 
   // --- Full-sync + last-updated markers (search routing + Settings display) ---
   /** Epoch ms when the FULL sync (album list + all songs) last completed — set
@@ -113,6 +127,11 @@ export interface SyncStatusState extends LastKnownMarkers {
   /** Increment `detailSyncCompleted` by 1 — called by the walk after each
    *  successful `fetchAlbum`. */
   incrementDetailSyncCompleted: () => void;
+  /** Set `detailSyncCompleted` outright — the fast song path derives it as the
+   *  count of DISTINCT albums we have songs for (albums-processed / total-albums). */
+  setDetailSyncCompleted: (completed: number) => void;
+  /** Toggle the "Finalizing…" state (in-memory index rebuild after the fetch). */
+  setSongSyncFinalizing: (finalizing: boolean) => void;
   setLastKnownMarkers: (partial: Partial<LastKnownMarkers>) => void;
   setBannerDismissedAt: (at: number | null) => void;
   resetDetailSync: () => void;
@@ -128,6 +147,8 @@ export interface SyncStatusState extends LastKnownMarkers {
   setSongSyncCursor: (cursor: number) => void;
   markSongSyncComplete: () => void;
   resetSongSync: () => void;
+  /** Update the ephemeral blob→normalized migration progress (banner/card). */
+  setNormalizedMigration: (phase: 'idle' | 'migrating', done: number, total: number) => void;
   /** Stamp `libraryLastUpdatedAt = now` — called at partial-update ingestion. */
   bumpLibraryUpdated: () => void;
   bumpGeneration: () => void;
@@ -156,6 +177,11 @@ export const syncStatusStore = create<SyncStatusState>()(
       songSyncStrategy: null,
       songSyncCursor: 0,
       songSyncComplete: false,
+      songSyncFinalizing: false,
+
+      normalizedMigrationPhase: 'idle',
+      normalizedMigrationDone: 0,
+      normalizedMigrationTotal: 0,
 
       fullSyncCompletedAt: null,
       libraryLastUpdatedAt: null,
@@ -181,6 +207,8 @@ export const syncStatusStore = create<SyncStatusState>()(
         set({ detailSyncTotal: total, detailSyncCompleted: 0 }),
       incrementDetailSyncCompleted: () =>
         set({ detailSyncCompleted: get().detailSyncCompleted + 1 }),
+      setDetailSyncCompleted: (completed) => set({ detailSyncCompleted: completed }),
+      setSongSyncFinalizing: (finalizing) => set({ songSyncFinalizing: finalizing }),
       setLastKnownMarkers: (partial) => set(partial),
       setBannerDismissedAt: (at) => set({ bannerDismissedAt: at }),
       resetDetailSync: () =>
@@ -216,6 +244,7 @@ export const syncStatusStore = create<SyncStatusState>()(
       markSongSyncComplete: () =>
         set((s) => ({
           songSyncComplete: true,
+          songSyncFinalizing: false,
           detailSyncPhase: 'idle',
           detailSyncTotal: 0,
           detailSyncCompleted: 0,
@@ -226,10 +255,17 @@ export const syncStatusStore = create<SyncStatusState>()(
           songSyncStrategy: null,
           songSyncCursor: 0,
           songSyncComplete: false,
+          songSyncFinalizing: false,
           detailSyncPhase: 'idle',
           detailSyncTotal: 0,
           detailSyncCompleted: 0,
           fullSyncCompletedAt: null,
+        }),
+      setNormalizedMigration: (phase, done, total) =>
+        set({
+          normalizedMigrationPhase: phase,
+          normalizedMigrationDone: done,
+          normalizedMigrationTotal: total,
         }),
       bumpLibraryUpdated: () => set({ libraryLastUpdatedAt: Date.now() }),
       bumpGeneration: () => set({ generation: get().generation + 1 }),

@@ -294,27 +294,34 @@ export async function runSpikeB(log: Log): Promise<void> {
   }
 }
 
+/** Percent-of-total formatter for phase breakdowns. */
+const pctOf = (ms: number, total: number): string =>
+  `${total > 0 ? Math.round((ms / total) * 100) : 0}%`;
+/** Compact thousands label (467000 → "467k"). */
+const kLabel = (n: number): string => (n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`);
+
 /**
- * Spike D — run the blob→normalized migration on the REAL app DB and validate it.
- * Additive + idempotent (creates + populates the normalized tables; never touches
- * the legacy blob tables), so it's safe to run repeatedly. Reports source vs
- * migrated counts, keyset read + A–Z seek latency, and EXPLAIN QUERY PLAN (proving
- * index seeks, not table scans).
+ * Spike D — COLD + timed blob→normalized migration on the REAL app DB, then
+ * validate it. Resets the normalized schema first so every run measures a true
+ * first-run cost (not an idempotent no-op) — REPEATABLE, so batch-size / async
+ * changes can be compared run-to-run. Reports a per-phase breakdown (read / parse
+ * / derive / write) so we can see where the time goes, throughput + extrapolation
+ * to large libraries, then count validation + keyset/EXPLAIN checks.
  */
 export async function runSpikeD(log: Log): Promise<void> {
-  log('=== Spike D: normalized migration + validation (REAL DB) ===');
+  log('=== Spike D: COLD + timed normalized migration (REAL DB) ===');
   // Lazy-require so this dev-only module never pulls the DB/migration/repository
   // into the app's boot import graph (the db-spikes route is eagerly loaded).
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  /* eslint-disable @typescript-eslint/no-var-requires */
   const { getDb } = require('../../store/persistence/db') as typeof import('../../store/persistence/db');
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { migrateBlobsToNormalized } = require('../migrateNormalized') as typeof import('../migrateNormalized');
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { migrateBlobsToNormalized, checkpointWalAsync } = require('../migrateNormalized') as typeof import('../migrateNormalized');
+  const { resetNormalizedSchema } = require('../createNormalizedTables') as typeof import('../createNormalizedTables');
   const { countAlbums } = require('../repository/albums') as typeof import('../repository/albums');
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { countSongs, listSongs } = require('../repository/songs') as typeof import('../repository/songs');
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { getCoercedColumns } = require('../repository/core') as typeof import('../repository/core');
+  const { countArtists } = require('../repository/artists') as typeof import('../repository/artists');
+  const { countPlaylists } = require('../repository/playlists') as typeof import('../repository/playlists');
+  const { getCoercedColumns, setChunkProfiler } = require('../repository/core') as typeof import('../repository/core');
+  /* eslint-enable @typescript-eslint/no-var-requires */
 
   const db = getDb();
   if (!db) {
@@ -326,22 +333,75 @@ export async function runSpikeD(log: Log): Promise<void> {
   const srcSongs = db.getFirstSync<{ n: number }>('SELECT COUNT(*) AS n FROM song_index')?.n ?? 0;
   log(`source blobs: library_albums=${srcAlbums}, song_index=${srcSongs}`);
 
-  log('migrating (keyset-paged, chunked)…');
-  const t0 = now();
-  const result = await migrateBlobsToNormalized(db, (m) => log(`  ${m}`));
-  log(`migration done in ${since(t0)}`);
-  log(`  albums: ${result.albums.migrated}/${result.albums.source} migrated, ${result.albums.skipped} skipped`);
-  log(`  songs:  ${result.songs.migrated}/${result.songs.source} migrated, ${result.songs.skipped} skipped`);
-  const coerced = getCoercedColumns();
-  log(`  coerced columns (type↔reality mismatches to fix at mapper): ${coerced.length ? coerced.join(', ') : 'none ✓'}`);
+  // COLD: drop + recreate normalized tables so we time a genuine first run.
+  log('resetting normalized schema (cold run)…');
+  resetNormalizedSchema(db);
 
+  // Accumulate the derive-vs-write split from every bulk-upsert chunk.
+  const profile = { readMs: 0, parseMs: 0 };
+  let deriveMs = 0;
+  let writeMs = 0;
+  let chunks = 0;
+  setChunkProfiler((t) => {
+    deriveMs += t.deriveMs;
+    writeMs += t.writeMs;
+    chunks += 1;
+  });
+
+  log('migrating (keyset-paged, chunked, async executeBatch)…');
+  const t0 = now();
+  let result;
+  try {
+    result = await migrateBlobsToNormalized(db, undefined, profile);
+  } finally {
+    setChunkProfiler(null);
+  }
+  const totalMs = now() - t0;
+  log(`migration done in ${Math.round(totalMs)}ms`);
+  log(`  albums:    ${result.albums.migrated}/${result.albums.source} (${result.albums.skipped} skipped)`);
+  log(`  songs:     ${result.songs.migrated}/${result.songs.source} (${result.songs.skipped} skipped)`);
+  log(`  artists:   ${result.artists.migrated} (${result.artists.source} in library KV)`);
+  log(`  playlists: ${result.playlists.migrated} (${result.playlists.source} in library KV)`);
+
+  // --- Phase breakdown: where did the wall-clock go? ---
+  const accounted = profile.readMs + profile.parseMs + deriveMs + writeMs;
+  const otherMs = Math.max(0, totalMs - accounted);
+  log('phase breakdown (where the time went):');
+  log(`  read   (SQL blobs):          ${Math.round(profile.readMs)}ms (${pctOf(profile.readMs, totalMs)})`);
+  log(`  parse  (JSON.parse):         ${Math.round(profile.parseMs)}ms (${pctOf(profile.parseMs, totalMs)})`);
+  log(`  derive (rows + norm + dmeta): ${Math.round(deriveMs)}ms (${pctOf(deriveMs, totalMs)})`);
+  log(`  write  (executeBatch async): ${Math.round(writeMs)}ms (${pctOf(writeMs, totalMs)})`);
+  log(`  other  (checkpoint + yields): ${Math.round(otherMs)}ms (${pctOf(otherMs, totalMs)})`);
+
+  // --- Throughput + extrapolation to large libraries ---
+  const totalItems = result.albums.migrated + result.songs.migrated;
+  const itemsPerSec = totalMs > 0 ? totalItems / (totalMs / 1000) : 0;
+  log(`throughput: ${Math.round(itemsPerSec)} rows/sec across ${chunks} chunks (${totalItems} rows)`);
+  const songsPerSec = totalMs > 0 ? result.songs.migrated / (totalMs / 1000) : 0;
+  if (songsPerSec > 0) {
+    for (const target of [100_000, 467_000, 1_000_000]) {
+      log(`  projected @ ${kLabel(target)} songs: ~${Math.round(target / songsPerSec)}s`);
+    }
+  }
+
+  // The WAL checkpoint is DEFERRED (async, background) so it never blocks the
+  // "migration done" time above — run + time it separately here to show its cost.
+  const ckMs = await checkpointWalAsync(db);
+  log(`background WAL checkpoint (TRUNCATE, deferred): ${Math.round(ckMs)}ms — runs AFTER completion, off the JS thread, does not block the user`);
+
+  const coerced = getCoercedColumns();
+  log(`coerced columns (type↔reality mismatches to fix at mapper): ${coerced.length ? coerced.join(', ') : 'none ✓'}`);
+
+  // --- Count validation ---
   const nAlbums = await countAlbums(db);
   const nSongs = await countSongs(db);
-  log(`normalized counts: albums=${nAlbums}, songs=${nSongs}`);
+  const nArtists = await countArtists(db);
+  const nPlaylists = await countPlaylists(db);
+  log(`normalized counts: albums=${nAlbums}, songs=${nSongs}, artists=${nArtists}, playlists=${nPlaylists}`);
   log(`  albums match source? ${nAlbums === srcAlbums ? 'YES ✓' : `NO ✗ (${nAlbums} vs ${srcAlbums})`}`);
   log(`  songs match (source - skipped)? ${nSongs === srcSongs - result.songs.skipped ? 'YES ✓' : `NO ✗ (${nSongs} vs ${srcSongs - result.songs.skipped})`}`);
 
-  // Keyset read latency on the real, populated songs table.
+  // --- Keyset read latency on the real, populated songs table ---
   const r0 = now();
   const first = await listSongs(db, { limit: 100 });
   log(`first keyset page (100 songs) in ${since(r0)} — e.g. "${first.rows[0]?.title ?? '(empty)'}"`);
@@ -362,5 +422,312 @@ export async function runSpikeD(log: Log): Promise<void> {
     log(`EXPLAIN failed: ${String(e)}`);
   }
 
-  log('Spike D done. PASS if counts match + reads are fast (~single-digit ms) + EXPLAIN shows an index seek.');
+  log('Spike D done. Re-run to compare after a tuning change; PASS if counts match + reads fast + index seek.');
+}
+
+/** Spike E page size — sweep this to find the memory/throughput sweet spot. */
+const SPIKE_E_PAGE = 1000;
+/** Cap the spike to a bounded slice so it stays a quick, repeatable measurement. */
+const SPIKE_E_MAX_PAGES = 25;
+
+/**
+ * Spike E — REMOTE library-sync timing (network → normalized). Instruments the
+ * real remote-fetch path: `searchSongsPage` (the exact call the production song
+ * sync uses) → `upsertSongs` (the normalized write), with a per-phase breakdown
+ * (fetch+parse / derive / write) so we can SEE the bottleneck and tune the remote
+ * case empirically. Cold (resets normalized first → fresh inserts), bounded, and
+ * repeatable. Answers "what takes the most time" and the double-metaphone-load
+ * question directly (derive = the norm + double-metaphone work).
+ */
+export async function runSpikeE(log: Log): Promise<void> {
+  log('=== Spike E: REMOTE library-sync timing (network → normalized) ===');
+  /* eslint-disable @typescript-eslint/no-var-requires */
+  const { getDb } = require('../../store/persistence/db') as typeof import('../../store/persistence/db');
+  const { searchSongsPage } = require('../../services/subsonicService') as typeof import('../../services/subsonicService');
+  const { upsertSongs, countSongs } = require('../repository/songs') as typeof import('../repository/songs');
+  const { setChunkProfiler } = require('../repository/core') as typeof import('../repository/core');
+  const { resetNormalizedSchema } = require('../createNormalizedTables') as typeof import('../createNormalizedTables');
+  /* eslint-enable @typescript-eslint/no-var-requires */
+
+  const db = getDb();
+  if (!db) {
+    log('DB unavailable — cannot run.');
+    return;
+  }
+
+  log('resetting normalized schema (cold — measures fresh inserts)…');
+  resetNormalizedSchema(db);
+
+  let deriveMs = 0;
+  let writeMs = 0;
+  setChunkProfiler((t) => {
+    deriveMs += t.deriveMs;
+    writeMs += t.writeMs;
+  });
+
+  let fetchMs = 0;
+  let totalSongs = 0;
+  let pages = 0;
+  let offset = 0;
+  let missingAlbumId = 0;
+  const t0 = now();
+  try {
+    for (let p = 0; p < SPIKE_E_MAX_PAGES; p++) {
+      const f0 = now();
+      // eslint-disable-next-line no-await-in-loop
+      const page = await searchSongsPage(SPIKE_E_PAGE, offset);
+      fetchMs += now() - f0;
+      if (page.length === 0) break;
+      missingAlbumId += page.filter((s) => !s.albumId).length;
+      // eslint-disable-next-line no-await-in-loop
+      await upsertSongs(db, page);
+      totalSongs += page.length;
+      offset += page.length;
+      pages += 1;
+      log(`  page ${pages}: +${page.length} songs (total ${totalSongs})`);
+    }
+  } catch (e) {
+    log(`Spike E fetch/write error: ${String(e)}`);
+  } finally {
+    setChunkProfiler(null);
+  }
+  const totalMs = now() - t0;
+
+  if (totalSongs === 0) {
+    log('Spike E: 0 songs fetched — is the app logged in and the server reachable? (searchSongsPage returned empty)');
+    return;
+  }
+
+  const per1k = (ms: number): string => `${Math.round((ms / totalSongs) * 1000)}ms/1k`;
+  const accounted = fetchMs + deriveMs + writeMs;
+  const otherMs = Math.max(0, totalMs - accounted);
+  log(`fetched ${totalSongs} songs across ${pages} page(s) of ${SPIKE_E_PAGE} in ${Math.round(totalMs)}ms`);
+  log('phase breakdown (where the time went):');
+  log(`  fetch+parse (network):        ${Math.round(fetchMs)}ms (${pctOf(fetchMs, totalMs)}, ${per1k(fetchMs)})`);
+  log(`  derive (rows + norm + dmeta): ${Math.round(deriveMs)}ms (${pctOf(deriveMs, totalMs)}, ${per1k(deriveMs)})`);
+  log(`  write (executeBatch async):   ${Math.round(writeMs)}ms (${pctOf(writeMs, totalMs)}, ${per1k(writeMs)})`);
+  log(`  other (yield/overhead):       ${Math.round(otherMs)}ms (${pctOf(otherMs, totalMs)})`);
+  log(`  songs missing albumId: ${missingAlbumId} (fast-path safety check — >1% forces the basic walk)`);
+
+  const songsPerSec = totalMs > 0 ? totalSongs / (totalMs / 1000) : 0;
+  log(`throughput: ${Math.round(songsPerSec)} songs/sec (incl. network)`);
+  if (songsPerSec > 0) {
+    log(`  projected full remote sync @ 200k songs: ~${Math.round(200_000 / songsPerSec)}s; @ 1M: ~${Math.round(1_000_000 / songsPerSec)}s`);
+  }
+  log(`normalized songs now: ${await countSongs(db)}`);
+  log(`Spike E done. Bottleneck = the biggest phase above. Sweep SPIKE_E_PAGE (now ${SPIKE_E_PAGE}) to tune batch size.`);
+}
+
+/**
+ * Spike F — split the "derive" cost (the ~25-48% of every sync/migration that
+ * Spikes D/E lump together) into its two parts, so we can decide the FTS5 tradeoff
+ * with real numbers and NO native rebuild:
+ *   - normalize / normalizeArtist  → the `norm_*` columns → REPLACEABLE by FTS5's
+ *     unicode61+trigram tokenizer (accent-fold + substring, done in C at insert).
+ *   - metaphoneKey (double-metaphone) → the `dmeta_*` columns → the phonetic tier
+ *     FTS5 can't do → DROPPABLE (loses voice "corn"→"Korn" recall until re-added).
+ * Times each over a real title/artist sample and reports the split + the redundant
+ * re-normalize inside metaphoneKey.
+ */
+export async function runSpikeF(log: Log): Promise<void> {
+  log('=== Spike F: search-derive cost split (normalize vs double-metaphone) ===');
+  /* eslint-disable @typescript-eslint/no-var-requires */
+  const { getDb } = require('../../store/persistence/db') as typeof import('../../store/persistence/db');
+  const { normalize, normalizeArtist, metaphoneKey, tokenize } =
+    require('../../services/searchMatch') as typeof import('../../services/searchMatch');
+  const { doubleMetaphone } = require('double-metaphone') as typeof import('double-metaphone');
+  /* eslint-enable @typescript-eslint/no-var-requires */
+
+  const db = getDb();
+  if (!db) {
+    log('DB unavailable — cannot run.');
+    return;
+  }
+
+  const SAMPLE = 20000;
+  const rows = await db.getAllAsync<{ title: string | null; artist: string | null }>(
+    "SELECT json_extract(raw_json,'$.title') AS title, json_extract(raw_json,'$.artist') AS artist FROM song_index LIMIT ?",
+    [SAMPLE],
+  );
+  const n = rows.length;
+  if (n === 0) {
+    log('no rows in song_index to sample — run a library sync first.');
+    return;
+  }
+  log(`sampled ${n} songs from song_index`);
+
+  let sink = 0; // consume results so nothing is optimized away
+  const per1k = (ms: number): string => `${Math.round((ms / n) * 1000)}ms/1k`;
+  const timeIt = (label: string, fn: (r: { title: string | null; artist: string | null }) => number): number => {
+    const t0 = now();
+    for (const r of rows) sink += fn(r);
+    const ms = now() - t0;
+    log(`  ${label}: ${Math.round(ms)}ms (${per1k(ms)})`);
+    return ms;
+  };
+
+  const normTitleMs = timeIt('normalize(title)', (r) => normalize(r.title).length);
+  const normArtistMs = timeIt('normalizeArtist(artist)', (r) => normalizeArtist(r.artist).length);
+  const dmetaTitleMs = timeIt('metaphoneKey(title) [re-norm + dmeta]', (r) => metaphoneKey(r.title).length);
+  const dmetaArtistMs = timeIt('metaphoneKey(artist) [re-norm + dmeta]', (r) => metaphoneKey(r.artist).length);
+
+  // Pure phonetic cost: double-metaphone over already-normalized tokens (no re-normalize).
+  const preTok = rows.map((r) => tokenize(r.title));
+  const dmPure0 = now();
+  for (const toks of preTok) for (const t of toks) sink += doubleMetaphone(t)[0].length;
+  const dmPureMs = now() - dmPure0;
+  log(`  double-metaphone ONLY (pre-normalized title tokens): ${Math.round(dmPureMs)}ms (${per1k(dmPureMs)})`);
+
+  const normWork = normTitleMs + normArtistMs;
+  const dmetaWork = dmetaTitleMs + dmetaArtistMs;
+  const total = normWork + dmetaWork;
+  log('splits (of per-row search-derive work):');
+  log(`  normalize (FTS5-replaceable): ${Math.round(normWork)}ms (${pctOf(normWork, total)})`);
+  log(`  metaphoneKey (droppable):     ${Math.round(dmetaWork)}ms (${pctOf(dmetaWork, total)})`);
+  log(`⇒ dropping double-metaphone removes ~${pctOf(dmetaWork, total)} of search-derive.`);
+  log(`⇒ FTS5 (unicode61+trigram) replaces the norm work at insert time (native C), removing the rest.`);
+  const redundant = Math.max(0, dmetaWork - dmPureMs);
+  log(`note: pure double-metaphone is only ${Math.round(dmPureMs)}ms — ~${pctOf(redundant, dmetaWork)} of metaphoneKey is a REDUNDANT re-normalize (cheap win: derive dmeta from the already-normalized tokens).`);
+  if (sink < 0) log(''); // keep sink live
+  log('Spike F done.');
+}
+
+/** Row scales to measure infix latency at. Seeds incrementally up to the last. */
+const SPIKE_G_SCALES = [50_000, 200_000, 500_000, 1_000_000];
+/** Word pool for synthetic norm_title/norm_artist (music-ish, deterministic). */
+const SPIKE_G_WORDS = [
+  'love', 'night', 'dream', 'heart', 'fire', 'blue', 'sky', 'road', 'home', 'time',
+  'light', 'dark', 'rain', 'sun', 'moon', 'star', 'sea', 'wind', 'gold', 'soul',
+  'life', 'world', 'song', 'dance', 'free', 'lost', 'wild', 'high', 'slow', 'cold',
+  'warm', 'deep', 'long', 'black', 'white', 'red', 'green', 'river', 'city', 'story',
+  'ghost', 'angel', 'devil', 'king', 'queen', 'child', 'stone', 'glass', 'iron', 'shadow',
+];
+
+/**
+ * Spike G — prove (or disprove) the infix-at-scale theory that motivates FTS5.
+ * Our infix search tier is `norm_* LIKE '%x%'`, which cannot use an index and
+ * scans the whole table. This seeds a lean synthetic table up to 1M rows and
+ * measures infix latency at each scale — worst case is a RARE term (0 matches),
+ * which forces a full scan (a common term short-circuits at LIMIT) — against
+ * index-backed prefix (`LIKE 'x%'`) as the baseline, with EXPLAIN to show what
+ * scans vs seeks. If infix stays interactive at 1M, the custom search is fine;
+ * if it balloons, a trigram column / FTS5 is justified. Throwaway DB, no rebuild.
+ */
+export async function runSpikeG(log: Log): Promise<void> {
+  log('=== Spike G: infix LIKE %x% latency vs scale (the FTS5 infix question) ===');
+  const OP = loadOpSqlite(log);
+  if (!OP) return;
+  const dir = dbDir(log);
+
+  let db: SpikeDb | null = null;
+  try {
+    db = OP.open({ name: 'spikeG.db', location: dir });
+  } catch (e) {
+    log(`Spike G FAIL: open threw: ${String(e)}`);
+    return;
+  }
+
+  // Inline write mutex (mirror serializeDbWrite): one batch in flight at a time.
+  let chain: Promise<unknown> = Promise.resolve();
+  const serialize = <T,>(task: () => Promise<T>): Promise<T> => {
+    const run = chain.then(task, task);
+    chain = run.then(() => undefined, () => undefined);
+    return run;
+  };
+
+  const P = SPIKE_G_WORDS.length;
+  const w = (i: number): string => SPIKE_G_WORDS[((i % P) + P) % P];
+  const titleFor = (i: number): string => `${w(i)} ${w(i * 7 + 1)} ${w(i * 13 + 2)}`;
+  const artistFor = (i: number): string => `${w(i * 3 + 1)} ${w(i * 17 + 3)}`;
+  const commonTerm = SPIKE_G_WORDS[0]; // appears in many rows → early LIMIT short-circuit
+  const rareTerm = 'zzqx'; // appears in none → worst-case full scan
+
+  const infixSql = 'SELECT id FROM g WHERE norm_title LIKE ? OR norm_artist LIKE ? LIMIT 60';
+  const prefixSql = 'SELECT id FROM g WHERE norm_title LIKE ? ORDER BY norm_title LIMIT 60';
+  const measure = async (sql: string, params: unknown[], runs = 8): Promise<number> => {
+    const lat: number[] = [];
+    for (let k = 0; k < runs; k++) {
+      const t0 = now();
+      // eslint-disable-next-line no-await-in-loop
+      await db!.execute(sql, params);
+      lat.push(now() - t0);
+    }
+    return percentile(lat, 50);
+  };
+
+  try {
+    db.executeSync('PRAGMA journal_mode = WAL');
+    db.executeSync('PRAGMA synchronous = NORMAL');
+    db.executeSync('PRAGMA temp_store = MEMORY');
+    db.executeSync('PRAGMA cache_size = -32000');
+    db.executeSync('DROP TABLE IF EXISTS g');
+    db.executeSync('CREATE TABLE g (id TEXT PRIMARY KEY, norm_title TEXT, norm_artist TEXT)');
+    db.executeSync('CREATE INDEX idx_g_title ON g (norm_title)'); // serves prefix, NOT infix
+
+    const BATCH = 2000;
+    let seeded = 0;
+    for (const scale of SPIKE_G_SCALES) {
+      const s0 = now();
+      while (seeded < scale) {
+        const to = Math.min(seeded + BATCH, scale);
+        const cmds: Array<[string, unknown[]]> = [];
+        for (let i = seeded; i < to; i++) cmds.push(['INSERT INTO g VALUES (?, ?, ?)', [`g${i}`, titleFor(i), artistFor(i)]]);
+        // eslint-disable-next-line no-await-in-loop
+        await serialize(() => db!.executeBatch(cmds));
+        seeded = to;
+      }
+      log(`seeded to ${kLabel(scale)} rows in ${since(s0)}`);
+
+      // eslint-disable-next-line no-await-in-loop
+      const prefixP50 = await measure(prefixSql, [`${commonTerm}%`]);
+      // eslint-disable-next-line no-await-in-loop
+      const infixCommon = await measure(infixSql, [`%${commonTerm}%`, `%${commonTerm}%`]);
+      // eslint-disable-next-line no-await-in-loop
+      const infixRare = await measure(infixSql, [`%${rareTerm}%`, `%${rareTerm}%`]);
+      log(
+        `@ ${kLabel(scale)}: prefix(idx)=${prefixP50}ms | infix common(early-stop)=${infixCommon}ms | ` +
+          `infix RARE(full scan)=${infixRare}ms`,
+      );
+    }
+
+    // Prove what scans vs seeks.
+    const plan = (sql: string, params: unknown[]): string =>
+      db!.executeSync(`EXPLAIN QUERY PLAN ${sql}`, params).rows.map((r) => String(r.detail)).join(' | ');
+    log(`EXPLAIN infix:  ${plan(infixSql, ['%x%', '%x%'])}`);
+    log(`EXPLAIN prefix: ${plan(prefixSql, ['x%'])}`);
+    log('Spike G done. If infix RARE(full scan) stays interactive (~<100ms) at 1M → custom search is fine; if it balloons → a trigram column / FTS5 is justified.');
+  } catch (e) {
+    log(`Spike G FAIL: ${String(e)}`);
+  } finally {
+    try {
+      db?.executeSync('DROP TABLE IF EXISTS g');
+      db?.close();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/**
+ * Spike H — empty the normalized tables so the next app RELOAD re-runs the BOOT
+ * migration (its drift check will see blobs > normalized and re-populate them with
+ * progress on the library-sync card + banner). Use this to watch the real
+ * background migration on a device whose tables were already filled by Spike D.
+ */
+export async function runSpikeH(log: Log): Promise<void> {
+  log('=== Spike H: reset normalized tables (for a boot-migration test) ===');
+  /* eslint-disable @typescript-eslint/no-var-requires */
+  const { getDb } = require('../../store/persistence/db') as typeof import('../../store/persistence/db');
+  const { resetNormalizedSchema } = require('../createNormalizedTables') as typeof import('../createNormalizedTables');
+  /* eslint-enable @typescript-eslint/no-var-requires */
+  const db = getDb();
+  if (!db) {
+    log('DB unavailable — cannot run.');
+    return;
+  }
+  resetNormalizedSchema(db);
+  log('normalized tables dropped + recreated EMPTY.');
+  log('→ Reload the app. The background boot migration will detect the drift and');
+  log('  re-populate them, showing "Upgrading library…" on the banner + a progress');
+  log('  bar + % on Settings → Library data.');
 }

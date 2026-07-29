@@ -1,13 +1,240 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
 import { PlaylistListView, type PlaylistLayout } from '../components/PlaylistListView';
 import { useFetchOnHydrated } from '../hooks/useFetchOnHydrated';
 import { onPullToRefresh } from '../services/dataSyncService';
+import {
+  countPlaylists,
+  listPlaylists,
+  listPlaylistsBefore,
+  playlistCursorOf,
+  playlistListRowToPlaylist,
+  type PlaylistListRow,
+} from '../db/repository/playlists';
+import { type Cursor } from '../db/repository/core';
+import { getDb } from '../store/persistence/db';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { playlistLibraryStore } from '../store/playlistLibraryStore';
+import { type IoniconsName } from '../utils/iconNames';
+
+const PAGE = 120;
+/** Alphabet-scroller letters — all active in keyset mode (the loaded window can't
+ *  reveal which letters exist; a tap on an empty letter seeks to the next one). */
+const ALL_LETTERS = new Set<string>([
+  '#',
+  ...Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i)),
+]);
+
+interface EmptyProps {
+  emptyIcon?: IoniconsName;
+  emptyMessage?: string;
+  emptySubtitle?: string;
+}
+
+/**
+ * Main playlist browse — reads bounded KEYSET pages from the normalized `playlists`
+ * table. Playlists fetch on demand (`fetchAllPlaylists`, which dual-writes normalized);
+ * on a fresh library the table is empty on first browse, so we trigger the fetch and
+ * reload the window when it lands (via the store's `lastFetchedAt`).
+ */
+function KeysetPlaylistList({
+  layout,
+  contentInsetTop,
+  emptyProps,
+}: {
+  layout: PlaylistLayout;
+  contentInsetTop: number;
+  emptyProps: EmptyProps;
+}) {
+  const [rows, setRows] = useState<PlaylistListRow[]>([]);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [seekTick, setSeekTick] = useState(0);
+  const cursorRef = useRef<Cursor | null>(null); // forward (end)
+  const prevCursorRef = useRef<Cursor | null>(null); // backward (start)
+  const doneRef = useRef(false);
+  const busyRef = useRef(false);
+
+  const playlists = useMemo(() => rows.map(playlistListRowToPlaylist), [rows]);
+
+  const loadFirstPage = useCallback(async () => {
+    busyRef.current = true;
+    try {
+      const db = getDb();
+      if (!db) return;
+      const page = await listPlaylists(db, { cursor: null, limit: PAGE });
+      cursorRef.current = page.nextCursor;
+      doneRef.current = !page.nextCursor;
+      prevCursorRef.current = page.rows.length > 0 ? playlistCursorOf(page.rows[0]) : null;
+      setRows(page.rows);
+    } finally {
+      busyRef.current = false;
+      setInitialLoading(false);
+    }
+  }, []);
+
+  const loadMore = useCallback(async () => {
+    if (busyRef.current || doneRef.current) return;
+    busyRef.current = true;
+    try {
+      const db = getDb();
+      if (!db) return;
+      const page = await listPlaylists(db, { cursor: cursorRef.current, limit: PAGE });
+      cursorRef.current = page.nextCursor;
+      if (!page.nextCursor) doneRef.current = true;
+      setRows((r) => [...r, ...page.rows]);
+    } finally {
+      busyRef.current = false;
+    }
+  }, []);
+
+  const loadPrevious = useCallback(async () => {
+    const before = prevCursorRef.current;
+    if (busyRef.current || !before) return;
+    busyRef.current = true;
+    try {
+      const db = getDb();
+      if (!db) return;
+      const page = await listPlaylistsBefore(db, { before, limit: PAGE });
+      prevCursorRef.current = page.prevCursor;
+      if (page.rows.length > 0) setRows((r) => [...page.rows, ...r]);
+    } finally {
+      busyRef.current = false;
+    }
+  }, []);
+
+  const seekLetter = useCallback(async (letter: string) => {
+    busyRef.current = true;
+    try {
+      const db = getDb();
+      if (!db) return;
+      const page = await listPlaylists(db, { letter, limit: PAGE });
+      cursorRef.current = page.nextCursor;
+      doneRef.current = !page.nextCursor;
+      prevCursorRef.current = page.rows.length > 0 ? playlistCursorOf(page.rows[0]) : null;
+      setRows(page.rows);
+      setSeekTick((t) => t + 1); // triggers scroll-to-top in PlaylistListView
+    } finally {
+      busyRef.current = false;
+    }
+  }, []);
+
+  // Initial window load on mount.
+  useEffect(() => {
+    void loadFirstPage();
+  }, [loadFirstPage]);
+
+  // Fetch-on-browse (once, post-hydration): if the normalized table is empty and
+  // nothing is in flight, pull playlists from the server (which dual-writes normalized
+  // + bumps lastFetchedAt → the reload effect below repaints the window).
+  useFetchOnHydrated(playlistLibraryStore, () => {
+    void (async () => {
+      const db = getDb();
+      const s = playlistLibraryStore.getState();
+      if (db && !s.loading && (await countPlaylists(db)) === 0) void s.fetchAllPlaylists();
+    })();
+  });
+
+  // Reload the window when a fetch lands. Skip the initial (persisted) value so this
+  // only fires on a genuine post-mount fetch completion.
+  const lastFetchedAt = playlistLibraryStore((s) => s.lastFetchedAt);
+  const fetchLoading = playlistLibraryStore((s) => s.loading);
+  const seenFetchRef = useRef(lastFetchedAt);
+  useEffect(() => {
+    if (lastFetchedAt === seenFetchRef.current) return;
+    seenFetchRef.current = lastFetchedAt;
+    cursorRef.current = null;
+    prevCursorRef.current = null;
+    doneRef.current = false;
+    void loadFirstPage();
+  }, [lastFetchedAt, loadFirstPage]);
+
+  // Spinner (not empty placeholder) until we have a DEFINITIVE result: the first
+  // keyset read, a fetch in flight, or a library never fetched yet.
+  const showLoading =
+    initialLoading || (rows.length === 0 && (fetchLoading || lastFetchedAt == null));
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await onPullToRefresh('playlists');
+      cursorRef.current = null;
+      prevCursorRef.current = null;
+      doneRef.current = false;
+      await loadFirstPage();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadFirstPage]);
+
+  return (
+    <PlaylistListView
+      playlists={playlists}
+      layout={layout}
+      loading={showLoading}
+      showAlphabetScroller
+      activeLetters={ALL_LETTERS}
+      onEndReached={loadMore}
+      onStartReached={loadPrevious}
+      onSeekLetter={seekLetter}
+      onRefresh={handleRefresh}
+      refreshing={refreshing}
+      scrollToTopTrigger={`seek:${seekTick}`}
+      contentInsetTop={contentInsetTop}
+      {...emptyProps}
+    />
+  );
+}
+
+/** Downloaded filter still reads the in-memory array (small set; keyset WHERE-filtering
+ *  is a follow-up). Unchanged from the pre-cutover screen. */
+function FilteredPlaylistList({
+  layout,
+  contentInsetTop,
+  emptyProps,
+}: {
+  layout: PlaylistLayout;
+  contentInsetTop: number;
+  emptyProps: EmptyProps;
+}) {
+  const playlists = playlistLibraryStore((s) => s.playlists);
+  const loading = playlistLibraryStore((s) => s.loading);
+  const error = playlistLibraryStore((s) => s.error);
+  const cachedItems = musicCacheStore((s) => s.cachedItems);
+
+  const filteredPlaylists = useMemo(
+    () => playlists.filter((p) => p.id in cachedItems),
+    [playlists, cachedItems],
+  );
+
+  const [refreshing, setRefreshing] = useState(false);
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await onPullToRefresh('playlists');
+    } finally {
+      setRefreshing(false);
+    }
+  }, []);
+
+  return (
+    <PlaylistListView
+      playlists={filteredPlaylists}
+      layout={layout}
+      loading={loading}
+      error={error}
+      onRefresh={handleRefresh}
+      refreshing={refreshing}
+      showAlphabetScroller
+      scrollToTopTrigger="downloaded"
+      contentInsetTop={contentInsetTop}
+      {...emptyProps}
+    />
+  );
+}
 
 export function PlaylistListScreen({
   layout = 'list',
@@ -20,37 +247,10 @@ export function PlaylistListScreen({
 }) {
   const { t } = useTranslation();
   const offlineMode = offlineModeStore((s) => s.offlineMode);
-  const playlists = playlistLibraryStore((s) => s.playlists);
-  const loading = playlistLibraryStore((s) => s.loading);
-  const error = playlistLibraryStore((s) => s.error);
 
-  const cachedItems = musicCacheStore((s) => s.cachedItems);
-
-  // Fetch only after hydration so a cached library isn't re-fetched on mount.
-  useFetchOnHydrated(playlistLibraryStore, () => {
-    const s = playlistLibraryStore.getState();
-    if (s.playlists.length === 0 && !s.loading) s.fetchAllPlaylists();
-  });
-
-  const filteredPlaylists = useMemo(() => {
-    if (!downloadedOnly) return playlists;
-    return playlists.filter((p) => p.id in cachedItems);
-  }, [playlists, downloadedOnly, cachedItems]);
-
-  const [refreshing, setRefreshing] = useState(false);
-
-  const handleRefresh = useCallback(async () => {
-    setRefreshing(true);
-    try {
-      await onPullToRefresh('playlists');
-    } finally {
-      setRefreshing(false);
-    }
-  }, []);
-
-  const emptyProps = offlineMode
+  const emptyProps: EmptyProps = offlineMode
     ? {
-        emptyIcon: 'cloud-offline-outline' as const,
+        emptyIcon: 'cloud-offline-outline',
         emptyMessage: t('noDownloadedPlaylists'),
         emptySubtitle: t('noDownloadedPlaylistsSubtitle'),
       }
@@ -58,18 +258,19 @@ export function PlaylistListScreen({
 
   return (
     <View style={styles.container}>
-      <PlaylistListView
-        playlists={filteredPlaylists}
-        layout={layout}
-        loading={loading}
-        error={error}
-        onRefresh={handleRefresh}
-        refreshing={refreshing}
-        showAlphabetScroller
-        scrollToTopTrigger={`${downloadedOnly}`}
-        contentInsetTop={contentInsetTop}
-        {...emptyProps}
-      />
+      {downloadedOnly ? (
+        <FilteredPlaylistList
+          layout={layout}
+          contentInsetTop={contentInsetTop}
+          emptyProps={emptyProps}
+        />
+      ) : (
+        <KeysetPlaylistList
+          layout={layout}
+          contentInsetTop={contentInsetTop}
+          emptyProps={emptyProps}
+        />
+      )}
     </View>
   );
 }

@@ -25,6 +25,7 @@
  * replaces four per-module `__setDbForTests` exports.
  */
 import { openDbConnection, type InternalDb } from '@/db/client';
+import { ensureNormalizedSchema } from '@/db/createNormalizedTables';
 
 // The DB surface types (`InternalDb`, `RunResult`) live in the op-SQLite client
 // now; re-export so existing consumers importing them from this module keep working.
@@ -346,6 +347,11 @@ try {
   db.execSync(
     'CREATE INDEX IF NOT EXISTS idx_image_download_queue_cycle ON image_download_queue (cycle_id);',
   );
+
+  // Normalized model: create the songs/albums/artists/playlists tables + children at
+  // boot so the live sync can dual-write them (not just the one-time migration).
+  // Generated DDL, all CREATE ... IF NOT EXISTS — idempotent + FK-safe.
+  ensureNormalizedSchema(db);
 } catch (e) {
   db = null;
   initError = e instanceof Error ? e : new Error(String(e));

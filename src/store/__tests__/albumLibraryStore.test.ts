@@ -86,7 +86,7 @@ describe('albumLibraryStore — fast path (paged search3)', () => {
     await albumLibraryStore.getState().fetchAllAlbums();
 
     expect(mockProbe).toHaveBeenCalledTimes(1);
-    expect(mockSearchPage).toHaveBeenCalledWith(10000, 0);
+    expect(mockSearchPage).toHaveBeenCalledWith(1000, 0);
     const state = albumLibraryStore.getState();
     expect(state.loading).toBe(false);
     expect(state.albums[0].artist).toBe('A Artist');
@@ -135,7 +135,7 @@ describe('albumLibraryStore — fast path (paged search3)', () => {
     await albumLibraryStore.getState().fetchAllAlbums();
 
     expect(mockProbe).not.toHaveBeenCalled(); // strategy persisted → no re-probe
-    expect(mockSearchPage).toHaveBeenNthCalledWith(1, 10000, 2);
+    expect(mockSearchPage).toHaveBeenNthCalledWith(1, 1000, 2);
     expect(albumLibraryStore.getState().albums).toHaveLength(4);
     expect(syncStatusStore.getState().librarySyncComplete).toBe(true);
   });

@@ -45,6 +45,7 @@ export const BannerStack = memo(function BannerStack() {
   const isStorageFull = storageLimitStore((s) => s.isStorageFull);
   const syncPhase = syncStatusStore((s) => s.detailSyncPhase);
   const listSyncPhase = syncStatusStore((s) => s.librarySyncPhase);
+  const migrationPhase = syncStatusStore((s) => s.normalizedMigrationPhase);
   const imageQueueCycleId = imageDownloadQueueStore((s) => s.cycleId);
   const imageQueueTotal = imageDownloadQueueStore((s) => s.cycleTotal);
   const imageQueuePhase = imageDownloadQueueStore((s) => s.phase);
@@ -75,9 +76,12 @@ export const BannerStack = memo(function BannerStack() {
   if (isSyncError) return <LibrarySyncBanner />;
 
   // Album-LIST fetch progress (paginated `library_albums` sync) shares this
-  // slot — it runs before the detail walk, so surface it here too.
+  // slot — it runs before the detail walk, so surface it here too. The one-time
+  // blob→normalized migration ("Upgrading library…") also lives here; LibrarySyncBanner
+  // internally prioritizes its variant over the sync variants.
   if (
-    syncPhase === 'syncing'
+    migrationPhase === 'migrating'
+    || syncPhase === 'syncing'
     || syncPhase === 'paused-offline'
     || listSyncPhase === 'fetching'
     || listSyncPhase === 'paused-offline'

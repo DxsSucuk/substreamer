@@ -2,7 +2,9 @@ jest.mock('../persistence/kvStorage', () => require('../persistence/__mocks__/kv
 jest.mock('../../services/subsonicService');
 
 import { ensureCoverArtAuth, getAllArtists } from '../../services/subsonicService';
+import { countArtists } from '../../db/repository/artists';
 import { artistLibraryStore } from '../artistLibraryStore';
+import { getDb } from '../persistence/db';
 
 const mockGetAllArtists = getAllArtists as jest.MockedFunction<typeof getAllArtists>;
 
@@ -25,6 +27,18 @@ describe('artistLibraryStore', () => {
       expect(state.artists).toHaveLength(1);
       expect(state.loading).toBe(false);
       expect(state.lastFetchedAt).toBeGreaterThan(0);
+    });
+
+    it('also dual-writes the normalized artists table', async () => {
+      const db = getDb();
+      db?.runSync('DELETE FROM artists');
+      mockGetAllArtists.mockResolvedValue([makeArtist('ar1', 'Radiohead'), makeArtist('ar2', 'Muse')]);
+
+      await artistLibraryStore.getState().fetchAllArtists();
+
+      // Array still set (kept for search/filters) AND normalized populated (list source).
+      expect(artistLibraryStore.getState().artists).toHaveLength(2);
+      expect(await countArtists(db!)).toBe(2);
     });
 
     it('prevents duplicate fetches', async () => {

@@ -1,7 +1,7 @@
 /**
- * Tiered candidate generation for local fuzzy search over the normalized tables —
- * mirrors the legacy `searchIndexQueries.ts` but reads `songs`/`albums`/`artists`
- * (which carry the same `norm_*`/`dmeta_*` columns). Casts a wide, per-tier-capped
+ * Tiered candidate generation for local fuzzy search over the normalized
+ * `songs`/`albums`/`artists` tables (which carry `norm_*`/`dmeta_*` columns).
+ * The sole search-candidate source (replaced the old blob-based path). Casts a wide, per-tier-capped
  * net (exact → prefix → infix on `norm_*` → phonetic on `dmeta_*`), deduped in
  * tier-priority order. Returns lean list rows; the precision re-rank stays in
  * `searchService`. Callers pass the already-normalized query, its word tokens, and
@@ -142,3 +142,14 @@ export const searchArtists = (
     tokens,
     dmetaTokens,
   );
+
+/** True iff the normalized song table has any rows — the routing gate for "do we have
+ *  a local corpus to search, or go straight to the server?". Songs-only, matching the
+ *  legacy `song_index`-only gate it replaces. Best-effort: any error → no corpus. */
+export const hasLocalCorpus = async (db: InternalDb): Promise<boolean> => {
+  try {
+    return (await db.getFirstAsync<{ x: number }>('SELECT 1 AS x FROM songs LIMIT 1')) != null;
+  } catch {
+    return false;
+  }
+};

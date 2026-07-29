@@ -4,31 +4,58 @@ import type { Playlist } from 'subsonic-api';
 
 import type { InternalDb } from '../client';
 import { playlistAllowedUserRows, playlistRow } from './mappers';
-import { bulkUpsert, countRows, keysetPage, type Cursor, type Page } from './core';
+import { bulkUpsert, countRows, keysetPage, keysetPageBefore, type Cursor, type Page } from './core';
 
-/** Lean projection for list rendering. */
+/** Lean projection for list rendering (the fields PlaylistRow/PlaylistCard read:
+ *  name, cover art, song count, duration). `owner` is carried so offline search can
+ *  render a downloaded playlist as an album row with its owner on the artist line
+ *  (AlbumRow shows `artist ?? unknownArtist`). */
 export interface PlaylistListRow {
   id: string;
   name: string | null;
-  comment: string | null;
   cover_art: string | null;
   song_count: number | null;
+  duration: number | null;
   owner: string | null;
+  sort_title: string | null;
 }
 
-const PLAYLIST_LIST_COLS = '"id", "name", "comment", "cover_art", "song_count", "owner"';
+const PLAYLIST_LIST_COLS =
+  '"id", "name", "cover_art", "song_count", "duration", "owner", "sort_title"';
+
+/** Adapt a lean row to the `Playlist` shape the row/card components render.
+ *  Required scalars get harmless defaults (list rows never show created/changed). */
+export function playlistListRowToPlaylist(r: PlaylistListRow): Playlist {
+  return {
+    id: r.id,
+    name: r.name ?? '',
+    coverArt: r.cover_art ?? undefined,
+    songCount: r.song_count ?? 0,
+    duration: r.duration ?? 0,
+    owner: r.owner ?? undefined,
+    created: new Date(0),
+    changed: new Date(0),
+  } as Playlist;
+}
+
+/** Keyset cursor for a playlist row (name A–Z). */
+export const playlistCursorOf = (r: PlaylistListRow): Cursor => ({
+  sortKey: r.sort_title ?? '',
+  id: r.id,
+});
 
 export function upsertPlaylists(
   db: InternalDb,
   playlists: Playlist[],
   onProgress?: (done: number, total: number) => void,
+  articles?: readonly string[],
 ): Promise<number> {
   return bulkUpsert(
     db,
     {
       table: 'playlists',
       idOf: (p) => p.id,
-      rowOf: playlistRow,
+      rowOf: (p) => playlistRow(p, articles),
       children: [
         { table: 'playlist_allowed_users', parentCol: 'playlist_id', rows: playlistAllowedUserRows },
       ],
@@ -38,25 +65,58 @@ export function upsertPlaylists(
   );
 }
 
-/**
- * Keyset list of playlists ordered by name. (No A–Z letter seek: playlists have
- * no folded sort key and there are few of them, so plain cursor paging suffices.)
- */
+/** Delete one playlist row (children cascade). */
+export const deletePlaylist = (db: InternalDb, id: string): Promise<unknown> =>
+  db.runAsync('DELETE FROM playlists WHERE id = ?', [id]);
+
+/** Prune playlists no longer on the server after a full fetch. `keepIds` is passed
+ *  as a JSON array via `json_each` to dodge the SQLite bound-variable limit. A no-op
+ *  keep-set (empty) would delete everything, so the caller guards that. */
+export const deletePlaylistsNotIn = (db: InternalDb, keepIds: string[]): Promise<unknown> =>
+  db.runAsync('DELETE FROM playlists WHERE id NOT IN (SELECT value FROM json_each(?))', [
+    JSON.stringify(keepIds),
+  ]);
+
+/** Keyset A–Z list of playlists (article-stripped `sort_title`), with letter seek —
+ *  consistent with albums/songs/artists. */
 export function listPlaylists(
   db: InternalDb,
-  opts: { cursor?: Cursor | null; limit: number },
+  opts: { cursor?: Cursor | null; letter?: string | null; limit: number },
 ): Promise<Page<PlaylistListRow>> {
   return keysetPage<PlaylistListRow>(db, {
     table: 'playlists',
-    sortCol: 'name',
+    sortCol: 'sort_title',
     columns: PLAYLIST_LIST_COLS,
     limit: opts.limit,
     cursor: opts.cursor,
-    sortKeyOf: (r) => r.name ?? '',
+    letter: opts.letter,
+    sortKeyOf: (r) => r.sort_title ?? '',
+  });
+}
+
+export function listPlaylistsBefore(
+  db: InternalDb,
+  opts: { before: Cursor; limit: number },
+): Promise<{ rows: PlaylistListRow[]; prevCursor: Cursor | null }> {
+  return keysetPageBefore<PlaylistListRow>(db, {
+    table: 'playlists',
+    sortCol: 'sort_title',
+    columns: PLAYLIST_LIST_COLS,
+    limit: opts.limit,
+    before: opts.before,
+    sortKeyOf: (r) => r.sort_title ?? '',
   });
 }
 
 export const countPlaylists = (db: InternalDb): Promise<number> => countRows(db, 'playlists');
+
+/** Lean rows for a set of playlist ids (unordered) — the downloaded set for offline
+ *  search. Ids pass as a JSON array via `json_each`; empty id set → no rows. */
+export const listPlaylistsByIds = (db: InternalDb, ids: string[]): Promise<PlaylistListRow[]> =>
+  db.getAllAsync<PlaylistListRow>(
+    `SELECT ${PLAYLIST_LIST_COLS} FROM playlists WHERE id IN (SELECT value FROM json_each(?))`,
+    [JSON.stringify(ids)],
+  );
 
 export const getPlaylist = (db: InternalDb, id: string): Promise<Record<string, unknown> | null> =>
   db.getFirstAsync('SELECT * FROM playlists WHERE id = ?', [id]);

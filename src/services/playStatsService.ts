@@ -15,10 +15,13 @@
  * go stale.
  */
 
+import { bumpAlbumPlayStats } from '../db/repository/albums';
+import { bumpSongPlayStats } from '../db/repository/songs';
 import { albumDetailStore } from '../store/albumDetailStore';
 import { albumLibraryStore } from '../store/albumLibraryStore';
 import { artistDetailStore } from '../store/artistDetailStore';
 import { favoritesStore } from '../store/favoritesStore';
+import { getDb } from '../store/persistence/db';
 import { playlistDetailStore } from '../store/playlistDetailStore';
 import { type Child } from './subsonicService';
 
@@ -61,6 +64,15 @@ export function applyLocalPlay(song: Child): void {
   favoritesStore.getState().applyLocalPlay(songId, albumId, now);
   albumLibraryStore.getState().applyLocalPlay(albumId, now);
   artistDetailStore.getState().applyLocalPlay(songId, albumId, now);
+
+  // Normalized model — the source the detail screens / player will read. Targeted
+  // scalar +1 UPDATE for the song + its album (no child-table churn) so play stats
+  // stay current without a full resync. Best-effort; no-op if the row isn't synced yet.
+  const db = getDb();
+  if (db) {
+    void bumpSongPlayStats(db, songId, now).catch(() => { /* best-effort */ });
+    if (albumId) void bumpAlbumPlayStats(db, albumId, now).catch(() => { /* best-effort */ });
+  }
 
   // Ephemeral player state — the currently-displayed track copy.
   playerPlayStatListener?.(songId, now);

@@ -15,7 +15,13 @@
  * manual mock (`__mocks__/@op-engineering/op-sqlite.js`) backs it with an
  * in-memory better-sqlite3 adapter for tests.
  */
-import { open, type DB, type QueryResult, type Scalar } from '@op-engineering/op-sqlite';
+import {
+  open,
+  type DB,
+  type QueryResult,
+  type Scalar,
+  type SQLBatchTuple,
+} from '@op-engineering/op-sqlite';
 import { Directory, Paths } from 'expo-file-system';
 
 /** Mirrors expo-sqlite's `SQLiteRunResult` so existing callers that read
@@ -24,6 +30,10 @@ export interface RunResult {
   changes: number;
   lastInsertRowId: number;
 }
+
+/** One statement + its bound params for a batched write. Scalars only (op-SQLite
+ *  binds string | number | null); the repository coerces before building these. */
+export type BatchCommand = readonly [sql: string, params: ReadonlyArray<string | number | null>];
 
 /**
  * The DB surface every persistence module consumes. Method names/shapes match
@@ -37,6 +47,13 @@ export interface InternalDb {
   getFirstAsync<T>(sql: string, params?: readonly unknown[]): Promise<T | null>;
   runSync(sql: string, params?: readonly unknown[]): RunResult;
   runAsync(sql: string, params?: readonly unknown[]): Promise<RunResult>;
+  /**
+   * Run many statements as ONE atomic batch off the JS thread (op-SQLite
+   * `executeBatch` wraps them in a single transaction on its native thread — the
+   * lowest-overhead bulk-write primitive, and non-blocking for the UI). The
+   * repository builds these tuples for id-sorted bulk upserts.
+   */
+  runBatchAsync(commands: readonly BatchCommand[]): Promise<void>;
   execSync(sql: string): void;
   withTransactionSync(fn: () => void): void;
   withTransactionAsync(task: () => Promise<void>): Promise<void>;
@@ -104,6 +121,10 @@ function adapt(op: DB): InternalDb {
     },
     async runAsync(sql: string, params?: readonly unknown[]): Promise<RunResult> {
       return toRunResult(await op.execute(sql, toParams(params)));
+    },
+    async runBatchAsync(commands: readonly BatchCommand[]): Promise<void> {
+      if (commands.length === 0) return;
+      await op.executeBatch(commands as unknown as SQLBatchTuple[]);
     },
     execSync(sql: string): void {
       op.executeSync(sql);

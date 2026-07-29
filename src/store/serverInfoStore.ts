@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
+import { setSortArticles } from '../db/sortArticles';
 import { kvStorage } from './persistence';
 
 interface OpenSubsonicExtension {
@@ -58,9 +59,16 @@ export const serverInfoStore = create<ServerInfoState>()(
           lastFetchedAt: info.lastFetchedAt ?? Date.now(),
         }),
 
-      setIgnoredArticles: (articles) => set({ ignoredArticles: articles }),
+      setIgnoredArticles: (articles) => {
+        set({ ignoredArticles: articles });
+        // Keep the dependency-free mirror the db/sort layer reads in sync.
+        setSortArticles(articles);
+      },
 
-      clearServerInfo: () => set(initialServerInfo),
+      clearServerInfo: () => {
+        set(initialServerInfo);
+        setSortArticles(null);
+      },
     }),
     {
       name: PERSIST_KEY,
@@ -76,6 +84,10 @@ export const serverInfoStore = create<ServerInfoState>()(
         shareRole: state.shareRole,
         ignoredArticles: state.ignoredArticles,
       }),
+      // Seed the mirror from persisted state on boot.
+      onRehydrateStorage: () => (state) => {
+        if (state) setSortArticles(state.ignoredArticles);
+      },
     }
   )
 );

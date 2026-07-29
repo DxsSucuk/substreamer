@@ -6,18 +6,16 @@ import {
   type ArtistID3,
   type Child,
 } from './subsonicService';
-import { albumLibraryStore } from '../store/albumLibraryStore';
-import { artistLibraryStore } from '../store/artistLibraryStore';
 import { musicCacheStore, getSongEnvelope } from '../store/musicCacheStore';
-import { playlistLibraryStore } from '../store/playlistLibraryStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { syncStatusStore } from '../store/syncStatusStore';
 import { connectivityStore } from '../store/connectivityStore';
-import {
-  querySongCandidates,
-  queryAlbumCandidates,
-  hasLocalLibraryRows,
-} from '../store/persistence/searchIndexQueries';
+import { getDb } from '../store/persistence/db';
+import { hasLocalCorpus, searchAlbums, searchArtists, searchSongs } from '../db/repository/search';
+import { albumListRowToAlbumID3, listAlbumsByIds } from '../db/repository/albums';
+import { artistListRowToArtistID3 } from '../db/repository/artists';
+import { songListRowToChild } from '../db/repository/songs';
+import { listPlaylistsByIds, playlistListRowToPlaylist } from '../db/repository/playlists';
 import { normalize, tokenize, metaphoneKey, scoreField, scoreCandidate, REJECT, CONFIDENT } from './searchMatch';
 import { getGenreNames } from '../utils/genreHelpers';
 
@@ -83,7 +81,7 @@ export async function performOfflineSearch(
   // Empty / whitespace query matches nothing (guards the scan too).
   if (!normalize(query)) return { albums: [], artists: [], songs: [] };
   const { cachedItems, cachedSongs } = musicCacheStore.getState();
-  const cachedIds = new Set(Object.keys(cachedItems));
+  const cachedIds = Object.keys(cachedItems);
 
   // Relevance for a name (+ optional artist) — the best of the two field scores.
   const rel = (name: string, artist?: string | null): number =>
@@ -92,18 +90,18 @@ export async function performOfflineSearch(
       artist ? scoreField(query, artist).score : 0,
     );
 
-  const albums = albumLibraryStore
-    .getState()
-    .albums.filter((a) => cachedIds.has(a.id))
-    .map((a) => ({ a, s: rel(a.name, a.artist) }))
+  // Downloaded albums/playlists: the normalized rows for the downloaded id set, scored
+  // in full (perfect recall over that small set — same coverage as the old array filter,
+  // now off the retired full-library arrays). No downloads / no db → nothing to match.
+  const db = getDb();
+  const albums = (db && cachedIds.length ? await listAlbumsByIds(db, cachedIds) : [])
+    .map((r) => ({ a: albumListRowToAlbumID3(r), s: rel(r.name ?? '', r.display_artist) }))
     .filter((x) => x.s >= REJECT)
     .sort((x, y) => y.s - x.s)
     .map((x) => x.a);
 
-  const playlists = playlistLibraryStore
-    .getState()
-    .playlists.filter((p) => cachedIds.has(p.id))
-    .map((p) => ({ p, s: scoreField(query, p.name).score }))
+  const playlists = (db && cachedIds.length ? await listPlaylistsByIds(db, cachedIds) : [])
+    .map((r) => ({ p: playlistListRowToPlaylist(r), s: scoreField(query, r.name ?? '').score }))
     .filter((x) => x.s >= REJECT)
     .sort((x, y) => y.s - x.s)
     .map((x) => x.p);
@@ -189,6 +187,8 @@ export async function searchFullLibraryScored(
 ): Promise<{ results: SearchResults; topScore: number }> {
   const norm = normalize(query);
   if (!norm) return { results: EMPTY_RESULTS, topScore: 0 };
+  const db = getDb();
+  if (!db) return { results: EMPTY_RESULTS, topScore: 0 };
   const tokens = tokenize(norm);
   // Phonetic tier is gated to tokens ≥4 chars (short tokens over-collide) and
   // to non-empty codes (non-Latin encodes to '' — never a phonetic candidate).
@@ -197,36 +197,39 @@ export async function searchFullLibraryScored(
     .map((t) => metaphoneKey(t))
     .filter((k) => k.length > 0);
 
-  const [songCands, albumCands] = await Promise.all([
-    querySongCandidates(norm, tokens, dmetaTokens),
-    queryAlbumCandidates(norm, tokens, dmetaTokens),
+  // Tiered candidate generation over the normalized tables (norm_*/dmeta_* columns),
+  // then the JS precision re-rank below. Artists now come from candidate generation
+  // too (was an un-prefiltered array scan) — same recall/scale tradeoff as songs/albums.
+  const [songCands, albumCands, artistCands] = await Promise.all([
+    searchSongs(db, norm, tokens, dmetaTokens),
+    searchAlbums(db, norm, tokens, dmetaTokens),
+    searchArtists(db, norm, tokens, dmetaTokens),
   ]);
   if (shouldAbort?.()) return { results: EMPTY_RESULTS, topScore: 0 };
 
   const songs = songCands
-    .map((c) => ({ c, s: relevance(query, c.title ?? '', c.artist) }))
+    .map((r) => ({ r, s: relevance(query, r.title ?? '', r.artist) }))
     .filter((x) => x.s >= REJECT)
     .sort((a, b) => b.s - a.s);
   const albums = albumCands
-    .map((a) => ({ a, s: relevance(query, a.name, a.artist) }))
+    .map((r) => ({ r, s: relevance(query, r.name ?? '', r.display_artist) }))
     .filter((x) => x.s >= REJECT)
     .sort((a, b) => b.s - a.s);
 
-  // Artists (online only): fuzzy-match names against the synced artist library.
-  // CONFIDENT floor, not REJECT — this scores every artist un-prefiltered, so a
-  // looser floor would admit weak Jaro-Winkler noise.
-  const artists = artistLibraryStore
-    .getState()
-    .artists.map((a) => ({ a, s: scoreField(query, a.name).score }))
+  // Artists keep the CONFIDENT floor (stricter than songs/albums' REJECT) intentionally:
+  // it matches today's artist strictness, so the cutover changes only the candidate set,
+  // not the ranking. Candidates are already norm/dmeta-matched, so no noise is admitted.
+  const artists = artistCands
+    .map((r) => ({ r, s: scoreField(query, r.name ?? '').score }))
     .filter((x) => x.s >= CONFIDENT)
     .sort((x, y) => y.s - x.s);
 
   const topScore = Math.max(songs[0]?.s ?? 0, albums[0]?.s ?? 0, artists[0]?.s ?? 0);
   return {
     results: {
-      albums: albums.slice(0, ALBUM_RESULT_CAP).map((x) => x.a),
-      artists: artists.slice(0, ARTIST_RESULT_CAP).map((x) => x.a),
-      songs: songs.slice(0, SONG_RESULT_CAP).map((x) => x.c),
+      albums: albums.slice(0, ALBUM_RESULT_CAP).map((x) => albumListRowToAlbumID3(x.r)),
+      artists: artists.slice(0, ARTIST_RESULT_CAP).map((x) => artistListRowToArtistID3(x.r)),
+      songs: songs.slice(0, SONG_RESULT_CAP).map((x) => songListRowToChild(x.r)),
     },
     topScore,
   };
@@ -310,7 +313,8 @@ export async function searchLibrary(
   const { hasConnection, isServerReachable } = connectivityStore.getState();
   const reachable = hasConnection && isServerReachable;
 
-  if (!(await hasLocalLibraryRows())) {
+  const db = getDb();
+  if (!db || !(await hasLocalCorpus(db))) {
     return reachable ? performOnlineSearch(query) : EMPTY_RESULTS;
   }
 
@@ -343,13 +347,21 @@ export async function findAlbum(name: string, artist?: string): Promise<AlbumID3
     .filter((t) => t.length >= 4)
     .map((t) => metaphoneKey(t))
     .filter((k) => k.length > 0);
-  const candidates = await queryAlbumCandidates(norm, tokens, dmetaTokens);
+  const db = getDb();
+  if (!db) return null;
+  const candidates = await searchAlbums(db, norm, tokens, dmetaTokens);
   if (candidates.length === 0) return null;
   const scored = candidates
-    .map((a) => ({ a, score: scoreCandidate({ song: name, artist }, { title: a.name, artist: a.artist }) }))
+    .map((r) => ({
+      r,
+      score: scoreCandidate(
+        { song: name, artist },
+        { title: r.name ?? '', artist: r.display_artist ?? undefined },
+      ),
+    }))
     .filter((x) => x.score >= REJECT)
     .sort((x, y) => y.score - x.score);
-  return scored[0]?.a ?? null;
+  return scored[0] ? albumListRowToAlbumID3(scored[0].r) : null;
 }
 
 /**

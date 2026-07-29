@@ -1,6 +1,6 @@
 /**
- * Drizzle schema — the fully-normalized data model for the persistence rebuild
- * (Phase 2). One column per typed Subsonic field (scalars on the entity tables,
+ * Drizzle schema — the fully-normalized data model for the persistence rebuild.
+ * One column per typed Subsonic field (scalars on the entity tables,
  * arrays/nested objects as child tables or flattened columns) — NO raw_json blob.
  * Details are relationships, not blobs (album detail = songs WHERE album_id=?, etc.).
  *
@@ -12,11 +12,11 @@
  *  - Booleans stored as 0/1 via `{ mode: 'boolean' }`.
  *  - ReplayGain flattened to `rg_*` REAL columns (1:1, no child table).
  *  - Search keeps the existing tiered `norm_*` (accent-folded) + `dmeta_*`
- *    (double-metaphone) columns — NOT FTS5 (Decision B).
+ *    (double-metaphone) columns — not FTS5.
  *  - Child tables cascade-delete with their parent entity.
  *
  * This schema is additive: it stands alongside the legacy blob tables until
- * consumers are cut over (Phase 3) and the old tables dropped (Phase 4).
+ * consumers are cut over and the old tables dropped.
  */
 import { sql } from 'drizzle-orm';
 import { index, integer, primaryKey, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
@@ -66,10 +66,18 @@ export const songs = sqliteTable(
     sortName: text('sort_name'),
     // article-stripped / accent-folded A–Z key (computed in JS via getSortKey)
     sortTitle: text('sort_title'),
+    // article-stripped / accent-folded ARTIST key — A–Z key for the "sort by
+    // artist" song browse (distinct from norm_artist, which is for search).
+    sortArtist: text('sort_artist'),
     musicBrainzId: text('music_brainz_id'),
     explicitStatus: text('explicit_status'),
     bookmarkPosition: integer('bookmark_position'),
     isVideo: integer('is_video', { mode: 'boolean' }),
+    isDir: integer('is_dir', { mode: 'boolean' }),
+    parent: text('parent'),
+    // video-only dimensions (Child.originalWidth/Height)
+    originalWidth: integer('original_width'),
+    originalHeight: integer('original_height'),
     // flattened ReplayGain (1:1)
     rgTrackGain: real('rg_track_gain'),
     rgAlbumGain: real('rg_album_gain'),
@@ -85,6 +93,7 @@ export const songs = sqliteTable(
   },
   (t) => ({
     sortIdx: index('idx_songs_sort').on(t.sortTitle, t.id),
+    artistSortIdx: index('idx_songs_artist_sort').on(t.sortArtist, t.sortTitle, t.id),
     albumIdx: index('idx_songs_album').on(t.albumId),
     artistIdx: index('idx_songs_artist').on(t.artistId),
     // favorites: only starred rows, pre-sorted to the list order
@@ -120,6 +129,9 @@ export const albums = sqliteTable(
     musicBrainzId: text('music_brainz_id'),
     sortName: text('sort_name'),
     sortTitle: text('sort_title'),
+    // Article-stripped/folded ARTIST sort key (getSortKey of displayArtist) — the
+    // A–Z key for the "sort by artist" browse; distinct from norm_artist (search).
+    sortArtist: text('sort_artist'),
     isCompilation: integer('is_compilation', { mode: 'boolean' }),
     explicitStatus: text('explicit_status'),
     // flattened ItemDate (originalReleaseDate / releaseDate)
@@ -129,6 +141,12 @@ export const albums = sqliteTable(
     releaseYear: integer('release_year'),
     releaseMonth: integer('release_month'),
     releaseDay: integer('release_day'),
+    // AlbumInfo (getAlbumInfo2; fetched on demand, nullable until fetched)
+    notes: text('notes'),
+    lastFmUrl: text('last_fm_url'),
+    imageUrlSmall: text('image_url_small'),
+    imageUrlMedium: text('image_url_medium'),
+    imageUrlLarge: text('image_url_large'),
     normName: text('norm_name'),
     normArtist: text('norm_artist'),
     dmetaName: text('dmeta_name'),
@@ -136,7 +154,7 @@ export const albums = sqliteTable(
   },
   (t) => ({
     sortIdx: index('idx_albums_sort').on(t.sortTitle, t.id),
-    artistSortIdx: index('idx_albums_artist_sort').on(t.displayArtist, t.sortTitle, t.id),
+    artistSortIdx: index('idx_albums_artist_sort').on(t.sortArtist, t.sortTitle, t.id),
     artistIdx: index('idx_albums_artist').on(t.artistId),
     starredIdx: index('idx_albums_starred')
       .on(t.starred, t.sortTitle, t.id)
@@ -195,11 +213,17 @@ export const playlists = sqliteTable(
     owner: text('owner'),
     public: integer('public', { mode: 'boolean' }),
     songCount: integer('song_count'),
+    // article-stripped / accent-folded A–Z key (getSortKey of name; playlists have
+    // no server sortName). Article-aware sort, consistent with albums/songs/artists.
+    sortTitle: text('sort_title'),
     normName: text('norm_name'),
     dmetaName: text('dmeta_name'),
   },
   (t) => ({
-    sortIdx: index('idx_playlists_sort').on(t.name, t.id),
+    // NEW index name (not the old idx_playlists_sort on `name`): CREATE INDEX IF NOT
+    // EXISTS keys on the index NAME, so reusing it would be a no-op on existing DBs and
+    // leave keyset paging unindexed. The old idx_playlists_sort lingers harmlessly.
+    sortTitleIdx: index('idx_playlists_sort_title').on(t.sortTitle, t.id),
     normNameIdx: index('idx_playlists_norm_name').on(t.normName),
   }),
 );

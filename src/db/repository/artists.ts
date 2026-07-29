@@ -7,6 +7,7 @@ import {
   bulkUpsert,
   countRows,
   keysetPage,
+  keysetPageBefore,
   replaceChildrenSync,
   upsertRowSync,
   type Cursor,
@@ -27,17 +28,38 @@ export interface ArtistListRow {
 export const ARTIST_LIST_COLS =
   '"id", "name", "cover_art", "album_count", "sort_title", "starred", "user_rating"';
 
+/** Adapt a lean list row to the `ArtistID3` shape the row/card components render
+ *  (they read `coverArt`, not `artistImageUrl`, so the lean projection suffices). */
+export function artistListRowToArtistID3(r: ArtistListRow): ArtistID3 {
+  return {
+    id: r.id,
+    name: r.name ?? '',
+    coverArt: r.cover_art ?? undefined,
+    albumCount: r.album_count ?? 0,
+    userRating: r.user_rating ?? undefined,
+    starred: r.starred ? new Date(r.starred) : undefined,
+  } as ArtistID3;
+}
+
+/** Build the keyset cursor for an artist row — used by the screen to seed a
+ *  backward page from the first loaded row. Artists sort by name only (no compound). */
+export const artistCursorOf = (r: ArtistListRow): Cursor => ({
+  sortKey: r.sort_title ?? '',
+  id: r.id,
+});
+
 export function upsertArtists(
   db: InternalDb,
   artists: ArtistID3[],
   onProgress?: (done: number, total: number) => void,
+  articles?: readonly string[],
 ): Promise<number> {
   return bulkUpsert(
     db,
     {
       table: 'artists',
       idOf: (a) => a.id,
-      rowOf: artistRow,
+      rowOf: (a) => artistRow(a, articles),
       children: [{ table: 'artist_roles', parentCol: 'artist_id', rows: artistRoleRows }],
       onProgress,
     },
@@ -68,6 +90,21 @@ export function listArtists(
     limit: opts.limit,
     cursor: opts.cursor,
     letter: opts.letter,
+    where: opts.starredOnly ? 'starred IS NOT NULL' : undefined,
+    sortKeyOf: (r) => r.sort_title ?? '',
+  });
+}
+
+export function listArtistsBefore(
+  db: InternalDb,
+  opts: { before: Cursor; limit: number; starredOnly?: boolean },
+): Promise<{ rows: ArtistListRow[]; prevCursor: Cursor | null }> {
+  return keysetPageBefore<ArtistListRow>(db, {
+    table: 'artists',
+    sortCol: 'sort_title',
+    columns: ARTIST_LIST_COLS,
+    limit: opts.limit,
+    before: opts.before,
     where: opts.starredOnly ? 'starred IS NOT NULL' : undefined,
     sortKeyOf: (r) => r.sort_title ?? '',
   });
