@@ -22,6 +22,7 @@ import {
 import { playlistDetailStore } from '../store/playlistDetailStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { getDb } from '../store/persistence/db';
+import { getProtectedIds } from '../db/protectedIds';
 import { countAlbums, listAlbumIds, listAlbumsByIds } from '../db/repository/albums';
 import { countArtists } from '../db/repository/artists';
 import { resetNormalizedSchema } from '../db/createNormalizedTables';
@@ -708,31 +709,27 @@ export function reconcilePlaylistLibrary(
  *
  * Called by the hook registered with `albumLibraryStore` at module load.
  */
-export function reconcileAlbumLibrary(
+export async function reconcileAlbumLibrary(
   oldIds: readonly string[],
   newIds: readonly string[],
-): void {
+): Promise<void> {
   const newSet = new Set(newIds);
   const oldSet = new Set(oldIds);
 
-  const cachedItems = musicCacheStore.getState().cachedItems;
-  const cachedSongs = musicCacheStore.getState().cachedSongs;
-  // Parent albums whose DETAIL backs a downloaded item's offline view but which
-  // aren't themselves downloaded as albums: the parent album of a downloaded
-  // single song, and the parent albums of favorited songs. Their album_details
-  // must survive a server-side removal (so offline "go to album" from the song
-  // still works), but their `library_albums` row may go — they weren't
-  // downloaded as albums, so they shouldn't resurrect in the browse list.
-  const protectedDetailAlbumIds = new Set<string>();
-  for (const item of Object.values(cachedItems)) {
-    if (item.type === 'song' && item.parentAlbumId) {
-      protectedDetailAlbumIds.add(item.parentAlbumId);
-    } else if (item.type === 'favorites') {
-      for (const songId of item.songIds ?? []) {
-        const parent = cachedSongs[songId]?.albumId;
-        if (parent) protectedDetailAlbumIds.add(parent);
-      }
-    }
+  // Protected ids come from the music-cache TABLES, not `musicCacheStore`: boot
+  // hydration swallows its own failures, so the store can read empty while the rows
+  // exist, and reaping on that basis would delete the offline library. A failed read
+  // means "we don't know what's protected" — skip the reap entirely rather than
+  // treating it as "nothing is protected".
+  const db = getDb();
+  if (!db) return;
+  let protectedIds;
+  try {
+    protectedIds = await getProtectedIds(db);
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[sync] protected-id read failed; skipping album reconcile', e);
+    return;
   }
 
   const removedDetail: string[] = []; // album_details (+ song-index cascade) to drop
@@ -744,9 +741,10 @@ export function reconcileAlbumLibrary(
     // `library_albums` row — so a server-removed-but-downloaded album keeps BOTH
     // (mirrors the playlist guard above). Offline is a filtered view over this
     // cached data; automated sync must not delete it.
-    if (id in cachedItems) continue;
-    // Parent album of a downloaded song/favorite: keep the DETAIL, drop the row.
-    if (protectedDetailAlbumIds.has(id)) {
+    if (protectedIds.downloadedAlbumIds.has(id)) continue;
+    // Parent album of a downloaded song/favorite: keep the DETAIL, drop the row —
+    // it was never downloaded as an album, so it must not resurrect in the browse list.
+    if (protectedIds.parentAlbumIds.has(id)) {
       removedRows.push(id);
       continue;
     }
@@ -1279,7 +1277,9 @@ registerScrobbleBatchCompletedHook(() => {
 registerScanCompletedHook(() => {
   fireAndForget(onScanCompleted(), 'sync.hook.scanCompleted');
 });
-registerAlbumLibraryReconcileHook((oldIds, newIds) => reconcileAlbumLibrary(oldIds, newIds));
+registerAlbumLibraryReconcileHook((oldIds, newIds) => {
+  fireAndForget(reconcileAlbumLibrary(oldIds, newIds), 'sync.hook.albumLibraryReconcile');
+});
 registerPlaylistLibraryReconcileHook((oldIds, newIds) => reconcilePlaylistLibrary(oldIds, newIds));
 registerMusicCacheOnAlbumReferencedHook((albumId) => {
   fireAndForget(onAlbumReferenced(albumId), 'sync.hook.onAlbumReferenced');

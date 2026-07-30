@@ -21,6 +21,7 @@ import { ensureNormalizedSchema, resetNormalizedSchema } from '@/db/createNormal
 import { countAlbums, listAlbumIds, upsertAlbums } from '@/db/repository/albums';
 import { upsertArtists } from '@/db/repository/artists';
 import { deletePlaylistsNotIn, upsertPlaylists } from '@/db/repository/playlists';
+import { getProtectedIds } from '@/db/protectedIds';
 import { countSongAlbums, countSongs, listSongAlbumIds, upsertSongs } from '@/db/repository/songs';
 import { getDb } from '@/store/persistence/db';
 import { clearAlbumCoverArtCache } from '@/hooks/useSongCoverArt';
@@ -36,6 +37,7 @@ import {
   getAlbumsPageByName,
   getAllArtists,
   getAllPlaylists,
+  getApi,
   probeEmptySearch3,
   searchAlbumsPage,
   searchSongsPage,
@@ -181,7 +183,11 @@ export async function syncPlaylistsNormalized(
   await ensureCoverArtAuth();
   const playlists = await getAllPlaylists();
   await upsertPlaylists(db, playlists, undefined, articles);
-  await deletePlaylistsNotIn(db, playlists.map((p) => p.id));
+  // Prune only when the API actually answered — `getAllPlaylists` returns `[]` (not a
+  // throw) when there is no usable API, and pruning against that empties the table.
+  if (getApi() === null) return;
+  const protectedIds = await getProtectedIds(db);
+  await deletePlaylistsNotIn(db, playlists.map((p) => p.id), [...protectedIds.playlistIds]);
 }
 
 /**

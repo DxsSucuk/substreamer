@@ -69,13 +69,29 @@ export function upsertPlaylists(
 export const deletePlaylist = (db: InternalDb, id: string): Promise<unknown> =>
   db.runAsync('DELETE FROM playlists WHERE id = ?', [id]);
 
-/** Prune playlists no longer on the server after a full fetch. `keepIds` is passed
- *  as a JSON array via `json_each` to dodge the SQLite bound-variable limit. A no-op
- *  keep-set (empty) would delete everything, so the caller guards that. */
-export const deletePlaylistsNotIn = (db: InternalDb, keepIds: string[]): Promise<unknown> =>
-  db.runAsync('DELETE FROM playlists WHERE id NOT IN (SELECT value FROM json_each(?))', [
-    JSON.stringify(keepIds),
-  ]);
+/**
+ * Prune playlists no longer on the server after a full fetch. Id sets pass as JSON
+ * arrays via `json_each` to dodge the SQLite bound-variable limit.
+ *
+ * An empty `keepIds` is REFUSED, not honoured: `getAllPlaylists` returns `[]` rather
+ * than throwing whenever the API is unavailable (offline, mid-logout, before auth
+ * restore), so an empty set means "couldn't ask" far more often than "the server has
+ * none". The cost of refusing is that deleting every playlist server-side no longer
+ * propagates until one is re-created; the cost of honouring it was wiping the user's
+ * playlists — including downloaded ones — on any offline refresh.
+ */
+export const deletePlaylistsNotIn = (
+  db: InternalDb,
+  keepIds: string[],
+  protectedIds: string[] = [],
+): Promise<unknown> => {
+  if (keepIds.length === 0) return Promise.resolve();
+  return db.runAsync(
+    'DELETE FROM playlists WHERE id NOT IN (SELECT value FROM json_each(?)) ' +
+      'AND id NOT IN (SELECT value FROM json_each(?))',
+    [JSON.stringify(keepIds), JSON.stringify(protectedIds)],
+  );
+};
 
 /** Keyset A–Z list of playlists (article-stripped `sort_title`), with letter seek —
  *  consistent with albums/songs/artists. */

@@ -10,9 +10,11 @@ import {
   deletePlaylistsNotIn,
   upsertPlaylists,
 } from '../db/repository/playlists';
+import { getProtectedIds } from '../db/protectedIds';
 import {
   ensureCoverArtAuth,
   getAllPlaylists,
+  getApi,
   type Playlist,
 } from '../services/subsonicService';
 import { getDb } from './persistence/db';
@@ -86,23 +88,32 @@ export const playlistLibraryStore = create<PlaylistLibraryState>()(
 
           // Capture the old playlists at COMMIT time, not at fetch start, so
           // the reconcile hook sees the actual baseline at the moment the
-          // store replacement happens. `getAllPlaylists` throws on protocol
-          // or HTTP failure (see `throwIfSubsonicFailure` in subsonicService),
-          // so we trust the result here.
+          // store replacement happens. NB `getAllPlaylists` only throws on a
+          // protocol/HTTP failure — with no usable API (offline, mid-logout,
+          // pre-auth-restore) it returns `[]`, which is why the prune below is
+          // gated rather than trusting an empty result.
           const oldPlaylists = get().playlists;
 
           // Array stays for the ~12 consumers + filters (retired in the search phase).
           set({ playlists, loading: false });
           // ALSO mirror into the normalized `playlists` table — the source the keyset
-          // list reads. Upsert the current set + prune server-side deletions (empty set
-          // clears all, which is correct). Best-effort. Bump `lastFetchedAt` AFTER the
-          // write so the keyset list reloads with rows present. Articles match the scroller.
+          // list reads. Upsert the current set, then prune server-side deletions only
+          // when the API actually answered, never reaping downloaded playlists.
+          // Best-effort. Bump `lastFetchedAt` AFTER the write so the keyset list reloads
+          // with rows present. Articles match the scroller.
           try {
             const db = getDb();
             if (db) {
               const articles = serverInfoStore.getState().ignoredArticles ?? undefined;
               await upsertPlaylists(db, playlists, undefined, articles);
-              await deletePlaylistsNotIn(db, playlists.map((p) => p.id));
+              if (getApi() !== null) {
+                const protectedIds = await getProtectedIds(db);
+                await deletePlaylistsNotIn(
+                  db,
+                  playlists.map((p) => p.id),
+                  [...protectedIds.playlistIds],
+                );
+              }
             }
           } catch (err) {
             // eslint-disable-next-line no-console
