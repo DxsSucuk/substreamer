@@ -18,7 +18,7 @@ import type { InternalDb } from './client';
 import { ensureNormalizedSchema } from './createNormalizedTables';
 import { upsertAlbums } from './repository/albums';
 import { getSortArticles } from './sortArticles';
-import { upsertArtistInfo, upsertArtists } from './repository/artists';
+import { setArtistDetailMeta, setArtistTopSongs, upsertArtistInfo, upsertArtists } from './repository/artists';
 import { setPlaylistSongs, upsertPlaylists } from './repository/playlists';
 import { upsertSongs } from './repository/songs';
 
@@ -129,41 +129,74 @@ interface ArtistDetailLite {
   artist?: ArtistID3;
   artistInfo?: ArtistInfo2 | null;
   biography?: string | null;
+  topSongs?: Child[];
+  resolvedMbid?: string | null;
+  bioCheckedAt?: number;
 }
 interface PlaylistDetailLite {
   playlist?: Playlist & { entry?: Child[] };
 }
 
-/** Artists: library rows (ArtistID3[]) + bio/similar from cached artist details. */
-async function migrateArtists(db: InternalDb, log?: Log): Promise<TableMigration> {
+/** Artists: library rows (ArtistID3[]) + full detail (images/similar + top songs +
+ *  resolved bio & negative-cache markers) from cached artist details. */
+async function migrateArtists(
+  db: InternalDb,
+  articles: readonly string[] | undefined,
+  log?: Log,
+): Promise<TableMigration> {
   const lib = await readKvState<{ artists?: ArtistID3[] }>(db, ARTIST_LIBRARY_KEY);
   const libraryArtists = lib?.artists ?? [];
-  let migrated = libraryArtists.length ? await upsertArtists(db, libraryArtists) : 0;
+  let migrated = libraryArtists.length ? await upsertArtists(db, libraryArtists, undefined, articles) : 0;
 
-  // Detail cache: ensure a row exists for any opened-but-not-in-list artist, then
-  // merge its resolved bio + similar artists.
+  // Detail cache: ensure a row exists for any opened-but-not-in-list artist, then write
+  // its images/similar (upsertArtistInfo), its top songs (rows + ordered junction), and
+  // the RESOLVED bio + negative-cache markers — exactly what the live detail fetch
+  // writes, so a migrated artist opens offline with full detail and won't re-hit MB.
   const det = await readKvState<{ artists?: Record<string, ArtistDetailLite> }>(db, ARTIST_DETAILS_KEY);
   const entries = det?.artists ? Object.values(det.artists) : [];
   const detailArtists = entries.map((e) => e?.artist).filter((a): a is ArtistID3 => !!a?.id);
-  if (detailArtists.length) migrated += await upsertArtists(db, detailArtists);
+  if (detailArtists.length) migrated += await upsertArtists(db, detailArtists, undefined, articles);
   for (const e of entries) {
     const id = e?.artist?.id;
-    if (!id || (!e.artistInfo && !e.biography)) continue;
-    const info = {
-      ...(e.artistInfo ?? {}),
-      biography: e.biography ?? e.artistInfo?.biography ?? undefined,
-    } as ArtistInfo2;
-    upsertArtistInfo(db, id, info);
+    if (!id) continue;
+    if (e.artistInfo || e.biography) {
+      const info = {
+        ...(e.artistInfo ?? {}),
+        biography: e.biography ?? e.artistInfo?.biography ?? undefined,
+      } as ArtistInfo2;
+      upsertArtistInfo(db, id, info);
+    }
+    const top = e.topSongs ?? [];
+    if (top.length > 0) {
+      // eslint-disable-next-line no-await-in-loop
+      await upsertSongs(db, top, undefined, articles);
+      // eslint-disable-next-line no-await-in-loop
+      await setArtistTopSongs(db, id, top.map((s) => s.id));
+    }
+    // Resolved bio + negative-cache markers last, so they win over info.biography.
+    if (e.biography != null || e.resolvedMbid != null || e.bioCheckedAt != null) {
+      // eslint-disable-next-line no-await-in-loop
+      await setArtistDetailMeta(db, id, {
+        biography: e.biography ?? null,
+        bioCheckedAt: e.bioCheckedAt ?? null,
+        resolvedMbid: e.resolvedMbid ?? null,
+      });
+    }
   }
   log?.(`artists: ${migrated} rows (${libraryArtists.length} library, ${entries.length} detail-cached)`);
   return { source: libraryArtists.length, migrated, skipped: 0 };
 }
 
-/** Playlists: library rows (Playlist[]) + ordered song membership from cached details. */
-async function migratePlaylists(db: InternalDb, log?: Log): Promise<TableMigration> {
+/** Playlists: library rows (Playlist[]) + ordered song membership (+ the member songs
+ *  themselves) from cached details. */
+async function migratePlaylists(
+  db: InternalDb,
+  articles: readonly string[] | undefined,
+  log?: Log,
+): Promise<TableMigration> {
   const lib = await readKvState<{ playlists?: Playlist[] }>(db, PLAYLIST_LIBRARY_KEY);
   const libraryPlaylists = lib?.playlists ?? [];
-  const migrated = libraryPlaylists.length ? await upsertPlaylists(db, libraryPlaylists) : 0;
+  const migrated = libraryPlaylists.length ? await upsertPlaylists(db, libraryPlaylists, undefined, articles) : 0;
 
   const det = await readKvState<{ playlists?: Record<string, PlaylistDetailLite> }>(db, PLAYLIST_DETAILS_KEY);
   const detEntries = det?.playlists ? Object.entries(det.playlists) : [];
@@ -171,10 +204,15 @@ async function migratePlaylists(db: InternalDb, log?: Log): Promise<TableMigrati
     const pl = pe?.playlist;
     if (!pl) continue;
     // Ensure the parent row exists (FK) even if the playlist isn't in the list.
-    await upsertPlaylists(db, [pl]);
-    // Membership order (song ids); songs themselves come from the migrated `songs`
-    // table via the detail JOIN (playlist songs are library songs).
-    const ids = (pl.entry ?? []).map((s) => s.id).filter(Boolean);
+    // eslint-disable-next-line no-await-in-loop
+    await upsertPlaylists(db, [pl], undefined, articles);
+    // Upsert the member songs FIRST so `playlist_songs JOIN songs` resolves: a playlist
+    // can hold tracks from albums the library never fully synced (absent from
+    // `song_index`); without this they'd be silently dropped from the offline playlist.
+    const entry = pl.entry ?? [];
+    // eslint-disable-next-line no-await-in-loop
+    if (entry.length > 0) await upsertSongs(db, entry, undefined, articles);
+    const ids = entry.map((s) => s.id).filter(Boolean);
     if (ids.length) setPlaylistSongs(db, pid, ids);
   }
   log?.(`playlists: ${migrated} rows (${libraryPlaylists.length} library, ${detEntries.length} detail-cached)`);
@@ -224,8 +262,11 @@ export async function migrateBlobsToNormalized(
     profile,
     bump,
   );
-  const artists = await migrateArtists(db, log);
-  const playlists = await migratePlaylists(db, log);
+  // NB: `album_details` is intentionally NOT read — it was written atomically alongside
+  // `song_index` (one disk write per album-detail fetch), so `song_index` is a superset
+  // of its songs; migrating both would be redundant.
+  const artists = await migrateArtists(db, articles, log);
+  const playlists = await migratePlaylists(db, articles, log);
   onProgress?.(total, total); // settle at 100% (artists/playlists done)
   // NB: the WAL checkpoint is deliberately NOT run here. Folding the migration's
   // (large) WAL takes seconds and must NOT hold up "migration complete" — the

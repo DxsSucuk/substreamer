@@ -6,3 +6,4 @@ export * from './songs';
 export * from './artists';
 export * from './playlists';
 export * from './search';
+export * from './details';

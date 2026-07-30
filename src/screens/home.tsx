@@ -31,7 +31,6 @@ import { computeStreaks, dateKey } from '../hooks/usePlaybackAnalytics';
 import { useTheme } from '../hooks/useTheme';
 import type { AlbumID3, Playlist } from '../services/subsonicService';
 import { composeHomeAlbumSections } from '../services/homeSectionsService';
-import { albumLibraryStore } from '../store/albumLibraryStore';
 import {
   albumListsStore,
   type AlbumListType,
@@ -44,7 +43,12 @@ import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { LIST_LENGTH_DISPLAY_CAP } from '../store/layoutPreferencesStore';
 import { offlineModeStore } from '../store/offlineModeStore';
-import { playlistLibraryStore } from '../store/playlistLibraryStore';
+import { serverInfoStore } from '../store/serverInfoStore';
+import {
+  downloadedAlbumsFromCache,
+  downloadedPlaylistsFromCache,
+} from '../store/persistence/cachedItemHelpers';
+import { sortAlbumsByPreference, sortPlaylistsByName } from '../utils/librarySort';
 import { searchStore } from '../store/searchStore';
 
 import { absoluteFill } from '../utils/styles';
@@ -384,9 +388,19 @@ export function HomeScreen() {
   const cachedItems = musicCacheStore((s) => s.cachedItems);
   const starredAlbums = favoritesStore((s) => s.albums);
   const includePartial = layoutPreferencesStore((s) => s.includePartialInDownloadedFilter);
+  const albumSortOrder = layoutPreferencesStore((s) => s.albumSortOrder);
 
-  const allLibraryAlbums = albumLibraryStore((s) => s.albums);
-  const allPlaylists = playlistLibraryStore((s) => s.playlists);
+  // The Downloaded Albums list comes from the never-reaped `cached_items` envelopes
+  // (bounded, offline-safe), sorted to match the album list — not the paged library.
+  const downloadedAlbums = useMemo(() => {
+    if (!downloadedOnly) return [];
+    const articles = serverInfoStore.getState().ignoredArticles ?? undefined;
+    return sortAlbumsByPreference(
+      downloadedAlbumsFromCache(cachedItems, includePartial),
+      albumSortOrder,
+      articles,
+    );
+  }, [downloadedOnly, cachedItems, includePartial, albumSortOrder]);
 
   // Which album lists appear (order + downloaded/favorites filtering + offline
   // drop-Random + Downloaded Albums) is owned by the shared homeSectionsService
@@ -398,7 +412,7 @@ export function HomeScreen() {
         recentlyPlayed,
         frequentlyPlayed,
         randomSelection,
-        allLibraryAlbums,
+        downloadedAlbums,
         offlineMode,
         downloadedOnly,
         favoritesOnly,
@@ -411,7 +425,7 @@ export function HomeScreen() {
       recentlyPlayed,
       frequentlyPlayed,
       randomSelection,
-      allLibraryAlbums,
+      downloadedAlbums,
       offlineMode,
       downloadedOnly,
       favoritesOnly,
@@ -425,9 +439,11 @@ export function HomeScreen() {
 
   const downloadedPlaylists = useMemo(() => {
     if (!downloadedOnly) return [];
-    // Playlists don't have a "partial" state — they download atomically.
-    return allPlaylists.filter((p) => p.id in cachedItems);
-  }, [downloadedOnly, allPlaylists, cachedItems]);
+    // Playlists download atomically (no partial state) — rebuild from their self-cached
+    // envelopes, sorted A-Z. Never-reaped source, independent of the paged library.
+    const articles = serverInfoStore.getState().ignoredArticles ?? undefined;
+    return sortPlaylistsByName(downloadedPlaylistsFromCache(cachedItems), articles);
+  }, [downloadedOnly, cachedItems]);
 
   const offlineEmpty = useMemo(() => {
     if (!downloadedOnly) return false;

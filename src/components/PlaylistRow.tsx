@@ -17,6 +17,9 @@ import { moreOptionsStore } from '../store/moreOptionsStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { playlistDetailStore } from '../store/playlistDetailStore';
 import { playlistLibraryStore } from '../store/playlistLibraryStore';
+import { getDb } from '../store/persistence/db';
+import { deletePlaylist as deletePlaylistRow } from '../db/repository/playlists';
+import { bumpDetailChanged } from '../db/detailNotifier';
 import { processingOverlayStore } from '../store/processingOverlayStore';
 import { formatCompactDuration } from '../utils/formatters';
 
@@ -58,6 +61,9 @@ export const PlaylistRow = memo(function PlaylistRow({ playlist }: { playlist: P
             const success = await deletePlaylist(playlist.id);
             if (!success) throw new Error('API returned false');
 
+            const db = getDb();
+            if (db) await deletePlaylistRow(db, playlist.id);
+            bumpDetailChanged('playlist', playlist.id);
             playlistDetailStore.getState().removePlaylist(playlist.id);
             playlistLibraryStore.getState().removePlaylist(playlist.id);
             if (playlist.id in musicCacheStore.getState().cachedItems) {

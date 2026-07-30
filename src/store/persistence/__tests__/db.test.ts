@@ -126,6 +126,8 @@ describe('persistence/db (happy path)', () => {
         'idx_library_albums_norm_name',
         'idx_library_albums_sortKey',
         'idx_pending_scrobble_events_time',
+        // idx_scrobble_events_hour is created by ensureScrobbleColumnsAsync (after the
+        // ALTER-added `hour` column exists), NOT in this eager block — see db.ts.
         'idx_scrobble_events_time',
         'idx_song_index_albumId',
         'idx_song_index_dmeta_artist',

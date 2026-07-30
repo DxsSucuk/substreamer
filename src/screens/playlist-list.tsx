@@ -18,6 +18,9 @@ import { getDb } from '../store/persistence/db';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { playlistLibraryStore } from '../store/playlistLibraryStore';
+import { serverInfoStore } from '../store/serverInfoStore';
+import { downloadedPlaylistsFromCache } from '../store/persistence/cachedItemHelpers';
+import { sortPlaylistsByName } from '../utils/librarySort';
 import { type IoniconsName } from '../utils/iconNames';
 
 const PAGE = 120;
@@ -189,8 +192,8 @@ function KeysetPlaylistList({
   );
 }
 
-/** Downloaded filter still reads the in-memory array (small set; keyset WHERE-filtering
- *  is a follow-up). Unchanged from the pre-cutover screen. */
+/** Downloaded filter reads the BOUNDED cache — the downloaded playlists rebuilt from each
+ *  `cached_items` self-cached envelope (never-reaped, offline-safe), not the paged library. */
 function FilteredPlaylistList({
   layout,
   contentInsetTop,
@@ -200,15 +203,12 @@ function FilteredPlaylistList({
   contentInsetTop: number;
   emptyProps: EmptyProps;
 }) {
-  const playlists = playlistLibraryStore((s) => s.playlists);
-  const loading = playlistLibraryStore((s) => s.loading);
-  const error = playlistLibraryStore((s) => s.error);
   const cachedItems = musicCacheStore((s) => s.cachedItems);
 
-  const filteredPlaylists = useMemo(
-    () => playlists.filter((p) => p.id in cachedItems),
-    [playlists, cachedItems],
-  );
+  const filteredPlaylists = useMemo(() => {
+    const articles = serverInfoStore.getState().ignoredArticles ?? undefined;
+    return sortPlaylistsByName(downloadedPlaylistsFromCache(cachedItems), articles);
+  }, [cachedItems]);
 
   const [refreshing, setRefreshing] = useState(false);
   const handleRefresh = useCallback(async () => {
@@ -224,8 +224,7 @@ function FilteredPlaylistList({
     <PlaylistListView
       playlists={filteredPlaylists}
       layout={layout}
-      loading={loading}
-      error={error}
+      loading={false}
       onRefresh={handleRefresh}
       refreshing={refreshing}
       showAlphabetScroller

@@ -180,8 +180,12 @@ export const artists = sqliteTable(
     starred: integer('starred'),
     userRating: integer('user_rating'),
     musicBrainzId: text('music_brainz_id'),
-    // ArtistInfo2 (fetched on demand; nullable until fetched)
+    // ArtistInfo2 (fetched on demand; nullable until fetched). `biography` holds the
+    // RESOLVED bio (Subsonic → MusicBrainz fallback). `bioCheckedAt` is the detail-fetch
+    // marker + MB negative-cache timestamp; `resolvedMbid` the MBID actually used.
     biography: text('biography'),
+    bioCheckedAt: integer('bio_checked_at'),
+    resolvedMbid: text('resolved_mbid'),
     lastFmUrl: text('last_fm_url'),
     imageUrlSmall: text('image_url_small'),
     imageUrlMedium: text('image_url_medium'),
@@ -400,6 +404,25 @@ export const artistSimilar = sqliteTable(
     pos: integer('pos').notNull(),
     similarArtistId: text('similar_artist_id'),
     name: text('name'),
+    // Denormalized from getArtistInfo2's similarArtist payload so the artist-detail
+    // "Similar Artists" cards render art + album count without a second fetch.
+    coverArt: text('cover_art'),
+    albumCount: integer('album_count'),
+    userRating: integer('user_rating'),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.artistId, t.pos] }) }),
+);
+
+// Artist "top songs" (Subsonic getTopSongs, by artist name) — ordered membership so the
+// artist-detail screen resolves them from the DB. Songs themselves live in `songs`.
+export const artistTopSongs = sqliteTable(
+  'artist_top_songs',
+  {
+    artistId: text('artist_id')
+      .notNull()
+      .references(() => artists.id, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    songId: text('song_id').notNull(),
   },
   (t) => ({ pk: primaryKey({ columns: [t.artistId, t.pos] }) }),
 );

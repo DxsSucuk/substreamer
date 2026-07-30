@@ -26,11 +26,11 @@ const mockPlaylistState = { playlists: {} as Record<string, unknown> };
 // A fetch populates the store (success) unless the id is flagged to fail —
 // mirroring `fetchAlbum` resolving null on a timeout/error without throwing.
 const mockFailIds = new Set<string>();
-const mockFetchAlbum = jest.fn(async (id: string) => {
+const mockFetchAlbum = jest.fn(async (id: string, _opts?: { prefetchCovers?: boolean }) => {
   if (!mockFailIds.has(id)) mockAlbumState.albums[id] = { id, song: [] };
   return mockAlbumState.albums[id] ?? null;
 });
-const mockFetchPlaylist = jest.fn(async (id: string) => {
+const mockFetchPlaylist = jest.fn(async (id: string, _opts?: { prefetchCovers?: boolean }) => {
   if (!mockFailIds.has(id)) mockPlaylistState.playlists[id] = { id, entry: [] };
   return mockPlaylistState.playlists[id] ?? null;
 });
@@ -44,13 +44,28 @@ jest.mock('../../store/downloadedMetadataRefreshStore', () => ({
 jest.mock('../../store/musicCacheStore', () => ({
   musicCacheStore: { getState: () => mockCacheState },
 }));
-jest.mock('../../store/albumDetailStore', () => ({
-  albumDetailStore: { getState: () => ({ albums: mockAlbumState.albums, fetchAlbum: mockFetchAlbum }) },
+// The service now fetches detail via the shared normalized detailFetchService; the mocks
+// delegate to the same fetch fns (and mocking this module keeps imageCacheService's
+// module-level offline subscription out of the test graph).
+jest.mock('../detailFetchService', () => ({
+  fetchAlbumDetail: (id: string, opts?: { prefetchCovers?: boolean }) => mockFetchAlbum(id, opts),
+  fetchPlaylistDetail: (id: string, opts?: { prefetchCovers?: boolean }) => mockFetchPlaylist(id, opts),
 }));
-jest.mock('../../store/playlistDetailStore', () => ({
-  playlistDetailStore: {
-    getState: () => ({ playlists: mockPlaylistState.playlists, fetchPlaylist: mockFetchPlaylist }),
-  },
+
+jest.mock('../../store/persistence/db', () => ({ getDb: () => ({}) }));
+
+// The normalized presence checks derive from the same album/playlist state the fetch
+// mocks populate, so the "has detail cached" gate + remaining-count behave as before.
+jest.mock('../../db/repository/songs', () => ({
+  albumIdsWithSongs: jest.fn(
+    async (_db: unknown, ids: string[]) => new Set(ids.filter((id) => mockAlbumState.albums[id])),
+  ),
+}));
+jest.mock('../../db/repository/playlists', () => ({
+  playlistIdsWithSongs: jest.fn(
+    async (_db: unknown, ids: string[]) =>
+      new Set(ids.filter((id) => mockPlaylistState.playlists[id])),
+  ),
 }));
 
 import { refreshDownloadedMetadata } from '../downloadedMetadataService';

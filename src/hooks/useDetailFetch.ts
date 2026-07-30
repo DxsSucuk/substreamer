@@ -5,8 +5,14 @@ import { minDelay } from '../utils/stringHelpers';
 interface DetailFetchOptions {
   /** Route param id; a missing id surfaces `missingIdMessage` instead of fetching. */
   id: string | undefined;
-  /** True when a cached store entry already populated the screen — skips the mount fetch. */
+  /** True when a cached (normalized) entry already populated the screen — skips the mount fetch. */
   hasCache: boolean;
+  /**
+   * True once the (async) local-DB cache lookup has RESOLVED. The mount fetch is held
+   * until this flips true, so a local-DB cache hit renders instantly instead of firing a
+   * blocking server fetch on every open. Defaults to `true` (legacy synchronous-cache path).
+   */
+  cacheChecked?: boolean;
   /** Error shown when `id` is missing. */
   missingIdMessage: string;
   /** Fallback error shown when the fetch throws a non-`Error`. */
@@ -30,6 +36,7 @@ interface DetailFetchOptions {
 export function useDetailFetch({
   id,
   hasCache,
+  cacheChecked = true,
   missingIdMessage,
   failedMessage,
   load,
@@ -63,10 +70,14 @@ export function useDetailFetch({
     [id, load, missingIdMessage, failedMessage],
   );
 
-  // Only fetch on mount if no cached data.
+  // Hold the mount fetch until the async local-DB cache lookup resolves: a cache HIT
+  // renders instantly (no server round-trip); only a genuine MISS fetches from the
+  // server. (Legacy synchronous-cache callers pass `cacheChecked` default true.)
   useEffect(() => {
+    if (!cacheChecked) return;
     if (!hasCache) fetchData();
-  }, [fetchData, hasCache]);
+    else setLoading(false);
+  }, [fetchData, hasCache, cacheChecked]);
 
   const onRefresh = useCallback(() => fetchData(true), [fetchData]);
 

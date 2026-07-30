@@ -2,6 +2,12 @@ jest.mock('../../store/persistence/kvStorage', () =>
   require('../../store/persistence/__mocks__/kvStorage'),
 );
 
+// Detail drilldown/playback go through the shared normalized detailFetchService.
+jest.mock('../detailFetchService', () => ({
+  fetchAlbumDetail: jest.fn(),
+  fetchPlaylistDetail: jest.fn(),
+}));
+
 import { __test, installHeadlessMediaService } from '../headlessMediaService';
 import {
   sectionId,
@@ -15,20 +21,30 @@ import { albumLibraryStore } from '../../store/albumLibraryStore';
 import { albumListsStore } from '../../store/albumListsStore';
 import { favoritesStore } from '../../store/favoritesStore';
 import { playlistLibraryStore } from '../../store/playlistLibraryStore';
-import { albumDetailStore } from '../../store/albumDetailStore';
+import { fetchAlbumDetail, fetchPlaylistDetail } from '../detailFetchService';
 import { offlineModeStore } from '../../store/offlineModeStore';
 import { musicCacheStore } from '../../store/musicCacheStore';
+import { getDb } from '../../store/persistence/db';
+import { ensureNormalizedSchema } from '../../db/createNormalizedTables';
+import { upsertAlbums } from '../../db/repository/albums';
+import { upsertPlaylists } from '../../db/repository/playlists';
 
 const album = (id: string, name: string) => ({ id, name, artist: 'Artist' } as any);
 const song = (id: string) => ({ id, title: `Song ${id}`, artist: 'Artist', albumId: 'al-1' } as any);
 const playlist = (id: string, name: string) => ({ id, name, songCount: 3 } as any);
 
-beforeEach(() => {
+const db = () => getDb()!;
+beforeAll(() => ensureNormalizedSchema(db()));
+
+beforeEach(async () => {
   offlineModeStore.setState({ offlineMode: false } as any);
   musicCacheStore.setState({ cachedItems: {} } as any);
-  albumLibraryStore.setState({
-    albums: [album('al-a', 'Abbey Road'), album('al-z', 'Zooropa')],
-  } as any);
+  // Headless now reads the normalized tables (not the doomed library stores) — seed
+  // the DB so the CarPlay/Auto browse + voice vocab resolve.
+  db().runSync('DELETE FROM albums');
+  db().runSync('DELETE FROM playlists');
+  await upsertAlbums(db(), [album('al-a', 'Abbey Road'), album('al-z', 'Zooropa')]);
+  await upsertPlaylists(db(), [playlist('p1', 'Roadtrip')]);
   albumListsStore.setState({
     recentlyAdded: [album('al-a', 'Abbey Road')],
     recentlyPlayed: [],
@@ -100,9 +116,7 @@ describe('resolveBrowseChildren', () => {
   });
 
   it('album:<id> → its tracks as playable rows (via detail store)', async () => {
-    albumDetailStore.setState({
-      fetchAlbum: jest.fn(async () => ({ song: [song('s1'), song('s2')] })),
-    } as any);
+    (fetchAlbumDetail as jest.Mock).mockResolvedValueOnce({ song: [song('s1'), song('s2')] });
     const rows = await __test.resolveBrowseChildren(albumId('al-a'));
     expect(rows).toHaveLength(2);
     expect(rows.every((r) => r.playable && !r.hasChildren)).toBe(true);
@@ -110,15 +124,10 @@ describe('resolveBrowseChildren', () => {
   });
 
   it('playlist:<id> offline → tracks from the persisted detail cache (shared fetchPlaylist)', async () => {
-    const { playlistDetailStore } = require('../../store/playlistDetailStore');
-    // Offline: the REAL fetchPlaylist short-circuits to the persisted cache — the same
-    // function + source the app's playlist screen uses. No headless-specific fallback.
+    // Offline: fetchPlaylistDetail returns the persisted normalized detail — the same
+    // shared fetch the app's playlist screen uses. No headless-specific fallback.
     offlineModeStore.setState({ offlineMode: true } as any);
-    playlistDetailStore.setState({
-      playlists: {
-        p1: { playlist: { id: 'p1', entry: [song('s1'), song('s2')] }, retrievedAt: 0 },
-      },
-    } as any);
+    (fetchPlaylistDetail as jest.Mock).mockResolvedValueOnce({ id: 'p1', entry: [song('s1'), song('s2')] });
     const rows = await __test.resolveBrowseChildren(playlistId('p1'));
     expect(rows).toHaveLength(2);
     expect(rows.every((r) => r.playable && !r.hasChildren)).toBe(true);
@@ -126,9 +135,7 @@ describe('resolveBrowseChildren', () => {
 
   it('album:<id> offline → tracks from the persisted detail cache (shared fetchAlbum)', async () => {
     offlineModeStore.setState({ offlineMode: true } as any);
-    albumDetailStore.setState({
-      albums: { 'al-a': { album: { id: 'al-a', song: [song('s1'), song('s2')] }, retrievedAt: 0 } },
-    } as any);
+    (fetchAlbumDetail as jest.Mock).mockResolvedValueOnce({ id: 'al-a', song: [song('s1'), song('s2')] });
     const rows = await __test.resolveBrowseChildren(albumId('al-a'));
     expect(rows).toHaveLength(2);
     expect(rows.every((r) => r.playable && !r.hasChildren)).toBe(true);
@@ -144,10 +151,7 @@ describe('resolvePlayback', () => {
   });
 
   it('track:playlist:<id>:<i> → full playlist queue + sourcePlaylistId', async () => {
-    const { playlistDetailStore } = require('../../store/playlistDetailStore');
-    playlistDetailStore.setState({
-      fetchPlaylist: jest.fn(async () => ({ entry: [song('s1'), song('s2'), song('s3')] })),
-    });
+    (fetchPlaylistDetail as jest.Mock).mockResolvedValueOnce({ entry: [song('s1'), song('s2'), song('s3')] });
     const r = await __test.resolvePlayback('track:playlist:p1:2');
     expect(r.queue).toHaveLength(3);
     expect(r.startIndex).toBe(2);

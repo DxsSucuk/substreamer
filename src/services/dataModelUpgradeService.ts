@@ -1,5 +1,8 @@
 /**
- * Background orchestrator for the blob→normalized migration.
+ * Data-model upgrade migration — migrates a user's data from the OLD blob model
+ * (`library_albums`/`song_index`/`album_details` + the artist/playlist KV blobs) into
+ * the NEW normalized model, once, on the first launch after they upgrade to a build that
+ * reads normalized. Background orchestrator.
  *
  * Runs POST-splash via the idle scheduler — NEVER on the blocking splash (on a
  * 200k-album library the migration is minutes long). It is completeness-agnostic:
@@ -18,7 +21,13 @@ import { ensureNormalizedSchema } from '@/db/createNormalizedTables';
 import { checkpointWalAsync, migrateBlobsToNormalized } from '@/db/migrateNormalized';
 import type { InternalDb } from '@/db/client';
 import { getDb } from '@/store/persistence/db';
+import { kvStorage } from '@/store/persistence';
 import { syncStatusStore } from '@/store/syncStatusStore';
+
+/** One-time completion flag: set after the first successful full migration so the
+ *  artist/playlist KV blobs (invisible to the album/song drift check) are migrated
+ *  exactly once — not skipped when a live sync populated albums/songs first. */
+const MIGRATION_DONE_KEY = 'substreamer-normalized-migration-complete';
 
 let inFlight: Promise<void> | null = null;
 
@@ -36,7 +45,7 @@ const countTable = async (db: InternalDb, table: string): Promise<number> => {
  * are already in step, a run is in flight, or a live library sync is active (we
  * don't race the sync; the next idle pass picks up the drift).
  */
-export function runNormalizedMigrationIfNeeded(): Promise<void> {
+export function runDataModelUpgradeIfNeeded(): Promise<void> {
   if (inFlight) return inFlight;
   inFlight = (async () => {
     try {
@@ -49,25 +58,32 @@ export function runNormalizedMigrationIfNeeded(): Promise<void> {
       const activeSync = sync.getInFlight('song-sync') ?? sync.getInFlight('full-walk');
       if (activeSync) {
         void activeSync.finally(() => {
-          void runNormalizedMigrationIfNeeded();
+          void runDataModelUpgradeIfNeeded();
         });
         return;
       }
 
       ensureNormalizedSchema(db);
-      const [blobAlbums, normAlbums, blobSongs, normSongs] = await Promise.all([
+      const [blobAlbums, normAlbums, blobSongs, normSongs, stampedRaw] = await Promise.all([
         countTable(db, 'library_albums'),
         countTable(db, 'albums'),
         countTable(db, 'song_index'),
         countTable(db, 'songs'),
+        kvStorage.getItem(MIGRATION_DONE_KEY),
       ]);
-      // Nothing un-migrated → no-op (steady state once the sync dual-writes both).
-      if (blobAlbums <= normAlbums && blobSongs <= normSongs) return;
+      // Run when the migration has NEVER completed (first upgrade — this is the only pass
+      // that migrates the artist/playlist KV blobs, which the album/song drift check
+      // can't see), OR when the blob tables grew past normalized (a manual re-sync).
+      // Steady state → no-op.
+      if (stampedRaw === '1' && blobAlbums <= normAlbums && blobSongs <= normSongs) return;
 
       syncStatusStore.getState().setNormalizedMigration('migrating', 0, 0);
       const result = await migrateBlobsToNormalized(db, undefined, undefined, (done, total) =>
         syncStatusStore.getState().setNormalizedMigration('migrating', done, total),
       );
+      // Stamp complete so the one-time artist/playlist migration isn't re-evaluated on
+      // every launch once albums/songs are in step.
+      await kvStorage.setItem(MIGRATION_DONE_KEY, '1');
       syncStatusStore.getState().setNormalizedMigration('idle', 0, 0);
       // Fold the (large) WAL in the background — does NOT block completion.
       void checkpointWalAsync(db);

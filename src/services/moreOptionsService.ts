@@ -6,14 +6,14 @@
  */
 
 import i18n from '../i18n/i18n';
-import { albumDetailStore } from '../store/albumDetailStore';
-import { artistDetailStore } from '../store/artistDetailStore';
+import { fetchArtistDetail } from './detailFetchService';
 import { favoritesStore } from '../store/favoritesStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { offlineModeStore } from '../store/offlineModeStore';
-import { playlistDetailStore } from '../store/playlistDetailStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import { playlistLibraryStore } from '../store/playlistLibraryStore';
+import { getDb } from '../store/persistence/db';
+import { getAlbumDetail, getArtistDetail, getPlaylistDetail } from '../db/repository/details';
 import { processingOverlayStore } from '../store/processingOverlayStore';
 import { shuffleArray } from '../utils/arrayHelpers';
 import {
@@ -132,7 +132,8 @@ export async function playSongNextInQueue(song: Child): Promise<void> {
  * Uses cached album data when available, otherwise fetches from the API.
  */
 export async function addAlbumToQueue(album: AlbumID3): Promise<void> {
-  let songs = albumDetailStore.getState().albums[album.id]?.album?.song;
+  const db = getDb();
+  let songs = db ? (await getAlbumDetail(db, album.id))?.songs : undefined;
   if (!songs?.length) {
     const full = await getAlbum(album.id);
     songs = full?.song;
@@ -146,7 +147,8 @@ export async function addAlbumToQueue(album: AlbumID3): Promise<void> {
  * Uses cached playlist data when available, otherwise fetches from the API.
  */
 export async function addPlaylistToQueue(playlist: Playlist): Promise<void> {
-  let entries = playlistDetailStore.getState().playlists[playlist.id]?.playlist?.entry;
+  const db = getDb();
+  let entries = db ? (await getPlaylistDetail(db, playlist.id))?.entry : undefined;
   if (!entries?.length) {
     const full = await getPlaylist(playlist.id);
     entries = full?.entry;
@@ -285,9 +287,10 @@ export async function saveArtistTopSongsPlaylist(artist: ArtistID3): Promise<voi
   processingOverlayStore.getState().show(i18n.t('creating'));
 
   try {
-    let topSongs = artistDetailStore.getState().artists[artist.id]?.topSongs;
+    const db = getDb();
+    let topSongs = db ? (await getArtistDetail(db, artist.id))?.topSongs : undefined;
     if (!topSongs?.length) {
-      const entry = await artistDetailStore.getState().fetchArtist(artist.id);
+      const entry = await fetchArtistDetail(artist.id);
       topSongs = entry?.topSongs ?? [];
     }
 
@@ -360,20 +363,22 @@ async function fetchAllArtistSongs(
     return songs;
   }
 
-  // Get artist detail (cached or fetched)
-  const cached = artistDetailStore.getState().artists[artistId];
-  const artistDetail = cached ?? (await artistDetailStore.getState().fetchArtist(artistId));
-  const albums = artistDetail?.artist?.album;
+  // Get the artist's albums from the normalized detail (fall back to a server fetch).
+  const db = getDb();
+  let albums = db ? (await getArtistDetail(db, artistId))?.albums : undefined;
+  if (!albums?.length) {
+    const entry = await fetchArtistDetail(artistId);
+    albums = entry?.artist?.album;
+  }
   if (!albums?.length) {
     processingOverlayStore.getState().showError(i18n.t('noSongsFoundByArtist', { artist: artistName }));
     return null;
   }
 
-  // Fetch songs from each album (use cache where available)
-  const cachedAlbums = albumDetailStore.getState().albums;
+  // Fetch songs from each album (normalized detail where available, else server).
   const albumSongs = await Promise.all(
     albums.map(async (album) => {
-      const cachedSongs = cachedAlbums[album.id]?.album?.song;
+      const cachedSongs = db ? (await getAlbumDetail(db, album.id))?.songs : undefined;
       if (cachedSongs?.length) return cachedSongs;
       const fetched = await getAlbum(album.id);
       return fetched?.song ?? [];

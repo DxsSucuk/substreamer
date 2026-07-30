@@ -8,6 +8,23 @@
  */
 import { getDb, serializeDbWrite } from './db';
 import { type CompletedScrobble } from '../completedScrobbleStore';
+import {
+  deriveScrobbleColumns,
+  scrobbleColumnValues,
+  SCROBBLE_COLUMN_NAMES,
+} from './scrobbleColumns';
+
+/** Full INSERT with the structured analytics columns (see scrobbleColumns.ts). */
+const INSERT_SQL =
+  `INSERT OR IGNORE INTO scrobble_events (id, song_json, time, ${SCROBBLE_COLUMN_NAMES.join(', ')}) ` +
+  `VALUES (${new Array(3 + SCROBBLE_COLUMN_NAMES.length).fill('?').join(', ')});`;
+
+const insertParams = (s: CompletedScrobble): (string | number | null)[] => [
+  s.id,
+  JSON.stringify(s.song),
+  s.time,
+  ...scrobbleColumnValues(deriveScrobbleColumns(s.song, s.time)),
+];
 
 /* ------------------------------------------------------------------ */
 /*  Reads                                                              */
@@ -102,6 +119,25 @@ export async function hydrateScrobblesAsync(): Promise<CompletedScrobble[]> {
   }
 }
 
+/**
+ * Which of the given ids already exist as completed scrobbles — the SQL-backed
+ * replacement for building a Set from the full in-memory array. Used by the
+ * scrobble processor to skip pending items already committed as completed.
+ */
+export async function existingScrobbleIds(ids: readonly string[]): Promise<Set<string>> {
+  const db = getDb();
+  if (db === null || ids.length === 0) return new Set<string>();
+  try {
+    const rows = await db.getAllAsync<{ id: string }>(
+      'SELECT id FROM scrobble_events WHERE id IN (SELECT value FROM json_each(?));',
+      [JSON.stringify([...ids])],
+    );
+    return new Set(rows.map((r) => r.id));
+  } catch {
+    return new Set<string>();
+  }
+}
+
 /** Return the total scrobble row count. Used by diagnostics. */
 export async function countScrobbles(): Promise<number> {
   const db = getDb();
@@ -128,12 +164,7 @@ export async function insertScrobble(scrobble: CompletedScrobble): Promise<void>
   if (db === null) return;
   if (!scrobble.id || !scrobble.song?.id || !scrobble.song.title) return;
   try {
-    await serializeDbWrite(() =>
-      db.runAsync(
-        'INSERT OR IGNORE INTO scrobble_events (id, song_json, time) VALUES (?, ?, ?);',
-        [scrobble.id, JSON.stringify(scrobble.song), scrobble.time],
-      ),
-    );
+    await serializeDbWrite(() => db.runAsync(INSERT_SQL, insertParams(scrobble)));
   } catch {
     /* dropped */
   }
@@ -163,10 +194,7 @@ export async function mergeScrobbles(
           if (seen.has(s.id)) continue;
           seen.add(s.id);
           // eslint-disable-next-line no-await-in-loop
-          await db.runAsync(
-            'INSERT OR IGNORE INTO scrobble_events (id, song_json, time) VALUES (?, ?, ?);',
-            [s.id, JSON.stringify(s.song), s.time],
-          );
+          await db.runAsync(INSERT_SQL, insertParams(s));
         }
       }),
     );
@@ -196,15 +224,105 @@ export async function replaceAllScrobbles(scrobbles: readonly CompletedScrobble[
           if (seen.has(s.id)) continue;
           seen.add(s.id);
           // eslint-disable-next-line no-await-in-loop
-          await db.runAsync(
-            'INSERT OR IGNORE INTO scrobble_events (id, song_json, time) VALUES (?, ?, ?);',
-            [s.id, JSON.stringify(s.song), s.time],
-          );
+          await db.runAsync(INSERT_SQL, insertParams(s));
         }
       }),
     );
   } catch {
     /* dropped */
+  }
+}
+
+/**
+ * ALTER-add the structured analytics columns to a pre-existing `scrobble_events`
+ * table (new installs get them from the CREATE). Idempotent — each ADD COLUMN is
+ * try/caught so a "duplicate column" on a second run is a no-op. Then backfill
+ * any rows still missing the derived values (an upgrade's existing scrobbles).
+ */
+export async function ensureScrobbleColumnsAsync(): Promise<void> {
+  const db = getDb();
+  if (db === null) return;
+  const defs: Array<[string, string]> = [
+    ['song_id', 'TEXT'],
+    ['artist', 'TEXT'],
+    ['artist_id', 'TEXT'],
+    ['album', 'TEXT'],
+    ['album_id', 'TEXT'],
+    ['cover_art', 'TEXT'],
+    ['genre', 'TEXT'],
+    ['year', 'INTEGER'],
+    ['duration', 'INTEGER'],
+    ['hour', 'INTEGER'],
+    ['day_key', 'TEXT'],
+  ];
+  for (const [col, type] of defs) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await serializeDbWrite(() =>
+        db.runAsync(`ALTER TABLE scrobble_events ADD COLUMN ${col} ${type};`),
+      );
+    } catch {
+      /* column already exists — expected on the second+ run */
+    }
+  }
+  try {
+    await serializeDbWrite(() =>
+      db.runAsync('CREATE INDEX IF NOT EXISTS idx_scrobble_events_hour ON scrobble_events (hour);'),
+    );
+  } catch {
+    /* best-effort */
+  }
+  await backfillScrobbleColumnsAsync();
+}
+
+/** Rows-per-chunk for the one-time backfill of derived columns on existing rows. */
+const BACKFILL_CHUNK = 500;
+
+/**
+ * Populate the derived columns for rows that predate them (song_id IS NULL).
+ * Chunked to keep the JS thread responsive on a large upgrade history. Parses
+ * each row's `song_json` and derives the same columns the write path stores.
+ */
+export async function backfillScrobbleColumnsAsync(): Promise<void> {
+  const db = getDb();
+  if (db === null) return;
+  try {
+    // Loop until no un-backfilled rows remain (each pass takes a bounded chunk).
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const rows = await db.getAllAsync<{ id: string; song_json: string; time: number }>(
+        'SELECT id, song_json, time FROM scrobble_events WHERE song_id IS NULL LIMIT ?;',
+        [BACKFILL_CHUNK],
+      );
+      if (rows.length === 0) break;
+      const updates: Array<[string, (string | number | null)[]]> = [];
+      for (const row of rows) {
+        let song: unknown;
+        try {
+          song = JSON.parse(row.song_json);
+        } catch {
+          song = null;
+        }
+        if (!song || typeof song !== 'object' || !(song as { id?: unknown }).id) {
+          // Unparseable/invalid — stamp song_id so we don't reconsider it forever.
+          updates.push(['UPDATE scrobble_events SET song_id = ? WHERE id = ?;', [row.id, row.id]]);
+          continue;
+        }
+        const cols = deriveScrobbleColumns(song as CompletedScrobble['song'], row.time);
+        updates.push([
+          `UPDATE scrobble_events SET ${SCROBBLE_COLUMN_NAMES.map((c) => `${c} = ?`).join(', ')} WHERE id = ?;`,
+          [...scrobbleColumnValues(cols), row.id],
+        ]);
+      }
+      // eslint-disable-next-line no-await-in-loop
+      await serializeDbWrite(() => db.runBatchAsync(updates));
+      if (rows.length < BACKFILL_CHUNK) break;
+      // Yield between chunks so a large history can't freeze the JS thread.
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+  } catch {
+    /* best-effort — analytics degrade gracefully on any unbackfilled rows */
   }
 }
 

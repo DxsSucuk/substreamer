@@ -53,7 +53,6 @@ import { SetRatingSheet } from '../components/SetRatingSheet';
 import { SleepTimerSheet } from '../components/SleepTimerSheet';
 import { PlaybackToast } from '../components/PlaybackToast';
 import { ProcessingOverlay } from '../components/ProcessingOverlay';
-import { initSongLibrary } from '../hooks/useAllSongsByTitle';
 import { useDownloadBackgroundNotification } from '../hooks/useDownloadBackgroundNotification';
 import { useDownloadKeepAwake } from '../hooks/useDownloadKeepAwake';
 import { useLayoutMode } from '../hooks/useLayoutMode';
@@ -64,7 +63,8 @@ import {
   onStartup,
   recoverStalledSync,
 } from '../services/dataSyncService';
-import { runNormalizedMigrationIfNeeded } from '../services/normalizedMigrationService';
+import { runDataModelUpgradeIfNeeded } from '../services/dataModelUpgradeService';
+import { hydrateDownloadedAlbumCoverArt } from '../hooks/useSongCoverArt';
 import { useLibrarySyncBackgroundNotification } from '../hooks/useLibrarySyncBackgroundNotification';
 import { useLibrarySyncKeepAwake } from '../hooks/useLibrarySyncKeepAwake';
 import {
@@ -242,6 +242,12 @@ async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
   await stage('deferredMusicCacheInit', () => deferredMusicCacheInit());
   if (getCancelled()) return;
 
+  // Warm the album cover-art cache for DOWNLOADED albums (after music-cache hydration)
+  // so offline imperative callers (lock-screen art, CarPlay snapshot) resolve album-mode
+  // cover art without a live DB round-trip. Bounded; on-demand fill covers everything else.
+  idleStage('hydrateDownloadedAlbumCoverArt', () => hydrateDownloadedAlbumCoverArt());
+  if (getCancelled()) return;
+
   // imageCacheStore aggregates come from SQL now (via `rehydrateAllStores`
   // at splash and `reconcileImageCache` inside `deferredImageCacheInit`),
   // so the one-time recalculate-from-stats call is gone.
@@ -267,21 +273,17 @@ async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
   idleStage('deferredDataSyncInit', () => deferredDataSyncInit());
   if (getCancelled()) return;
 
-  // One-time blob→normalized migration — DISABLED while evaluating the target-state
-  // normalized library sync (`runNormalizedLibrarySync`, wired to forceFullResync),
-  // which is the sole writer of the normalized model. Running the drift-migration
-  // too would be the old+new models populating in parallel. Re-enable once we settle
-  // the transition strategy (migrate-existing-blobs vs sync-only).
-  // idleStage('normalizedMigration', () => runNormalizedMigrationIfNeeded());
-  void runNormalizedMigrationIfNeeded; // keep the import referenced while disabled
+  // One-time blob/KV→normalized migration — populates the normalized model from the
+  // user's EXISTING local caches on the first boot after the update, so an offline user
+  // (or one before a server sync finishes) still has their full library / artists /
+  // playlists / detail. Idle-scheduled (never blocks first paint), drift/version-gated,
+  // idempotent, and it waits for an active library/song sync to settle first — so it
+  // safely co-exists with the live normalized sync (both are idempotent upserts).
+  idleStage('dataModelUpgrade', () => runDataModelUpgradeIfNeeded());
   if (getCancelled()) return;
 
-  // Build the songs-library list once, now that the startup data-load/refresh
-  // tasks have settled, so the first tap on the Songs segment is an instant hit.
-  // Thereafter it's kept current by optimistic in-memory patches from song-index
-  // writes — no full rebuild on every album-detail sync.
-  await stage('initSongLibrary', () => { initSongLibrary(); });
-  if (getCancelled()) return;
+  // (The old `initSongLibrary` whole-library build is retired — the song FILTER views
+  // now source from the bounded favorites/cached stores, and the A–Z browse pages the DB.)
 
   // Re-push the CarPlay / Android Auto browse snapshot now the library stores
   // are hydrated — a cold car wake that rendered an empty skeleton self-corrects.

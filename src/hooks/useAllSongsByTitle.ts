@@ -1,12 +1,9 @@
-import { useEffect, useMemo } from 'react';
+import { useMemo } from 'react';
 
 import { getLocalTrackUri } from '../services/musicCacheService';
 import { favoritesStore } from '../store/favoritesStore';
 import { musicCacheStore } from '../store/musicCacheStore';
-import { songIndexStore } from '../store/songIndexStore';
-import { songLibraryStore } from '../store/songLibraryStore';
 import type { Child } from '../services/subsonicService';
-import { runWhenIdle } from '../utils/runWhenIdle';
 
 interface UseAllSongsByTitleOpts {
   downloadedOnly?: boolean;
@@ -16,94 +13,75 @@ interface UseAllSongsByTitleOpts {
 interface UseAllSongsByTitleResult {
   songs: Child[];
   totalCount: number;
-  /** True while the base list is being built (before the first build resolves). */
   loading: boolean;
   refresh: () => void;
 }
 
 const EMPTY: Child[] = [];
+const byTitle = (a: Child, b: Child): number => (a.title ?? '').localeCompare(b.title ?? '');
+
+/** Shape a cached_songs row into the `Child` the song rows render. */
+function childFromCached(s: {
+  id: string;
+  title?: string;
+  artist?: string;
+  albumId?: string;
+  duration?: number;
+  coverArt?: string;
+}): Child {
+  return {
+    id: s.id,
+    title: s.title ?? '',
+    artist: s.artist,
+    albumId: s.albumId,
+    duration: s.duration ?? 0,
+    coverArt: s.coverArt,
+    isDir: false,
+  } as Child;
+}
 
 /**
- * Read all songs from the in-memory `songLibraryStore` base list, with optional
- * in-memory filtering by downloaded/favorited state.
- *
- * **Reactivity model:**
- *  - The unfiltered base list is owned by `songLibraryStore`: built once
- *    (asynchronously, off the JS thread) after startup, and thereafter kept
- *    current by optimistic in-memory patches from `songIndexStore` writes — NOT
- *    rebuilt on every mutation. A pull-to-refresh (`refresh`) forces a clean
- *    rebuild from `song_index`.
- *  - `downloadedOnly` and `favoritesOnly` filters are applied in JS against
- *    live stores (`musicCacheStore.cachedItems`, `favoritesStore.songs` +
- *    `overrides`) so star/download/delete actions from anywhere in the app
- *    refresh the filtered list automatically.
- *  - Per-row star/rating/download badges remain driven by `useIsStarred`,
- *    `useRating`, and `useDownloadStatus` on each row.
+ * Songs for the downloaded/favorites FILTER views, title-sorted. Sourced entirely from
+ * the BOUNDED, kept stores — `favoritesStore.songs` (the complete starred set + optimistic
+ * overrides) and `musicCacheStore.cachedSongs` (the downloaded set) — so it retires the
+ * old whole-library `songLibraryStore.base` / `songIndexStore` read (the OOM risk). This
+ * hook is only mounted when a filter is active; the main A–Z browse pages the DB directly.
  */
-export function useAllSongsByTitle(
-  opts: UseAllSongsByTitleOpts = {},
-): UseAllSongsByTitleResult {
+export function useAllSongsByTitle(opts: UseAllSongsByTitleOpts = {}): UseAllSongsByTitleResult {
   const downloadedOnly = opts.downloadedOnly === true;
   const favoritesOnly = opts.favoritesOnly === true;
-  const totalCount = songIndexStore((s) => s.totalCount);
 
-  const base = songLibraryStore((s) => s.base);
-  const building = songLibraryStore((s) => s.building);
-
-  // Live subscriptions — re-fire the filter useMemo when star/download changes.
   const starredSongs = favoritesStore((s) => s.songs);
   const starOverrides = favoritesStore((s) => s.overrides);
   const cachedItems = musicCacheStore((s) => s.cachedItems);
-
-  // Ensure the list is built if it wasn't pre-built at startup (idempotent).
-  useEffect(() => {
-    if (base === null) void songLibraryStore.getState().build();
-  }, [base]);
-
-  const safeBase = base ?? EMPTY;
+  const cachedSongs = musicCacheStore((s) => s.cachedSongs);
 
   const songs = useMemo(() => {
-    if (!downloadedOnly && !favoritesOnly) return safeBase;
+    if (!downloadedOnly && !favoritesOnly) return EMPTY;
 
-    let starredIds: Set<string> | null = null;
+    let result: Child[];
     if (favoritesOnly) {
-      starredIds = new Set(starredSongs.map((s) => s.id));
-      // Apply optimistic overrides — newly starred songs land here before
-      // they make it into `favoritesStore.songs` (and unstarred songs vanish).
+      // Complete starred set, adjusted by optimistic overrides (newly (un)starred rows).
+      const starredIds = new Set(starredSongs.map((s) => s.id));
       for (const [id, isStarred] of Object.entries(starOverrides)) {
         if (isStarred) starredIds.add(id);
         else starredIds.delete(id);
       }
+      result = starredSongs.filter((s) => starredIds.has(s.id));
+      if (downloadedOnly) result = result.filter((s) => getLocalTrackUri(s.id) !== null);
+    } else {
+      // Downloaded-only: the cached-songs set, deduped by id.
+      const seen = new Set<string>();
+      result = [];
+      for (const cs of Object.values(cachedSongs)) {
+        if (!cs || seen.has(cs.id)) continue;
+        seen.add(cs.id);
+        result.push(childFromCached(cs));
+      }
     }
+    return [...result].sort(byTitle);
+    // `cachedItems` is a dep so the list refreshes when a download completes/is deleted.
+  }, [downloadedOnly, favoritesOnly, starredSongs, starOverrides, cachedItems, cachedSongs]);
 
-    return safeBase.filter((song) => {
-      if (favoritesOnly && starredIds && !starredIds.has(song.id)) return false;
-      if (downloadedOnly && getLocalTrackUri(song.id) === null) return false;
-      return true;
-    });
-    // cachedItems is a dep so the JS filter re-runs whenever a download
-    // completes/is deleted (trackUriMap is synchronised with cachedItems
-    // writes, so reading getLocalTrackUri inside the filter sees fresh state).
-  }, [safeBase, downloadedOnly, favoritesOnly, starredSongs, starOverrides, cachedItems]);
-
-  const refresh = useMemo(
-    () => () => {
-      void songLibraryStore.getState().build(true);
-    },
-    [],
-  );
-
-  return { songs, totalCount, loading: base === null && building, refresh };
-}
-
-/**
- * Build the songs-library list once, on startup, after the data-load/refresh
- * tasks have settled. Called from the deferred-startup sequence. Idempotent —
- * `songLibraryStore.build()` no-ops once the list is built. Deferred to an idle
- * window so the SQLite read + mapping doesn't compete with first-frame render.
- */
-export function initSongLibrary(): void {
-  runWhenIdle(() => {
-    void songLibraryStore.getState().build();
-  });
+  return { songs, totalCount: songs.length, loading: false, refresh: () => {} };
 }

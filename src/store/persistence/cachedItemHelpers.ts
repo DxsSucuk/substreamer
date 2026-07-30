@@ -1,3 +1,5 @@
+import type { AlbumID3, Playlist } from 'subsonic-api';
+
 import {
   type CachedItemRow,
   type DownloadQueueRow,
@@ -46,6 +48,48 @@ export function albumPassesDownloadedFilter(
   if (!item) return false;
   if (!includePartial && isPartialAlbum(item)) return false;
   return true;
+}
+
+/**
+ * The DOWNLOADED albums, rebuilt from each `cached_items` row's self-cached
+ * `rawJson` envelope — the never-reaped source of truth for downloaded metadata,
+ * independent of the (paged) library. Honours the partial-download preference via
+ * the same `isPartialAlbum` rule the library filter uses. A row with no envelope or
+ * a corrupt one is skipped.
+ */
+export function downloadedAlbumsFromCache(
+  cachedItems: Record<string, CachedItemRow>,
+  includePartial: boolean,
+): AlbumID3[] {
+  const out: AlbumID3[] = [];
+  for (const item of Object.values(cachedItems)) {
+    if (item.type !== 'album') continue;
+    if (!includePartial && isPartialAlbum(item)) continue;
+    if (!item.rawJson) continue;
+    try {
+      out.push(JSON.parse(item.rawJson) as AlbumID3);
+    } catch {
+      /* skip a corrupt envelope */
+    }
+  }
+  return out;
+}
+
+/** The DOWNLOADED playlists, rebuilt from each `cached_items` row's `rawJson`. */
+export function downloadedPlaylistsFromCache(
+  cachedItems: Record<string, CachedItemRow>,
+): Playlist[] {
+  const out: Playlist[] = [];
+  for (const item of Object.values(cachedItems)) {
+    if (item.type !== 'playlist') continue;
+    if (!item.rawJson) continue;
+    try {
+      out.push(JSON.parse(item.rawJson) as Playlist);
+    } catch {
+      /* skip a corrupt envelope */
+    }
+  }
+  return out;
 }
 
 /**

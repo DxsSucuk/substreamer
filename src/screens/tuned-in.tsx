@@ -40,6 +40,7 @@ import { playTrack } from '../services/playerService';
 import { getAlbum } from '../services/subsonicService';
 import { albumListsStore } from '../store/albumListsStore';
 import { completedScrobbleStore } from '../store/completedScrobbleStore';
+import { loadScrobblesSince } from '../store/persistence/scrobbleAggregates';
 import { connectivityStore } from '../store/connectivityStore';
 import { favoritesStore } from '../store/favoritesStore';
 import { genreStore } from '../store/genreStore';
@@ -849,7 +850,6 @@ export function TunedInScreen() {
   const bentoHeroW = bentoCellW * 2 + BENTO_GAP;
 
   const aggregates = completedScrobbleStore((s) => s.aggregates);
-  const completedScrobbles = completedScrobbleStore((s) => s.completedScrobbles);
   const starredSongs = favoritesStore((s) => s.songs);
   const online = !offlineModeStore((s) => s.offlineMode) && connectivityStore((s) => s.isServerReachable);
   const recentlyPlayed = albumListsStore((s) => s.recentlyPlayed);
@@ -876,8 +876,15 @@ export function TunedInScreen() {
   const [mixesReady, setMixesReady] = useState(false);
   useEffect(() => {
     if (!transitionComplete) return;
-    const handle = setTimeout(() => {
-      const scrobbles = completedScrobbles.map((s) => ({
+    let alive = true;
+    // A BOUNDED recent slice (last 30 days) from SQL feeds the time-window mixes
+    // (Heavy Rotation 7d, time-of-day) — never the full history. All-time patterns
+    // still come from the SQL aggregates above.
+    const RECENT_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+    const handle = setTimeout(async () => {
+      const recent = await loadScrobblesSince(Date.now() - RECENT_WINDOW_MS);
+      if (!alive) return;
+      const scrobbles = recent.map((s) => ({
         time: s.time,
         song: s.song as { genre?: string; genres?: unknown[]; artist?: string; artistId?: string },
       }));
@@ -895,8 +902,11 @@ export function TunedInScreen() {
       );
       setMixesReady(true);
     }, 0);
-    return () => clearTimeout(handle);
-  }, [transitionComplete, aggregates, completedScrobbles, starredSongs, online, refreshKey]);
+    return () => {
+      alive = false;
+      clearTimeout(handle);
+    };
+  }, [transitionComplete, aggregates, starredSongs, online, refreshKey]);
 
   // Available genres for the builder
   const builderGenres = useMemo(() => {

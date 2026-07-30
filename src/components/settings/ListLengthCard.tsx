@@ -9,7 +9,7 @@ import {
   type ListLength,
 } from '../../store/layoutPreferencesStore';
 import { albumListsStore } from '../../store/albumListsStore';
-import { artistDetailStore } from '../../store/artistDetailStore';
+import { refreshArtistTopSongs } from '../../services/detailFetchService';
 import { offlineModeStore } from '../../store/offlineModeStore';
 import { processingOverlayStore } from '../../store/processingOverlayStore';
 import { DropdownRow, type DropdownOption } from './DropdownRow';
@@ -44,7 +44,7 @@ export function ListLengthCard() {
       try {
         await Promise.all([
           albumListsStore.getState().refreshAll(),
-          artistDetailStore.getState().refreshTopSongs(),
+          refreshArtistTopSongs(),
         ]);
         processingOverlayStore.getState().showSuccess(t('cachedListsUpdated'));
       } catch {

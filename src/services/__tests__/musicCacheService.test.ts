@@ -118,24 +118,37 @@ jest.mock('../subsonicService');
 
 const mockFetchAlbum = jest.fn();
 const mockAlbumDetailAlbums: { value: Record<string, any> } = { value: {} };
-jest.mock('../../store/albumDetailStore', () => ({
-  albumDetailStore: {
-    getState: jest.fn(() => ({
-      fetchAlbum: mockFetchAlbum,
-      albums: mockAlbumDetailAlbums.value,
-    })),
-  },
-}));
-
 const mockFetchPlaylist = jest.fn();
 let mockPlaylistDetailPlaylists: Record<string, any> = {};
-jest.mock('../../store/playlistDetailStore', () => ({
-  playlistDetailStore: {
-    getState: jest.fn(() => ({
-      fetchPlaylist: mockFetchPlaylist,
-      playlists: mockPlaylistDetailPlaylists,
-    })),
-  },
+// Detail fetch now goes through the shared normalized detailFetchService.
+jest.mock('../detailFetchService', () => ({
+  fetchAlbumDetail: (...args: unknown[]) => mockFetchAlbum(...args),
+  fetchPlaylistDetail: (...args: unknown[]) => mockFetchPlaylist(...args),
+}));
+
+// The normalized detail reads + album-song presence check derive from the same detail-store
+// mock state the tests drive, so the envelope build + partial-album count behave as before.
+// `getAlbumDetail().album` is the album META (song stripped) — matches production.
+jest.mock('../../db/repository/details', () => ({
+  ...jest.requireActual('../../db/repository/details'),
+  getAlbumDetail: jest.fn(async (_db: unknown, id: string) => {
+    const a = mockAlbumDetailAlbums.value[id];
+    if (!a) return null;
+    const { song, ...albumMeta } = a.album ?? a;
+    return { album: albumMeta, songs: song ?? [] };
+  }),
+  getPlaylistDetail: jest.fn(async (_db: unknown, id: string) => {
+    const p = mockPlaylistDetailPlaylists[id];
+    if (!p) return null;
+    const { entry, ...plMeta } = p.playlist ?? p;
+    return { playlist: plMeta, entry: entry ?? [] };
+  }),
+}));
+jest.mock('../../db/repository/songs', () => ({
+  ...jest.requireActual('../../db/repository/songs'),
+  albumIdsWithSongs: jest.fn(
+    async (_db: unknown, ids: string[]) => new Set(ids.filter((id) => mockAlbumDetailAlbums.value[id])),
+  ),
 }));
 
 jest.mock('../../store/favoritesStore', () => {

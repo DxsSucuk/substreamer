@@ -55,6 +55,7 @@ import {
   upsertCachedImage,
   type CacheBrowserFilter,
 } from '../store/persistence/imageCacheTable';
+import { isDbHealthy } from '../store/persistence/db';
 import {
   clearImageQueueByCycle,
   countImageQueueRowsByCycle,
@@ -1935,6 +1936,17 @@ async function teardownImageCacheState({ reinit }: { reinit: boolean }): Promise
   // rows drift the reconcile safety gate then refuses to heal). The cache path
   // is always `{document}/image-cache`, so delete it regardless of the handle.
   cacheDir = null;
+  // GUARD: never perform the destructive wipe when the DB is unavailable. The disk
+  // delete below is unconditional, but the paired row-clear (clearAllCachedImages)
+  // needs the DB — wiping now would orphan every row (files gone, rows remain → mass
+  // placeholder). This is precisely how a migration-triggered clear during a failed DB
+  // boot nuked the cache. Skip the destructive part; the in-memory reset still runs.
+  if (!isDbHealthy()) {
+    logImageCache(`teardown-wipe SKIPPED reinit=${reinit} — DB unavailable, refusing to orphan the cache`);
+    imageCacheStore.getState().reset();
+    if (reinit) initImageCache();
+    return;
+  }
   try {
     // Recursive on-disk wipe off the JS thread — the image cache is thousands
     // of small variant files; a sync Directory.delete() would freeze the UI

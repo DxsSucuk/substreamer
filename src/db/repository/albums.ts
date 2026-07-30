@@ -191,3 +191,31 @@ export const bumpAlbumPlayStats = (db: InternalDb, id: string, played: string): 
 
 export const getAlbum = (db: InternalDb, id: string): Promise<Record<string, unknown> | null> =>
   db.getFirstAsync('SELECT * FROM albums WHERE id = ?', [id]);
+
+/** Every album id in the table — the normalized replacement for the sync's in-memory
+ *  `albumLibraryStore.albums` `knownIds` set (change-detect + walk enumeration). */
+export const listAlbumIds = (db: InternalDb): Promise<string[]> =>
+  db.getAllAsync<{ id: string }>('SELECT id FROM albums').then((rows) => rows.map((r) => r.id));
+
+/** All album lean rows, sort-title order. For the CarPlay/headless A–Z browse + voice
+ *  vocabulary — the normalized replacement for reading `albumLibraryStore.albums`.
+ *  (NB: whole-table read; a per-letter headless browse is a follow-up memory refinement.) */
+export const listAllAlbums = (db: InternalDb): Promise<AlbumListRow[]> =>
+  db.getAllAsync<AlbumListRow>(`SELECT ${ALBUM_LIST_COLS} FROM albums ORDER BY sort_title, "id"`);
+
+/**
+ * Non-destructive full-sync reconcile: delete album rows whose id is NOT in the current
+ * server set AND NOT protected (downloaded/favorited detail we must never reap). Replaces
+ * `resetNormalizedSchema` (DROP+recreate) for full sync so offline content survives.
+ * Children cascade via FK. Both id sets pass as JSON via `json_each`.
+ */
+export const reconcileAlbums = (
+  db: InternalDb,
+  keepIds: string[],
+  protectedIds: string[] = [],
+): Promise<unknown> =>
+  db.runAsync(
+    'DELETE FROM albums WHERE id NOT IN (SELECT value FROM json_each(?)) ' +
+      'AND id NOT IN (SELECT value FROM json_each(?))',
+    [JSON.stringify(keepIds), JSON.stringify(protectedIds)],
+  );

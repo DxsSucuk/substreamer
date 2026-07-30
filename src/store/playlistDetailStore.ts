@@ -13,6 +13,8 @@ import {
 } from '../services/subsonicService';
 import { ratingStore } from './ratingStore';
 import { offlineModeStore } from './offlineModeStore';
+import { getDb, serializeDbWrite } from './persistence/db';
+import { writePlaylistDetailToNormalized } from '../db/normalizedSyncWriter';
 
 interface PlaylistDetailEntry {
   playlist: PlaylistWithSongs;
@@ -72,6 +74,16 @@ export const playlistDetailStore = create<PlaylistDetailState>()(
               [id]: { playlist: data, retrievedAt: Date.now() },
             },
           });
+
+          // Dual-write the playlist row + ordered membership (+ member songs) into the
+          // normalized model so `getPlaylistDetail` resolves (nothing else writes
+          // `playlist_songs` live). Best-effort, off the render path.
+          const db = getDb();
+          if (db) {
+            void serializeDbWrite(() => writePlaylistDetailToNormalized(db, data)).catch(() => {
+              /* best-effort */
+            });
+          }
 
           // Proactively cache cover art for new IDs so they survive offline.
           // Skipped during bulk sync — see prefetchCovers contract above.

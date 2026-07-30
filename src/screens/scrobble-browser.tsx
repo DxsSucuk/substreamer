@@ -92,13 +92,11 @@ export function ScrobbleBrowserScreen() {
   );
 
   const pendingScrobbles = pendingScrobbleStore((s) => s.pendingScrobbles);
-  const completedScrobbles = completedScrobbleStore((s) => s.completedScrobbles);
+  // Bounded NEWEST-FIRST recent slice (full history lives in SQL; analytics are
+  // SQL aggregates). The browser shows the most recent scrobbles.
+  const recentScrobbles = completedScrobbleStore((s) => s.recentScrobbles);
 
-
-  const completedReversed = useMemo(
-    () => [...completedScrobbles].reverse(),
-    [completedScrobbles],
-  );
+  const completedReversed = recentScrobbles;
 
   const pendingReversed = useMemo(
     () => [...pendingScrobbles].reverse(),

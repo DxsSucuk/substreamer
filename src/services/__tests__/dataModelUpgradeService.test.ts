@@ -1,9 +1,10 @@
 import { ensureNormalizedSchema } from '../../db/createNormalizedTables';
 import { countAlbums } from '../../db/repository/albums';
+import { countArtists } from '../../db/repository/artists';
 import { countSongs } from '../../db/repository/songs';
 import { getDb } from '../../store/persistence/db';
 import { syncStatusStore } from '../../store/syncStatusStore';
-import { runNormalizedMigrationIfNeeded } from '../normalizedMigrationService';
+import { runDataModelUpgradeIfNeeded } from '../dataModelUpgradeService';
 
 const db = () => getDb()!;
 
@@ -25,6 +26,8 @@ beforeEach(() => {
   for (const t of ['library_albums', 'song_index', 'albums', 'songs', 'artists', 'playlists']) {
     db().runSync(`DELETE FROM ${t}`);
   }
+  // Reset the one-time completion flag + any seeded KV so each test starts unstamped.
+  db().runSync("DELETE FROM storage WHERE key IN ('substreamer-normalized-migration-complete', 'substreamer-artist-library')");
   syncStatusStore.setState({
     inFlight: new Map(),
     normalizedMigrationPhase: 'idle',
@@ -33,13 +36,13 @@ beforeEach(() => {
   });
 });
 
-describe('runNormalizedMigrationIfNeeded', () => {
+describe('runDataModelUpgradeIfNeeded', () => {
   it('migrates when the blobs hold rows the normalized tables lack, then settles', async () => {
     seedAlbum('a1');
     seedSong('s1', 'a1');
     seedSong('s2', 'a1');
 
-    await runNormalizedMigrationIfNeeded();
+    await runDataModelUpgradeIfNeeded();
 
     expect(await countAlbums(db())).toBe(1);
     expect(await countSongs(db())).toBe(2);
@@ -49,9 +52,26 @@ describe('runNormalizedMigrationIfNeeded', () => {
 
   it('is a no-op when the tables are already in step (no drift)', async () => {
     // both blob + normalized empty → no drift → nothing migrated
-    await runNormalizedMigrationIfNeeded();
+    await runDataModelUpgradeIfNeeded();
     expect(await countSongs(db())).toBe(0);
     expect(syncStatusStore.getState().normalizedMigrationPhase).toBe('idle');
+  });
+
+  it('runs the one-time artist/playlist migration even when albums/songs are in step, then stamps', async () => {
+    // Simulate a live sync having already populated albums/songs (no album/song drift),
+    // while the artist KV blob has never been migrated. The old drift-only gate would
+    // skip this forever; the version stamp guarantees it runs exactly once.
+    db().runSync("INSERT OR REPLACE INTO storage (key, value) VALUES ('substreamer-artist-library', ?)", [
+      JSON.stringify({ state: { artists: [{ id: 'ar1', name: 'Solo' }] }, version: 0 }),
+    ]);
+
+    await runDataModelUpgradeIfNeeded();
+    expect(await countArtists(db())).toBe(1);
+
+    // Now stamped: a second pass with no album/song drift is a true no-op (not re-run).
+    db().runSync('DELETE FROM artists');
+    await runDataModelUpgradeIfNeeded();
+    expect(await countArtists(db())).toBe(0);
   });
 
   it('does not race an in-flight library sync', async () => {
@@ -59,7 +79,7 @@ describe('runNormalizedMigrationIfNeeded', () => {
     seedSong('s1', 'a1');
     syncStatusStore.getState().setInFlight('song-sync', Promise.resolve());
 
-    await runNormalizedMigrationIfNeeded();
+    await runDataModelUpgradeIfNeeded();
 
     // skipped while the sync holds the lock; drift is picked up on a later pass
     expect(await countSongs(db())).toBe(0);

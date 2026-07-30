@@ -10,9 +10,7 @@ import { cancelAllSyncs, forceFullResync, resumeSync } from '../../services/data
 import { countAlbums } from '../../db/repository/albums';
 import { countSongs } from '../../db/repository/songs';
 import { getDb } from '../../store/persistence/db';
-import { albumLibraryStore } from '../../store/albumLibraryStore';
 import { offlineModeStore } from '../../store/offlineModeStore';
-import { songIndexStore } from '../../store/songIndexStore';
 import { syncStatusStore } from '../../store/syncStatusStore';
 import { OfflineNotice } from './OfflineNotice';
 import { SettingsSectionTitle } from './SettingsSectionTitle';
@@ -25,9 +23,7 @@ export function LibrarySyncCard() {
   const { confirm } = useThemedAlert();
 
   const offlineMode = offlineModeStore((s) => s.offlineMode);
-  const librarySize = albumLibraryStore((s) => s.albums.length);
   const libraryLastFetchedAt = syncStatusStore((s) => s.librarySyncLastFetchedAt);
-  const songIndexSize = songIndexStore((s) => s.totalCount);
   const librarySyncPhase = syncStatusStore((s) => s.librarySyncPhase);
   const songSyncPhase = syncStatusStore((s) => s.detailSyncPhase);
   const librarySyncComplete = syncStatusStore((s) => s.librarySyncComplete);
@@ -47,8 +43,7 @@ export function LibrarySyncCard() {
   const songSyncPct = albumsTotal > 0 ? Math.min(100, Math.floor((albumsProcessed / albumsTotal) * 100)) : 0;
 
   // Counts reflect the NORMALIZED model (the target-state sync's output), refreshed
-  // as the sync progresses — not the legacy blob-backed stores. Fall back to the
-  // blob counts until the first query resolves.
+  // as the sync progresses. Null until the first query resolves (shown as 0).
   const [normAlbums, setNormAlbums] = useState<number | null>(null);
   const [normSongs, setNormSongs] = useState<number | null>(null);
   useEffect(() => {
@@ -70,15 +65,15 @@ export function LibrarySyncCard() {
       cancelled = true;
     };
   }, [albumsProcessed, albumsTotal, songSyncComplete, librarySyncComplete]);
-  const displayAlbums = normAlbums ?? librarySize;
-  const displaySongs = normSongs ?? songIndexSize;
+  const displayAlbums = normAlbums ?? 0;
+  const displaySongs = normSongs ?? 0;
 
   // A sync is actively running when either the album-list fetch or the song
   // fetch is in progress.
   const isSyncing = librarySyncPhase === 'fetching' || songSyncPhase === 'syncing';
   const fullyComplete = librarySyncComplete && songSyncComplete;
   // Started but neither running nor finished (e.g. paused, or interrupted).
-  const isPaused = !isSyncing && !fullyComplete && librarySize > 0;
+  const isPaused = !isSyncing && !fullyComplete && displayAlbums > 0;
   const showSync = !isSyncing && !isPaused;
 
   const stageText =

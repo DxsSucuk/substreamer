@@ -113,5 +113,53 @@ export function listArtistsBefore(
 export const countArtists = (db: InternalDb, starredOnly = false): Promise<number> =>
   countRows(db, 'artists', starredOnly ? 'starred IS NOT NULL' : undefined);
 
+/** Lean rows for a set of artist ids (unordered) — the downloaded-artist filter hydrates
+ *  the artists who own a downloaded album. Ids pass as a JSON array via `json_each` to
+ *  dodge the bound-variable limit; an empty id set returns no rows. */
+export const listArtistsByIds = (db: InternalDb, ids: string[]): Promise<ArtistListRow[]> =>
+  db.getAllAsync<ArtistListRow>(
+    `SELECT ${ARTIST_LIST_COLS} FROM artists WHERE id IN (SELECT value FROM json_each(?))`,
+    [JSON.stringify(ids)],
+  );
+
 export const getArtist = (db: InternalDb, id: string): Promise<Record<string, unknown> | null> =>
   db.getFirstAsync('SELECT * FROM artists WHERE id = ?', [id]);
+
+/** Artists that already have persisted top songs — the set whose top-song lists a
+ *  list-length change refreshes (replaces the doomed detail store's in-memory map). */
+export const listArtistsWithTopSongs = (
+  db: InternalDb,
+): Promise<{ id: string; name: string | null }[]> =>
+  db.getAllAsync<{ id: string; name: string | null }>(
+    'SELECT DISTINCT a.id, a.name FROM artists a JOIN artist_top_songs ats ON ats.artist_id = a.id',
+  );
+
+/**
+ * Persist the artist-detail RESOLVED metadata: the final biography (Subsonic →
+ * MusicBrainz fallback — NOT necessarily `info.biography`), the `bio_checked_at`
+ * detail-fetch/negative-cache marker, and the `resolved_mbid` actually used. A targeted
+ * UPDATE (no-op if the artist row isn't present yet).
+ */
+export const setArtistDetailMeta = (
+  db: InternalDb,
+  id: string,
+  meta: { biography: string | null; bioCheckedAt: number | null; resolvedMbid: string | null },
+): Promise<unknown> =>
+  db.runAsync(
+    'UPDATE artists SET biography = ?, bio_checked_at = ?, resolved_mbid = ? WHERE id = ?',
+    [meta.biography, meta.bioCheckedAt, meta.resolvedMbid, id],
+  );
+
+/** Replace an artist's ordered top-song membership (position = array index). The songs
+ *  themselves must already be upserted into `songs` by the caller. Async batch (no
+ *  sync transaction) so it can't collide with a concurrent write. */
+export const setArtistTopSongs = (db: InternalDb, artistId: string, songIds: string[]): Promise<unknown> =>
+  db.runBatchAsync([
+    ['DELETE FROM artist_top_songs WHERE artist_id = ?', [artistId]],
+    ...songIds.map(
+      (songId, pos): [string, (string | number)[]] => [
+        'INSERT INTO artist_top_songs (artist_id, pos, song_id) VALUES (?, ?, ?)',
+        [artistId, pos, songId],
+      ],
+    ),
+  ]);

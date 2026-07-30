@@ -14,6 +14,8 @@ import {
 } from './persistence';
 import { clearDetailTables } from './persistence/detailTables';
 import { clearLibraryAlbumsAsync } from './persistence/libraryAlbumsTable';
+import { getDb } from './persistence/db';
+import { resetNormalizedSchema } from '../db/createNormalizedTables';
 import { clearPendingScrobbles } from './persistence/pendingScrobbleTable';
 import { clearScrobbles } from './persistence/scrobbleTable';
 import { clearMusicCacheTables } from './musicCacheStore';
@@ -149,6 +151,11 @@ export async function resetAllStores(): Promise<void> {
   // albumLibraryStore is row-based now (`library_albums`), in its own table;
   // wipe it here so the browse list doesn't survive logout.
   await clearLibraryAlbumsAsync();
+  // The normalized model is (becoming) the sole source of truth — wipe it too so a
+  // different account/server can't see the previous account's library after logout
+  // (downloads + blobs are cleared here as well, so a full reset is consistent).
+  const normDb = getDb();
+  if (normDb) resetNormalizedSchema(normDb);
   // completedScrobbleStore also persists to a per-row table (`scrobble_events`)
   // in its own connection; truncate it here so logged-out state is clean.
   await clearScrobbles();

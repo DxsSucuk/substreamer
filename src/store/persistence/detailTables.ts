@@ -399,10 +399,11 @@ export async function bulkUpsertSongs(songs: readonly Child[]): Promise<number> 
     console.warn('[detailTables] bulkUpsertSongs failed', e);
     return 0;
   }
-  // NB: NO inline normalized dual-write on this bulk fast-sync path. Deriving norm/
-  // dmeta for every page here doubles the JS-thread work and holding pages for a
-  // deferred write would blow memory at 200k. The normalized tables are populated
-  // off this critical path by the background drift migration instead.
+  // Dual-write the songs into the normalized `songs` table (SEPARATE serialized slot,
+  // not nested in the blob txn) — required so the normalized model is COMPLETE on the
+  // fast sync path (previously skipped, which left normalized `songs` sparse). Bounded:
+  // `writeSongsToNormalized` → `upsertSongs` chunks id-sorted batches off the JS thread.
+  await serializeSongIndexWrite(() => writeSongsToNormalized(db, valid));
   return valid.length;
 }
 

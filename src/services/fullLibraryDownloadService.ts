@@ -16,6 +16,9 @@ import { connectivityStore } from '../store/connectivityStore';
 import { fullLibraryDownloadStore } from '../store/fullLibraryDownloadStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { playlistLibraryStore } from '../store/playlistLibraryStore';
+import { getDb } from '../store/persistence/db';
+import { listAlbumIds } from '../db/repository/albums';
+import { listPlaylistIds } from '../db/repository/playlists';
 import { enqueueAlbumDownload, enqueuePlaylistDownload } from './musicCacheService';
 
 /** True when the server is reachable and the user isn't in offline mode. */
@@ -48,10 +51,12 @@ export async function enqueueFullLibraryDownload(): Promise<void> {
     await albumLibraryStore.getState().fetchAllAlbums();
     await playlistLibraryStore.getState().fetchAllPlaylists();
 
-    const albums = albumLibraryStore.getState().albums;
-    const playlists = playlistLibraryStore.getState().playlists;
-    total = albums.length + playlists.length;
-    fullLibraryDownloadStore.getState().setTotals(albums.length, playlists.length);
+    // Enumerate from the normalized model (the fetch actions above dual-write it).
+    const db = getDb();
+    const albumIds = db ? await listAlbumIds(db) : [];
+    const playlistIds = db ? await listPlaylistIds(db) : [];
+    total = albumIds.length + playlistIds.length;
+    fullLibraryDownloadStore.getState().setTotals(albumIds.length, playlistIds.length);
 
     // Phase 2 — enqueue. Sequential awaits keep a single album-detail fetch in
     // flight at a time (avoids hundreds of concurrent getAlbum calls) and yield
@@ -63,16 +68,16 @@ export async function enqueueFullLibraryDownload(): Promise<void> {
     // `awaitCover: false` — don't serialize this loop on each item's cover
     // download; the image queue fetches covers in parallel and they're
     // purge-protected, so the offline copy still completes.
-    for (const album of albums) {
+    for (const albumId of albumIds) {
       if (!fullLibraryDownloadStore.getState().active) return; // cancelled
-      await enqueueAlbumDownload(album.id, { awaitCover: false }).catch(() => { failed += 1; });
+      await enqueueAlbumDownload(albumId, { awaitCover: false }).catch(() => { failed += 1; });
       fullLibraryDownloadStore.getState().incAlbum();
     }
 
     // Playlists last — their songs are mostly already cached from the albums.
-    for (const playlist of playlists) {
+    for (const playlistId of playlistIds) {
       if (!fullLibraryDownloadStore.getState().active) return; // cancelled
-      await enqueuePlaylistDownload(playlist.id, { awaitCover: false }).catch(() => { failed += 1; });
+      await enqueuePlaylistDownload(playlistId, { awaitCover: false }).catch(() => { failed += 1; });
       fullLibraryDownloadStore.getState().incPlaylist();
     }
 

@@ -65,6 +65,10 @@ import { offlineModeStore } from '../store/offlineModeStore';
 import { playerStore } from '../store/playerStore';
 import { playlistDetailStore } from '../store/playlistDetailStore';
 import { playlistLibraryStore } from '../store/playlistLibraryStore';
+import { getDb } from '../store/persistence/db';
+import { getArtistDetail } from '../db/repository/details';
+import { deletePlaylist as deletePlaylistRow } from '../db/repository/playlists';
+import { bumpDetailChanged } from '../db/detailNotifier';
 import { runWithOverlay } from '../store/processingOverlayStore';
 import { canUserShare, supports } from '../services/serverCapabilityService';
 import { setRatingStore } from '../store/setRatingStore';
@@ -367,8 +371,14 @@ export function MoreOptionsSheet() {
       const artistId = entity.item.id;
       const artistName = entity.item.name;
       const override = getOverride(mbidOverrideStore.getState().overrides, 'artist', artistId);
-      const resolvedMbid = artistDetailStore.getState().artists[artistId]?.resolvedMbid;
-      const currentMbid = override?.mbid ?? resolvedMbid ?? null;
+      const db = getDb();
+      // Prefer the persisted resolved MBID; fall back to the (transitional) store since
+      // the normalized `resolved_mbid` column is only populated on a fetch since #111.
+      const resolvedMbid =
+        (db ? (await getArtistDetail(db, artistId))?.resolvedMbid : null) ??
+        artistDetailStore.getState().artists[artistId]?.resolvedMbid ??
+        null;
+      const currentMbid = override?.mbid ?? resolvedMbid;
       await moreOptionsStore.getState().hideAndAwait();
       mbidSearchStore.getState().showArtist(artistId, artistName, currentMbid, resolveEntityCoverArt(entity.item));
     } else if (entity.type === 'album') {
@@ -565,6 +575,9 @@ export function MoreOptionsSheet() {
                 const success = await deletePlaylist(playlistId);
                 if (!success) throw new Error('API returned false');
 
+                const db = getDb();
+                if (db) await deletePlaylistRow(db, playlistId);
+                bumpDetailChanged('playlist', playlistId);
                 playlistDetailStore.getState().removePlaylist(playlistId);
                 playlistLibraryStore.getState().removePlaylist(playlistId);
                 if (playlistId in musicCacheStore.getState().cachedItems) {

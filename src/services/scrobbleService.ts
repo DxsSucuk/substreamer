@@ -10,6 +10,7 @@
 import { onAppForeground } from '../utils/onAppForeground';
 
 import { completedScrobbleStore } from '../store/completedScrobbleStore';
+import { existingScrobbleIds } from '../store/persistence/scrobbleTable';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { pendingScrobbleStore } from '../store/pendingScrobbleStore';
 import { scrobbleExclusionStore } from '../store/scrobbleExclusionStore';
@@ -145,9 +146,9 @@ async function processScrobbles(): Promise<void> {
     // Snapshot the queue – iterate over a copy so mutations don't
     // interfere with the loop.
     const pending = [...pendingScrobbleStore.getState().pendingScrobbles];
-    const completedIds = new Set(
-      completedScrobbleStore.getState().completedScrobbles.map((s) => s.id),
-    );
+    // Which of the pending items are already committed as completed (SQL-backed,
+    // replaces scanning the full in-memory completed array).
+    const completedIds = await existingScrobbleIds(pending.map((s) => s.id));
     let anySucceeded = false;
 
     for (const item of pending) {

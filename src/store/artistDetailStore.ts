@@ -26,6 +26,9 @@ import { sanitizeBiographyText } from '../utils/formatters';
 import { withTimeout } from '../utils/withTimeout';
 import { layoutPreferencesStore } from './layoutPreferencesStore';
 import { ratingStore } from './ratingStore';
+import { getDb, serializeDbWrite } from './persistence/db';
+import { writeArtistDetailToNormalized } from '../db/normalizedSyncWriter';
+import { bumpDetailChanged } from '../db/detailNotifier';
 
 /** Hard budget for a single artist-detail fetch (server + MB enrichment). */
 const FETCH_TIMEOUT_MS = 15_000;
@@ -88,18 +91,34 @@ export const artistDetailStore = create<ArtistDetailState>()(
 
           // Various Artists: skip all remote enrichment, inject static data.
           if (isVariousArtists(artistData.name)) {
+            const vaBio = getVariousArtistsBio();
+            const vaArtist = { ...artistData, coverArt: VARIOUS_ARTISTS_COVER_ART_ID };
             const entry: ArtistDetailEntry = {
-              artist: {
-                ...artistData,
-                coverArt: VARIOUS_ARTISTS_COVER_ART_ID,
-              },
+              artist: vaArtist,
               artistInfo: null,
               topSongs: [],
-              biography: getVariousArtistsBio(),
+              biography: vaBio,
               resolvedMbid: null,
               retrievedAt: Date.now(),
+              bioCheckedAt: Date.now(),
             };
             set({ artists: { ...get().artists, [id]: entry } });
+            // Persist to normalized so the local-first screen resolves VA offline too.
+            const vaDb = getDb();
+            if (vaDb) {
+              void serializeDbWrite(() =>
+                writeArtistDetailToNormalized(vaDb, vaArtist, null, {
+                  biography: vaBio,
+                  resolvedMbid: null,
+                  bioCheckedAt: Date.now(),
+                  topSongs: [],
+                }),
+              )
+                .then(() => bumpDetailChanged('artist', id))
+                .catch(() => {
+                  /* best-effort */
+                });
+            }
             return entry;
           }
 
@@ -177,6 +196,25 @@ export const artistDetailStore = create<ArtistDetailState>()(
               [id]: entry,
             },
           });
+
+          // Dual-write the artist row + albums + bio/similar + RESOLVED bio meta + top
+          // songs into the normalized model so `getArtistDetail` resolves and persists
+          // (nothing else writes artist info/similar/topSongs live). Best-effort, off render.
+          const db = getDb();
+          if (db) {
+            void serializeDbWrite(() =>
+              writeArtistDetailToNormalized(db, artistData, infoData, {
+                biography,
+                resolvedMbid,
+                bioCheckedAt: bioCheckedAt ?? null,
+                topSongs,
+              }),
+            )
+              .then(() => bumpDetailChanged('artist', id))
+              .catch(() => {
+                /* best-effort */
+              });
+          }
 
           // Proactively cache cover art for new IDs so they survive offline.
           // Skipped during bulk sync — see prefetchCovers contract above.

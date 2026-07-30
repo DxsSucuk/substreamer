@@ -18,6 +18,7 @@ import {
   getArtist,
   listArtists,
   listArtistsBefore,
+  listArtistsByIds,
   upsertArtistInfo,
   upsertArtists,
 } from '../artists';
@@ -315,6 +316,17 @@ describe('artists repository', () => {
     const page = await listArtists(db(), { limit: 1 });
     const a = artistListRowToArtistID3(page.rows[0]);
     expect(a).toMatchObject({ id: 'ar1', name: 'Radiohead', coverArt: 'c1', albumCount: 9 });
+  });
+
+  it('listArtistsByIds returns the lean rows for a set of ids (downloaded-artist hydrate)', async () => {
+    await upsertArtists(db(), [
+      artist('ar1', 'ABBA', { albumCount: 3 }),
+      artist('ar2', 'Beatles', { albumCount: 12 }),
+      artist('ar3', 'Cure'),
+    ]);
+    const rows = await listArtistsByIds(db(), ['ar1', 'ar3', 'missing']);
+    expect(rows.map((r) => r.id).sort()).toEqual(['ar1', 'ar3']);
+    expect(await listArtistsByIds(db(), [])).toEqual([]);
   });
 });
 

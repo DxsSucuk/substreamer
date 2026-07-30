@@ -12,11 +12,15 @@ import {
 } from '../db/repository/albums';
 import { type Cursor } from '../db/repository/core';
 import { getDb } from '../store/persistence/db';
-import { albumLibraryStore } from '../store/albumLibraryStore';
 import { favoritesStore } from '../store/favoritesStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import { musicCacheStore } from '../store/musicCacheStore';
-import { albumPassesDownloadedFilter } from '../store/persistence/cachedItemHelpers';
+import { serverInfoStore } from '../store/serverInfoStore';
+import {
+  albumPassesDownloadedFilter,
+  downloadedAlbumsFromCache,
+} from '../store/persistence/cachedItemHelpers';
+import { sortAlbumsByPreference } from '../utils/librarySort';
 
 const PAGE = 120;
 /** Alphabet-scroller letters — all active in keyset mode (the loaded window can't
@@ -149,8 +153,9 @@ function KeysetAlbumList({ layout, contentInsetTop }: { layout: AlbumLayout; con
   );
 }
 
-/** Downloaded/favorites filters still read the in-memory array (small sets; keyset
- *  WHERE-filtering is a follow-up). */
+/** Downloaded/favorites filters read BOUNDED stores — favorites from `favoritesStore`,
+ *  downloaded rebuilt from each `cached_items` self-cached envelope (never-reaped, offline-
+ *  safe) — never the (paged) library table. Sorted to match the main list's A-Z scroller. */
 function FilteredAlbumList({
   layout,
   downloadedOnly,
@@ -162,23 +167,20 @@ function FilteredAlbumList({
   favoritesOnly: boolean;
   contentInsetTop: number;
 }) {
-  const albums = albumLibraryStore((s) => s.albums);
-  const loading = albumLibraryStore((s) => s.loading);
-  const error = albumLibraryStore((s) => s.error);
   const cachedItems = musicCacheStore((s) => s.cachedItems);
   const starredAlbums = favoritesStore((s) => s.albums);
   const includePartial = layoutPreferencesStore((s) => s.includePartialInDownloadedFilter);
+  const sortOrder = layoutPreferencesStore((s) => s.albumSortOrder);
 
   const filteredAlbums = useMemo(() => {
-    const starredIds = favoritesOnly ? new Set(starredAlbums.map((a) => a.id)) : null;
-    return albums.filter((album) => {
-      if (downloadedOnly && !albumPassesDownloadedFilter(album, cachedItems, includePartial)) {
-        return false;
-      }
-      if (starredIds && !starredIds.has(album.id)) return false;
-      return true;
-    });
-  }, [albums, downloadedOnly, favoritesOnly, cachedItems, starredAlbums, includePartial]);
+    const articles = serverInfoStore.getState().ignoredArticles ?? undefined;
+    const list = favoritesOnly
+      ? downloadedOnly
+        ? starredAlbums.filter((a) => albumPassesDownloadedFilter(a, cachedItems, includePartial))
+        : starredAlbums
+      : downloadedAlbumsFromCache(cachedItems, includePartial);
+    return sortAlbumsByPreference(list, sortOrder, articles);
+  }, [downloadedOnly, favoritesOnly, cachedItems, starredAlbums, includePartial, sortOrder]);
 
   const [refreshing, setRefreshing] = useState(false);
   const handleRefresh = useCallback(async () => {
@@ -194,8 +196,7 @@ function FilteredAlbumList({
     <AlbumListView
       albums={filteredAlbums}
       layout={layout}
-      loading={loading}
-      error={error}
+      loading={false}
       onRefresh={handleRefresh}
       refreshing={refreshing}
       showAlphabetScroller

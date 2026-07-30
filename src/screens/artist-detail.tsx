@@ -38,7 +38,10 @@ import { PillToggle } from '../components/PillToggle';
 import { playAllByArtist, playMoreByArtist, toggleStar } from '../services/moreOptionsService';
 import { shuffleArray } from '../utils/arrayHelpers';
 import { playTrack } from '../services/playerService';
-import { artistDetailStore } from '../store/artistDetailStore';
+import { fetchArtistDetail } from '../services/detailFetchService';
+import { getDb } from '../store/persistence/db';
+import { getArtistDetail } from '../db/repository/details';
+import { subscribeDetailChanged } from '../db/detailNotifier';
 import { layoutPreferencesStore, LIST_LENGTH_DISPLAY_CAP } from '../store/layoutPreferencesStore';
 import { moreOptionsStore } from '../store/moreOptionsStore';
 import { offlineModeStore } from '../store/offlineModeStore';
@@ -46,7 +49,7 @@ import { playbackSettingsStore, type ArtistPlayMode } from '../store/playbackSet
 
 import {
   type AlbumID3,
-  type ArtistInfo2,
+  type ArtistID3,
   type ArtistWithAlbumsID3,
   type Child,
 } from '../services/subsonicService';
@@ -78,32 +81,64 @@ export function ArtistDetailScreen() {
     if (id) toggleStar('artist', id);
   }, [id]);
 
-  const cachedEntry = artistDetailStore((s) => (id ? s.artists[id] : undefined));
-  const [artist, setArtist] = useState<ArtistWithAlbumsID3 | null>(cachedEntry?.artist ?? null);
-  const [artistInfo, setArtistInfo] = useState<ArtistInfo2 | null>(cachedEntry?.artistInfo ?? null);
-  const [topSongs, setTopSongs] = useState<Child[]>(cachedEntry?.topSongs ?? []);
-  const [biography, setBiography] = useState<string | null>(cachedEntry?.biography ?? null);
+  const [artist, setArtist] = useState<ArtistWithAlbumsID3 | null>(null);
+  const [similarArtists, setSimilarArtists] = useState<ArtistID3[]>([]);
+  const [heroFallbackUrl, setHeroFallbackUrl] = useState<string | undefined>(undefined);
+  const [topSongs, setTopSongs] = useState<Child[]>([]);
+  const [biography, setBiography] = useState<string | null>(null);
   const [bioExpanded, setBioExpanded] = useState(false);
   const [albumSortDesc, setAlbumSortDesc] = useState(
     () => layoutPreferencesStore.getState().artistAlbumSortOrder === 'newest',
   );
+  const [hasCache, setHasCache] = useState(false);
+  const [cacheChecked, setCacheChecked] = useState(false);
 
   // Defer heavy sections (top songs, similar artists, albums) until the
   // navigation animation completes so the transition isn't blocked by
   // mounting dozens of CachedImage components synchronously.
-  const ready = useTransitionComplete(!cachedEntry);
+  const ready = useTransitionComplete();
   const isWide = useLayoutMode() === 'wide';
   const refreshControlKey = useRefreshControlKey();
 
-  // Sync local state when the store entry is updated externally (e.g. after
-  // an MBID override triggers a background refetch).
+  // Read the cached detail from the local DB first (fast) — the server fetch only runs on a
+  // genuine miss. The server refresh (fetchArtist) dual-writes normalized + bumps the detail
+  // notifier, so a re-open resolves instantly here and a background MBID-override refetch
+  // re-reads without a store subscription.
   useEffect(() => {
-    if (!cachedEntry) return;
-    setArtist(cachedEntry.artist);
-    setArtistInfo(cachedEntry.artistInfo);
-    setTopSongs(cachedEntry.topSongs);
-    setBiography(cachedEntry.biography);
-  }, [cachedEntry]);
+    if (!id) return;
+    const db = getDb();
+    if (!db) {
+      setCacheChecked(true);
+      return;
+    }
+    let alive = true;
+    const read = () =>
+      getArtistDetail(db, id).then((d) => {
+        if (!alive || !d) return;
+        setArtist({ ...d.artist, album: d.albums } as ArtistWithAlbumsID3);
+        setSimilarArtists(d.similarArtist);
+        setHeroFallbackUrl(d.artistInfo?.largeImageUrl ?? undefined);
+        setTopSongs(d.topSongs);
+        setBiography(d.biography);
+        // "Cached" only once we've actually fetched detail (topSongs present or a bio check
+        // ran): an artist ROW can exist from a list sync without its detail children yet.
+        setHasCache(d.topSongs.length > 0 || d.bioCheckedAt != null);
+      });
+    read()
+      .catch(() => {
+        /* treat a read failure as a miss → server fetch */
+      })
+      .finally(() => {
+        if (alive) setCacheChecked(true);
+      });
+    const unsub = subscribeDetailChanged('artist', id, () => {
+      void read();
+    });
+    return () => {
+      alive = false;
+      unsub();
+    };
+  }, [id]);
 
   /* ---- Header right: more options button ---- */
   useEffect(() => {
@@ -133,30 +168,31 @@ export function ArtistDetailScreen() {
   }, [artist, navigation, colors.textPrimary, colors.red, starred, offlineMode, handleToggleStar]);
 
   /* ---- Data fetching ---- */
-  const { fetchArtist } = artistDetailStore.getState();
-
   const load = useCallback(async (artistId: string, isRefresh: boolean) => {
-    const entry = await fetchArtist(artistId);
+    const entry = await fetchArtistDetail(artistId);
     if (!entry) {
       setArtist(null);
-      setArtistInfo(null);
+      setSimilarArtists([]);
+      setHeroFallbackUrl(undefined);
       setTopSongs([]);
       setBiography(null);
       return t('artistNotFound');
     }
     setArtist(entry.artist);
-    setArtistInfo(entry.artistInfo);
+    setSimilarArtists(entry.artistInfo?.similarArtist ?? []);
+    setHeroFallbackUrl(entry.artistInfo?.largeImageUrl ?? undefined);
     setTopSongs(entry.topSongs);
     setBiography(entry.biography);
     if (isRefresh && entry.artist.id) {
       refreshCoverArt(entry.artist.id, 'artist-detail-pull').catch(() => { /* non-critical */ });
     }
     return null;
-  }, [fetchArtist, t]);
+  }, [t]);
 
   const { loading, refreshing, error, onRefresh } = useDetailFetch({
     id,
-    hasCache: !!cachedEntry,
+    hasCache,
+    cacheChecked,
     missingIdMessage: t('missingArtistId'),
     failedMessage: t('failedToLoadArtist'),
     load,
@@ -164,7 +200,6 @@ export function ArtistDetailScreen() {
 
   /* ---- Derived values ---- */
   const albums = artist?.album ?? [];
-  const similarArtists = artistInfo?.similarArtist ?? [];
 
   const sortedAlbums = useMemo(() => {
     if (albums.length === 0) return albums;
@@ -235,7 +270,7 @@ export function ArtistDetailScreen() {
           <CachedImage
             coverArtId={artist.coverArt}
             size={HERO_COVER_SIZE}
-            fallbackUri={artistInfo?.largeImageUrl ?? undefined}
+            fallbackUri={heroFallbackUrl}
             style={[styles.heroImage, { width: heroImageSize, height: heroImageSize, borderRadius: heroImageSize / 2 }]}
             resizeMode="cover"
           />
@@ -376,7 +411,7 @@ export function ArtistDetailScreen() {
     );
   }, [
     artist,
-    artistInfo,
+    heroFallbackUrl,
     heroImageSize,
     ready,
     biography,

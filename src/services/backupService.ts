@@ -7,6 +7,7 @@ import { defaultCollator } from '../utils/intl';
 import { authStore } from '../store/authStore';
 import { backupStore } from '../store/backupStore';
 import { completedScrobbleStore } from '../store/completedScrobbleStore';
+import { hydrateScrobblesAsync } from '../store/persistence/scrobbleTable';
 import { deviceIdentityStore, getDeviceShortId } from '../store/deviceIdentityStore';
 import { mbidOverrideStore } from '../store/mbidOverrideStore';
 import { scrobbleExclusionStore } from '../store/scrobbleExclusionStore';
@@ -252,7 +253,9 @@ export async function createBackup(): Promise<void> {
   let exclusionsMeta: BackupDatasetMeta | null = null;
   let bookmarksMeta: BackupDatasetMeta | null = null;
 
-  const scrobbles = completedScrobbleStore.getState().completedScrobbles;
+  // Read the FULL history from SQL for the backup (transient — the store keeps
+  // only a bounded recent slice in memory; analytics are SQL aggregates).
+  const scrobbles = await hydrateScrobblesAsync();
   if (scrobbles.length > 0) {
     scrobblesMeta = await writeBackupDataset(scrobblesFileName(stem), scrobbles, scrobbles.length);
   }
@@ -427,10 +430,10 @@ export async function restoreBackup(
       scrobbleSkipped = result.skipped;
     } else {
       // replaceAll writes the scrobble_events table in one transaction and then
-      // rebuilds stats/aggregates from the validated set, keeping SQL + memory
-      // coherent for any follow-up reads (home stats, my-listening, etc.).
+      // refreshes stats/aggregates from SQL, keeping SQL + the store coherent for
+      // any follow-up reads (home stats, my-listening, etc.).
       await completedScrobbleStore.getState().replaceAll(scrobbles);
-      scrobbleCount = completedScrobbleStore.getState().completedScrobbles.length;
+      scrobbleCount = completedScrobbleStore.getState().stats.totalPlays;
     }
   }
 

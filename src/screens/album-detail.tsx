@@ -37,7 +37,9 @@ import { toggleStar } from '../services/moreOptionsService';
 import { enqueueAlbumDownload } from '../services/musicCacheService';
 import { shuffleArray } from '../utils/arrayHelpers';
 import { playTrack } from '../services/playerService';
-import { albumDetailStore } from '../store/albumDetailStore';
+import { fetchAlbumDetail } from '../services/detailFetchService';
+import { getDb } from '../store/persistence/db';
+import { getAlbumDetail } from '../db/repository/details';
 import { moreOptionsStore } from '../store/moreOptionsStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 
@@ -75,8 +77,38 @@ export function AlbumDetailScreen() {
   const navigation = useNavigation();
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const cachedEntry = albumDetailStore((s) => (id ? s.albums[id] : undefined));
-  const [album, setAlbum] = useState<AlbumWithSongsID3 | null>(cachedEntry?.album ?? null);
+  const [album, setAlbum] = useState<AlbumWithSongsID3 | null>(null);
+  const [hasCache, setHasCache] = useState(false);
+  const [cacheChecked, setCacheChecked] = useState(false);
+  // Read the cached detail from the local DB first (fast) — the server fetch only runs
+  // on a genuine miss. The server refresh (fetchAlbum) dual-writes normalized, so a
+  // re-open resolves instantly from here without a network round-trip.
+  useEffect(() => {
+    if (!id) return;
+    const db = getDb();
+    if (!db) {
+      setCacheChecked(true);
+      return;
+    }
+    let alive = true;
+    getAlbumDetail(db, id)
+      .then((d) => {
+        if (!alive) return;
+        if (d) {
+          setAlbum((prev) => prev ?? ({ ...d.album, song: d.songs } as AlbumWithSongsID3));
+          // "Cached" only if we actually have the tracks — an album ROW can exist without
+          // its songs synced yet; an empty song list ⇒ fetch from the server.
+          setHasCache(d.songs.length > 0);
+        }
+        setCacheChecked(true);
+      })
+      .catch(() => {
+        if (alive) setCacheChecked(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [id]);
   const starred = useIsStarred('album', id ?? '');
   const transitionComplete = useTransitionComplete();
   const downloadStatus = useDownloadStatus('album', Platform.OS === 'ios' ? (id ?? '') : '');
@@ -116,23 +148,21 @@ export function AlbumDetailScreen() {
   }, [album, id, navigation, colors.textPrimary, colors.red, starred, offlineMode, handleToggleStar]);
 
   /* ---- Data fetching ---- */
-  const { fetchAlbum } = albumDetailStore.getState();
-
   const load = useCallback(async (albumId: string, isRefresh: boolean) => {
-    // Reflect the viewed album in the library (#202): an explicit refresh
-    // replaces the entry (propagating server-side edits), a plain open adds
-    // it only if it wasn't synced yet.
-    const data = await fetchAlbum(albumId, { syncToLibrary: isRefresh ? 'replace' : 'ifAbsent' });
+    // The fetch always upserts the album row, so the viewed album is reflected in the
+    // library list (#202) without a separate sync step.
+    const data = await fetchAlbumDetail(albumId);
     setAlbum(data);
     if (isRefresh && data?.id) {
       refreshCoverArt(data.id, 'album-detail-pull').catch(() => { /* non-critical */ });
     }
     return data ? null : t('albumNotFound');
-  }, [fetchAlbum, t]);
+  }, [t]);
 
   const { loading, refreshing, error, onRefresh } = useDetailFetch({
     id,
-    hasCache: !!cachedEntry,
+    hasCache,
+    cacheChecked,
     missingIdMessage: t('missingAlbumId'),
     failedMessage: t('failedToLoadAlbum'),
     load,

@@ -17,6 +17,7 @@ import { completedScrobbleStore } from '../../store/completedScrobbleStore';
 import { pendingScrobbleStore } from '../../store/pendingScrobbleStore';
 import { scrobbleExclusionStore } from '../../store/scrobbleExclusionStore';
 import { getApi } from '../subsonicService';
+import { getDb } from '../../store/persistence/db';
 import {
   addCompletedScrobble,
   sendNowPlaying,
@@ -25,8 +26,11 @@ import {
 const mockGetApi = getApi as jest.Mock;
 
 beforeEach(() => {
+  // The completed dedup is now SQL-backed, so reset the actual table (not just
+  // the in-memory store) or a prior test's rows leak into the next's dedup.
+  getDb()?.runSync('DELETE FROM scrobble_events');
   pendingScrobbleStore.setState({ pendingScrobbles: [] });
-  completedScrobbleStore.setState({ completedScrobbles: [], stats: { totalPlays: 0, totalListeningSeconds: 0, uniqueArtists: {} } });
+  completedScrobbleStore.setState({ recentScrobbles: [], stats: { totalPlays: 0, totalListeningSeconds: 0, uniqueArtists: {} } });
   scrobbleExclusionStore.setState({ excludedAlbums: {}, excludedArtists: {}, excludedPlaylists: {} });
   mockGetApi.mockReturnValue(null);
   mockApplyLocalPlay.mockClear();
@@ -170,7 +174,7 @@ describe('processScrobbles (via addCompletedScrobble)', () => {
       expect.objectContaining({ id: 's1', submission: true }),
     );
     expect(pendingScrobbleStore.getState().pendingScrobbles).toHaveLength(0);
-    expect(completedScrobbleStore.getState().completedScrobbles).toHaveLength(1);
+    expect(completedScrobbleStore.getState().recentScrobbles).toHaveLength(1);
   });
 
   it('retries once on first failure, succeeds on retry', async () => {
@@ -184,7 +188,7 @@ describe('processScrobbles (via addCompletedScrobble)', () => {
 
     expect(mockScrobble).toHaveBeenCalledTimes(2);
     expect(pendingScrobbleStore.getState().pendingScrobbles).toHaveLength(0);
-    expect(completedScrobbleStore.getState().completedScrobbles).toHaveLength(1);
+    expect(completedScrobbleStore.getState().recentScrobbles).toHaveLength(1);
   });
 
   it('stops processing on double failure, keeps scrobble pending', async () => {
@@ -196,7 +200,7 @@ describe('processScrobbles (via addCompletedScrobble)', () => {
 
     expect(mockScrobble).toHaveBeenCalledTimes(2);
     expect(pendingScrobbleStore.getState().pendingScrobbles).toHaveLength(1);
-    expect(completedScrobbleStore.getState().completedScrobbles).toHaveLength(0);
+    expect(completedScrobbleStore.getState().recentScrobbles).toHaveLength(0);
   });
 
   it('skips scrobbles already in completed store', async () => {
@@ -261,7 +265,7 @@ describe('initScrobbleService', () => {
         time: Date.now(),
       }],
     });
-    cs.setState({ completedScrobbles: [], stats: { totalPlays: 0, totalListeningSeconds: 0, uniqueArtists: {} } });
+    cs.setState({ recentScrobbles: [], stats: { totalPlays: 0, totalListeningSeconds: 0, uniqueArtists: {} } });
 
     const mockScrobble = jest.fn().mockResolvedValue(undefined);
     (ga as jest.Mock).mockReturnValue({ scrobble: mockScrobble });
@@ -303,7 +307,7 @@ describe('initScrobbleService', () => {
     const { getApi: ga } = require('../subsonicService');
 
     ps.setState({ pendingScrobbles: [] });
-    cs.setState({ completedScrobbles: [], stats: { totalPlays: 0, totalListeningSeconds: 0, uniqueArtists: {} } });
+    cs.setState({ recentScrobbles: [], stats: { totalPlays: 0, totalListeningSeconds: 0, uniqueArtists: {} } });
     (ga as jest.Mock).mockReturnValue(null);
 
     const { initScrobbleService: init } = require('../scrobbleService');
@@ -337,7 +341,7 @@ describe('initScrobbleService', () => {
     const { initScrobbleService: init } = require('../scrobbleService');
 
     ps.setState({ pendingScrobbles: [] });
-    cs.setState({ completedScrobbles: [], stats: { totalPlays: 0, totalListeningSeconds: 0, uniqueArtists: {} } });
+    cs.setState({ recentScrobbles: [], stats: { totalPlays: 0, totalListeningSeconds: 0, uniqueArtists: {} } });
     (ga as jest.Mock).mockReturnValue(null);
 
     init();
@@ -385,7 +389,7 @@ describe('initScrobbleService', () => {
       });
 
     ps.setState({ pendingScrobbles: [] });
-    cs.setState({ completedScrobbles: [], stats: { totalPlays: 0, totalListeningSeconds: 0, uniqueArtists: {} } });
+    cs.setState({ recentScrobbles: [], stats: { totalPlays: 0, totalListeningSeconds: 0, uniqueArtists: {} } });
     (ga as jest.Mock).mockReturnValue(null);
 
     const { initScrobbleService: init } = require('../scrobbleService');

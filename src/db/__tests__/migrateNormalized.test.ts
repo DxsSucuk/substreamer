@@ -7,6 +7,7 @@ import { countAlbums, listAlbums } from '../repository/albums';
 import { countArtists } from '../repository/artists';
 import { countPlaylists, listPlaylistSongIds } from '../repository/playlists';
 import { countSongs } from '../repository/songs';
+import { getArtistDetail, getPlaylistDetail } from '../repository/details';
 
 const db = () => getDb()!;
 
@@ -32,7 +33,10 @@ const putKv = (key: string, state: unknown) =>
 
 beforeAll(() => ensureNormalizedSchema(db()));
 beforeEach(() => {
-  for (const t of ['library_albums', 'song_index', 'albums', 'songs', 'artists', 'playlists', 'playlist_songs']) {
+  for (const t of [
+    'library_albums', 'song_index', 'albums', 'songs', 'artists', 'playlists',
+    'playlist_songs', 'artist_top_songs', 'artist_similar',
+  ]) {
     db().runSync(`DELETE FROM ${t}`);
   }
   for (const k of [
@@ -110,5 +114,57 @@ describe('migrateBlobsToNormalized', () => {
     const result = await migrateBlobsToNormalized(db());
     expect(result.artists).toEqual({ source: 0, migrated: 0, skipped: 0 });
     expect(result.playlists).toEqual({ source: 0, migrated: 0, skipped: 0 });
+  });
+
+  it('migrates the playlist entry SONGS so the detail JOIN resolves (not just membership)', async () => {
+    // s1/s2 belong to album a9, which is NOT in library_albums/song_index — the songs
+    // exist ONLY in the cached playlist detail. The old migration recorded membership but
+    // never upserted the songs, so `getPlaylistDetail`'s `playlist_songs JOIN songs`
+    // dropped them, leaving an empty offline playlist.
+    putKv('substreamer-playlist-details', {
+      playlists: {
+        pl1: {
+          playlist: {
+            id: 'pl1',
+            name: 'My Mix',
+            entry: [
+              { id: 's1', title: 'One', albumId: 'a9' },
+              { id: 's2', title: 'Two', albumId: 'a9' },
+            ],
+          },
+        },
+      },
+    });
+
+    await migrateBlobsToNormalized(db());
+
+    const detail = await getPlaylistDetail(db(), 'pl1');
+    expect(detail?.entry.map((e) => e.id)).toEqual(['s1', 's2']);
+    expect(detail?.entry.map((e) => e.title)).toEqual(['One', 'Two']);
+  });
+
+  it('migrates artist detail: top songs + resolved bio & negative-cache markers', async () => {
+    putKv('substreamer-artist-details', {
+      artists: {
+        ar1: {
+          artist: { id: 'ar1', name: 'Solo' },
+          biography: 'A resolved bio',
+          resolvedMbid: 'mbid-123',
+          bioCheckedAt: 1_700_000_000_000,
+          topSongs: [
+            { id: 't1', title: 'Hit One' },
+            { id: 't2', title: 'Hit Two' },
+          ],
+        },
+      },
+    });
+
+    await migrateBlobsToNormalized(db());
+
+    const detail = await getArtistDetail(db(), 'ar1');
+    expect(detail?.topSongs.map((s) => s.id)).toEqual(['t1', 't2']);
+    expect(detail?.biography).toBe('A resolved bio');
+    expect(detail?.resolvedMbid).toBe('mbid-123');
+    expect(detail?.bioCheckedAt).toBe(1_700_000_000_000);
   });
 });

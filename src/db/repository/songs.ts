@@ -162,3 +162,25 @@ export const bumpSongPlayStats = (db: InternalDb, id: string, played: string): P
  *  `idx_songs_album`; derived from the persisted table, so it's resume-stable. */
 export const countSongAlbums = async (db: InternalDb): Promise<number> =>
   (await db.getFirstAsync<{ n: number }>('SELECT COUNT(DISTINCT album_id) AS n FROM songs'))?.n ?? 0;
+
+/** Distinct album ids that already have songs — the "done" set the basic-path song walk
+ *  diffs against the album ids to find which albums still need their songs fetched. */
+export const listSongAlbumIds = (db: InternalDb): Promise<string[]> =>
+  db
+    .getAllAsync<{ album_id: string }>(
+      'SELECT DISTINCT album_id FROM songs WHERE album_id IS NOT NULL',
+    )
+    .then((rows) => rows.map((r) => r.album_id));
+
+/** Which of the given album ids already have their detail (≥1 song) in the normalized
+ *  model — the "has detail cached" presence check the downloaded-metadata refresh uses.
+ *  Ids pass as a JSON array via `json_each` to dodge the bound-variable limit. */
+export const albumIdsWithSongs = (db: InternalDb, ids: string[]): Promise<Set<string>> =>
+  ids.length === 0
+    ? Promise.resolve(new Set<string>())
+    : db
+        .getAllAsync<{ album_id: string }>(
+          'SELECT DISTINCT album_id FROM songs WHERE album_id IN (SELECT value FROM json_each(?))',
+          [JSON.stringify(ids)],
+        )
+        .then((rows) => new Set(rows.map((r) => r.album_id)));

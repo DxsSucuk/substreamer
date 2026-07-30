@@ -35,7 +35,7 @@ import {
 } from 'expo-async-fs';
 import { checkStorageLimit } from './storageService';
 import { beginDownload, clearDownload } from './downloadSpeedTracker';
-import { albumDetailStore } from '../store/albumDetailStore';
+import { fetchAlbumDetail, fetchPlaylistDetail } from './detailFetchService';
 import { favoritesStore } from '../store/favoritesStore';
 import { storageLimitStore } from '../store/storageLimitStore';
 import {
@@ -53,7 +53,9 @@ import { logImageCache } from './imageCacheLogger';
 import { processingOverlayStore } from '../store/processingOverlayStore';
 import { playbackSettingsStore } from '../store/playbackSettingsStore';
 import { resolveEffectiveFormat } from '../utils/effectiveFormat';
-import { playlistDetailStore } from '../store/playlistDetailStore';
+import { getDb } from '../store/persistence/db';
+import { getAlbumDetail, getPlaylistDetail } from '../db/repository/details';
+import { albumIdsWithSongs } from '../db/repository/songs';
 import {
   ensureCoverArtAuth,
   getDownloadStreamUrl,
@@ -792,7 +794,7 @@ export async function enqueueAlbumDownload(
   }
 
   await ensureCoverArtAuth();
-  const album = await albumDetailStore.getState().fetchAlbum(albumId);
+  const album = await fetchAlbumDetail(albumId);
   if (!album?.song?.length) {
     if (isTopUp) {
       processingOverlayStore.getState().showError(i18n.t('failedToLoadAlbum'));
@@ -898,7 +900,7 @@ export async function enqueuePlaylistDownload(
   if (state.downloadQueue.some((q) => q.itemId === playlistId)) return;
 
   await ensureCoverArtAuth();
-  const playlist = await playlistDetailStore.getState().fetchPlaylist(playlistId);
+  const playlist = await fetchPlaylistDetail(playlistId);
   if (!playlist?.entry?.length) return;
 
   // Re-check after the awaits (see enqueueAlbumDownload) — avoid a duplicate row.
@@ -944,10 +946,14 @@ export async function enqueueSongDownload(song: Child): Promise<void> {
   // avoids a redundant round-trip when the album was already downloaded or the
   // song is being re-added. Best-effort. This is the download-side half of the
   // "downloads carry their own metadata" invariant.
-  if (song.albumId && !albumDetailStore.getState().albums[song.albumId]) {
-    try {
-      await albumDetailStore.getState().fetchAlbum(song.albumId, { prefetchCovers: true });
-    } catch { /* best-effort — parent album detail is a bonus for the song */ }
+  if (song.albumId) {
+    const db = getDb();
+    const parentHasDetail = db ? (await albumIdsWithSongs(db, [song.albumId])).has(song.albumId) : false;
+    if (!parentHasDetail) {
+      try {
+        await fetchAlbumDetail(song.albumId, { prefetchCovers: true });
+      } catch { /* best-effort — parent album detail is a bonus for the song */ }
+    }
   }
   const songCover = resolveSongCoverArt(song);
   if (songCover) {
@@ -1051,23 +1057,21 @@ function registerTrackToItem(songId: string, itemId: string): void {
  * later from local caches, and future writes will populate it when the
  * store warms up.
  */
-function buildCachedItemEnvelope(
+async function buildCachedItemEnvelope(
   itemId: string,
   type: CachedItemMeta['type'],
-): string | undefined {
+): Promise<string | undefined> {
+  const db = getDb();
+  if (!db) return undefined;
   if (type === 'album') {
-    const albums = albumDetailStore.getState().albums;
-    const album = albums?.[itemId]?.album;
-    if (!album) return undefined;
-    const { song: _songs, ...meta } = album;
-    return JSON.stringify(meta);
+    // `getAlbumDetail().album` is the AlbumID3 meta WITHOUT songs (they live in
+    // cached_item_songs), exactly the envelope shape.
+    const detail = await getAlbumDetail(db, itemId);
+    return detail ? JSON.stringify(detail.album) : undefined;
   }
   if (type === 'playlist') {
-    const playlists = playlistDetailStore.getState().playlists;
-    const playlist = playlists?.[itemId]?.playlist;
-    if (!playlist) return undefined;
-    const { entry: _entries, ...meta } = playlist;
-    return JSON.stringify(meta);
+    const detail = await getPlaylistDetail(db, itemId);
+    return detail ? JSON.stringify(detail.playlist) : undefined;
   }
   // `favorites` (__starred__) and `song` intents have no natural envelope.
   return undefined;
@@ -1100,22 +1104,20 @@ async function ensurePartialAlbumEdge(
   // it doesn't. `fetchAlbum` caches the result in albumDetailStore so
   // subsequent calls in the same session reuse it.
   const albumId = song.albumId;
-  let cachedAlbum = albumDetailStore.getState().albums[albumId];
-  if (!cachedAlbum) {
+  const db = getDb();
+  // Authoritative track count = songs the normalized model holds for this album.
+  let detail = db ? await getAlbumDetail(db, albumId) : null;
+  if (!detail || detail.songs.length === 0) {
     // `prefetchCovers: false` — we're inside a song-download hot path
     // and don't want to kick off hundreds of cover-art downloads here.
     // The album-detail screen visit re-fetches with covers when needed.
-    // try/catch (not .catch) so a sync throw or a non-thenable return
-    // both land in the no-op branch without aborting the edge stitch.
-    let fetched: unknown = null;
+    // fetchAlbum dual-writes the normalized rows we then re-read.
     try {
-      fetched = await albumDetailStore
-        .getState()
-        .fetchAlbum(albumId, { prefetchCovers: false });
+      await fetchAlbumDetail(albumId, { prefetchCovers: false });
     } catch { /* fall through to the unknown-count branch */ }
-    if (fetched) cachedAlbum = albumDetailStore.getState().albums[albumId];
+    if (db) detail = await getAlbumDetail(db, albumId);
   }
-  const authoritativeCount = cachedAlbum?.album?.song?.length;
+  const authoritativeCount = detail && detail.songs.length > 0 ? detail.songs.length : undefined;
 
   const state = musicCacheStore.getState();
   const existing = state.cachedItems[albumId];
@@ -1126,7 +1128,7 @@ async function ensurePartialAlbumEdge(
     // refresh `rawJson` if the existing row is missing its envelope.
     const envelope = existing.rawJson
       ? undefined
-      : buildCachedItemEnvelope(albumId, 'album');
+      : await buildCachedItemEnvelope(albumId, 'album');
     if (
       (authoritativeCount !== undefined && authoritativeCount !== existing.expectedSongCount) ||
       envelope !== undefined
@@ -1169,8 +1171,8 @@ async function ensurePartialAlbumEdge(
     {
       itemId: albumId,
       type: 'album',
-      name: song.album ?? cachedAlbum?.album?.name ?? 'Unknown',
-      artist: song.artist ?? cachedAlbum?.album?.artist,
+      name: song.album ?? detail?.album.name ?? 'Unknown',
+      artist: song.artist ?? detail?.album.artist,
       // Album item — cover art keys off the album's `coverArt` value (#202),
       // looked up from the synced library (fallback to the song's own cover).
       coverArtId: albumCoverArtById(albumId) ?? song.coverArt,
@@ -1178,7 +1180,7 @@ async function ensurePartialAlbumEdge(
       parentAlbumId: undefined,
       lastSyncAt: now,
       downloadedAt: now,
-      rawJson: buildCachedItemEnvelope(albumId, 'album'),
+      rawJson: await buildCachedItemEnvelope(albumId, 'album'),
       // Auto-created partial-album grouping — NOT a real download holder. Songs
       // here orphan when their last real holder (playlist/favorites/song/full
       // album) is removed; this row is pruned once empty.
@@ -1334,7 +1336,7 @@ async function downloadItem(queueItem: DownloadQueueItem, myId: number): Promise
       parentAlbumId: queueItem.type === 'song' ? songs[0]?.albumId : undefined,
       lastSyncAt: Date.now(),
       downloadedAt: Date.now(),
-      rawJson: buildCachedItemEnvelope(queueItem.itemId, queueItem.type),
+      rawJson: await buildCachedItemEnvelope(queueItem.itemId, queueItem.type),
     };
     const songsToCommit = Array.from(itemSongsForCommit.values());
     const edgesForCommit = itemEdges.map((e) => ({
@@ -2191,7 +2193,7 @@ export async function enqueueStarredSongsDownload(): Promise<void> {
     void runPool(
       parentAlbumIds,
       async (id) => {
-        await albumDetailStore.getState().fetchAlbum(id, { prefetchCovers: true });
+        await fetchAlbumDetail(id, { prefetchCovers: true });
       },
       { concurrency: 3 },
     );

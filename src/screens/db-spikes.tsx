@@ -14,13 +14,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BottomChrome } from '../components/BottomChrome';
 import { GradientBackground } from '../components/GradientBackground';
-import { runSpikeA, runSpikeB, runSpikeD, runSpikeE, runSpikeF, runSpikeG, runSpikeH } from '../db/testing/dbSpikes';
+import { runSpikeA, runSpikeB, runSpikeD, runSpikeE, runSpikeF, runSpikeG, runSpikeH, runSpikeI, runSpikeJ } from '../db/testing/dbSpikes';
 import { useTheme } from '../hooks/useTheme';
 import type { ThemeColors } from '../constants/theme';
 import type { IoniconsName } from '../utils/iconNames';
 
 type Runner = (log: (message: string) => void) => Promise<void>;
-type SpikeKey = 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H';
+type SpikeKey = 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'I' | 'J';
 
 interface SpikeDef {
   key: SpikeKey;
@@ -31,6 +31,8 @@ interface SpikeDef {
 }
 
 const SPIKES: SpikeDef[] = [
+  { key: 'I', label: 'I · full sync FAST (search3)', icon: 'cloud-download-outline', run: runSpikeI },
+  { key: 'J', label: 'J · full sync SLOW (basic walk)', icon: 'speedometer-outline', run: runSpikeJ },
   { key: 'D', label: 'D · migrate cold + timed', icon: 'git-branch-outline', run: runSpikeD },
   { key: 'E', label: 'E · remote sync timing', icon: 'cloud-download-outline', run: runSpikeE },
   { key: 'F', label: 'F · search-derive split', icon: 'search-outline', run: runSpikeF },

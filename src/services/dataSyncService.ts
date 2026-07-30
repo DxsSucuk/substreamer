@@ -21,6 +21,10 @@ import {
 } from '../store/playlistLibraryStore';
 import { playlistDetailStore } from '../store/playlistDetailStore';
 import { musicCacheStore } from '../store/musicCacheStore';
+import { getDb } from '../store/persistence/db';
+import { countAlbums, listAlbumIds, listAlbumsByIds } from '../db/repository/albums';
+import { countArtists } from '../db/repository/artists';
+import { resetNormalizedSchema } from '../db/createNormalizedTables';
 import { connectivityStore } from '../store/connectivityStore';
 import { scanStatusStore } from '../store/scanStatusStore';
 import { authStore } from '../store/authStore';
@@ -82,12 +86,14 @@ const STARTUP_PREFETCH_SETTLE_MS = 1500;
  * whether an offline startup should surface the "paused — offline" banner
  * or stay silent.
  */
-function isLibrarySyncPending(): boolean {
-  const lib = albumLibraryStore.getState();
+async function isLibrarySyncPending(): Promise<boolean> {
   const status = syncStatusStore.getState();
   // Pending if the album list or the song index hasn't fully synced. O(1) —
   // no per-album detail scan (album_details is on-demand now).
-  return lib.albums.length === 0 || !status.librarySyncComplete || !status.songSyncComplete;
+  if (!status.librarySyncComplete || !status.songSyncComplete) return true;
+  const db = getDb();
+  if (!db) return false; // can't count; flags say complete
+  return (await countAlbums(db)) === 0;
 }
 
 /**
@@ -230,7 +236,7 @@ export async function onStartup(): Promise<void> {
     // Surface "paused — offline" so the user knows sync is waiting on
     // connectivity. Without this the banner stayed silent and users
     // couldn't tell whether their library was stale or already synced.
-    if (isLibrarySyncPending()) {
+    if (await isLibrarySyncPending()) {
       syncStatusStore.getState().setDetailSyncPhase('paused-offline');
     }
     return;
@@ -274,6 +280,10 @@ async function handleServerSwitchIfNeeded(): Promise<void> {
   cancelAllSyncs('server-switch');
   await albumDetailStore.getState().clearAlbums();
   await albumLibraryStore.getState().clearAlbums();
+  // Wipe the normalized model too — once it's the sole store, the new server must not
+  // inherit the previous server's library (blobs above are cleared for the same reason).
+  const normDb = getDb();
+  if (normDb) resetNormalizedSchema(normDb);
   // Reset the song sync + re-probe capability for the new server.
   syncStatusStore.getState().resetSongSync();
   syncStatusStore.getState().setSyncStrategy(null);
@@ -318,14 +328,14 @@ async function startupOrResumeFlow(): Promise<void> {
       // array, so hydration timing can't trigger a spurious full re-fetch.
       const rowCount = await countLibraryAlbumsAsync();
       const needsLibraryFetch =
-        !syncStatusStore.getState().librarySyncComplete ||
-        rowCount === 0 ||
-        albumLibraryStore.getState().albums.length === 0;
+        !syncStatusStore.getState().librarySyncComplete || rowCount === 0;
       const libPromise = needsLibraryFetch
         ? albumLibraryStore.getState().fetchAllAlbums()
         : Promise.resolve();
 
-      if (artistLibraryStore.getState().artists.length === 0) {
+      const startupDb = getDb();
+      const artistCount = startupDb ? await countArtists(startupDb) : 0;
+      if (artistCount === 0) {
         artistLibraryStore.getState().fetchAllArtists();
       }
       // Refresh playlists on every ONLINE startup (not just when empty) so the
@@ -440,8 +450,15 @@ function ensureOfflineSyncPhaseSubscription(): void {
     if (state.offlineMode === prev.offlineMode) return;
     const phase = syncStatusStore.getState().detailSyncPhase;
     if (state.offlineMode) {
-      if (phase === 'idle' && isLibrarySyncPending()) {
-        syncStatusStore.getState().setDetailSyncPhase('paused-offline');
+      if (phase === 'idle') {
+        fireAndForget(
+          (async () => {
+            if (await isLibrarySyncPending()) {
+              syncStatusStore.getState().setDetailSyncPhase('paused-offline');
+            }
+          })(),
+          'sync.offlineToggle.pending',
+        );
       }
     } else {
       if (phase === 'paused-offline') {
@@ -493,8 +510,8 @@ export async function onScanCompleted(
   const { changedAlbumIds, newestAlbums } = precomputed ?? (await detectChanges());
   if (changedAlbumIds.length === 0) return;
   // Use the same probe result from detectChanges — no second network call.
-  const lib = albumLibraryStore.getState();
-  const knownIds = new Set(lib.albums.map((a) => a.id));
+  const db = getDb();
+  const knownIds = new Set(db ? await listAlbumIds(db) : []);
   const newAlbums: AlbumID3[] = [];
   for (const album of newestAlbums) {
     if (changedAlbumIds.includes(album.id) && !knownIds.has(album.id)) {
@@ -502,7 +519,7 @@ export async function onScanCompleted(
     }
   }
   if (newAlbums.length > 0) {
-    lib.upsertAlbums(newAlbums);
+    albumLibraryStore.getState().upsertAlbums(newAlbums);
   }
   // Pull the changed albums' SONGS into song_index (album_details stays
   // on-demand). Keeps the flat Songs list current without a full re-sync.
@@ -555,9 +572,10 @@ export async function onScrobbleCompleted(): Promise<void> {
  */
 export async function onAlbumReferenced(albumId: string): Promise<void> {
   if (offlineModeStore.getState().offlineMode) return;
-  const libState = albumLibraryStore.getState();
-  if (libState.albums.length === 0) return;
-  if (libState.albums.some((a) => a.id === albumId)) return;
+  const db = getDb();
+  if (!db) return;
+  if ((await countAlbums(db)) === 0) return; // library not synced yet
+  if ((await listAlbumsByIds(db, [albumId])).length > 0) return; // already known
   try {
     await ensureCoverArtAuth();
     const album = await getAlbum(albumId);
@@ -892,9 +910,8 @@ async function runDetectChanges(): Promise<{
 
       if (primaryTriggered || idChanged || timestampChanged) {
         // Walk down the list until we hit something we already know.
-        const libraryIds = new Set(
-          albumLibraryStore.getState().albums.map((a) => a.id),
-        );
+        const detectDb = getDb();
+        const libraryIds = new Set(detectDb ? await listAlbumIds(detectDb) : []);
         for (const album of newest) {
           if (libraryIds.has(album.id)) continue;
           changedAlbumIds.push(album.id);
@@ -1099,9 +1116,12 @@ async function doWalk(): Promise<void> {
     syncStatusStore.getState().setDetailSyncPhase('paused-offline');
     return;
   }
-  const libState = albumLibraryStore.getState();
-  if (libState.loading) return; // library still fetching; recovery will retry
-  if (libState.albums.length < MIN_LIBRARY_FOR_WALK) {
+  // library still fetching; recovery will retry
+  if (syncStatusStore.getState().librarySyncPhase === 'fetching') return;
+  const db = getDb();
+  if (!db) return;
+  const albumIds = await listAlbumIds(db);
+  if (albumIds.length < MIN_LIBRARY_FOR_WALK) {
     syncStatusStore.getState().resetDetailSync();
     return;
   }
@@ -1114,9 +1134,9 @@ async function doWalk(): Promise<void> {
   // detailed albums correctly and never re-walk all of them each launch.
   const detailedIds = await getDetailedAlbumIdsAsync();
   const missing: string[] = [];
-  for (const album of libState.albums) {
-    if (!detailedIds.has(album.id)) {
-      missing.push(album.id);
+  for (const albumId of albumIds) {
+    if (!detailedIds.has(albumId)) {
+      missing.push(albumId);
     }
   }
   if (missing.length === 0) {
@@ -1189,7 +1209,9 @@ async function doWalk(): Promise<void> {
     // Mark the song sync complete only if EVERY album is now detailed (no
     // partial-failure remainder) — else the next walk retries the stragglers.
     const nowDetailed = await getDetailedAlbumIdsAsync();
-    if (albumLibraryStore.getState().albums.every((a) => nowDetailed.has(a.id))) {
+    const walkDb = getDb();
+    const allAlbumIds = walkDb ? await listAlbumIds(walkDb) : [];
+    if (allAlbumIds.length > 0 && allAlbumIds.every((id) => nowDetailed.has(id))) {
       syncStatusStore.getState().markSongSyncComplete();
     }
   } finally {
@@ -1268,17 +1290,25 @@ registerMusicCacheOnAlbumReferencedHook((albumId) => {
 // doesn't have, route through `onAlbumReferenced`. This keeps the same
 // "new album on home page triggers library refresh" behavior but without
 // a store-level import cycle.
-albumListsStore.subscribe((state, prev) => {
-  if (state.recentlyAdded === prev.recentlyAdded) return;
-  const libState = albumLibraryStore.getState();
-  if (libState.albums.length === 0) return;
-  const knownIds = new Set(libState.albums.map((a) => a.id));
-  for (const album of state.recentlyAdded) {
-    if (!knownIds.has(album.id)) {
-      fireAndForget(onAlbumReferenced(album.id), 'sync.recentlyAddedReferenced');
+async function referenceFirstNewRecentlyAdded(recentlyAdded: readonly AlbumID3[]): Promise<void> {
+  const db = getDb();
+  if (!db) return;
+  const ids = recentlyAdded.map((a) => a.id);
+  if (ids.length === 0) return;
+  if ((await countAlbums(db)) === 0) return; // library not synced yet
+  // Bounded: check only the (few) recently-added ids against the normalized table.
+  const known = new Set((await listAlbumsByIds(db, ids)).map((r) => r.id));
+  for (const album of recentlyAdded) {
+    if (!known.has(album.id)) {
+      await onAlbumReferenced(album.id);
       return; // one fetch covers all new ids via reconciliation
     }
   }
+}
+
+albumListsStore.subscribe((state, prev) => {
+  if (state.recentlyAdded === prev.recentlyAdded) return;
+  fireAndForget(referenceFirstNewRecentlyAdded(state.recentlyAdded), 'sync.recentlyAddedReferenced');
 });
 
 // NOTE: The runtime offline-mode → sync-phase reaction lived here at module

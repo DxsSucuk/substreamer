@@ -236,6 +236,9 @@ export const artistSimilarRows = (info: ArtistInfo2, id: string): Row[] =>
     pos,
     similar_artist_id: str(s.id),
     name: str(s.name),
+    cover_art: str(s.coverArt),
+    album_count: num(s.albumCount),
+    user_rating: num(s.userRating),
   }));
 
 // ── Playlists (Playlist) ──────────────────────────────────────────────────────

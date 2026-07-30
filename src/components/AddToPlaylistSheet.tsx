@@ -37,6 +37,8 @@ import {
 import { musicCacheStore } from '../store/musicCacheStore';
 import { playlistDetailStore } from '../store/playlistDetailStore';
 import { playlistLibraryStore } from '../store/playlistLibraryStore';
+import { getDb } from '../store/persistence/db';
+import { listAllPlaylists, playlistListRowToPlaylist } from '../db/repository/playlists';
 import { processingOverlayStore, runWithOverlay } from '../store/processingOverlayStore';
 
 import type { Playlist } from '../services/subsonicService';
@@ -87,9 +89,11 @@ export function AddToPlaylistSheet() {
   const visible = addToPlaylistStore((s) => s.visible);
   const target = addToPlaylistStore((s) => s.target);
   const hide = addToPlaylistStore((s) => s.hide);
-  const playlists = playlistLibraryStore((s) => s.playlists);
-  const playlistsLoading = playlistLibraryStore((s) => s.loading);
-  const playlistsFetchError = playlistLibraryStore((s) => s.error);
+  // The pickable playlists come from the normalized `playlists` table (bounded read),
+  // seeded from cache then refreshed from the server on open.
+  const [playlists, setPlaylists] = useState<Playlist[]>([]);
+  const [playlistsLoading, setPlaylistsLoading] = useState(false);
+  const [playlistsFetchError, setPlaylistsFetchError] = useState(false);
 
   const { colors } = useTheme();
   const { t } = useTranslation();
@@ -109,18 +113,39 @@ export function AddToPlaylistSheet() {
   const contentOpacity = useSharedValue(0);
 
   useEffect(() => {
-    if (visible) {
-      setPhase('loading');
-      hasMeasured.current = false;
-      animatedHeight.value = SPINNER_HEIGHT;
-      contentOpacity.value = 0;
-      const timer = setTimeout(() => {
-        playlistLibraryStore.getState().fetchAllPlaylists();
-        setPhase('measuring');
-      }, CONTENT_DELAY_MS);
-      return () => clearTimeout(timer);
-    }
-    return undefined;
+    if (!visible) return undefined;
+    setPhase('loading');
+    hasMeasured.current = false;
+    animatedHeight.value = SPINNER_HEIGHT;
+    contentOpacity.value = 0;
+    let alive = true;
+    const timer = setTimeout(async () => {
+      const db = getDb();
+      // Seed with the cached playlists first so the reveal animation measures real
+      // content, THEN measure, THEN refresh from the server (dual-writes normalized).
+      if (db) {
+        const cached = (await listAllPlaylists(db)).map(playlistListRowToPlaylist);
+        if (!alive) return;
+        if (cached.length) setPlaylists(cached);
+      }
+      setPhase('measuring');
+      setPlaylistsLoading(true);
+      setPlaylistsFetchError(false);
+      try {
+        await playlistLibraryStore.getState().fetchAllPlaylists();
+        if (db && alive) {
+          setPlaylists((await listAllPlaylists(db)).map(playlistListRowToPlaylist));
+        }
+      } catch {
+        if (alive) setPlaylistsFetchError(true);
+      } finally {
+        if (alive) setPlaylistsLoading(false);
+      }
+    }, CONTENT_DELAY_MS);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
   }, [visible, animatedHeight, contentOpacity]);
 
   const transitionToReady = useCallback(() => {
@@ -181,11 +206,12 @@ export function AddToPlaylistSheet() {
           const success = await addToPlaylist(playlist.id, songIds);
           if (!success) throw new Error('API returned false');
 
-          if (playlist.id in playlistDetailStore.getState().playlists) {
+          // Only downloaded playlists need a re-fetch here — to re-sync the on-disk
+          // tracks with the added songs. Non-downloaded playlists re-fetch lazily when
+          // their detail screen next opens (local-first). fetchPlaylist dual-writes normalized.
+          if (playlist.id in musicCacheStore.getState().cachedItems) {
             const updated = await playlistDetailStore.getState().fetchPlaylist(playlist.id);
-            if (updated && playlist.id in musicCacheStore.getState().cachedItems) {
-              syncCachedItemTracks(playlist.id, updated.entry ?? []);
-            }
+            if (updated) syncCachedItemTracks(playlist.id, updated.entry ?? []);
           }
 
           playlistLibraryStore.getState().fetchAllPlaylists();

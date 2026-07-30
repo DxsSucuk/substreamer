@@ -8,7 +8,6 @@ import { useTranslation } from 'react-i18next';
 import { useTheme } from '../../hooks/useTheme';
 import { useThemedAlert } from '../../hooks/useThemedAlert';
 import { settingsStyles } from '../../styles/settingsStyles';
-import { albumLibraryStore } from '../../store/albumLibraryStore';
 import { connectivityStore } from '../../store/connectivityStore';
 import { fullLibraryDownloadStore } from '../../store/fullLibraryDownloadStore';
 import {
@@ -16,8 +15,10 @@ import {
   type MaxConcurrentDownloads,
 } from '../../store/musicCacheStore';
 import { offlineModeStore } from '../../store/offlineModeStore';
-import { playlistLibraryStore } from '../../store/playlistLibraryStore';
 import { downloadedMetadataRefreshStore } from '../../store/downloadedMetadataRefreshStore';
+import { getDb } from '../../store/persistence/db';
+import { countAlbums } from '../../db/repository/albums';
+import { countPlaylists } from '../../db/repository/playlists';
 import {
   canDownloadFullLibrary,
   enqueueFullLibraryDownload,
@@ -74,7 +75,7 @@ export function DownloadedMusicCard() {
     setSheetVisible(false);
   }, []);
 
-  const handleDownloadFullLibrary = useCallback(() => {
+  const handleDownloadFullLibrary = useCallback(async () => {
     if (!canDownloadFullLibrary()) {
       alert(t('downloadFullLibrary'), t('downloadFullLibraryOffline'));
       return;
@@ -90,8 +91,9 @@ export function DownloadedMusicCard() {
       return;
     }
 
-    const albums = albumLibraryStore.getState().albums.length;
-    const playlists = playlistLibraryStore.getState().playlists.length;
+    const db = getDb();
+    const albums = db ? await countAlbums(db) : 0;
+    const playlists = db ? await countPlaylists(db) : 0;
     confirm({
       title: t('downloadFullLibraryConfirmTitle'),
       message: t('downloadFullLibraryConfirmBody', { albums, playlists }),

@@ -1,6 +1,8 @@
 import {
   albumPassesDownloadedFilter,
   computeQueueItemProgress,
+  downloadedAlbumsFromCache,
+  downloadedPlaylistsFromCache,
   isCompleteAlbum,
   isPartialAlbum,
 } from '../cachedItemHelpers';
@@ -112,6 +114,51 @@ describe('albumPassesDownloadedFilter', () => {
   it('includes partial album when includePartial is true', () => {
     const map = { a2: partial };
     expect(albumPassesDownloadedFilter({ id: 'a2' }, map, true)).toBe(true);
+  });
+});
+
+describe('downloadedAlbumsFromCache', () => {
+  const complete = makeItem({
+    itemId: 'a1',
+    songIds: Array.from({ length: 10 }, (_, i) => `s${i}`),
+    expectedSongCount: 10,
+    rawJson: JSON.stringify({ id: 'a1', name: 'Complete' }),
+  });
+  const partial = makeItem({
+    itemId: 'a2',
+    songIds: ['s1', 's2'],
+    expectedSongCount: 10,
+    rawJson: JSON.stringify({ id: 'a2', name: 'Partial' }),
+  });
+
+  it('rebuilds album envelopes from rawJson, honouring the partial toggle', () => {
+    const map = { a1: complete, a2: partial };
+    expect(downloadedAlbumsFromCache(map, false).map((a) => a.id)).toEqual(['a1']);
+    expect(downloadedAlbumsFromCache(map, true).map((a) => a.id).sort()).toEqual(['a1', 'a2']);
+  });
+
+  it('ignores non-album types and rows without an envelope', () => {
+    const map = {
+      p1: makeItem({ itemId: 'p1', type: 'playlist', rawJson: JSON.stringify({ id: 'p1' }) }),
+      a3: makeItem({ itemId: 'a3', songIds: ['s'], expectedSongCount: 1 /* complete, no rawJson */ }),
+    };
+    expect(downloadedAlbumsFromCache(map, true)).toEqual([]);
+  });
+
+  it('skips a corrupt envelope without throwing', () => {
+    const map = { a1: makeItem({ itemId: 'a1', songIds: ['s'], expectedSongCount: 1, rawJson: '{not json' }) };
+    expect(downloadedAlbumsFromCache(map, true)).toEqual([]);
+  });
+});
+
+describe('downloadedPlaylistsFromCache', () => {
+  it('rebuilds playlist envelopes from rawJson, ignoring other types', () => {
+    const map = {
+      p1: makeItem({ itemId: 'p1', type: 'playlist', rawJson: JSON.stringify({ id: 'p1', name: 'Mix' }) }),
+      a1: makeItem({ itemId: 'a1', rawJson: JSON.stringify({ id: 'a1' }) }),
+      p2: makeItem({ itemId: 'p2', type: 'playlist' /* no rawJson */ }),
+    };
+    expect(downloadedPlaylistsFromCache(map).map((p) => p.id)).toEqual(['p1']);
   });
 });
 

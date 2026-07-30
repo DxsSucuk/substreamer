@@ -731,3 +731,50 @@ export async function runSpikeH(log: Log): Promise<void> {
   log('  re-populate them, showing "Upgrading library…" on the banner + a progress');
   log('  bar + % on Settings → Library data.');
 }
+
+/* ------------------------------------------------------------------ */
+/*  Full remote library sync — FAST (search3) vs SLOW (basic walk)     */
+/* ------------------------------------------------------------------ */
+
+async function runFullSyncSpike(log: Log, strategy: 'search3' | 'basic'): Promise<void> {
+  const label = strategy === 'search3' ? 'FAST (search3)' : 'SLOW (basic per-album walk)';
+  log(`=== Full remote library sync — ${label} ===`);
+  const { getDb } = require('../../store/persistence/db') as typeof import('../../store/persistence/db');
+  const db = getDb();
+  if (!db) {
+    log('DB unavailable — abort.');
+    return;
+  }
+  const { runNormalizedLibrarySync } =
+    require('../../services/normalizedLibrarySync') as typeof import('../../services/normalizedLibrarySync');
+  const { countAlbums } = require('../repository/albums') as typeof import('../repository/albums');
+  const { countSongs } = require('../repository/songs') as typeof import('../repository/songs');
+  const { countArtists } = require('../repository/artists') as typeof import('../repository/artists');
+  const { countPlaylists } = require('../repository/playlists') as typeof import('../repository/playlists');
+
+  log(`forcing transport=${strategy}; full reset + timed run (drops + repopulates the`);
+  log('normalized tables — the running app repopulates from this)...');
+  const t0 = now();
+  await runNormalizedLibrarySync({ full: true, forceStrategy: strategy });
+  const elapsed = since(t0);
+
+  const [a, s, ar, pl] = await Promise.all([
+    countAlbums(db),
+    countSongs(db),
+    countArtists(db),
+    countPlaylists(db),
+  ]);
+  log(`DONE in ${elapsed}`);
+  log(`  albums=${a} songs=${s} artists=${ar} playlists=${pl}`);
+  log('→ Run the other path to compare timings (your server supports both).');
+}
+
+/** Spike I — full remote library sync via the FAST search3 transport, timed. */
+export async function runSpikeI(log: Log): Promise<void> {
+  await runFullSyncSpike(log, 'search3');
+}
+
+/** Spike J — full remote library sync via the SLOW basic per-album walk, timed. */
+export async function runSpikeJ(log: Log): Promise<void> {
+  await runFullSyncSpike(log, 'basic');
+}

@@ -47,7 +47,7 @@ import {
   type DownloadQueueRow,
 } from '../store/persistence/musicCacheTables';
 import { replaceAllPendingScrobbles } from '../store/persistence/pendingScrobbleTable';
-import { replaceAllScrobbles } from '../store/persistence/scrobbleTable';
+import { ensureScrobbleColumnsAsync, replaceAllScrobbles } from '../store/persistence/scrobbleTable';
 import {
   bulkInsertCachedImages,
   countCachedImages as countCachedImagesRow,
@@ -1168,13 +1168,13 @@ const MIGRATION_TASKS: MigrationTask[] = [
     id: 3,
     name: 'Build analytics aggregates',
     run: async (log) => {
-      const state = completedScrobbleStore.getState();
-      if (state.completedScrobbles.length === 0) {
-        log('No scrobbles — skipping aggregate rebuild.');
-        return;
-      }
-      state.rebuildAggregates();
-      log(`Rebuilt aggregates for ${state.completedScrobbles.length} scrobbles.`);
+      // Analytics are now SQL GROUP BY aggregates over structured columns.
+      // Backfill those columns for any legacy rows, then refresh the store's
+      // cached all-time stats/aggregates from SQL.
+      await ensureScrobbleColumnsAsync();
+      await completedScrobbleStore.getState().refreshFromDb();
+      const total = completedScrobbleStore.getState().stats.totalPlays;
+      log(total > 0 ? `Backfilled + refreshed analytics for ${total} scrobbles.` : 'No scrobbles.');
     },
   },
 
@@ -2334,6 +2334,41 @@ const MIGRATION_TASKS: MigrationTask[] = [
   //   },
   // },
   // -------------------------------------------------------------------
+  //
+  // TODO: enable ONLY after verification runs of the final release (irreversible; frees space).
+  //
+  // The release is otherwise COMPLETE. The blob→normalized data-model upgrade migration
+  // (migrateBlobsToNormalized) is a PERMANENT part of the upgrade path — ANY user on an
+  // old version who ever upgrades gets their data migrated into the normalized model. The
+  // legacy blob tables are kept as dead data ONLY as the safety net (so the migration can
+  // be re-run or extended if a field was missed). When enabled, THIS task runs a final
+  // catch-up migration and THEN drops the tables — migrate-BEFORE-drop is mandatory so a
+  // very-old upgrader still recovers their data before it's gone. Held back JUST IN CASE
+  // until the final release is verified; uncomment to enable (it becomes id 34).
+  //
+  // {
+  //   id: 34,
+  //   name: 'Migrate any remaining blob data, then drop the legacy blob tables',
+  //   run: async (log) => {
+  //     const { getDb } = require('../store/persistence/db') as { getDb: () => any };
+  //     const db = getDb();
+  //     if (db === null) { log('[m34] db unavailable — skipping'); return; }
+  //     // Final catch-up FIRST (idempotent): recover any un-migrated blob data into the
+  //     // normalized model before the tables vanish.
+  //     const { migrateBlobsToNormalized, checkpointWalAsync } =
+  //       require('../db/migrateNormalized') as typeof import('../db/migrateNormalized');
+  //     await migrateBlobsToNormalized(db, log);
+  //     for (const t of ['library_albums', 'song_index', 'album_details']) {
+  //       await db.runAsync(`DROP TABLE IF EXISTS ${t};`);
+  //       log(`[m34] dropped ${t}`);
+  //     }
+  //     // Reclaim the freed pages so the DB file actually shrinks.
+  //     await checkpointWalAsync(db, log);
+  //     await db.runAsync('VACUUM;');
+  //     log('[m34] reclaimed space');
+  //   },
+  // },
+  // -------------------------------------------------------------------
 ];
 
 /* ------------------------------------------------------------------ */
@@ -2356,7 +2391,14 @@ export const LATEST_MIGRATION_ID = Math.max(...MIGRATION_TASKS.map((t) => t.id))
  * guard avoids misreading a fallback-store 0 (DB failed to open) as "fresh".
  */
 export function getPendingTasks(completedVersion: number): MigrationTask[] {
-  if (completedVersion === 0 && isDbHealthy()) {
+  // NEVER migrate against an unavailable DB. A failed DB init makes the persisted
+  // `completedVersion` read back as 0 (KV falls back to in-memory), and returning
+  // `id > 0` here would re-run EVERY migration on an already-loaded app — repeating
+  // one-time DESTRUCTIVE steps that don't touch the DB and so aren't skipped (e.g. the
+  // image-cache re-key wipes m25/m29 delete the on-disk image-cache dir). Bail; the
+  // next healthy boot reads the real version and runs the genuine pending set.
+  if (!isDbHealthy()) return [];
+  if (completedVersion === 0) {
     return MIGRATION_TASKS.filter((t) => t.runOnFreshInstall);
   }
   return MIGRATION_TASKS.filter((t) => t.id > completedVersion);
@@ -2374,6 +2416,10 @@ export async function runMigrations(
   completedVersion: number,
   onProgress?: (task: MigrationTask) => void,
 ): Promise<number> {
+  // Hard guard (defense-in-depth with getPendingTasks): never run migrations against
+  // an unavailable DB — the version read is unreliable and re-running tasks on an
+  // already-loaded app repeats destructive one-time steps. Leave the version untouched.
+  if (!isDbHealthy()) return completedVersion;
   // Fresh install: `pending` is only the `runOnFreshInstall` tasks; stamp
   // straight to latest afterwards so the skipped no-op data migrations aren't
   // re-swept next boot. Best-effort — return latest even if a cleanup throws.

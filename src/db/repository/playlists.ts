@@ -110,6 +110,16 @@ export function listPlaylistsBefore(
 
 export const countPlaylists = (db: InternalDb): Promise<number> => countRows(db, 'playlists');
 
+/** All playlist lean rows, sort-title order — the normalized replacement for reading
+ *  `playlistLibraryStore.playlists` (CarPlay/headless browse + voice vocabulary). */
+/** Every playlist id — the normalized replacement for enumerating
+ *  `playlistLibraryStore.playlists` (e.g. the full-library download). */
+export const listPlaylistIds = (db: InternalDb): Promise<string[]> =>
+  db.getAllAsync<{ id: string }>('SELECT id FROM playlists').then((rows) => rows.map((r) => r.id));
+
+export const listAllPlaylists = (db: InternalDb): Promise<PlaylistListRow[]> =>
+  db.getAllAsync<PlaylistListRow>(`SELECT ${PLAYLIST_LIST_COLS} FROM playlists ORDER BY sort_title, "id"`);
+
 /** Lean rows for a set of playlist ids (unordered) — the downloaded set for offline
  *  search. Ids pass as a JSON array via `json_each`; empty id set → no rows. */
 export const listPlaylistsByIds = (db: InternalDb, ids: string[]): Promise<PlaylistListRow[]> =>
@@ -143,3 +153,16 @@ export const listPlaylistSongIds = (db: InternalDb, playlistId: string): Promise
       [playlistId],
     )
     .then((rows) => rows.map((r) => r.song_id));
+
+/** Which of the given playlist ids already have their membership (≥1 track) in the
+ *  normalized model — the "has detail cached" presence check for the downloaded-metadata
+ *  refresh. Ids pass as a JSON array via `json_each` to dodge the bound-variable limit. */
+export const playlistIdsWithSongs = (db: InternalDb, ids: string[]): Promise<Set<string>> =>
+  ids.length === 0
+    ? Promise.resolve(new Set<string>())
+    : db
+        .getAllAsync<{ playlist_id: string }>(
+          'SELECT DISTINCT playlist_id FROM playlist_songs WHERE playlist_id IN (SELECT value FROM json_each(?))',
+          [JSON.stringify(ids)],
+        )
+        .then((rows) => new Set(rows.map((r) => r.playlist_id)));

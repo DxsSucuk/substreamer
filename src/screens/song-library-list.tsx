@@ -16,7 +16,6 @@ import {
 import { type Cursor } from '../db/repository/core';
 import { getDb } from '../store/persistence/db';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
-import { songIndexStore } from '../store/songIndexStore';
 import type { Child } from '../services/subsonicService';
 
 const PAGE = 120;
@@ -174,7 +173,6 @@ function FilteredSongList({
 }) {
   const { t } = useTranslation();
   const { songs, refresh, loading } = useAllSongsByTitle({ downloadedOnly, favoritesOnly });
-  const hasHydrated = songIndexStore((s) => s.hasHydrated);
 
   const [refreshing, setRefreshing] = useState(false);
   const handleRefresh = useCallback(async () => {
@@ -192,7 +190,7 @@ function FilteredSongList({
     <SongListView
       songs={songs}
       layout={layout}
-      loading={!hasHydrated || loading}
+      loading={loading}
       onRefresh={handleRefresh}
       refreshing={refreshing}
       onSongPress={handleSongPress}

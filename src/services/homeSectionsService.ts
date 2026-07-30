@@ -39,8 +39,9 @@ export interface ComposeHomeInput {
   recentlyPlayed: AlbumID3[];
   frequentlyPlayed: AlbumID3[];
   randomSelection: AlbumID3[];
-  /** Full library album list — source for the Downloaded Albums list. */
-  allLibraryAlbums: AlbumID3[];
+  /** The downloaded albums (already filtered + sorted by the caller from the never-reaped
+   *  `cached_items` envelopes) — the body of the Downloaded Albums list. */
+  downloadedAlbums: AlbumID3[];
   offlineMode: boolean;
   downloadedOnly: boolean;
   favoritesOnly: boolean;
@@ -64,7 +65,7 @@ export function composeHomeAlbumSections(input: ComposeHomeInput): HomeAlbumSect
     recentlyPlayed,
     frequentlyPlayed,
     randomSelection,
-    allLibraryAlbums,
+    downloadedAlbums,
     offlineMode,
     downloadedOnly,
     favoritesOnly,
@@ -100,9 +101,7 @@ export function composeHomeAlbumSections(input: ComposeHomeInput): HomeAlbumSect
     sections.push({
       type: 'downloadedAlbums',
       titleKey: 'downloadedAlbums',
-      albums: allLibraryAlbums.filter((a) =>
-        albumPassesDownloadedFilter(a, cachedItems, includePartial),
-      ),
+      albums: downloadedAlbums,
     });
   }
 

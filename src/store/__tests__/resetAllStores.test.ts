@@ -120,7 +120,7 @@ describe('resetAllStores', () => {
     authStore.getState().setSession('https://example.com', 'user', 'pass', '1.16');
     albumLibraryStore.setState({ albums: [{ id: 'a1' }] as any });
     completedScrobbleStore.setState({
-      completedScrobbles: [{ id: 's1' }] as any,
+      recentScrobbles: [{ id: 's1' }] as any,
     });
     mbidOverrideStore.setState({
       overrides: { 'art-1': { mbid: 'x', name: 'A' } } as any,
@@ -134,7 +134,7 @@ describe('resetAllStores', () => {
     expect(authStore.getState().isLoggedIn).toBe(false);
     expect(authStore.getState().serverUrl).toBeNull();
     expect(albumLibraryStore.getState().albums).toEqual([]);
-    expect(completedScrobbleStore.getState().completedScrobbles).toEqual([]);
+    expect(completedScrobbleStore.getState().recentScrobbles).toEqual([]);
     expect(mbidOverrideStore.getState().overrides).toEqual({});
     expect(scrobbleExclusionStore.getState().excludedAlbums).toEqual({});
   });

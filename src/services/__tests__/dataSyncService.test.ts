@@ -130,6 +130,22 @@ jest.mock('../../store/artistLibraryStore', () => ({
   },
 }));
 
+// The sync's change-detection now reads normalized counts/ids from the repository
+// instead of the (doomed) library-store arrays. Derive those from the SAME mock
+// state the tests drive, so change-detection behaves as before. requireActual
+// preserves the repository's other exports (used by the real normalizedSyncWriter).
+jest.mock('../../db/repository/albums', () => ({
+  ...jest.requireActual('../../db/repository/albums'),
+  countAlbums: () => Promise.resolve(albumLibraryState.albums.length),
+  listAlbumIds: () => Promise.resolve(albumLibraryState.albums.map((a: { id: string }) => a.id)),
+  listAlbumsByIds: (_db: unknown, ids: string[]) =>
+    Promise.resolve(albumLibraryState.albums.filter((a: { id: string }) => ids.includes(a.id))),
+}));
+jest.mock('../../db/repository/artists', () => ({
+  ...jest.requireActual('../../db/repository/artists'),
+  countArtists: () => Promise.resolve(artistLibraryState.artists.length),
+}));
+
 jest.mock('../../store/playlistLibraryStore', () => ({
   __esModule: true,
   playlistLibraryStore: {
@@ -224,7 +240,9 @@ jest.mock('../../store/musicCacheStore', () => ({
 const mockConnectivity = { hasConnection: true, isServerReachable: true };
 jest.mock('../../store/connectivityStore', () => ({
   __esModule: true,
-  connectivityStore: { getState: () => mockConnectivity },
+  // `subscribe` is needed because detailFetchService → imageCacheService installs a
+  // module-level connectivity subscription at load.
+  connectivityStore: { getState: () => mockConnectivity, subscribe: () => () => {} },
 }));
 
 // Shortcut minDelay to a near-instant resolve in tests — its purpose is UI
@@ -639,8 +657,10 @@ describe('dataSyncService — runFullAlbumDetailSync', () => {
     expect(syncStatusStore.getState().detailSyncPhase).toBe('paused-offline');
   });
 
-  it('is a no-op when library is still loading', async () => {
-    albumLibraryState.loading = true;
+  it('is a no-op when the album list is still fetching', async () => {
+    // The walk now gates on the sync phase (normalized-era signal), not the
+    // doomed store's `loading` flag.
+    syncStatusStore.setState({ librarySyncPhase: 'fetching' });
     albumLibraryState.albums = [{ id: 'a1' }];
     await runFullAlbumDetailSync();
     expect(mockFetchAlbum).not.toHaveBeenCalled();

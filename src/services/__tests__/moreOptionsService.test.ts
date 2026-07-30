@@ -64,6 +64,41 @@ jest.mock('../../store/playlistDetailStore', () => ({
   },
 }));
 
+jest.mock('../../store/persistence/db', () => ({
+  getDb: jest.fn(() => ({})),
+}));
+
+// The normalized detail reads derive from the (mocked) detail stores so the existing
+// cached-data test setups exercise the same code path without per-test churn.
+jest.mock('../../db/repository/details', () => ({
+  getAlbumDetail: jest.fn(async (_db: unknown, id: string) => {
+    const al = require('../../store/albumDetailStore').albumDetailStore.getState().albums[id];
+    return al ? { album: al.album, songs: al.album?.song ?? [] } : null;
+  }),
+  getArtistDetail: jest.fn(async (_db: unknown, id: string) => {
+    const a = require('../../store/artistDetailStore').artistDetailStore.getState().artists[id];
+    return a
+      ? {
+          albums: a.artist?.album ?? [],
+          topSongs: a.topSongs ?? [],
+          resolvedMbid: a.resolvedMbid ?? null,
+          biography: a.biography ?? null,
+        }
+      : null;
+  }),
+  getPlaylistDetail: jest.fn(async (_db: unknown, id: string) => {
+    const p = require('../../store/playlistDetailStore').playlistDetailStore.getState().playlists[id];
+    return p ? { entry: p.playlist?.entry ?? [] } : null;
+  }),
+}));
+
+// Artist detail fetch routes through the shared normalized detailFetchService; bridge it to
+// the per-test `fetchArtist` injection on the (still-present) artistDetailStore mock.
+jest.mock('../detailFetchService', () => ({
+  fetchArtistDetail: (id: string) =>
+    require('../../store/artistDetailStore').artistDetailStore.getState().fetchArtist(id),
+}));
+
 jest.mock('../../store/playlistLibraryStore', () => ({
   playlistLibraryStore: {
     getState: jest.fn(() => ({

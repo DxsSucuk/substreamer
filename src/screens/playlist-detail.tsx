@@ -50,7 +50,9 @@ import { authStore } from '../store/authStore';
 import { moreOptionsStore } from '../store/moreOptionsStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { offlineModeStore } from '../store/offlineModeStore';
-import { playlistDetailStore } from '../store/playlistDetailStore';
+import { fetchPlaylistDetail } from '../services/detailFetchService';
+import { getDb } from '../store/persistence/db';
+import { getPlaylistDetail } from '../db/repository/details';
 import { playlistLibraryStore } from '../store/playlistLibraryStore';
 import { processingOverlayStore } from '../store/processingOverlayStore';
 
@@ -213,8 +215,38 @@ export function PlaylistDetailScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const cachedEntry = playlistDetailStore((s) => (id ? s.playlists[id] : undefined));
-  const [playlist, setPlaylist] = useState<PlaylistWithSongs | null>(cachedEntry?.playlist ?? null);
+  const [playlist, setPlaylist] = useState<PlaylistWithSongs | null>(null);
+  const [hasCache, setHasCache] = useState(false);
+  const [cacheChecked, setCacheChecked] = useState(false);
+  // Read the cached detail from the local DB first (fast) — the server fetch only runs
+  // on a genuine miss, so a re-open is instant. The server refresh dual-writes normalized.
+  useEffect(() => {
+    if (!id) return;
+    const db = getDb();
+    if (!db) {
+      setCacheChecked(true);
+      return;
+    }
+    let alive = true;
+    getPlaylistDetail(db, id)
+      .then((d) => {
+        if (!alive) return;
+        if (d) {
+          setPlaylist((prev) => prev ?? ({ ...d.playlist, entry: d.entry } as PlaylistWithSongs));
+          // "Cached" only if we actually have the tracks — a playlist ROW exists from the
+          // list sync, but its membership (`playlist_songs`) is only populated by a detail
+          // fetch. An empty entry ⇒ fetch from the server (fixes the "No tracks" flash).
+          setHasCache(d.entry.length > 0);
+        }
+        setCacheChecked(true);
+      })
+      .catch(() => {
+        if (alive) setCacheChecked(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [id]);
   const transitionComplete = useTransitionComplete();
   const downloadStatus = useDownloadStatus('playlist', Platform.OS === 'ios' ? (id ?? '') : '');
   const isWide = useLayoutMode() === 'wide';
@@ -240,20 +272,19 @@ export function PlaylistDetailScreen() {
   const canEdit = !offlineMode && isOwn;
 
   /* ---- Data fetching ---- */
-  const { fetchPlaylist } = playlistDetailStore.getState();
-
   const load = useCallback(async (playlistId: string, isRefresh: boolean) => {
-    const data = await fetchPlaylist(playlistId);
+    const data = await fetchPlaylistDetail(playlistId);
     setPlaylist(data);
     if (isRefresh && data?.id) {
       refreshCoverArt(data.id, 'playlist-detail-pull').catch(() => { /* non-critical */ });
     }
     return data ? null : t('playlistNotFound');
-  }, [fetchPlaylist, t]);
+  }, [t]);
 
   const { loading, refreshing, error, onRefresh } = useDetailFetch({
     id,
-    hasCache: !!cachedEntry,
+    hasCache,
+    cacheChecked,
     missingIdMessage: t('missingPlaylistId'),
     failedMessage: t('failedToLoadPlaylist'),
     load,
@@ -354,7 +385,7 @@ export function PlaylistDetailScreen() {
 
       // 3. Reconcile from server truth; patch the library list from the refetched
       //    values so it reflects reality even on a partial (tracks-ok/props-failed) save.
-      const fresh = await fetchPlaylist(id);
+      const fresh = await fetchPlaylistDetail(id);
       if (fresh?.id) {
         await ensureCached(fresh.id);
       }
@@ -380,7 +411,7 @@ export function PlaylistDetailScreen() {
     } finally {
       setSaving(false);
     }
-  }, [playlist, id, tracks, editedTracks, editedPublic, fetchPlaylist, t]);
+  }, [playlist, id, tracks, editedTracks, editedPublic, t]);
 
   /* ---- Header ---- */
 

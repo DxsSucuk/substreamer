@@ -23,6 +23,18 @@ jest.mock('../../store/connectivityStore', () => ({
   connectivityStore: { getState: () => ({ isServerReachable: mockReachable }) },
 }));
 
+// Enumeration reads the normalized ids; derive them from the same mock state the
+// fetch actions "populate" so the queueing order + totals behave as before.
+jest.mock('../../store/persistence/db', () => ({ getDb: () => ({}) }));
+jest.mock('../../db/repository/albums', () => ({
+  ...jest.requireActual('../../db/repository/albums'),
+  listAlbumIds: jest.fn(async () => mockAlbumsState.map((a) => a.id)),
+}));
+jest.mock('../../db/repository/playlists', () => ({
+  ...jest.requireActual('../../db/repository/playlists'),
+  listPlaylistIds: jest.fn(async () => mockPlaylistsState.map((p) => p.id)),
+}));
+
 const mockEnqueueAlbum = jest.fn();
 const mockEnqueuePlaylist = jest.fn();
 jest.mock('../musicCacheService', () => ({

@@ -4,12 +4,14 @@ const album = (id: string) => ({ id, name: `Album ${id}` } as any);
 
 // With includePartial: true, an album counts as downloaded iff cachedItems has
 // an entry for its id (the partial check is skipped), so `{ a1: {} }` marks a1.
+// `downloadedAlbums` is now the caller-precomputed body of the Downloaded Albums
+// section (the service no longer filters a full library list).
 const base: ComposeHomeInput = {
   recentlyAdded: [album('a1'), album('a2')],
   recentlyPlayed: [album('a3')],
   frequentlyPlayed: [album('a4')],
   randomSelection: [album('a5')],
-  allLibraryAlbums: [album('a1'), album('a2'), album('a3'), album('a4'), album('a5')],
+  downloadedAlbums: [],
   starredAlbums: [],
   cachedItems: {} as any,
   includePartial: true,
@@ -39,6 +41,7 @@ describe('composeHomeAlbumSections', () => {
     const s = composeHomeAlbumSections({
       ...base,
       cachedItems,
+      downloadedAlbums: [album('a1'), album('a3')],
       offlineMode: true,
       downloadedOnly: true,
     });
@@ -56,7 +59,12 @@ describe('composeHomeAlbumSections', () => {
 
   it('downloadedOnly while online: keeps Random, still prepends Downloaded Albums', () => {
     const cachedItems = { a1: {}, a5: {} } as any;
-    const s = composeHomeAlbumSections({ ...base, cachedItems, downloadedOnly: true });
+    const s = composeHomeAlbumSections({
+      ...base,
+      cachedItems,
+      downloadedAlbums: [album('a1'), album('a5')],
+      downloadedOnly: true,
+    });
     expect(types(s)).toEqual([
       'downloadedAlbums',
       'recentlyAdded',

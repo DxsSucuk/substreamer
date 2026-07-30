@@ -173,17 +173,35 @@ try {
   db.execSync('CREATE INDEX IF NOT EXISTS idx_library_albums_dmeta_name ON library_albums (dmeta_name);');
   db.execSync('CREATE INDEX IF NOT EXISTS idx_library_albums_dmeta_artist ON library_albums (dmeta_artist);');
 
-  // scrobble_events — completed scrobbles.
+  // scrobble_events — completed scrobbles. Structured columns (song_id, artist,
+  // …, hour, day_key) back the SQL analytics aggregates; existing installs get
+  // them ALTER-added + backfilled by ensureScrobbleColumnsAsync (scrobbleTable).
   db.execSync(
     `CREATE TABLE IF NOT EXISTS scrobble_events (
        id TEXT PRIMARY KEY NOT NULL,
        song_json TEXT NOT NULL,
-       time INTEGER NOT NULL
+       time INTEGER NOT NULL,
+       song_id TEXT,
+       artist TEXT,
+       artist_id TEXT,
+       album TEXT,
+       album_id TEXT,
+       cover_art TEXT,
+       genre TEXT,
+       year INTEGER,
+       duration INTEGER,
+       hour INTEGER,
+       day_key TEXT
      );`,
   );
   db.execSync(
     'CREATE INDEX IF NOT EXISTS idx_scrobble_events_time ON scrobble_events (time);',
   );
+  // NB: the `hour` index is NOT created here — on an existing install `scrobble_events`
+  // predates the `hour` column (ALTER-added by ensureScrobbleColumnsAsync), so a
+  // `CREATE INDEX … (hour)` in this eager block throws ("no such column: hour") and takes
+  // the whole DB init down. ensureScrobbleColumnsAsync creates the index AFTER adding the
+  // column, for both fresh and upgraded installs.
 
   // pending_scrobble_events — the offline transmit queue. Same row shape
   // as scrobble_events but a separate table so a completed row and its

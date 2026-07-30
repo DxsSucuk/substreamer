@@ -43,16 +43,24 @@ import { getLocalTrackUri } from './musicCacheService';
 import { logVoiceSearch } from './voiceSearchLogger';
 import { scoreCandidate, REJECT } from './searchMatch';
 import { composeHomeAlbumSections } from './homeSectionsService';
-import { albumLibraryStore } from '../store/albumLibraryStore';
+import { getDb } from '../store/persistence/db';
+import { listAllAlbums, albumListRowToAlbumID3 } from '../db/repository/albums';
+import { listAllPlaylists, playlistListRowToPlaylist } from '../db/repository/playlists';
+// playlistLibraryStore is kept only for the CarPlay-refresh subscription below (a
+// transitional dependency retired when the store is deleted in the subtractive phase).
 import { playlistLibraryStore } from '../store/playlistLibraryStore';
 import { favoritesStore } from '../store/favoritesStore';
 import { albumListsStore } from '../store/albumListsStore';
-import { albumDetailStore } from '../store/albumDetailStore';
-import { playlistDetailStore } from '../store/playlistDetailStore';
+import { fetchAlbumDetail, fetchPlaylistDetail } from './detailFetchService';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
-import { albumPassesDownloadedFilter } from '../store/persistence/cachedItemHelpers';
+import { serverInfoStore } from '../store/serverInfoStore';
+import {
+  albumPassesDownloadedFilter,
+  downloadedAlbumsFromCache,
+} from '../store/persistence/cachedItemHelpers';
+import { sortAlbumsByPreference } from '../utils/librarySort';
 import { awaitKvHydration, rehydrateAllStores } from '../store/persistence/rehydrate';
 import i18n from '../i18n/i18n';
 import {
@@ -85,9 +93,23 @@ function isOffline(): boolean {
   return offlineModeStore.getState().offlineMode;
 }
 
+/** All library albums from the normalized `albums` table (sort-title order). Replaces
+ *  reading `albumLibraryStore.albums`. NB: whole-table load, matching the previous
+ *  in-memory-array behaviour; a per-letter browse is a follow-up memory refinement. */
+async function allAlbums(): Promise<AlbumID3[]> {
+  const db = getDb();
+  return db ? (await listAllAlbums(db)).map(albumListRowToAlbumID3) : [];
+}
+
+/** All playlists from the normalized `playlists` table. Replaces `playlistLibraryStore`. */
+async function allPlaylists(): Promise<Playlist[]> {
+  const db = getDb();
+  return db ? (await listAllPlaylists(db)).map(playlistListRowToPlaylist) : [];
+}
+
 /** Library albums, filtered to downloaded when offline. */
-function albumSet(): AlbumID3[] {
-  const albums = albumLibraryStore.getState().albums;
+async function albumSet(): Promise<AlbumID3[]> {
+  const albums = await allAlbums();
   if (!isOffline()) return albums;
   const cachedItems = musicCacheStore.getState().cachedItems;
   const includePartial = layoutPreferencesStore.getState().includePartialInDownloadedFilter;
@@ -102,15 +124,15 @@ function favoriteSongs(): Child[] {
 }
 
 /** Playlists, filtered to cached when offline (playlists download atomically). */
-function playlistSet(): Playlist[] {
-  const pls = playlistLibraryStore.getState().playlists;
+async function playlistSet(): Promise<Playlist[]> {
+  const pls = await allPlaylists();
   if (!isOffline()) return pls;
   const cachedItems = musicCacheStore.getState().cachedItems;
   return pls.filter((p) => p.id in cachedItems);
 }
 
-function azItems(): AzItem[] {
-  return albumSet().map((a) => ({
+async function azItems(): Promise<AzItem[]> {
+  return (await albumSet()).map((a) => ({
     id: a.id,
     title: a.name,
     coverArt: a.coverArt ?? undefined,
@@ -121,18 +143,27 @@ function azItems(): AzItem[] {
 function homeInput() {
   const offline = isOffline();
   const lists = albumListsStore.getState();
+  const cachedItems = musicCacheStore.getState().cachedItems;
+  const includePartial = layoutPreferencesStore.getState().includePartialInDownloadedFilter;
+  // Downloaded Albums come from the never-reaped `cached_items` envelopes (offline-safe),
+  // sorted like the phone so the browse tree matches.
+  const downloadedAlbums = sortAlbumsByPreference(
+    downloadedAlbumsFromCache(cachedItems, includePartial),
+    layoutPreferencesStore.getState().albumSortOrder,
+    serverInfoStore.getState().ignoredArticles ?? undefined,
+  );
   return {
     recentlyAdded: lists.recentlyAdded,
     recentlyPlayed: lists.recentlyPlayed,
     frequentlyPlayed: lists.frequentlyPlayed,
     randomSelection: lists.randomSelection,
-    allLibraryAlbums: albumLibraryStore.getState().albums,
+    downloadedAlbums,
     offlineMode: offline,
     downloadedOnly: offline,
     favoritesOnly: false,
     starredAlbums: favoritesStore.getState().albums,
-    cachedItems: musicCacheStore.getState().cachedItems,
-    includePartial: layoutPreferencesStore.getState().includePartialInDownloadedFilter,
+    cachedItems,
+    includePartial,
   };
 }
 
@@ -223,7 +254,7 @@ async function trackRows(
 async function buildSnapshot(): Promise<BrowseSnapshot> {
   // Home: curated album lists (offline recomposed — drop Random, add
   // Downloaded Albums, filter to downloaded) — one drill row per non-empty list.
-  const homeItems: BrowseItem[] = composeHomeAlbumSections(homeInput())
+  const homeItems: BrowseItem[] = composeHomeAlbumSections(await homeInput())
     .filter((s) => s.albums.length > 0)
     .map((s) => ({
       id: listId(s.type),
@@ -239,11 +270,11 @@ async function buildSnapshot(): Promise<BrowseSnapshot> {
   );
 
   // Albums: A–Z letter buckets first (mandatory — libraries exceed the cap).
-  const albumItems = albumLetterRows(azItems());
+  const albumItems = albumLetterRows(await azItems());
 
   // Playlists: shown directly (display-capped; play loads the full list).
   const playlistItems = await Promise.all(
-    playlistSet().slice(0, CAR_MAX_ITEMS_PER_NODE).map(playlistRow),
+    (await playlistSet()).slice(0, CAR_MAX_ITEMS_PER_NODE).map(playlistRow),
   );
 
   const sections: BrowseSection[] = [
@@ -273,7 +304,7 @@ async function buildSnapshot(): Promise<BrowseSnapshot> {
  *  the app's album screen uses (online → server; offline → persisted detail cache). */
 async function albumSongs(id: string): Promise<Child[]> {
   try {
-    return (await albumDetailStore.getState().fetchAlbum(id))?.song ?? [];
+    return (await fetchAlbumDetail(id))?.song ?? [];
   } catch (e) {
     console.warn(`${LOG_TAG} fetchAlbum(${id}) failed:`, e);
     return [];
@@ -284,7 +315,7 @@ async function albumSongs(id: string): Promise<Child[]> {
  *  source the app's playlist screen uses (online → server; offline → detail cache). */
 async function playlistSongs(id: string): Promise<Child[]> {
   try {
-    return (await playlistDetailStore.getState().fetchPlaylist(id))?.entry ?? [];
+    return (await fetchPlaylistDetail(id))?.entry ?? [];
   } catch (e) {
     console.warn(`${LOG_TAG} fetchPlaylist(${id}) failed:`, e);
     return [];
@@ -296,13 +327,15 @@ async function resolveBrowseChildren(parentId: string): Promise<BrowseItem[]> {
   const p = parseMediaId(parentId);
   switch (p.kind) {
     case 'list': {
-      const section = composeHomeAlbumSections(homeInput()).find((s) => s.type === p.list);
+      const section = composeHomeAlbumSections(await homeInput()).find((s) => s.type === p.list);
       return Promise.all((section?.albums ?? []).map(albumRow));
     }
-    case 'azLetter':
-      return resolveAlbumLetterNode(albumsForLetter(azItems(), p.letter), p.letter, toAzAlbumRow);
+    case 'azLetter': {
+      const items = await azItems();
+      return resolveAlbumLetterNode(albumsForLetter(items, p.letter), p.letter, toAzAlbumRow);
+    }
     case 'azBucket':
-      return Promise.all(albumsForBucket(azItems(), p.letter, p.lo, p.hi).map(toAzAlbumRow));
+      return Promise.all(albumsForBucket(await azItems(), p.letter, p.lo, p.hi).map(toAzAlbumRow));
     case 'album':
       return trackRows(await albumSongs(p.albumId), (i) => albumTrackId(p.albumId, i));
     case 'playlist':
@@ -357,9 +390,9 @@ async function resolvePlayback(mediaId: string): Promise<ResolvedPlayback> {
   return { queue: [], startIndex: 0, sourcePlaylistId: null };
 }
 
-function findPlaylistByName(name: string): Playlist | undefined {
+async function findPlaylistByName(name: string): Promise<Playlist | undefined> {
   const target = name.trim().toLowerCase();
-  const pls = playlistSet();
+  const pls = await playlistSet();
   return (
     pls.find((p) => p.name.trim().toLowerCase() === target) ??
     pls.find((p) => p.name.trim().toLowerCase().includes(target))
@@ -455,7 +488,7 @@ async function resolveVoice(request: MediaSearchRequest): Promise<Child[]> {
   logVoiceSearch(`intent=${intent}`);
 
   if (intent === 'playlist') {
-    const pl = findPlaylistByName(request.playlist?.trim() || request.query);
+    const pl = await findPlaylistByName(request.playlist?.trim() || request.query);
     if (pl) {
       const songs = await playlistSongs(pl.id);
       if (songs.length) {
@@ -551,14 +584,14 @@ function uniqueSorted(values: string[]): string[] {
   return Array.from(new Set(values)).sort((a, b) => baseCollator.compare(a, b));
 }
 
-function donateVocabulary(): void {
+async function donateVocabulary(): Promise<void> {
   try {
+    const [albums, playlists] = await Promise.all([allAlbums(), allPlaylists()]);
     const artists = uniqueSorted([
-      ...albumLibraryStore.getState().albums.map((a) => a.artist).filter((a): a is string => !!a),
+      ...albums.map((a) => a.artist).filter((a): a is string => !!a),
       ...favoritesStore.getState().artists.map((a) => a.name),
     ]);
-    const playlists = playlistLibraryStore.getState().playlists.map((p) => p.name);
-    getTrackPlayer().donateVoiceVocabulary({ artists, playlists });
+    getTrackPlayer().donateVoiceVocabulary({ artists, playlists: playlists.map((p) => p.name) });
   } catch (e) {
     console.warn(`${LOG_TAG} donateVoiceVocabulary failed:`, e);
   }
@@ -577,7 +610,7 @@ async function pushSnapshot(): Promise<void> {
     }
     // Siri vocabulary is iOS SiriKit (INVocabulary) — phone-side, independent of any
     // car connection — so it is NOT car-gated (unlike the browse snapshot above).
-    donateVocabulary();
+    await donateVocabulary();
   } catch (e) {
     console.warn(`${LOG_TAG} pushSnapshot failed:`, e);
   }
