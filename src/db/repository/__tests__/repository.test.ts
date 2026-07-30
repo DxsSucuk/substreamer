@@ -15,6 +15,7 @@ import {
   artistCursorOf,
   artistListRowToArtistID3,
   countArtists,
+  deleteArtistsNotIn,
   getArtist,
   listArtists,
   listArtistsBefore,
@@ -505,5 +506,21 @@ describe('deleteAlbumSongsNotIn', () => {
     await upsertSongs(db(), [{ id: 'sx', title: 'sx', isDir: false } as unknown as Child]);
     await deleteAlbumSongsNotIn(db(), 'alA', []);
     expect(await countSongs(db())).toBe(1);
+  });
+});
+
+describe('deleteArtistsNotIn', () => {
+  it('prunes artists the server no longer lists', async () => {
+    await upsertArtists(db(), [artist('ar1', 'Alpha'), artist('ar2', 'Beta')]);
+    await deleteArtistsNotIn(db(), ['ar1']);
+    expect(await countArtists(db())).toBe(1);
+  });
+
+  it('refuses an empty keep-set', async () => {
+    // getAllArtists resolves [] rather than throwing when there is no usable API, so an
+    // empty set means "couldn't ask" far more often than "the server has no artists".
+    await upsertArtists(db(), [artist('ar1', 'Alpha')]);
+    await deleteArtistsNotIn(db(), []);
+    expect(await countArtists(db())).toBe(1);
   });
 });

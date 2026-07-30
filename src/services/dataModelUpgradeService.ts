@@ -11,33 +11,22 @@
  * user manually re-syncs if songs are missing (see the plan's deferred
  * "reliable-completeness" item; the sync-complete flags are known to lie at scale).
  *
- * Trigger = a DRIFT CHECK, not a one-shot flag: it runs only when the blob tables
- * hold more rows than the normalized tables (the initial upgrade, or a manual
- * re-sync that grew the blobs). Once the live sync dual-writes both (next phase),
- * they stay in step and this is a cheap no-op. Upserts are idempotent, so a kill
- * mid-run just re-runs next launch. Progress surfaces on the library-sync chrome.
+ * Trigger = a ONE-SHOT flag. It was a drift check ("blobs hold more rows than
+ * normalized") while both models were written together; the blob tables are frozen now,
+ * so that comparison would re-import a stale library on any later shrink. Upserts are
+ * idempotent, so a kill mid-run just re-runs next launch (the flag is only stamped on
+ * success). Progress surfaces on the library-sync chrome.
  */
 import { ensureNormalizedSchema } from '@/db/createNormalizedTables';
 import { checkpointWalAsync, migrateBlobsToNormalized } from '@/db/migrateNormalized';
-import type { InternalDb } from '@/db/client';
 import { getDb } from '@/store/persistence/db';
 import { kvStorage } from '@/store/persistence';
 import { syncStatusStore } from '@/store/syncStatusStore';
 
-/** One-time completion flag: set after the first successful full migration so the
- *  artist/playlist KV blobs (invisible to the album/song drift check) are migrated
- *  exactly once — not skipped when a live sync populated albums/songs first. */
+/** Stamped after the first successful full migration; the sole trigger gate. */
 const MIGRATION_DONE_KEY = 'substreamer-normalized-migration-complete';
 
 let inFlight: Promise<void> | null = null;
-
-const countTable = async (db: InternalDb, table: string): Promise<number> => {
-  try {
-    return (await db.getFirstAsync<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table}`))?.n ?? 0;
-  } catch {
-    return 0; // table may not exist yet
-  }
-};
 
 /**
  * Convert any un-migrated legacy blob/KV data into the normalized tables, in the
@@ -64,18 +53,13 @@ export function runDataModelUpgradeIfNeeded(): Promise<void> {
       }
 
       ensureNormalizedSchema(db);
-      const [blobAlbums, normAlbums, blobSongs, normSongs, stampedRaw] = await Promise.all([
-        countTable(db, 'library_albums'),
-        countTable(db, 'albums'),
-        countTable(db, 'song_index'),
-        countTable(db, 'songs'),
-        kvStorage.getItem(MIGRATION_DONE_KEY),
-      ]);
-      // Run when the migration has NEVER completed (first upgrade — this is the only pass
-      // that migrates the artist/playlist KV blobs, which the album/song drift check
-      // can't see), OR when the blob tables grew past normalized (a manual re-sync).
-      // Steady state → no-op.
-      if (stampedRaw === '1' && blobAlbums <= normAlbums && blobSongs <= normSongs) return;
+      // ONE-SHOT, not a drift check. The drift form ("blobs hold more than normalized")
+      // was only meaningful while both sides were written together. The blob tables are
+      // frozen now, so their counts are a permanent high-water mark of the first server
+      // ever synced — any later shrink in normalized (a reap, an interrupted resync, or
+      // the wipe on a server switch) would re-migrate that stale library back in, in the
+      // server-switch case straight into a different account's tables.
+      if ((await kvStorage.getItem(MIGRATION_DONE_KEY)) === '1') return;
 
       syncStatusStore.getState().setNormalizedMigration('migrating', 0, 0);
       const result = await migrateBlobsToNormalized(db, undefined, undefined, (done, total) =>

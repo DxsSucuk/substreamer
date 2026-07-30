@@ -285,7 +285,11 @@ async function handleServerSwitchIfNeeded(): Promise<void> {
   // inherit the previous server's library (blobs above are cleared for the same reason).
   const normDb = getDb();
   if (normDb) resetNormalizedSchema(normDb);
-  // Reset the song sync + re-probe capability for the new server.
+  // Reset both sync cursors + re-probe capability for the new server. The library
+  // cursor reset currently rides along inside `albumLibraryStore.clearAlbums()` above;
+  // make it explicit so it survives that store's removal — otherwise the album loop
+  // would resume at the PREVIOUS server's offset and skip that many albums.
+  syncStatusStore.getState().resetLibrarySync();
   syncStatusStore.getState().resetSongSync();
   syncStatusStore.getState().setSyncStrategy(null);
   syncStatusStore.getState().setLastKnownMarkers({

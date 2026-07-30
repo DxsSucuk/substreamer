@@ -50,17 +50,33 @@ describe('runDataModelUpgradeIfNeeded', () => {
     expect(syncStatusStore.getState().normalizedMigrationPhase).toBe('idle');
   });
 
-  it('is a no-op when the tables are already in step (no drift)', async () => {
-    // both blob + normalized empty → no drift → nothing migrated
+  it('is a no-op when there is nothing in the blob caches to migrate', async () => {
     await runDataModelUpgradeIfNeeded();
     expect(await countSongs(db())).toBe(0);
     expect(syncStatusStore.getState().normalizedMigrationPhase).toBe('idle');
   });
 
+  it('never re-imports the frozen blob tables after the normalized model shrinks', async () => {
+    // The trigger used to be a drift check (blobs hold more rows than normalized).
+    // Nothing writes the blob tables any more, so their counts are a permanent
+    // high-water mark: any later shrink — a reap, an interrupted resync, or the wipe on
+    // a server switch — would re-import that stale library, in the switch case into a
+    // different account's tables.
+    seedAlbum('a1');
+    seedSong('s1', 'a1');
+    await runDataModelUpgradeIfNeeded();
+    expect(await countSongs(db())).toBe(1);
+
+    // Normalized emptied (e.g. server switch); the blob rows are still sitting there.
+    db().runSync('DELETE FROM songs');
+    db().runSync('DELETE FROM albums');
+    await runDataModelUpgradeIfNeeded();
+    expect(await countSongs(db())).toBe(0);
+  });
+
   it('runs the one-time artist/playlist migration even when albums/songs are in step, then stamps', async () => {
-    // Simulate a live sync having already populated albums/songs (no album/song drift),
-    // while the artist KV blob has never been migrated. The old drift-only gate would
-    // skip this forever; the version stamp guarantees it runs exactly once.
+    // Simulate a live sync having already populated albums/songs, while the artist KV
+    // blob has never been migrated. The stamp guarantees this runs exactly once.
     db().runSync("INSERT OR REPLACE INTO storage (key, value) VALUES ('substreamer-artist-library', ?)", [
       JSON.stringify({ state: { artists: [{ id: 'ar1', name: 'Solo' }] }, version: 0 }),
     ]);

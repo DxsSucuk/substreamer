@@ -19,7 +19,7 @@ import type { AlbumID3, Child } from 'subsonic-api';
 import type { InternalDb } from '@/db/client';
 import { ensureNormalizedSchema, resetNormalizedSchema } from '@/db/createNormalizedTables';
 import { countAlbums, listAlbumIds, upsertAlbums } from '@/db/repository/albums';
-import { upsertArtists } from '@/db/repository/artists';
+import { deleteArtistsNotIn, upsertArtists } from '@/db/repository/artists';
 import { deletePlaylistsNotIn, upsertPlaylists } from '@/db/repository/playlists';
 import { getProtectedIds } from '@/db/protectedIds';
 import {
@@ -199,6 +199,11 @@ export async function syncArtistsNormalized(
     artists.map((a) => ({ id: a.id, serverRating: a.userRating ?? 0 })),
   );
   await upsertArtists(db, artists, undefined, articles);
+  // Prune only when the API actually answered — same shape as the playlist prune.
+  // Nothing else ever removes an artist row, so a server-side rename (ids are name
+  // hashes on some servers) would otherwise leave the old artist in the list forever.
+  if (getApi() === null) return;
+  await deleteArtistsNotIn(db, artists.map((a) => a.id));
 }
 
 /** Initial sync of the (lightweight) playlists list into the normalized `playlists`

@@ -110,6 +110,21 @@ export function listArtistsBefore(
   });
 }
 
+/**
+ * Prune artists no longer on the server after a full fetch. Exact rather than
+ * epoch-based because `getAllArtists` returns the COMPLETE set in one call.
+ *
+ * An empty `keepIds` is REFUSED, not honoured — `getAllArtists` returns `[]` rather than
+ * throwing whenever there is no usable API (offline, mid-logout, before auth restore),
+ * so an empty set means "couldn't ask" far more often than "the server has none".
+ */
+export const deleteArtistsNotIn = (db: InternalDb, keepIds: string[]): Promise<unknown> => {
+  if (keepIds.length === 0) return Promise.resolve();
+  return db.runAsync('DELETE FROM artists WHERE id NOT IN (SELECT value FROM json_each(?))', [
+    JSON.stringify(keepIds),
+  ]);
+};
+
 export const countArtists = (db: InternalDb, starredOnly = false): Promise<number> =>
   countRows(db, 'artists', starredOnly ? 'starred IS NOT NULL' : undefined);
 
