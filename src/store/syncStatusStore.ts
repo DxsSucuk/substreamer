@@ -91,6 +91,11 @@ export interface SyncStatusState extends LastKnownMarkers {
   songSyncStrategy: SyncStrategy | null;
   /** Resume cursor for the fast paged-`search3` song loop (`songOffset`). */
   songSyncCursor: number;
+  /** A FULL resync asked for a total re-walk of every album's songs. The basic walk
+   *  normally skips albums that already have songs, which would make a full resync a
+   *  no-op now that it no longer drops the tables first. Persisted so an interrupted
+   *  full resync still re-walks on resume instead of silently completing. */
+  fullWalkPending: boolean;
   /** True once every song has been fetched into `song_index`. Startup gate. */
   songSyncComplete: boolean;
   /** EPHEMERAL — the fetch loop finished and the in-memory index is rebuilding
@@ -176,6 +181,7 @@ export const syncStatusStore = create<SyncStatusState>()(
       syncStrategy: null,
       songSyncStrategy: null,
       songSyncCursor: 0,
+      fullWalkPending: false,
       songSyncComplete: false,
       songSyncFinalizing: false,
 
@@ -244,6 +250,9 @@ export const syncStatusStore = create<SyncStatusState>()(
       markSongSyncComplete: () =>
         set((s) => ({
           songSyncComplete: true,
+          // Cleared here rather than only in the walk: on a search3 server the basic
+          // walk never runs, so the flag would otherwise latch true forever.
+          fullWalkPending: false,
           songSyncFinalizing: false,
           detailSyncPhase: 'idle',
           detailSyncTotal: 0,
@@ -254,6 +263,10 @@ export const syncStatusStore = create<SyncStatusState>()(
         set({
           songSyncStrategy: null,
           songSyncCursor: 0,
+          // Both callers (full resync, server switch) want every album's songs
+          // re-fetched, not just the ones missing them. Persisted with the cursor
+          // in this same write so an interrupted run resumes as a full walk.
+          fullWalkPending: true,
           songSyncComplete: false,
           songSyncFinalizing: false,
           detailSyncPhase: 'idle',
@@ -302,6 +315,7 @@ export const syncStatusStore = create<SyncStatusState>()(
         syncStrategy: state.syncStrategy,
         songSyncStrategy: state.songSyncStrategy,
         songSyncCursor: state.songSyncCursor,
+        fullWalkPending: state.fullWalkPending,
         songSyncComplete: state.songSyncComplete,
         fullSyncCompletedAt: state.fullSyncCompletedAt,
         libraryLastUpdatedAt: state.libraryLastUpdatedAt,

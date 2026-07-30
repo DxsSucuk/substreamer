@@ -10,9 +10,9 @@
  * (from the persisted tables, no memory). Resumes from `librarySyncCursor` /
  * `songSyncCursor`.
  *
- * Scope: search3-capable servers. The per-album basic walk into the normalized
- * model is not implemented yet — if the server's songs lack `albumId`, the song
- * phase bails with an error phase rather than silently doing the wrong thing.
+ * Handles both transports: paged `search3` where songs carry `albumId`, and the
+ * per-album `getAlbum` walk for basic servers (and for search3 servers whose songs
+ * come back without `albumId`).
  */
 import type { AlbumID3, Child } from 'subsonic-api';
 
@@ -22,7 +22,13 @@ import { countAlbums, listAlbumIds, upsertAlbums } from '@/db/repository/albums'
 import { upsertArtists } from '@/db/repository/artists';
 import { deletePlaylistsNotIn, upsertPlaylists } from '@/db/repository/playlists';
 import { getProtectedIds } from '@/db/protectedIds';
-import { countSongAlbums, countSongs, listSongAlbumIds, upsertSongs } from '@/db/repository/songs';
+import {
+  countSongAlbums,
+  countSongs,
+  deleteAlbumSongsNotIn,
+  listSongAlbumIds,
+  upsertSongs,
+} from '@/db/repository/songs';
 import { getDb } from '@/store/persistence/db';
 import { clearAlbumCoverArtCache } from '@/hooks/useSongCoverArt';
 import { offlineModeStore } from '@/store/offlineModeStore';
@@ -58,6 +64,10 @@ const nowMs = (): number => {
 };
 
 let inFlight: Promise<void> | null = null;
+/** Generation + fullness of the in-flight run, so a later caller can tell whether
+ *  joining it would actually satisfy the request. See `runNormalizedLibrarySync`. */
+let inFlightGen = -1;
+let inFlightFull = false;
 
 /**
  * Basic (non-search3) servers: songs don't carry `albumId`, so the paged fast path can't
@@ -69,17 +79,21 @@ async function doBasicSongWalk(
   db: InternalDb,
   articles: readonly string[] | undefined,
   capturedGen: number,
-): Promise<void> {
+): Promise<'done' | 'bailed'> {
   const genChanged = (): boolean => syncStatusStore.getState().generation !== capturedGen;
   const isOffline = (): boolean => offlineModeStore.getState().offlineMode;
 
   const allIds = await listAlbumIds(db);
-  const have = new Set(await listSongAlbumIds(db));
+  // A full resync must re-fetch EVERY album's songs. The incremental walk skips albums
+  // that already have songs, which — now that a full resync no longer drops the tables —
+  // would make it an instant no-op and silently mark the sync complete.
+  const fullWalk = syncStatusStore.getState().fullWalkPending;
+  const have = fullWalk ? new Set<string>() : new Set(await listSongAlbumIds(db));
   const missing = allIds.filter((id) => !have.has(id));
   syncStatusStore.getState().setDetailSyncTotal(allIds.length);
   let done = allIds.length - missing.length;
   syncStatusStore.getState().setDetailSyncCompleted(done);
-  if (missing.length === 0) return;
+  if (missing.length === 0) return 'done';
 
   // Abort the pool on a generation bump (cancel/force-resync/logout) or an offline flip.
   const ctrl = new AbortController();
@@ -89,14 +103,20 @@ async function doBasicSongWalk(
   const unsubOffline = offlineModeStore.subscribe((s) => {
     if (s.offlineMode) ctrl.abort();
   });
+  let result;
   try {
-    await runPool(
+    result = await runPool(
       missing,
       async (id) => {
         if (genChanged() || isOffline()) throw new Error('walk-bail');
-        const album = await getAlbum(id).catch(() => null);
-        if (album?.song && album.song.length > 0) {
+        // `getAlbum` swallows every error and returns null, so a null result is the ONLY
+        // signal a fetch failed. Throw so it lands in runPool's `rejected` — otherwise a
+        // flaky connection silently leaves albums track-less and still reports success.
+        const album = await getAlbum(id);
+        if (album === null) throw new Error('walk-fetch-failed');
+        if (album.song && album.song.length > 0) {
           await upsertSongs(db, album.song, undefined, articles);
+          await deleteAlbumSongsNotIn(db, id, album.song.map((s) => s.id));
         }
         done += 1;
         if (done % PROGRESS_EVERY === 0) syncStatusStore.getState().setDetailSyncCompleted(done);
@@ -108,6 +128,10 @@ async function doBasicSongWalk(
     unsubOffline();
   }
   syncStatusStore.getState().setDetailSyncCompleted(done);
+  // A partial walk must NOT read as success: it would clear `fullWalkPending` and mark
+  // the song sync complete with albums still missing their tracks.
+  if (result.aborted || result.rejected.length > 0) return 'bailed';
+  return 'done';
 }
 
 /**
@@ -134,15 +158,18 @@ async function runSearch3SongPhase(
     }
     // eslint-disable-next-line no-await-in-loop
     const page: Child[] = await searchSongsPage(SONG_PAGE, songOffset);
-    if (page.length === 0) break;
+    // An empty page means "end of library" ONLY if we actually had an API to ask. With
+    // no usable API (mid-logout, pre-auth-restore) the page fns resolve [] without
+    // throwing, and treating that as the end marks a truncated library complete.
+    if (page.length === 0) return getApi() === null ? 'bailed' : 'done';
     if (firstPage) {
       firstPage = false;
       const missing = page.filter((s) => !s.albumId).length;
       if (missing / page.length > 0.01) {
         // Songs lack albumId — fall back to the per-album walk.
         // eslint-disable-next-line no-await-in-loop
-        await doBasicSongWalk(db, articles, capturedGen);
-        return genChanged() || isOffline() ? 'bailed' : 'done';
+        const walk = await doBasicSongWalk(db, articles, capturedGen);
+        return walk === 'done' && !genChanged() && !isOffline() ? 'done' : 'bailed';
       }
     }
     // eslint-disable-next-line no-await-in-loop
@@ -191,16 +218,28 @@ export async function syncPlaylistsNormalized(
 }
 
 /**
- * Run the full remote library sync into the normalized model. `full` drops +
- * recreates the normalized tables first (clean cold run). Deduped — a concurrent
- * call returns the running promise.
+ * Run the full remote library sync into the normalized model. `full` restarts from
+ * cursor zero and re-walks every album's songs, without dropping the tables.
+ *
+ * Deduping is conditional: a plain concurrent call joins the running promise, but a
+ * `full` request must never silently join a non-full run (that is the user tapping the
+ * exit hatch and getting nothing), and neither may a call whose generation has moved on
+ * — `forceFullResync` bumps the generation immediately before asking for the full run.
  */
 export function runNormalizedLibrarySync(
   opts: { full?: boolean; forceStrategy?: 'search3' | 'basic' } = {},
 ): Promise<void> {
-  if (inFlight) return inFlight;
-  inFlight = doNormalizedSync(opts).finally(() => {
-    inFlight = null;
+  const gen = syncStatusStore.getState().generation;
+  const canJoin = inFlight !== null && gen === inFlightGen && (!opts.full || inFlightFull);
+  if (canJoin) return inFlight as Promise<void>;
+  const previous = inFlight;
+  inFlightGen = gen;
+  inFlightFull = opts.full === true;
+  const run = (previous ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(() => doNormalizedSync(opts));
+  inFlight = run.finally(() => {
+    if (inFlight === run) inFlight = null;
   });
   return inFlight;
 }
@@ -218,12 +257,16 @@ async function doNormalizedSync(
 
   const tStart = nowMs();
   try {
+    ensureNormalizedSchema(db);
     if (full) {
-      resetNormalizedSchema(db);
+      // Deliberately NOT `resetNormalizedSchema`. Dropping the tables also destroys the
+      // things the sync never rebuilds — playlist membership, artist bio/similar/top
+      // songs — and album/playlist detail read only the normalized tables, so a
+      // downloaded album's track list goes blank offline until the song phase finishes,
+      // permanently if it is interrupted. Upserts overwrite every server-derived column
+      // anyway, so a restart-from-zero rebuild is equivalent without the collateral.
       syncStatusStore.getState().resetLibrarySync();
       syncStatusStore.getState().resetSongSync();
-    } else {
-      ensureNormalizedSchema(db);
     }
 
     // Transport: forced (dev fast/slow timing spikes) → use as-is; else the persisted
@@ -255,7 +298,13 @@ async function doNormalizedSync(
       const page: AlbumID3[] = useBasic
         ? await getAlbumsPageByName(BASIC_PAGE, albumOffset)
         : await searchAlbumsPage(ALBUM_PAGE, albumOffset);
-      if (page.length === 0) break;
+      if (page.length === 0) {
+        // End of library ONLY if we actually had an API to ask — the page fns resolve
+        // [] without throwing when there is none (mid-logout, pre-auth-restore), and
+        // marking the library complete off that leaves it permanently truncated.
+        if (getApi() === null) return;
+        break;
+      }
       // Ignore-offset guard: a server that ignores `albumOffset` returns the same
       // first page forever. Detect via an unchanged first id and switch to basic.
       if (!useBasic && albumOffset > 0 && page[0]?.id === prevFirstId) {
@@ -265,6 +314,13 @@ async function doNormalizedSync(
         continue;
       }
       prevFirstId = page[0]?.id ?? null;
+      // Correct any stale optimistic rating override against the server value — parity
+      // with the blob album-list sync (`albumLibraryStore.fetchAllAlbums`), which is the
+      // only thing doing this today and goes away with that store. Per page rather than
+      // at the end so it stays bounded-memory.
+      ratingStore.getState().reconcileRatings(
+        page.map((a) => ({ id: a.id, serverRating: a.userRating ?? 0 })),
+      );
       // eslint-disable-next-line no-await-in-loop
       await upsertAlbums(db, page, undefined, articles);
       albumOffset += page.length;
@@ -287,11 +343,15 @@ async function doNormalizedSync(
     const tSong0 = nowMs();
     syncStatusStore.getState().setDetailSyncPhase('syncing');
     syncStatusStore.getState().setDetailSyncTotal(totalAlbums);
-    syncStatusStore.getState().setDetailSyncCompleted(await countSongAlbums(db));
+    // On a full re-walk every album is about to be re-fetched, so seeding from
+    // `countSongAlbums` would show 100% for the whole phase (the rows are still there —
+    // we no longer drop them). Start from zero and let the walk count up.
+    const fullWalk = syncStatusStore.getState().fullWalkPending;
+    syncStatusStore.getState().setDetailSyncCompleted(fullWalk ? 0 : await countSongAlbums(db));
     if (strat === 'basic') {
       // Basic (non-search3) server, or a forced slow-path run: songs don't carry albumId,
       // so walk each album's getAlbum song list instead of paging search3.
-      await doBasicSongWalk(db, articles, capturedGen);
+      if ((await doBasicSongWalk(db, articles, capturedGen)) === 'bailed') return;
       if (genChanged() || isOffline()) return;
     } else if ((await runSearch3SongPhase(db, articles, capturedGen)) === 'bailed') {
       return;

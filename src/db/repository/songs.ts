@@ -147,6 +147,29 @@ export const listSongsByAlbum = (db: InternalDb, albumId: string): Promise<SongL
 export const countSongs = (db: InternalDb, starredOnly = false): Promise<number> =>
   countRows(db, 'songs', starredOnly ? 'starred IS NOT NULL' : undefined);
 
+/**
+ * Drop this album's songs that the server no longer lists. Servers that derive song ids
+ * from path+tags (Navidrome et al.) emit fresh ids after a re-tag, and since nothing
+ * else deletes song rows the album's track list would otherwise show the old and new
+ * sets forever (`getAlbumDetail` is `WHERE album_id = ?`).
+ *
+ * Scoped to ONE album and ONE authoritative `getAlbum` response, so it carries no
+ * assumption about what a whole sync run saw. Downloaded tracks are exempt — their row
+ * backs the offline track list even when the server has moved on. Run it AFTER the
+ * upsert: deleting first would leave the album empty if the process died in between.
+ */
+export const deleteAlbumSongsNotIn = (
+  db: InternalDb,
+  albumId: string,
+  keepIds: string[],
+): Promise<unknown> =>
+  db.runAsync(
+    'DELETE FROM songs WHERE album_id = ? ' +
+      'AND id NOT IN (SELECT value FROM json_each(?)) ' +
+      'AND id NOT IN (SELECT song_id FROM cached_songs)',
+    [albumId, JSON.stringify(keepIds)],
+  );
+
 /** Eager +1 play-count + last-played for a just-scrobbled song — a TARGETED scalar
  *  UPDATE (no child-table churn) so normalized play stats stay current for the detail
  *  screens / player. Relative increment mirrors the store bumps; a full resync

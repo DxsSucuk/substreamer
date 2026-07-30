@@ -754,6 +754,11 @@ async function runFullSyncSpike(log: Log, strategy: 'search3' | 'basic'): Promis
 
   log(`forcing transport=${strategy}; full reset + timed run (drops + repopulates the`);
   log('normalized tables — the running app repopulates from this)...');
+  // The sync itself no longer drops (that destroyed detail the sync can't rebuild), so
+  // the spike drops here instead — timing an idempotent re-upsert into a populated table
+  // measures a different workload than the cold insert this spike exists to compare.
+  const { resetNormalizedSchema } = require('../createNormalizedTables') as typeof import('../createNormalizedTables');
+  resetNormalizedSchema(db);
   const t0 = now();
   await runNormalizedLibrarySync({ full: true, forceStrategy: strategy });
   const elapsed = since(t0);

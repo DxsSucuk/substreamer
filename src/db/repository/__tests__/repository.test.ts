@@ -36,6 +36,7 @@ import {
 } from '../playlists';
 import {
   countSongs,
+  deleteAlbumSongsNotIn,
   listSongs,
   listSongsBefore,
   listSongsByAlbum,
@@ -464,5 +465,45 @@ describe('schema completeness (all typed metadata captured)', () => {
     // base fields survive the partial info upsert
     expect(row.name).toBe('Kind of Blue');
     expect(row.artist).toBe('Miles Davis');
+  });
+});
+
+describe('deleteAlbumSongsNotIn', () => {
+  const song = (id: string, albumId: string): Child =>
+    ({ id, title: id, albumId, isDir: false }) as unknown as Child;
+
+  beforeEach(async () => {
+    db().runSync('DELETE FROM songs');
+    db().runSync('DELETE FROM cached_songs');
+  });
+
+  it('drops only this album\'s tracks the server no longer lists', async () => {
+    await upsertSongs(db(), [song('s1', 'alA'), song('s2', 'alA'), song('s3', 'alB')]);
+    // Server re-tagged alA and re-keyed its ids: s1 stays, s2 is gone, s9 is new.
+    await upsertSongs(db(), [song('s9', 'alA')]);
+    await deleteAlbumSongsNotIn(db(), 'alA', ['s1', 's9']);
+
+    const remaining = (await listSongsByAlbum(db(), 'alA')).map((s) => s.id).sort();
+    expect(remaining).toEqual(['s1', 's9']);
+    // A different album is untouched.
+    expect((await listSongsByAlbum(db(), 'alB')).map((s) => s.id)).toEqual(['s3']);
+  });
+
+  it('never deletes a downloaded track', async () => {
+    await upsertSongs(db(), [song('s1', 'alA'), song('s2', 'alA')]);
+    db().runSync(
+      `INSERT OR REPLACE INTO cached_songs
+         (song_id, title, album_id, bytes, duration, suffix, format_captured_at, downloaded_at)
+       VALUES ('s2', 's2', 'alA', 0, 0, 'mp3', 0, 0)`,
+    );
+    // s2 vanished from the server, but its file is on disk and backs the offline list.
+    await deleteAlbumSongsNotIn(db(), 'alA', ['s1']);
+    expect((await listSongsByAlbum(db(), 'alA')).map((s) => s.id).sort()).toEqual(['s1', 's2']);
+  });
+
+  it('is a no-op for songs with a null album_id', async () => {
+    await upsertSongs(db(), [{ id: 'sx', title: 'sx', isDir: false } as unknown as Child]);
+    await deleteAlbumSongsNotIn(db(), 'alA', []);
+    expect(await countSongs(db())).toBe(1);
   });
 });

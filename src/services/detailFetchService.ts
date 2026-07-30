@@ -38,7 +38,7 @@ import {
   upsertArtists,
 } from '../db/repository/artists';
 import { setPlaylistSongs, upsertPlaylists } from '../db/repository/playlists';
-import { upsertSongs } from '../db/repository/songs';
+import { deleteAlbumSongsNotIn, upsertSongs } from '../db/repository/songs';
 import { getAlbumDetail, getArtistDetail, getPlaylistDetail } from '../db/repository/details';
 import { getDb, serializeDbWrite } from '../store/persistence/db';
 
@@ -106,7 +106,13 @@ export async function fetchAlbumDetail(
       if (db) {
         await serializeDbWrite(async () => {
           await upsertAlbums(db, [data], undefined, articles());
-          if (data.song && data.song.length > 0) await upsertSongs(db, data.song, undefined, articles());
+          if (data.song && data.song.length > 0) {
+            await upsertSongs(db, data.song, undefined, articles());
+            // Drop tracks the server no longer lists for this album — servers that
+            // re-key song ids on re-tag would otherwise leave the old and new sets
+            // both showing in the track list. Downloaded tracks are exempt.
+            await deleteAlbumSongsNotIn(db, data.id, data.song.map((s) => s.id));
+          }
         });
         bumpDetailChanged('album', id);
       }
