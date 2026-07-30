@@ -4,6 +4,7 @@ import { getLocalTrackUri } from '../services/musicCacheService';
 import { favoritesStore } from '../store/favoritesStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import type { Child } from '../services/subsonicService';
+import { defaultCollator } from '../utils/intl';
 
 interface UseAllSongsByTitleOpts {
   downloadedOnly?: boolean;
@@ -18,7 +19,10 @@ interface UseAllSongsByTitleResult {
 }
 
 const EMPTY: Child[] = [];
-const byTitle = (a: Child, b: Child): number => (a.title ?? '').localeCompare(b.title ?? '');
+// `defaultCollator`, not `localeCompare` — Hermes on Android ARM64 clones a fresh ICU
+// collator per call (#867), which is why the raw method is banned repo-wide.
+const byTitle = (a: Child, b: Child): number =>
+  defaultCollator.compare(a.title ?? '', b.title ?? '');
 
 /** Shape a cached_songs row into the `Child` the song rows render. */
 function childFromCached(s: {
