@@ -19,7 +19,15 @@
  * consumers are cut over and the old tables dropped.
  */
 import { sql } from 'drizzle-orm';
-import { index, integer, primaryKey, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import {
+  index,
+  integer,
+  primaryKey,
+  real,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from 'drizzle-orm/sqlite-core';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Entities
@@ -456,4 +464,182 @@ export const playlistAllowedUsers = sqliteTable(
     username: text('username').notNull(),
   },
   (t) => ({ pk: primaryKey({ columns: [t.playlistId, t.pos] }) }),
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Kept tables — permanent user data, NOT part of the library model
+//
+// These predate the normalized rebuild and survive it: the KV blob store (auth,
+// settings, theme), scrobble history, the download tables and the image cache.
+// They live here so `ensureNormalizedSchema` owns every CREATE/ALTER/INDEX in one
+// ordered pass (tables → add missing columns → indexes) — the hand-written block in
+// `db.ts` had no such ordering, which is how a `hour` index came to be created before
+// the `hour` column and took DB init down.
+//
+// They are classified as KEPT_TABLES in `createNormalizedTables.ts` so a resync,
+// server switch or dev spike can never drop them. Definitions transcribed 1:1 from the
+// former `db.ts` block, which already includes every column ever ALTER-added.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Generic key/value blob store — Zustand `persist` targets this. */
+export const storage = sqliteTable('storage', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+});
+
+/** Completed scrobbles. The structured columns back the SQL analytics aggregates;
+ *  `hour`/`day_key` are device-local buckets computed at write time. */
+export const scrobbleEvents = sqliteTable(
+  'scrobble_events',
+  {
+    id: text('id').primaryKey(),
+    songJson: text('song_json').notNull(),
+    time: integer('time').notNull(),
+    songId: text('song_id'),
+    artist: text('artist'),
+    artistId: text('artist_id'),
+    album: text('album'),
+    albumId: text('album_id'),
+    coverArt: text('cover_art'),
+    genre: text('genre'),
+    year: integer('year'),
+    duration: integer('duration'),
+    hour: integer('hour'),
+    dayKey: text('day_key'),
+  },
+  (t) => ({
+    timeIdx: index('idx_scrobble_events_time').on(t.time),
+    hourIdx: index('idx_scrobble_events_hour').on(t.hour),
+  }),
+);
+
+/** Offline transmit queue. Same row shape as `scrobble_events` but a separate table so
+ *  a completed row and its still-pending sibling can legitimately share an id. */
+export const pendingScrobbleEvents = sqliteTable(
+  'pending_scrobble_events',
+  {
+    id: text('id').primaryKey(),
+    songJson: text('song_json').notNull(),
+    time: integer('time').notNull(),
+  },
+  (t) => ({ timeIdx: index('idx_pending_scrobble_events_time').on(t.time) }),
+);
+
+/** Downloaded tracks. `raw_json` preserves the full Subsonic `Child` envelope. */
+export const cachedSongs = sqliteTable(
+  'cached_songs',
+  {
+    songId: text('song_id').primaryKey(),
+    title: text('title').notNull(),
+    artist: text('artist'),
+    album: text('album'),
+    albumId: text('album_id').notNull(),
+    coverArt: text('cover_art'),
+    bytes: integer('bytes').notNull(),
+    duration: integer('duration').notNull(),
+    suffix: text('suffix').notNull(),
+    bitRate: integer('bit_rate'),
+    bitDepth: integer('bit_depth'),
+    samplingRate: integer('sampling_rate'),
+    formatCapturedAt: integer('format_captured_at').notNull(),
+    downloadedAt: integer('downloaded_at').notNull(),
+    rawJson: text('raw_json'),
+  },
+  (t) => ({ albumIdx: index('idx_cached_songs_album_id').on(t.albumId) }),
+);
+
+/** A downloaded album / playlist / favorites set / single song. `derived` marks a row
+ *  created to hold an edge rather than an explicit user download. */
+export const cachedItems = sqliteTable('cached_items', {
+  itemId: text('item_id').primaryKey(),
+  type: text('type').notNull(),
+  name: text('name').notNull(),
+  artist: text('artist'),
+  coverArtId: text('cover_art_id'),
+  expectedSongCount: integer('expected_song_count').notNull(),
+  parentAlbumId: text('parent_album_id'),
+  lastSyncAt: integer('last_sync_at').notNull(),
+  downloadedAt: integer('downloaded_at').notNull(),
+  rawJson: text('raw_json'),
+  derived: integer('derived').default(0),
+});
+
+/** Ordered membership of a cached item. The UNIQUE index enforces one edge per
+ *  (item, song) — the PK alone allows the same song at two positions. */
+export const cachedItemSongs = sqliteTable(
+  'cached_item_songs',
+  {
+    itemId: text('item_id')
+      .notNull()
+      .references(() => cachedItems.itemId, { onDelete: 'cascade' }),
+    position: integer('position').notNull(),
+    songId: text('song_id')
+      .notNull()
+      .references(() => cachedSongs.songId),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.itemId, t.position] }),
+    songIdx: index('idx_cached_item_songs_song_id').on(t.songId),
+    itemSongIdx: uniqueIndex('idx_cached_item_songs_item_song').on(t.itemId, t.songId),
+  }),
+);
+
+/** Persistent music download queue. */
+export const downloadQueue = sqliteTable(
+  'download_queue',
+  {
+    queueId: text('queue_id').primaryKey(),
+    itemId: text('item_id').notNull(),
+    type: text('type').notNull(),
+    name: text('name').notNull(),
+    artist: text('artist'),
+    coverArtId: text('cover_art_id'),
+    status: text('status').notNull(),
+    totalSongs: integer('total_songs').notNull(),
+    completedSongs: integer('completed_songs').notNull(),
+    error: text('error'),
+    addedAt: integer('added_at').notNull(),
+    queuePosition: integer('queue_position').notNull(),
+    songsJson: text('songs_json').notNull(),
+  },
+  (t) => ({
+    statusIdx: index('idx_download_queue_status').on(t.status),
+    positionIdx: index('idx_download_queue_position').on(t.queuePosition),
+  }),
+);
+
+/** Per-variant record of on-disk cover art. No FK — cover art ids come from the server
+ *  and aren't owned by any local table. At most one row per (id, size). */
+export const cachedImages = sqliteTable(
+  'cached_images',
+  {
+    coverArtId: text('cover_art_id').notNull(),
+    size: integer('size').notNull(),
+    ext: text('ext').notNull(),
+    bytes: integer('bytes').notNull(),
+    cachedAt: integer('cached_at').notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.coverArtId, t.size] }),
+    cachedAtIdx: index('idx_cached_images_cached_at').on(t.cachedAt),
+    coverArtIdx: index('idx_cached_images_cover_art_id').on(t.coverArtId),
+  }),
+);
+
+/** Persistent queue for user-initiated cover-art refresh cycles. */
+export const imageDownloadQueue = sqliteTable(
+  'image_download_queue',
+  {
+    coverArtId: text('cover_art_id').primaryKey(),
+    scope: text('scope').notNull(),
+    status: text('status').notNull(),
+    error: text('error'),
+    attempts: integer('attempts').notNull().default(0),
+    addedAt: integer('added_at').notNull(),
+    cycleId: text('cycle_id').notNull(),
+  },
+  (t) => ({
+    statusIdx: index('idx_image_download_queue_status').on(t.status, t.addedAt),
+    cycleIdx: index('idx_image_download_queue_cycle').on(t.cycleId),
+  }),
 );

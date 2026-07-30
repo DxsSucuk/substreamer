@@ -12,15 +12,25 @@ const path = require('path');
 const migrationsDir = path.join(__dirname, '../src/db/migrations');
 const outPath = path.join(__dirname, '../src/db/normalizedDdl.ts');
 
-// Newest .sql migration in the folder (there is only one for the initial schema).
-const sqlFile = fs
-  .readdirSync(migrationsDir)
-  .filter((f) => f.endsWith('.sql'))
-  .sort()
-  .pop();
-if (!sqlFile) {
+// The runtime applies the WHOLE schema on every boot, so this file must contain every
+// CREATE — not a delta. drizzle-kit emits incremental ALTER-only migrations once a
+// baseline exists, and taking the newest of those would silently reduce NORMALIZED_DDL
+// to those ALTERs: ensureNormalizedSchema becomes a no-op and normalizedTableNames()
+// returns [], which looks fine on an existing install and gives fresh installs zero
+// tables. Refuse rather than guess — regenerate from scratch instead:
+//   rm src/db/migrations/0000_*.sql && rm -rf src/db/migrations/meta
+//   npx drizzle-kit generate && node scripts/build-normalized-ddl.js
+const sqlFiles = fs.readdirSync(migrationsDir).filter((f) => f.endsWith('.sql')).sort();
+if (sqlFiles.length === 0) {
   throw new Error('No .sql migration found — run `npx drizzle-kit generate` first.');
 }
+if (sqlFiles.length > 1) {
+  throw new Error(
+    `Expected exactly one .sql migration, found ${sqlFiles.length}: ${sqlFiles.join(', ')}.\n` +
+      'Delete src/db/migrations/*.sql + meta/ and regenerate so the DDL is a full schema, not a delta.',
+  );
+}
+const sqlFile = sqlFiles[0];
 
 const raw = fs.readFileSync(path.join(migrationsDir, sqlFile), 'utf8');
 const statements = raw

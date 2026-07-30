@@ -4,6 +4,9 @@
 // through op-SQLite's `executeSync`, so a jest.fn() spy on it captures the exact
 // statement sequence the previous expo-sqlite `execSync` spy used to.
 
+import { KEPT_TABLES } from '../../../db/createNormalizedTables';
+import { NORMALIZED_DDL } from '../../../db/normalizedDdl';
+
 const okResult = { rows: [] as Array<Record<string, unknown>>, rowsAffected: 0 };
 
 describe('persistence/db (happy path)', () => {
@@ -16,7 +19,13 @@ describe('persistence/db (happy path)', () => {
 
   beforeAll(() => {
     jest.isolateModules(() => {
-      mockExecuteSync = jest.fn(() => okResult);
+      // Report `cached_item_songs` as present so the dedup's existence guard fires —
+      // an upgrading install, which is the case the dedup exists for.
+      mockExecuteSync = jest.fn((sql: string) =>
+        typeof sql === 'string' && sql.includes('sqlite_master')
+          ? { rows: [{ n: 1 }], rowsAffected: 0 }
+          : okResult,
+      );
       mockExecute = jest.fn(async () => okResult);
       jest.doMock('@op-engineering/op-sqlite', () => ({
         open: () => ({
@@ -61,32 +70,26 @@ describe('persistence/db (happy path)', () => {
     ]);
   });
 
-  it('creates every persistence table in FK-safe order', () => {
+  it('hand-creates ONLY the legacy blob tables', () => {
     const creates = mockExecuteSync.mock.calls
       .map((c) => c[0] as string)
-      // Legacy tables only — the normalized model's generated DDL uses backtick-
-      // quoted names and is validated by the repository/DDL tests, not here.
+      // The normalized model + the permanent kept tables live in schema.ts and are
+      // created by ensureNormalizedSchema from the generated (backtick-quoted) DDL.
       .filter((sql) => sql.trim().startsWith('CREATE TABLE') && !sql.includes('`'));
-    // The order here is load-bearing: cached_items must be created before
-    // cached_item_songs so the FOREIGN KEY clause resolves.
     const tableNames = creates.map((sql) => {
       const match = sql.match(/CREATE TABLE IF NOT EXISTS (\w+)/);
       return match?.[1];
     });
-    expect(tableNames).toEqual([
-      'storage',
-      'album_details',
-      'song_index',
-      'library_albums',
-      'scrobble_events',
-      'pending_scrobble_events',
-      'cached_songs',
-      'cached_items',
-      'cached_item_songs',
-      'download_queue',
-      'cached_images',
-      'image_download_queue',
-    ]);
+    // Only the three temporary blob tables. They stay hand-written because the DROP
+    // migration removes them — in schema.ts they would be recreated on the next boot.
+    expect(tableNames).toEqual(['album_details', 'song_index', 'library_albums']);
+  });
+
+  it('declares every permanent table in the generated DDL, not by hand', () => {
+    const ddl = NORMALIZED_DDL.join('\n');
+    for (const t of KEPT_TABLES) {
+      expect(ddl).toContain(`CREATE TABLE IF NOT EXISTS \`${t}\``);
+    }
   });
 
   it('reads the tuning PRAGMAs back at boot to validate they applied', () => {
@@ -102,10 +105,9 @@ describe('persistence/db (happy path)', () => {
     );
   });
 
-  it('creates every expected index', () => {
+  it('hand-creates only the legacy blob indexes', () => {
     const indexNames = mockExecuteSync.mock.calls
       .map((c) => c[0] as string)
-      // Legacy indexes only — the normalized model's generated DDL uses backticks.
       .filter((sql) => sql.trim().startsWith('CREATE INDEX') && !sql.includes('`'))
       .map((sql) => {
         const match = sql.match(/CREATE INDEX IF NOT EXISTS (\w+)/);
@@ -113,22 +115,10 @@ describe('persistence/db (happy path)', () => {
       });
     expect(indexNames.sort()).toEqual(
       [
-        'idx_cached_images_cached_at',
-        'idx_cached_images_cover_art_id',
-        'idx_cached_item_songs_song_id',
-        'idx_cached_songs_album_id',
-        'idx_download_queue_position',
-        'idx_download_queue_status',
-        'idx_image_download_queue_cycle',
-        'idx_image_download_queue_status',
         'idx_library_albums_dmeta_artist',
         'idx_library_albums_dmeta_name',
         'idx_library_albums_norm_name',
         'idx_library_albums_sortKey',
-        'idx_pending_scrobble_events_time',
-        // idx_scrobble_events_hour is created by ensureScrobbleColumnsAsync (after the
-        // ALTER-added `hour` column exists), NOT in this eager block — see db.ts.
-        'idx_scrobble_events_time',
         'idx_song_index_albumId',
         'idx_song_index_dmeta_artist',
         'idx_song_index_dmeta_title',
@@ -139,15 +129,50 @@ describe('persistence/db (happy path)', () => {
     );
   });
 
+  it('the kept tables index via the generated DDL, after their columns exist', () => {
+    // The whole point of the consolidation: ensureNormalizedSchema runs tables →
+    // ALTER-add missing columns → indexes, so `idx_scrobble_events_hour` can no longer
+    // be created before the `hour` column and take DB init down.
+    const ddl = NORMALIZED_DDL.join('\n');
+    for (const idx of [
+      'idx_scrobble_events_time',
+      'idx_scrobble_events_hour',
+      'idx_pending_scrobble_events_time',
+      'idx_cached_songs_album_id',
+      'idx_cached_item_songs_song_id',
+      'idx_cached_item_songs_item_song',
+      'idx_download_queue_status',
+      'idx_download_queue_position',
+      'idx_cached_images_cached_at',
+      'idx_cached_images_cover_art_id',
+      'idx_image_download_queue_status',
+      'idx_image_download_queue_cycle',
+    ]) {
+      expect(ddl).toContain(`\`${idx}\``);
+    }
+  });
+
   it('cached_item_songs declares ON DELETE CASCADE on item_id', () => {
     // Guards against accidental schema regression — the cascade behavior is
     // exactly what the UPSERT fix in commit 5867ff0 relies on for orphan
     // edges to clean up, and its absence would silently corrupt the
-    // refcount-by-COUNT invariant.
-    const cascadeDdl = mockExecuteSync.mock.calls
-      .map((c) => c[0] as string)
-      .find((sql) => sql.includes('cached_item_songs'));
-    expect(cascadeDdl).toMatch(/ON DELETE CASCADE/);
+    // refcount-by-COUNT invariant. Match the CREATE specifically: the dedup DELETE in
+    // db.ts also mentions the table, and drizzle emits lowercase `ON DELETE cascade`.
+    const cascadeDdl = NORMALIZED_DDL.find(
+      (sql) => sql.trim().startsWith('CREATE TABLE') && sql.includes('cached_item_songs'),
+    );
+    expect(cascadeDdl).toMatch(/on delete cascade/i);
+  });
+
+  it('dedups cached_item_songs before the UNIQUE index is created', () => {
+    // The dedup must precede ensureNormalizedSchema — that transaction creates the
+    // UNIQUE (item_id, song_id) index all-or-nothing, so leftover duplicates would
+    // fail it and null the whole DB handle.
+    const sqls = mockExecuteSync.mock.calls.map((c) => c[0] as string);
+    const dedupIdx = sqls.findIndex((s) => s.includes('DELETE FROM cached_item_songs'));
+    const uniqueIdx = sqls.findIndex((s) => s.includes('idx_cached_item_songs_item_song'));
+    expect(dedupIdx).toBeGreaterThanOrEqual(0);
+    expect(uniqueIdx).toBeGreaterThan(dedupIdx);
   });
 
   describe('__setDbForTests', () => {

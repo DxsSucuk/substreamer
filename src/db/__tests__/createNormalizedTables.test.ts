@@ -1,5 +1,11 @@
 import { getDb } from '../../store/persistence/db';
-import { ensureNormalizedSchema } from '../createNormalizedTables';
+import {
+  KEPT_TABLES,
+  MODEL_TABLES,
+  ddlTableNames,
+  ensureNormalizedSchema,
+  normalizedTableNames,
+} from '../createNormalizedTables';
 
 const NORMALIZED_TABLES = [
   'songs',
@@ -73,5 +79,31 @@ describe('ensureNormalizedSchema', () => {
       "SELECT COUNT(*) AS n FROM album_genres WHERE album_id = 'a1'",
     );
     expect(childCount?.n).toBe(0);
+  });
+});
+
+describe('drop scope', () => {
+  it('classifies every table in the DDL as either model or kept', () => {
+    // Both lists are hard-coded on purpose. A derived MODEL = DDL - KEPT would make this
+    // assertion vacuous AND fail open: a new unclassified table would join the drop list.
+    const classified = new Set([...MODEL_TABLES, ...KEPT_TABLES]);
+    const unclassified = ddlTableNames().filter((n) => !classified.has(n));
+    expect(unclassified).toEqual([]);
+  });
+
+  it('has no stale entries — every MODEL_TABLE still exists in the DDL', () => {
+    // Catches a rename: the old name lingers here (and in every shipped DB) while the
+    // DDL moves on, so it would never be dropped again and would leak across accounts.
+    const inDdl = new Set(ddlTableNames());
+    expect(MODEL_TABLES.filter((n) => !inDdl.has(n))).toEqual([]);
+  });
+
+  it('never exposes a kept table as droppable', () => {
+    const droppable = new Set(normalizedTableNames());
+    for (const kept of KEPT_TABLES) expect(droppable.has(kept)).toBe(false);
+  });
+
+  it('reports the library model as droppable', () => {
+    expect(normalizedTableNames()).toEqual(expect.arrayContaining(['albums', 'songs']));
   });
 });

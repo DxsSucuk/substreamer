@@ -20,19 +20,37 @@ import { NORMALIZED_DDL } from './normalizedDdl';
 const isCreateTable = (s: string): boolean => /^\s*CREATE TABLE/i.test(s);
 const isCreateIndex = (s: string): boolean => /^\s*CREATE\s+(?:UNIQUE\s+)?INDEX/i.test(s);
 
-/** Table name + its column (name, type) list, parsed from a CREATE TABLE statement.
- *  Constraint lines (FOREIGN KEY / PRIMARY KEY(...)) don't start with a
- *  backtick-quoted identifier followed by a type, so they're skipped. */
-function parseTableColumns(stmt: string): { table: string; columns: { name: string; type: string }[] } | null {
+interface ParsedColumn {
+  name: string;
+  type: string;
+  /** The literal from `DEFAULT <literal>`, if the column declares one. */
+  defaultSql?: string;
+  notNull: boolean;
+}
+
+/** Table name + its parsed columns, from a CREATE TABLE statement. Constraint lines
+ *  (FOREIGN KEY / PRIMARY KEY(...)) don't start with a backtick-quoted identifier
+ *  followed by a type, so they're skipped. Drizzle emits constraints in the order
+ *  `DEFAULT <lit> NOT NULL`, which is why the tail is parsed rather than pattern-matched
+ *  as a fixed sequence. */
+function parseTableColumns(stmt: string): { table: string; columns: ParsedColumn[] } | null {
   const nameM = stmt.match(/CREATE TABLE(?:\s+IF NOT EXISTS)?\s+`([^`]+)`/i);
   if (!nameM) return null;
   const open = stmt.indexOf('(');
   const close = stmt.lastIndexOf(')');
   const body = open >= 0 && close > open ? stmt.slice(open + 1, close) : '';
-  const columns: { name: string; type: string }[] = [];
+  const columns: ParsedColumn[] = [];
   for (const rawLine of body.split('\n')) {
-    const m = rawLine.trim().match(/^`([^`]+)`\s+(text|integer|real|blob|numeric)\b/i);
-    if (m) columns.push({ name: m[1], type: m[2] });
+    const m = rawLine.trim().match(/^`([^`]+)`\s+(text|integer|real|blob|numeric)\b(.*)$/i);
+    if (!m) continue;
+    const tail = m[3];
+    const defM = tail.match(/\bDEFAULT\s+('[^']*'|-?\d+(?:\.\d+)?|NULL|TRUE|FALSE)/i);
+    columns.push({
+      name: m[1],
+      type: m[2],
+      defaultSql: defM?.[1],
+      notNull: /\bNOT\s+NULL\b/i.test(tail),
+    });
   }
   return { table: nameM[1], columns };
 }
@@ -61,9 +79,15 @@ export function ensureNormalizedSchema(db: InternalDb): void {
       if (!parsed) continue;
       const have = existingColumns(db, parsed.table);
       for (const col of parsed.columns) {
-        if (!have.has(col.name)) {
-          db.execSync(`ALTER TABLE "${parsed.table}" ADD COLUMN "${col.name}" ${col.type}`);
+        if (have.has(col.name)) continue;
+        let ddl = `ALTER TABLE "${parsed.table}" ADD COLUMN "${col.name}" ${col.type}`;
+        if (col.defaultSql != null) {
+          ddl += ` DEFAULT ${col.defaultSql}`;
+          // NOT NULL is only legal on ADD COLUMN when a DEFAULT supplies a value for the
+          // existing rows; without one SQLite rejects it outright on a non-empty table.
+          if (col.notNull) ddl += ' NOT NULL';
         }
+        db.execSync(ddl);
       }
     }
     // 3. Indexes last — every referenced column now exists.
@@ -73,14 +97,69 @@ export function ensureNormalizedSchema(db: InternalDb): void {
   });
 }
 
-/** Every normalized table name, parsed from the generated DDL so it can't drift. */
-export function normalizedTableNames(): string[] {
+/**
+ * The normalized LIBRARY model — the only tables a resync/logout/server-switch may drop.
+ *
+ * An explicit allowlist, not "everything in the DDL minus the kept ones": schema.ts also
+ * defines the permanent tables (auth/settings KV, downloads, scrobble history, image
+ * cache), and a subtract-based rule fails OPEN — forget to classify a new table and it
+ * silently joins the drop list. Here an unclassified table is simply never dropped.
+ */
+export const MODEL_TABLES: readonly string[] = [
+  'albums',
+  'songs',
+  'artists',
+  'playlists',
+  'album_artists',
+  'album_disc_titles',
+  'album_genres',
+  'album_moods',
+  'album_record_labels',
+  'album_release_types',
+  'artist_roles',
+  'artist_similar',
+  'artist_top_songs',
+  'playlist_allowed_users',
+  'playlist_songs',
+  'song_album_artists',
+  'song_artists',
+  'song_contributors',
+  'song_genres',
+  'song_moods',
+];
+
+/**
+ * Permanent user data that lives in schema.ts for ordered schema management but must
+ * NEVER be dropped by a resync, a server switch or the dev spikes. Losing any of these
+ * means losing the login, the downloads (leaving orphaned files on disk), the listening
+ * history or the image cache.
+ */
+export const KEPT_TABLES: readonly string[] = [
+  'storage',
+  'scrobble_events',
+  'pending_scrobble_events',
+  'cached_songs',
+  'cached_items',
+  'cached_item_songs',
+  'download_queue',
+  'cached_images',
+  'image_download_queue',
+];
+
+/** Every table name in the generated DDL, in emission order. */
+export function ddlTableNames(): string[] {
   const names: string[] = [];
   for (const stmt of NORMALIZED_DDL) {
     const m = stmt.match(/CREATE TABLE(?:\s+IF NOT EXISTS)?\s+[`"]?([A-Za-z0-9_]+)[`"]?/i);
     if (m) names.push(m[1]);
   }
   return names;
+}
+
+/** The droppable subset: DDL ∩ MODEL_TABLES. */
+export function normalizedTableNames(): string[] {
+  const model = new Set(MODEL_TABLES);
+  return ddlTableNames().filter((n) => model.has(n));
 }
 
 /**

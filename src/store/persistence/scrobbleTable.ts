@@ -234,44 +234,14 @@ export async function replaceAllScrobbles(scrobbles: readonly CompletedScrobble[
 }
 
 /**
- * ALTER-add the structured analytics columns to a pre-existing `scrobble_events`
- * table (new installs get them from the CREATE). Idempotent — each ADD COLUMN is
- * try/caught so a "duplicate column" on a second run is a no-op. Then backfill
- * any rows still missing the derived values (an upgrade's existing scrobbles).
+ * Backfill the structured analytics columns for rows that predate them.
+ *
+ * The columns and the `hour` index are no longer ALTER-added here: `scrobble_events`
+ * is declared in `src/db/schema.ts`, so `ensureNormalizedSchema` adds any missing column
+ * and only then creates the indexes — which is what stops a `hour` index being created
+ * before the `hour` column exists. Only the DATA half remains.
  */
 export async function ensureScrobbleColumnsAsync(): Promise<void> {
-  const db = getDb();
-  if (db === null) return;
-  const defs: Array<[string, string]> = [
-    ['song_id', 'TEXT'],
-    ['artist', 'TEXT'],
-    ['artist_id', 'TEXT'],
-    ['album', 'TEXT'],
-    ['album_id', 'TEXT'],
-    ['cover_art', 'TEXT'],
-    ['genre', 'TEXT'],
-    ['year', 'INTEGER'],
-    ['duration', 'INTEGER'],
-    ['hour', 'INTEGER'],
-    ['day_key', 'TEXT'],
-  ];
-  for (const [col, type] of defs) {
-    try {
-      // eslint-disable-next-line no-await-in-loop
-      await serializeDbWrite(() =>
-        db.runAsync(`ALTER TABLE scrobble_events ADD COLUMN ${col} ${type};`),
-      );
-    } catch {
-      /* column already exists — expected on the second+ run */
-    }
-  }
-  try {
-    await serializeDbWrite(() =>
-      db.runAsync('CREATE INDEX IF NOT EXISTS idx_scrobble_events_hour ON scrobble_events (hour);'),
-    );
-  } catch {
-    /* best-effort */
-  }
   await backfillScrobbleColumnsAsync();
 }
 

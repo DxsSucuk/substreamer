@@ -48,13 +48,13 @@ try {
   const conn = openDbConnection();
   db = conn.db;
   // ---- Schema ----
-  // Created in FK-safe order: parents before children. Every CREATE is
-  // `IF NOT EXISTS` so a second launch against an existing DB is a no-op.
-
-  // storage (KV blob) — no FK, no dependencies.
-  db.execSync(
-    'CREATE TABLE IF NOT EXISTS storage (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);',
-  );
+  // Only the LEGACY BLOB tables are created here. Every permanent table (KV storage,
+  // scrobbles, downloads, image cache) is declared in `src/db/schema.ts` and created by
+  // `ensureNormalizedSchema` at the end of this block, which orders tables → missing
+  // columns → indexes in one pass. The blob tables stay hand-written precisely because
+  // they are temporary: the DROP migration removes them, and anything in `schema.ts`
+  // would be recreated on the very next boot so the DROP would never stick.
+  // Every CREATE is `IF NOT EXISTS` so a second launch against an existing DB is a no-op.
 
   // album_details + song_index — detail cache for albums/songs.
   db.execSync(
@@ -173,198 +173,26 @@ try {
   db.execSync('CREATE INDEX IF NOT EXISTS idx_library_albums_dmeta_name ON library_albums (dmeta_name);');
   db.execSync('CREATE INDEX IF NOT EXISTS idx_library_albums_dmeta_artist ON library_albums (dmeta_artist);');
 
-  // scrobble_events — completed scrobbles. Structured columns (song_id, artist,
-  // …, hour, day_key) back the SQL analytics aggregates; existing installs get
-  // them ALTER-added + backfilled by ensureScrobbleColumnsAsync (scrobbleTable).
-  db.execSync(
-    `CREATE TABLE IF NOT EXISTS scrobble_events (
-       id TEXT PRIMARY KEY NOT NULL,
-       song_json TEXT NOT NULL,
-       time INTEGER NOT NULL,
-       song_id TEXT,
-       artist TEXT,
-       artist_id TEXT,
-       album TEXT,
-       album_id TEXT,
-       cover_art TEXT,
-       genre TEXT,
-       year INTEGER,
-       duration INTEGER,
-       hour INTEGER,
-       day_key TEXT
-     );`,
+  // cached_item_songs dedup — a one-time heal, NOT schema, so it stays here. It must
+  // run BEFORE the UNIQUE (item_id, song_id) index, which `ensureNormalizedSchema`
+  // creates inside a single all-or-nothing transaction below: surviving duplicates
+  // would fail that CREATE and take DB init down. The PK (item_id, position) prevents
+  // a duplicate insert at the same position but not the same song at two positions,
+  // which a concurrent `ensurePartialAlbumEdge` + queue-completion race could produce.
+  // Guarded on the table existing — a fresh install has not created it yet (and it
+  // can hold no duplicates).
+  const itemSongsTable = db.getFirstSync<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='cached_item_songs'",
   );
-  db.execSync(
-    'CREATE INDEX IF NOT EXISTS idx_scrobble_events_time ON scrobble_events (time);',
-  );
-  // NB: the `hour` index is NOT created here — on an existing install `scrobble_events`
-  // predates the `hour` column (ALTER-added by ensureScrobbleColumnsAsync), so a
-  // `CREATE INDEX … (hour)` in this eager block throws ("no such column: hour") and takes
-  // the whole DB init down. ensureScrobbleColumnsAsync creates the index AFTER adding the
-  // column, for both fresh and upgraded installs.
-
-  // pending_scrobble_events — the offline transmit queue. Same row shape
-  // as scrobble_events but a separate table so a completed row and its
-  // still-pending sibling (legitimately sharing `id`) don't collide.
-  db.execSync(
-    `CREATE TABLE IF NOT EXISTS pending_scrobble_events (
-       id TEXT PRIMARY KEY NOT NULL,
-       song_json TEXT NOT NULL,
-       time INTEGER NOT NULL
-     );`,
-  );
-  db.execSync(
-    'CREATE INDEX IF NOT EXISTS idx_pending_scrobble_events_time ON pending_scrobble_events (time);',
-  );
-
-  // Music-cache tables — FK graph: cached_item_songs.item_id → cached_items
-  // (ON DELETE CASCADE), cached_item_songs.song_id → cached_songs.
-  // `raw_json` preserves the full Subsonic `Child` envelope alongside the
-  // indexed/hot columns. Columns above are for sort/filter/display fast paths;
-  // `raw_json` is the source of truth for any field a future feature might
-  // need (discNumber, track, genre, MusicBrainz id, ReplayGain, contributors,
-  // …). Never drop fields from the envelope on write — see CLAUDE.md /
-  // plan `new-issue-to-look-distributed-quiche.md`. Nullable initially to
-  // keep Migration 17 a pure schema change; Migration 18 backfills.
-  db.execSync(
-    `CREATE TABLE IF NOT EXISTS cached_songs (
-       song_id TEXT PRIMARY KEY NOT NULL,
-       title TEXT NOT NULL,
-       artist TEXT,
-       album TEXT,
-       album_id TEXT NOT NULL,
-       cover_art TEXT,
-       bytes INTEGER NOT NULL,
-       duration INTEGER NOT NULL,
-       suffix TEXT NOT NULL,
-       bit_rate INTEGER,
-       bit_depth INTEGER,
-       sampling_rate INTEGER,
-       format_captured_at INTEGER NOT NULL,
-       downloaded_at INTEGER NOT NULL,
-       raw_json TEXT
-     );`,
-  );
-  db.execSync(
-    'CREATE INDEX IF NOT EXISTS idx_cached_songs_album_id ON cached_songs(album_id);',
-  );
-  // `raw_json` preserves the full Subsonic `AlbumID3` / `Playlist` envelope
-  // for album and playlist items. Nullable: `favorites` and `song`-intent
-  // rows have no natural envelope (favorites is an app-local virtual
-  // playlist; `song` intent refers to a Child already stored in
-  // `cached_songs.raw_json`).
-  db.execSync(
-    `CREATE TABLE IF NOT EXISTS cached_items (
-       item_id TEXT PRIMARY KEY NOT NULL,
-       type TEXT NOT NULL,
-       name TEXT NOT NULL,
-       artist TEXT,
-       cover_art_id TEXT,
-       expected_song_count INTEGER NOT NULL,
-       parent_album_id TEXT,
-       last_sync_at INTEGER NOT NULL,
-       downloaded_at INTEGER NOT NULL,
-       raw_json TEXT,
-       derived INTEGER DEFAULT 0
-     );`,
-  );
-  db.execSync(
-    `CREATE TABLE IF NOT EXISTS cached_item_songs (
-       item_id TEXT NOT NULL,
-       position INTEGER NOT NULL,
-       song_id TEXT NOT NULL,
-       PRIMARY KEY (item_id, position),
-       FOREIGN KEY (item_id) REFERENCES cached_items(item_id) ON DELETE CASCADE,
-       FOREIGN KEY (song_id) REFERENCES cached_songs(song_id)
-     );`,
-  );
-  db.execSync(
-    'CREATE INDEX IF NOT EXISTS idx_cached_item_songs_song_id ON cached_item_songs(song_id);',
-  );
-  // Dedup any rows with the same (item_id, song_id) before adding a UNIQUE
-  // index. The PK `(item_id, position)` prevents duplicate inserts at the
-  // same position but does not prevent the same song being edged twice at
-  // different positions — which could theoretically happen under a
-  // concurrent `ensurePartialAlbumEdge` + queue-completion race. Heal
-  // in-flight by keeping the lowest-position edge per `(item_id, song_id)`.
-  db.execSync(
-    `DELETE FROM cached_item_songs
-       WHERE rowid NOT IN (
-         SELECT MIN(rowid) FROM cached_item_songs
-         GROUP BY item_id, song_id
-       );`,
-  );
-  db.execSync(
-    'CREATE UNIQUE INDEX IF NOT EXISTS idx_cached_item_songs_item_song ON cached_item_songs(item_id, song_id);',
-  );
-  db.execSync(
-    `CREATE TABLE IF NOT EXISTS download_queue (
-       queue_id TEXT PRIMARY KEY NOT NULL,
-       item_id TEXT NOT NULL,
-       type TEXT NOT NULL,
-       name TEXT NOT NULL,
-       artist TEXT,
-       cover_art_id TEXT,
-       status TEXT NOT NULL,
-       total_songs INTEGER NOT NULL,
-       completed_songs INTEGER NOT NULL,
-       error TEXT,
-       added_at INTEGER NOT NULL,
-       queue_position INTEGER NOT NULL,
-       songs_json TEXT NOT NULL
-     );`,
-  );
-  db.execSync(
-    'CREATE INDEX IF NOT EXISTS idx_download_queue_status ON download_queue(status);',
-  );
-  db.execSync(
-    'CREATE INDEX IF NOT EXISTS idx_download_queue_position ON download_queue(queue_position);',
-  );
-
-  // cached_images — per-variant record of on-disk cover-art files. No FKs
-  // (cover_art_ids come from server and aren't owned by any local table).
-  // Composite PK on (cover_art_id, size) means at most one row per variant.
-  db.execSync(
-    `CREATE TABLE IF NOT EXISTS cached_images (
-       cover_art_id TEXT NOT NULL,
-       size INTEGER NOT NULL,
-       ext TEXT NOT NULL,
-       bytes INTEGER NOT NULL,
-       cached_at INTEGER NOT NULL,
-       PRIMARY KEY (cover_art_id, size)
-     );`,
-  );
-  db.execSync(
-    'CREATE INDEX IF NOT EXISTS idx_cached_images_cached_at ON cached_images (cached_at);',
-  );
-  db.execSync(
-    'CREATE INDEX IF NOT EXISTS idx_cached_images_cover_art_id ON cached_images (cover_art_id);',
-  );
-
-  // image_download_queue — persistent queue for user-initiated cover-art
-  // refresh cycles. Each row is one cover_art_id awaiting (or in-progress on,
-  // or errored after) a re-download. `PRIMARY KEY (cover_art_id)` dedups
-  // duplicate enqueues via INSERT OR IGNORE. Mirrors the shape of
-  // download_queue for the music queue — same status enum vocabulary
-  // (queued | downloading | error), same retry-once-inline + reset-on-restart
-  // policy. See plans/2026-05-23-image-cache-queue-rework.md.
-  db.execSync(
-    `CREATE TABLE IF NOT EXISTS image_download_queue (
-       cover_art_id TEXT PRIMARY KEY NOT NULL,
-       scope TEXT NOT NULL,
-       status TEXT NOT NULL,
-       error TEXT,
-       attempts INTEGER NOT NULL DEFAULT 0,
-       added_at INTEGER NOT NULL,
-       cycle_id TEXT NOT NULL
-     );`,
-  );
-  db.execSync(
-    'CREATE INDEX IF NOT EXISTS idx_image_download_queue_status ON image_download_queue (status, added_at);',
-  );
-  db.execSync(
-    'CREATE INDEX IF NOT EXISTS idx_image_download_queue_cycle ON image_download_queue (cycle_id);',
-  );
+  if ((itemSongsTable?.n ?? 0) > 0) {
+    db.execSync(
+      `DELETE FROM cached_item_songs
+         WHERE rowid NOT IN (
+           SELECT MIN(rowid) FROM cached_item_songs
+           GROUP BY item_id, song_id
+         );`,
+    );
+  }
 
   // Normalized model: create the songs/albums/artists/playlists tables + children at
   // boot so the live sync can dual-write them (not just the one-time migration).
