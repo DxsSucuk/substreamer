@@ -16,6 +16,7 @@ import { connectivityStore } from '../store/connectivityStore';
 import { fullLibraryDownloadStore } from '../store/fullLibraryDownloadStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { playlistLibraryStore } from '../store/playlistLibraryStore';
+import { refreshPlaylistLibrary } from './normalizedLibrarySync';
 import { getDb } from '../store/persistence/db';
 import { listAlbumIds } from '../db/repository/albums';
 import { listPlaylistIds } from '../db/repository/playlists';
@@ -49,7 +50,7 @@ export async function enqueueFullLibraryDownload(): Promise<void> {
     // connection drops) aborts before queueing and is surfaced to the user.
     fullLibraryDownloadStore.getState().setPhase('preparing');
     await albumLibraryStore.getState().fetchAllAlbums();
-    await playlistLibraryStore.getState().fetchAllPlaylists();
+    await refreshPlaylistLibrary();
 
     // Enumerate from the normalized model (the fetch actions above dual-write it).
     const db = getDb();

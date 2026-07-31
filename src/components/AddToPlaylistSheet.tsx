@@ -37,6 +37,7 @@ import {
 import { musicCacheStore } from '../store/musicCacheStore';
 import { playlistDetailStore } from '../store/playlistDetailStore';
 import { playlistLibraryStore } from '../store/playlistLibraryStore';
+import { refreshPlaylistLibrary } from '../services/normalizedLibrarySync';
 import { getDb } from '../store/persistence/db';
 import { listAllPlaylists, playlistListRowToPlaylist } from '../db/repository/playlists';
 import { processingOverlayStore, runWithOverlay } from '../store/processingOverlayStore';
@@ -132,7 +133,7 @@ export function AddToPlaylistSheet() {
       setPlaylistsLoading(true);
       setPlaylistsFetchError(false);
       try {
-        await playlistLibraryStore.getState().fetchAllPlaylists();
+        await refreshPlaylistLibrary();
         if (db && alive) {
           setPlaylists((await listAllPlaylists(db)).map(playlistListRowToPlaylist));
         }
@@ -214,7 +215,7 @@ export function AddToPlaylistSheet() {
             if (updated) syncCachedItemTracks(playlist.id, updated.entry ?? []);
           }
 
-          playlistLibraryStore.getState().fetchAllPlaylists();
+          void refreshPlaylistLibrary();
         },
         { loading: t('adding'), success: t('addedToPlaylist'), error: t('failedToAddToPlaylist') },
       );
@@ -240,7 +241,7 @@ export function AddToPlaylistSheet() {
       if (!success) throw new Error('API returned false');
 
       handleClose();
-      playlistLibraryStore.getState().fetchAllPlaylists();
+      void refreshPlaylistLibrary();
       processingOverlayStore.getState().show(t('creating'));
       processingOverlayStore.getState().showSuccess(t('playlistCreated'));
     } catch {

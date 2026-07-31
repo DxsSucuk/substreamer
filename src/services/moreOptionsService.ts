@@ -12,6 +12,7 @@ import { musicCacheStore } from '../store/musicCacheStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import { playlistLibraryStore } from '../store/playlistLibraryStore';
+import { refreshPlaylistLibrary } from './normalizedLibrarySync';
 import { getDb } from '../store/persistence/db';
 import { getAlbumDetail, getArtistDetail, getPlaylistDetail } from '../db/repository/details';
 import { processingOverlayStore } from '../store/processingOverlayStore';
@@ -306,7 +307,7 @@ export async function saveArtistTopSongsPlaylist(artist: ArtistID3): Promise<voi
       return;
     }
 
-    await playlistLibraryStore.getState().fetchAllPlaylists();
+    await refreshPlaylistLibrary();
     processingOverlayStore.getState().showSuccess(i18n.t('playlistCreated'));
   } catch {
     processingOverlayStore.getState().showError(i18n.t('failedToCreatePlaylist'));

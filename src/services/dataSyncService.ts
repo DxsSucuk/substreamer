@@ -51,7 +51,11 @@ import {
 import { songIndexStore } from '../store/songIndexStore';
 import { songLibraryStore } from '../store/songLibraryStore';
 import { registerMusicCacheOnAlbumReferencedHook, syncCachedItemTracks } from './musicCacheService';
-import { runNormalizedLibrarySync } from './normalizedLibrarySync';
+import {
+  refreshArtistLibrary,
+  refreshPlaylistLibrary,
+  runNormalizedLibrarySync,
+} from './normalizedLibrarySync';
 import { fetchScanStatus, registerScanCompletedHook } from './scanService';
 import { registerScrobbleBatchCompletedHook } from './scrobbleService';
 import { canUserScan } from './serverCapabilityService';
@@ -160,10 +164,10 @@ async function performScope(scope: SyncScope): Promise<void> {
       }
       return;
     case 'artists':
-      await artistLibraryStore.getState().fetchAllArtists();
+      await refreshArtistLibrary();
       return;
     case 'playlists':
-      await playlistLibraryStore.getState().fetchAllPlaylists();
+      await refreshPlaylistLibrary();
       return;
     case 'favorites':
       // Background sync: refresh metadata without kicking off the
@@ -341,7 +345,7 @@ async function startupOrResumeFlow(): Promise<void> {
       const startupDb = getDb();
       const artistCount = startupDb ? await countArtists(startupDb) : 0;
       if (artistCount === 0) {
-        artistLibraryStore.getState().fetchAllArtists();
+        refreshArtistLibrary();
       }
       // Refresh playlists on every ONLINE startup (not just when empty) so the
       // reconcile picks up NEW/UPDATED playlists and refreshes their detail.
@@ -354,7 +358,7 @@ async function startupOrResumeFlow(): Promise<void> {
           conn.hasConnection &&
           conn.isServerReachable
         ) {
-          playlistLibraryStore.getState().fetchAllPlaylists();
+          refreshPlaylistLibrary();
         }
       }
       genreStore.getState().fetchGenres();

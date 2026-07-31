@@ -11,6 +11,9 @@ jest.mock('../../store/albumLibraryStore', () => ({
     getState: () => ({ albums: mockAlbumsState, fetchAllAlbums: mockFetchAllAlbums }),
   },
 }));
+jest.mock('../normalizedLibrarySync', () => ({
+  refreshPlaylistLibrary: (...a: unknown[]) => mockFetchAllPlaylists(...a),
+}));
 jest.mock('../../store/playlistLibraryStore', () => ({
   playlistLibraryStore: {
     getState: () => ({ playlists: mockPlaylistsState, fetchAllPlaylists: mockFetchAllPlaylists }),

@@ -223,6 +223,45 @@ export async function syncPlaylistsNormalized(
 }
 
 /**
+ * Refresh the artist list from the server into `artists`.
+ *
+ * Wraps {@link syncArtistsNormalized} with the dedup guard + `loading`/`lastFetchedAt`
+ * the list screens render from — the behaviour that used to live in
+ * `artistLibraryStore.fetchAllArtists`, re-homed onto `syncStatusStore` so it survives
+ * that store's removal.
+ */
+export async function refreshArtistLibrary(): Promise<void> {
+  if (syncStatusStore.getState().artistLibraryLoading) return;
+  const db = getDb();
+  if (!db) return;
+  syncStatusStore.getState().setListRefresh('artists', true);
+  try {
+    await syncArtistsNormalized(db, serverInfoStore.getState().ignoredArticles ?? undefined);
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[normalized-sync] artist refresh failed', e);
+  } finally {
+    syncStatusStore.getState().setListRefresh('artists', false);
+  }
+}
+
+/** Refresh the playlist list from the server into `playlists`. See {@link refreshArtistLibrary}. */
+export async function refreshPlaylistLibrary(): Promise<void> {
+  if (syncStatusStore.getState().playlistLibraryLoading) return;
+  const db = getDb();
+  if (!db) return;
+  syncStatusStore.getState().setListRefresh('playlists', true);
+  try {
+    await syncPlaylistsNormalized(db, serverInfoStore.getState().ignoredArticles ?? undefined);
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[normalized-sync] playlist refresh failed', e);
+  } finally {
+    syncStatusStore.getState().setListRefresh('playlists', false);
+  }
+}
+
+/**
  * Run the full remote library sync into the normalized model. `full` restarts from
  * cursor zero and re-walks every album's songs, without dropping the tables.
  *

@@ -15,7 +15,8 @@ import {
 } from '../db/repository/artists';
 import { type Cursor } from '../db/repository/core';
 import { getDb } from '../store/persistence/db';
-import { artistLibraryStore } from '../store/artistLibraryStore';
+import { refreshArtistLibrary } from '../services/normalizedLibrarySync';
+import { syncStatusStore } from '../store/syncStatusStore';
 import { favoritesStore } from '../store/favoritesStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import { musicCacheStore } from '../store/musicCacheStore';
@@ -127,19 +128,20 @@ function KeysetArtistList({
   // Fetch-on-browse (once, post-hydration): if the normalized table is empty and
   // nothing is in flight, pull artists from the server (which dual-writes normalized
   // + bumps lastFetchedAt → the reload effect below repaints the window).
-  useFetchOnHydrated(artistLibraryStore, () => {
+  useFetchOnHydrated(syncStatusStore, () => {
     void (async () => {
       const db = getDb();
-      const s = artistLibraryStore.getState();
-      if (db && !s.loading && (await countArtists(db)) === 0) void s.fetchAllArtists();
+      if (db && !syncStatusStore.getState().artistLibraryLoading && (await countArtists(db)) === 0) {
+        void refreshArtistLibrary();
+      }
     })();
   });
 
   // Reload the window when a fetch lands. Skip the initial (persisted) value so this
   // only fires on a genuine post-mount fetch completion — no loop when the library is
   // legitimately empty (fetch-on-browse already fired once above).
-  const lastFetchedAt = artistLibraryStore((s) => s.lastFetchedAt);
-  const fetchLoading = artistLibraryStore((s) => s.loading);
+  const lastFetchedAt = syncStatusStore((s) => s.artistLibraryLastFetchedAt);
+  const fetchLoading = syncStatusStore((s) => s.artistLibraryLoading);
   const seenFetchRef = useRef(lastFetchedAt);
 
   // Show the spinner (not the empty placeholder) until we have a DEFINITIVE result:

@@ -257,6 +257,13 @@ jest.mock('../../utils/stringHelpers', () => {
 jest.mock('../subsonicService');
 jest.mock('../normalizedLibrarySync', () => ({
   runNormalizedLibrarySync: (opts?: unknown) => mockRunNormalizedLibrarySync(opts),
+  // The artist/playlist list refresh moved off the library stores onto the sync
+  // service. Route it back at the store mocks so the existing call assertions —
+  // which are about the fan-out, not the implementation — keep holding.
+  refreshArtistLibrary: () =>
+    require('../../store/artistLibraryStore').artistLibraryStore.getState().fetchAllArtists(),
+  refreshPlaylistLibrary: () =>
+    require('../../store/playlistLibraryStore').playlistLibraryStore.getState().fetchAllPlaylists(),
 }));
 
 // Poly-fill requestIdleCallback so the deferred-prefetch block runs in tests.

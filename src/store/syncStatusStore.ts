@@ -89,6 +89,17 @@ export interface SyncStatusState extends LastKnownMarkers {
   /** Strategy the song fetch actually uses — normally `syncStrategy`, but forced
    *  to `basic` (the walk) if fast-path songs come back without `albumId`. */
   songSyncStrategy: SyncStrategy | null;
+  // --- Artist / playlist list refresh (UI state channel) ---
+  // These lists are fetched whole in one call, so they need no cursor — just the
+  // `loading` + `lastFetchedAt` pair the list screens render from. They live here
+  // rather than in the library stores because those stores are being retired; the
+  // precedent is `librarySyncLastFetchedAt` below. `loading` is EPHEMERAL: a persisted
+  // true would strand the spinner after a kill mid-fetch.
+  artistLibraryLoading: boolean;
+  artistLibraryLastFetchedAt: number | null;
+  playlistLibraryLoading: boolean;
+  playlistLibraryLastFetchedAt: number | null;
+
   /** Resume cursor for the fast paged-`search3` song loop (`songOffset`). */
   songSyncCursor: number;
   /** A FULL resync asked for a total re-walk of every album's songs. The basic walk
@@ -150,6 +161,8 @@ export interface SyncStatusState extends LastKnownMarkers {
   setSyncStrategy: (strategy: SyncStrategy | null) => void;
   setSongSyncStrategy: (strategy: SyncStrategy | null) => void;
   setSongSyncCursor: (cursor: number) => void;
+  /** Mark an artist/playlist list refresh as started, or finished (stamps lastFetchedAt). */
+  setListRefresh: (kind: 'artists' | 'playlists', loading: boolean) => void;
   markSongSyncComplete: () => void;
   resetSongSync: () => void;
   /** Update the ephemeral blob→normalized migration progress (banner/card). */
@@ -180,6 +193,10 @@ export const syncStatusStore = create<SyncStatusState>()(
 
       syncStrategy: null,
       songSyncStrategy: null,
+      artistLibraryLoading: false,
+      artistLibraryLastFetchedAt: null,
+      playlistLibraryLoading: false,
+      playlistLibraryLastFetchedAt: null,
       songSyncCursor: 0,
       fullWalkPending: false,
       songSyncComplete: false,
@@ -247,6 +264,20 @@ export const syncStatusStore = create<SyncStatusState>()(
       setSyncStrategy: (strategy) => set({ syncStrategy: strategy }),
       setSongSyncStrategy: (strategy) => set({ songSyncStrategy: strategy }),
       setSongSyncCursor: (cursor) => set({ songSyncCursor: cursor }),
+      setListRefresh: (kind, loading) =>
+        set(
+          kind === 'artists'
+            ? {
+                artistLibraryLoading: loading,
+                // Stamp only on completion — the list screens reload their window off
+                // a change in this value.
+                ...(loading ? {} : { artistLibraryLastFetchedAt: Date.now() }),
+              }
+            : {
+                playlistLibraryLoading: loading,
+                ...(loading ? {} : { playlistLibraryLastFetchedAt: Date.now() }),
+              },
+        ),
       markSongSyncComplete: () =>
         set((s) => ({
           songSyncComplete: true,
@@ -316,6 +347,10 @@ export const syncStatusStore = create<SyncStatusState>()(
         songSyncStrategy: state.songSyncStrategy,
         songSyncCursor: state.songSyncCursor,
         fullWalkPending: state.fullWalkPending,
+        // `loading` is deliberately NOT persisted (see the field docs) — only the
+        // timestamps, which the list screens use to tell "never fetched" from "empty".
+        artistLibraryLastFetchedAt: state.artistLibraryLastFetchedAt,
+        playlistLibraryLastFetchedAt: state.playlistLibraryLastFetchedAt,
         songSyncComplete: state.songSyncComplete,
         fullSyncCompletedAt: state.fullSyncCompletedAt,
         libraryLastUpdatedAt: state.libraryLastUpdatedAt,

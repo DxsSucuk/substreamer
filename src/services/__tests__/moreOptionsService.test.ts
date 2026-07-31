@@ -99,6 +99,12 @@ jest.mock('../detailFetchService', () => ({
     require('../../store/artistDetailStore').artistDetailStore.getState().fetchArtist(id),
 }));
 
+// The playlist-list refresh moved off the store onto the sync service; route it back
+// at the store mock so the existing call assertions keep working.
+jest.mock('../normalizedLibrarySync', () => ({
+  refreshPlaylistLibrary: () =>
+    require('../../store/playlistLibraryStore').playlistLibraryStore.getState().fetchAllPlaylists(),
+}));
 jest.mock('../../store/playlistLibraryStore', () => ({
   playlistLibraryStore: {
     getState: jest.fn(() => ({

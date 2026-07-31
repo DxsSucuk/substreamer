@@ -17,7 +17,8 @@ import { type Cursor } from '../db/repository/core';
 import { getDb } from '../store/persistence/db';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { offlineModeStore } from '../store/offlineModeStore';
-import { playlistLibraryStore } from '../store/playlistLibraryStore';
+import { refreshPlaylistLibrary } from '../services/normalizedLibrarySync';
+import { syncStatusStore } from '../store/syncStatusStore';
 import { serverInfoStore } from '../store/serverInfoStore';
 import { downloadedPlaylistsFromCache } from '../store/persistence/cachedItemHelpers';
 import { sortPlaylistsByName } from '../utils/librarySort';
@@ -133,18 +134,19 @@ function KeysetPlaylistList({
   // Fetch-on-browse (once, post-hydration): if the normalized table is empty and
   // nothing is in flight, pull playlists from the server (which dual-writes normalized
   // + bumps lastFetchedAt → the reload effect below repaints the window).
-  useFetchOnHydrated(playlistLibraryStore, () => {
+  useFetchOnHydrated(syncStatusStore, () => {
     void (async () => {
       const db = getDb();
-      const s = playlistLibraryStore.getState();
-      if (db && !s.loading && (await countPlaylists(db)) === 0) void s.fetchAllPlaylists();
+      if (db && !syncStatusStore.getState().playlistLibraryLoading && (await countPlaylists(db)) === 0) {
+        void refreshPlaylistLibrary();
+      }
     })();
   });
 
   // Reload the window when a fetch lands. Skip the initial (persisted) value so this
   // only fires on a genuine post-mount fetch completion.
-  const lastFetchedAt = playlistLibraryStore((s) => s.lastFetchedAt);
-  const fetchLoading = playlistLibraryStore((s) => s.loading);
+  const lastFetchedAt = syncStatusStore((s) => s.playlistLibraryLastFetchedAt);
+  const fetchLoading = syncStatusStore((s) => s.playlistLibraryLoading);
   const seenFetchRef = useRef(lastFetchedAt);
   useEffect(() => {
     if (lastFetchedAt === seenFetchRef.current) return;
