@@ -4,11 +4,11 @@
  * page → upsert → free. NO blob tables (`library_albums`/`song_index`), NO
  * in-memory whole-library arrays, NO `rebuildFromDb`, NO reconcile fan-out.
  *
- * Progress = albums-whose-songs-we-have / total-albums, both DB-derived
- * (`COUNT(DISTINCT album_id) FROM songs` / `COUNT(*) FROM albums`). Because this
- * is the sole writer, the metric is accurate, monotonic, smooth, and resume-stable
- * (from the persisted tables, no memory). Resumes from `librarySyncCursor` /
- * `songSyncCursor`.
+ * Progress is derived from the RESUME CURSOR, not from counting rows: the search3 phase
+ * maps `songSyncCursor` onto the album list via the server's total track count, and the
+ * basic walk counts albums it has actually fetched. Counting rows would read as 100% for
+ * the whole phase, since a full resync overwrites the tables in place rather than
+ * emptying them first. Resumes from `librarySyncCursor` / `songSyncCursor`.
  *
  * Handles both transports: paged `search3` where songs carry `albumId`, and the
  * per-album `getAlbum` walk for basic servers (and for search3 servers whose songs
@@ -18,12 +18,11 @@ import type { AlbumID3, Child } from 'subsonic-api';
 
 import type { InternalDb } from '@/db/client';
 import { ensureNormalizedSchema, resetNormalizedSchema } from '@/db/createNormalizedTables';
-import { countAlbums, listAlbumIds, upsertAlbums } from '@/db/repository/albums';
+import { countAlbums, listAlbumIds, sumAlbumSongCounts, upsertAlbums } from '@/db/repository/albums';
 import { deleteArtistsNotIn, upsertArtists } from '@/db/repository/artists';
 import { deletePlaylistsNotIn, upsertPlaylists } from '@/db/repository/playlists';
 import { getProtectedIds } from '@/db/protectedIds';
 import {
-  countSongAlbums,
   countSongs,
   deleteAlbumSongsNotIn,
   listSongAlbumIds,
@@ -52,8 +51,7 @@ import {
 const ALBUM_PAGE = 1000; // search3 albumCount per page (uncapped); basic path caps at 500
 const SONG_PAGE = 1000;
 const BASIC_PAGE = 500; // getAlbumList2 spec cap
-/** Refresh the album-progress COUNT(DISTINCT) every N song pages — indexed but not
- *  free at 1M songs, and the bar doesn't need per-page precision. */
+/** Update the progress bar every N song pages — the bar doesn't need per-page precision. */
 const PROGRESS_EVERY = 5;
 /** Concurrent per-album `getAlbum` fetches during the basic-server song walk. */
 const WALK_CONCURRENCY = 4;
@@ -147,7 +145,21 @@ async function runSearch3SongPhase(
 ): Promise<'done' | 'bailed'> {
   const genChanged = (): boolean => syncStatusStore.getState().generation !== capturedGen;
   const isOffline = (): boolean => offlineModeStore.getState().offlineMode;
+  // Progress = "which album we're up to" / total albums, derived from the resume cursor.
+  // NOT `COUNT(DISTINCT album_id) FROM songs`: a full resync no longer empties the table,
+  // so that counts rows this run hasn't rewritten and pins the bar at 100% for the whole
+  // phase. The cursor is monotonic, resume-stable, and costs no per-page scan.
+  const totalAlbumsForProgress = await countAlbums(db);
+  const totalSongsForProgress = await sumAlbumSongCounts(db);
+  const albumsUpTo = (songsFetched: number): number =>
+    totalSongsForProgress > 0
+      ? Math.min(
+          totalAlbumsForProgress,
+          Math.round((songsFetched / totalSongsForProgress) * totalAlbumsForProgress),
+        )
+      : 0;
   let songOffset = syncStatusStore.getState().songSyncCursor;
+  syncStatusStore.getState().setDetailSyncCompleted(albumsUpTo(songOffset));
   let firstPage = songOffset === 0;
   let songPage = 0;
   for (;;) {
@@ -177,8 +189,7 @@ async function runSearch3SongPhase(
     songOffset += page.length;
     syncStatusStore.getState().setSongSyncCursor(songOffset);
     if (songPage % PROGRESS_EVERY === 0) {
-      // eslint-disable-next-line no-await-in-loop
-      syncStatusStore.getState().setDetailSyncCompleted(await countSongAlbums(db));
+      syncStatusStore.getState().setDetailSyncCompleted(albumsUpTo(songOffset));
     }
     songPage += 1;
     // eslint-disable-next-line no-await-in-loop
@@ -387,11 +398,8 @@ async function doNormalizedSync(
     const tSong0 = nowMs();
     syncStatusStore.getState().setDetailSyncPhase('syncing');
     syncStatusStore.getState().setDetailSyncTotal(totalAlbums);
-    // On a full re-walk every album is about to be re-fetched, so seeding from
-    // `countSongAlbums` would show 100% for the whole phase (the rows are still there —
-    // we no longer drop them). Start from zero and let the walk count up.
-    const fullWalk = syncStatusStore.getState().fullWalkPending;
-    syncStatusStore.getState().setDetailSyncCompleted(fullWalk ? 0 : await countSongAlbums(db));
+    // Each song phase seeds its own progress from its resume cursor (search3) or its
+    // walk position (basic) — both immune to rows a full resync hasn't rewritten yet.
     if (strat === 'basic') {
       // Basic (non-search3) server, or a forced slow-path run: songs don't carry albumId,
       // so walk each album's getAlbum song list instead of paging search3.

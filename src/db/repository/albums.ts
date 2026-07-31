@@ -162,6 +162,12 @@ export function listAlbumsBefore(
 export const countAlbums = (db: InternalDb, starredOnly = false): Promise<number> =>
   countRows(db, 'albums', starredOnly ? 'starred IS NOT NULL' : undefined);
 
+/** Server-reported total track count across the library. Lets the song phase derive
+ *  progress from its resume cursor instead of counting rows it may not have written. */
+export const sumAlbumSongCounts = async (db: InternalDb): Promise<number> =>
+  (await db.getFirstAsync<{ n: number }>('SELECT COALESCE(SUM(song_count), 0) AS n FROM albums'))
+    ?.n ?? 0;
+
 /** Lean rows for a set of album ids (unordered) — the downloaded set for offline
  *  search. Ids pass as a JSON array via `json_each` to dodge the bound-variable limit;
  *  an empty id set is the caller's job to guard (this returns no rows for it). */
