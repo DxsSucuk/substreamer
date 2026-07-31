@@ -136,6 +136,8 @@ jest.mock('../../store/artistLibraryStore', () => ({
 // preserves the repository's other exports (used by the real normalizedSyncWriter).
 jest.mock('../../db/repository/albums', () => ({
   ...jest.requireActual('../../db/repository/albums'),
+  // onAlbumReferenced writes through the repository now, not albumLibraryStore.
+  upsertAlbums: (_db: unknown, albums: unknown[]) => mockUpsertAlbums(albums),
   countAlbums: () => Promise.resolve(albumLibraryState.albums.length),
   listAlbumIds: () => Promise.resolve(albumLibraryState.albums.map((a: { id: string }) => a.id)),
   listAlbumsByIds: (_db: unknown, ids: string[]) =>
@@ -294,8 +296,6 @@ import {
   onScrobbleCompleted,
   onStartup,
   forceFullResync,
-  reconcileAlbumLibrary,
-  reconcilePlaylistLibrary,
   recoverStalledSync,
   runFullAlbumDetailSync,
   syncSongLibrary,
@@ -955,141 +955,6 @@ describe('dataSyncService — onAlbumReferenced', () => {
   });
 });
 
-describe('dataSyncService — reconcileAlbumLibrary', () => {
-  // Protection is read from the music-cache TABLES (not `musicCacheStore`), so these
-  // seed real rows. See `src/db/protectedIds.ts` for why the store is not trusted.
-  const seedCachedItem = (
-    itemId: string,
-    type: string,
-    parentAlbumId: string | null = null,
-  ): void => {
-    getDb()!.runSync(
-      `INSERT OR REPLACE INTO cached_items
-         (item_id, type, name, expected_song_count, parent_album_id, last_sync_at, downloaded_at)
-       VALUES (?, ?, ?, 0, ?, 0, 0)`,
-      [itemId, type, itemId, parentAlbumId],
-    );
-  };
-  const seedCachedSong = (songId: string, albumId: string): void => {
-    getDb()!.runSync(
-      `INSERT OR REPLACE INTO cached_songs
-         (song_id, title, album_id, bytes, duration, suffix, format_captured_at, downloaded_at)
-       VALUES (?, ?, ?, 0, 0, 'mp3', 0, 0)`,
-      [songId, songId, albumId],
-    );
-  };
-  const seedItemSong = (itemId: string, songId: string): void => {
-    getDb()!.runSync(
-      'INSERT OR REPLACE INTO cached_item_songs (item_id, position, song_id) VALUES (?, 0, ?)',
-      [itemId, songId],
-    );
-  };
-
-  beforeEach(() => {
-    const db = getDb()!;
-    db.runSync('DELETE FROM cached_item_songs');
-    db.runSync('DELETE FROM cached_items');
-    db.runSync('DELETE FROM cached_songs');
-  });
-
-  it('reaps removed ids from the detail cache', async () => {
-    mockDetailState.albums = { a1: {}, a2: {}, a3: {} };
-    await reconcileAlbumLibrary(['a1', 'a2', 'a3'], ['a1', 'a3']);
-    expect(mockRemoveEntries).toHaveBeenCalledWith(['a2']);
-  });
-
-  it('does not call removeEntries when there are no removals', async () => {
-    await reconcileAlbumLibrary(['a1', 'a2'], ['a1', 'a2']);
-    expect(mockRemoveEntries).not.toHaveBeenCalled();
-  });
-
-  it('triggers the walk when new ids are added', async () => {
-    albumLibraryState.albums = [{ id: 'a1' }, { id: 'a2' }];
-    mockDetailState.albums = { a1: {}, a2: {} };
-    await reconcileAlbumLibrary(['a1'], ['a1', 'a2']);
-    // onAlbumReferenced no-op → this is the reconcile triggering the walk.
-    // Walk is fire-and-forget; flush the microtask.
-    await new Promise((r) => setImmediate(r));
-    // a2 already in detail cache — walk sees nothing missing, exits quickly.
-    // The important assertion: no error thrown, no crash.
-  });
-
-  it('does not trigger the walk when offline', async () => {
-    offlineState.offline = true;
-    await reconcileAlbumLibrary([], ['a1']);
-    await new Promise((r) => setImmediate(r));
-    expect(mockFetchAlbum).not.toHaveBeenCalled();
-  });
-
-  it('handles both removal and addition in one diff', async () => {
-    mockDetailState.albums = { a1: {}, a2: {} };
-    await reconcileAlbumLibrary(['a1', 'a2'], ['a2', 'a3']);
-    expect(mockRemoveEntries).toHaveBeenCalledWith(['a1']);
-  });
-
-  it('does NOT reap a downloaded album that vanishes from the server list', async () => {
-    mockDetailState.albums = { a1: {}, a2: {}, a3: {} };
-    seedCachedItem('a2', 'album'); // downloaded → its detail + list row must survive
-    await reconcileAlbumLibrary(['a1', 'a2', 'a3'], ['a1', 'a3']);
-    expect(mockRemoveEntries).not.toHaveBeenCalled();
-  });
-
-  it('reaps only the NON-downloaded removals', async () => {
-    mockDetailState.albums = { a1: {}, a2: {}, a3: {}, a4: {} };
-    seedCachedItem('a2', 'album'); // downloaded — kept
-    await reconcileAlbumLibrary(['a1', 'a2', 'a3', 'a4'], ['a1']);
-    expect(mockRemoveEntries).toHaveBeenCalledWith(['a3', 'a4']);
-  });
-
-  it('a non-downloaded removal drops BOTH detail and list row', async () => {
-    mockDetailState.albums = { a1: {} };
-    await reconcileAlbumLibrary(['a1'], []);
-    expect(mockRemoveEntries).toHaveBeenCalledWith(['a1']);
-    expect(mockDeleteLibraryAlbums).toHaveBeenCalledWith(['a1']);
-  });
-
-  it("keeps a downloaded single song's parent-album DETAIL but drops its list row", async () => {
-    mockDetailState.albums = { albX: {} };
-    seedCachedItem('song:s1', 'song', 'albX');
-    await reconcileAlbumLibrary(['albX'], []); // albX vanished from the server list
-    // Detail is protected (offline "go to album" from the song still works)...
-    expect(mockRemoveEntries).not.toHaveBeenCalled();
-    // ...but the lean list row is dropped so it doesn't resurrect in browse.
-    expect(mockDeleteLibraryAlbums).toHaveBeenCalledWith(['albX']);
-  });
-
-  it("keeps a favorited song's parent-album detail but drops its list row", async () => {
-    seedCachedItem('__starred__', 'favorites');
-    seedCachedSong('s9', 'albF');
-    seedItemSong('__starred__', 's9');
-    await reconcileAlbumLibrary(['albF'], []);
-    expect(mockRemoveEntries).not.toHaveBeenCalled();
-    expect(mockDeleteLibraryAlbums).toHaveBeenCalledWith(['albF']);
-  });
-
-  it("keeps a downloaded PLAYLIST's member-song parent album (blob-era carve-out missed this)", async () => {
-    seedCachedItem('pl1', 'playlist');
-    seedCachedSong('s5', 'albP');
-    seedItemSong('pl1', 's5');
-    await reconcileAlbumLibrary(['albP'], []);
-    expect(mockRemoveEntries).not.toHaveBeenCalled();
-    expect(mockDeleteLibraryAlbums).toHaveBeenCalledWith(['albP']);
-  });
-
-  it('skips the reap entirely when the protected-id read fails', async () => {
-    mockDetailState.albums = { a1: {} };
-    const db = getDb()!;
-    const spy = jest.spyOn(db, 'getAllAsync').mockRejectedValue(new Error('db down'));
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    await reconcileAlbumLibrary(['a1'], []);
-    // "Couldn't tell what's protected" must never degrade to "nothing is protected".
-    expect(mockRemoveEntries).not.toHaveBeenCalled();
-    expect(mockDeleteLibraryAlbums).not.toHaveBeenCalled();
-    spy.mockRestore();
-    warn.mockRestore();
-  });
-});
-
 describe('dataSyncService — detectChanges', () => {
   const mockGetRecentlyAdded = subsonicService.getRecentlyAddedAlbums as jest.Mock;
 
@@ -1195,74 +1060,6 @@ describe('dataSyncService — forceFullResync', () => {
     await forceFullResync();
     expect(syncStatusStore.getState().generation).toBe(beforeGen + 1);
     expect(mockRunNormalizedLibrarySync).not.toHaveBeenCalled();
-  });
-});
-
-describe('dataSyncService — reconcilePlaylistLibrary', () => {
-  const T1 = '2026-01-01T00:00:00.000Z';
-  const T2 = '2026-02-01T00:00:00.000Z';
-  const pl = (id: string, changed: string, songCount = 1): Playlist =>
-    ({ id, name: id, changed, created: changed, duration: 0, songCount } as unknown as Playlist);
-  // Let the fire-and-forget detail-fetch pool drain.
-  const flush = () => new Promise((r) => setTimeout(r, 0));
-
-  it('reaps removed non-downloaded playlists but KEEPS downloaded ones', () => {
-    mockCachedItems.p2 = {}; // p2 is downloaded → its detail must survive
-    reconcilePlaylistLibrary([pl('p1', T1), pl('p2', T1), pl('p3', T1)], []);
-    expect(mockPlaylistDetail.removePlaylist).toHaveBeenCalledWith('p1');
-    expect(mockPlaylistDetail.removePlaylist).toHaveBeenCalledWith('p3');
-    expect(mockPlaylistDetail.removePlaylist).not.toHaveBeenCalledWith('p2');
-  });
-
-  it('fetches detail for NEW and UPDATED playlists, skips unchanged', async () => {
-    reconcilePlaylistLibrary(
-      [pl('p1', T1, 1), pl('p2', T1, 1), pl('p3', T1, 1)],
-      [
-        pl('p1', T1, 1), // unchanged → skip
-        pl('p2', T2, 1), // changed timestamp → updated
-        pl('p3', T1, 2), // songCount differs → updated
-        pl('p4', T1, 1), // new
-      ],
-    );
-    await flush();
-    const fetched = mockPlaylistDetail.fetchPlaylist.mock.calls.map((c) => c[0]);
-    expect(fetched).toEqual(expect.arrayContaining(['p2', 'p3', 'p4']));
-    expect(fetched).not.toContain('p1');
-  });
-
-  it('syncs cached tracks for a downloaded UPDATED playlist', async () => {
-    mockCachedItems.p1 = {};
-    mockPlaylistDetail.fetchPlaylist.mockResolvedValue({ id: 'p1', entry: [{ id: 's1' }] } as unknown);
-    reconcilePlaylistLibrary([pl('p1', T1, 1)], [pl('p1', T2, 1)]);
-    await flush();
-    expect(mockSyncCachedItemTracks).toHaveBeenCalledWith('p1', [{ id: 's1' }]);
-  });
-
-  it('does not fetch when offline', async () => {
-    offlineState.offline = true;
-    reconcilePlaylistLibrary([], [pl('p1', T1), pl('p2', T1)]);
-    await flush();
-    expect(mockPlaylistDetail.fetchPlaylist).not.toHaveBeenCalled();
-  });
-
-  it('caps eager fetches at 50 but exempts downloaded playlists', async () => {
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    mockCachedItems.dl = {};
-    const next: Playlist[] = [pl('dl', T2, 1)]; // downloaded + new → exempt from cap
-    for (let i = 0; i < 60; i++) next.push(pl(`n${i}`, T2, 1)); // 60 new, non-downloaded
-    reconcilePlaylistLibrary([], next);
-    await flush();
-    const fetched = mockPlaylistDetail.fetchPlaylist.mock.calls.map((c) => c[0]);
-    expect(fetched).toContain('dl'); // downloaded always fetched
-    expect(fetched.length).toBe(51); // 50 capped non-downloaded + 1 downloaded
-    expect(warn).toHaveBeenCalled(); // truncation logged (no silent cap)
-    warn.mockRestore();
-  });
-
-  it('is a no-op when both lists are identical', () => {
-    expect(() =>
-      reconcilePlaylistLibrary([pl('p1', T1), pl('p2', T1)], [pl('p1', T1), pl('p2', T1)]),
-    ).not.toThrow();
   });
 });
 

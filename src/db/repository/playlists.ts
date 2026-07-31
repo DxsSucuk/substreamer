@@ -93,6 +93,41 @@ export const deletePlaylistsNotIn = (
   );
 };
 
+/** Per-playlist detail-sync markers. Read BEFORE the list upsert; compared against the
+ *  LIST envelope to decide whether a playlist's tracks need re-fetching. NULL = never
+ *  fetched. See `reconcilePlaylistDetails`. */
+export interface PlaylistDetailStateRow {
+  id: string;
+  detail_changed: number | null;
+  detail_song_count: number | null;
+}
+
+export const listPlaylistDetailState = (db: InternalDb): Promise<PlaylistDetailStateRow[]> =>
+  db.getAllAsync<PlaylistDetailStateRow>(
+    'SELECT id, detail_changed, detail_song_count FROM playlists',
+  );
+
+/** Record that this playlist's tracks are current as of the LIST envelope's values.
+ *  Only ever called after a genuine server round-trip — stamping on a cached/offline read
+ *  would suppress the refetch permanently. */
+export const stampPlaylistDetailSynced = (
+  db: InternalDb,
+  id: string,
+  changedEpoch: number,
+  songCount: number,
+): Promise<unknown> =>
+  db.runAsync('UPDATE playlists SET detail_changed = ?, detail_song_count = ? WHERE id = ?', [
+    changedEpoch,
+    songCount,
+    id,
+  ]);
+
+/** Clear every marker so a full resync actually re-fetches membership — the resync
+ *  overwrites rows in place rather than dropping them, so markers would otherwise survive
+ *  and make the one manual repair the UI offers a no-op. */
+export const clearPlaylistDetailMarkers = (db: InternalDb): Promise<unknown> =>
+  db.runAsync('UPDATE playlists SET detail_changed = NULL, detail_song_count = NULL');
+
 /** Keyset A–Z list of playlists (article-stripped `sort_title`), with letter seek —
  *  consistent with albums/songs/artists. */
 export function listPlaylists(

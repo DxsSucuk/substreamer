@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "fe55a910-b563-4db6-b59f-c9213bbbd62b",
+  "id": "71d8bcbc-2b52-4d32-91e0-9b1aa922215c",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "album_artists": {
@@ -1886,6 +1886,20 @@
         "dmeta_name": {
           "name": "dmeta_name",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "detail_changed": {
+          "name": "detail_changed",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "detail_song_count": {
+          "name": "detail_song_count",
+          "type": "integer",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false

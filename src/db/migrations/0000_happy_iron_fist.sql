@@ -281,7 +281,9 @@ CREATE TABLE `playlists` (
 	`song_count` integer,
 	`sort_title` text,
 	`norm_name` text,
-	`dmeta_name` text
+	`dmeta_name` text,
+	`detail_changed` integer,
+	`detail_song_count` integer
 );
 --> statement-breakpoint
 CREATE INDEX `idx_playlists_sort_title` ON `playlists` (`sort_title`,`id`);--> statement-breakpoint

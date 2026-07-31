@@ -20,26 +20,6 @@ import {
 import { getDb } from './persistence/db';
 import { serverInfoStore } from './serverInfoStore';
 
-/**
- * Hook invoked after `fetchAllPlaylists` has successfully replaced the list.
- * Registered by `dataSyncService` at module load; same pattern as the album
- * library reconcile hook. Receives the OLD and NEW id lists so consumers can
- * reap orphans from `playlistDetailStore` and pre-fetch new playlists.
- */
-// Passes the full old + new playlist objects (not just ids) so the reconcile
-// can detect UPDATED playlists by comparing `changed`/`songCount`, not only
-// additions/removals.
-let reconcileHook:
-  | ((oldPlaylists: readonly Playlist[], newPlaylists: readonly Playlist[]) => void)
-  | null = null;
-export function registerPlaylistLibraryReconcileHook(
-  hook:
-    | ((oldPlaylists: readonly Playlist[], newPlaylists: readonly Playlist[]) => void)
-    | null,
-): void {
-  reconcileHook = hook;
-}
-
 export interface PlaylistLibraryState {
   /** All playlists in the user's library */
   playlists: Playlist[];
@@ -86,14 +66,6 @@ export const playlistLibraryStore = create<PlaylistLibraryState>()(
           await ensureCoverArtAuth();
           const playlists = await getAllPlaylists();
 
-          // Capture the old playlists at COMMIT time, not at fetch start, so
-          // the reconcile hook sees the actual baseline at the moment the
-          // store replacement happens. NB `getAllPlaylists` only throws on a
-          // protocol/HTTP failure — with no usable API (offline, mid-logout,
-          // pre-auth-restore) it returns `[]`, which is why the prune below is
-          // gated rather than trusting an empty result.
-          const oldPlaylists = get().playlists;
-
           // Array stays for the ~12 consumers + filters (retired in the search phase).
           set({ playlists, loading: false });
           // ALSO mirror into the normalized `playlists` table — the source the keyset
@@ -120,14 +92,6 @@ export const playlistLibraryStore = create<PlaylistLibraryState>()(
             console.warn('[playlistLibraryStore] normalized playlists upsert failed', err);
           }
           set({ lastFetchedAt: Date.now() });
-
-          if (reconcileHook) {
-            try {
-              reconcileHook(oldPlaylists, playlists);
-            } catch {
-              /* non-critical — reconcile is best-effort */
-            }
-          }
         } catch (e) {
           set({
             loading: false,

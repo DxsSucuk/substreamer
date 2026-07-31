@@ -26,7 +26,10 @@ import {
   upsertArtists,
 } from '../artists';
 import {
+  clearPlaylistDetailMarkers,
   countPlaylists,
+  listPlaylistDetailState,
+  stampPlaylistDetailSynced,
   deletePlaylist,
   deletePlaylistsNotIn,
   listPlaylistSongIds,
@@ -550,5 +553,36 @@ describe('deleteArtistsNotIn', () => {
     await upsertArtists(db(), [artist('ar1', 'Alpha')]);
     await deleteArtistsNotIn(db(), []);
     expect(await countArtists(db())).toBe(1);
+  });
+});
+
+describe('playlist detail markers', () => {
+  it('round-trips, defaults to null, and clears in bulk', async () => {
+    await upsertPlaylists(db(), [playlist('p1', 'Mix'), playlist('p2', 'Other')]);
+    // Never fetched → null, which is what makes "fetch it" the default.
+    let state = await listPlaylistDetailState(db());
+    expect(state.find((r) => r.id === 'p1')?.detail_changed).toBeNull();
+
+    await stampPlaylistDetailSynced(db(), 'p1', 1700000000000, 7);
+    state = await listPlaylistDetailState(db());
+    const p1 = state.find((r) => r.id === 'p1');
+    expect(p1?.detail_changed).toBe(1700000000000);
+    expect(p1?.detail_song_count).toBe(7);
+    expect(state.find((r) => r.id === 'p2')?.detail_changed).toBeNull();
+
+    await clearPlaylistDetailMarkers(db());
+    state = await listPlaylistDetailState(db());
+    expect(state.every((r) => r.detail_changed === null)).toBe(true);
+  });
+
+  it('a list upsert does not touch the markers', async () => {
+    await upsertPlaylists(db(), [playlist('p1', 'Mix')]);
+    await stampPlaylistDetailSynced(db(), 'p1', 42, 3);
+    // The whole point of separate columns: `upsertPlaylists` (and the detail fetch,
+    // which also upserts) must not clobber the sync marker.
+    await upsertPlaylists(db(), [playlist('p1', 'Mix Renamed')]);
+    const row = (await listPlaylistDetailState(db())).find((r) => r.id === 'p1');
+    expect(row?.detail_changed).toBe(42);
+    expect(row?.detail_song_count).toBe(3);
   });
 });

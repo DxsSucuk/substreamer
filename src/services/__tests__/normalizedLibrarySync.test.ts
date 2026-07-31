@@ -23,6 +23,11 @@ const mockSongsData: Child[] = Array.from({ length: 10 }, (_, i) => ({
 })) as unknown as Child[];
 
 let mockApi: unknown = {};
+let mockPlaylists: Array<Record<string, unknown>> = [];
+const mockFetchPlaylistDetail = jest.fn((id: string) =>
+  Promise.resolve({ id, entry: [] } as unknown),
+);
+const mockSyncCachedItemTracks = jest.fn();
 jest.mock('../subsonicService', () => ({
   probeEmptySearch3: () => Promise.resolve(true),
   searchAlbumsPage: (count: number, offset: number) => Promise.resolve(mockAlbumsData.slice(offset, offset + count)),
@@ -31,16 +36,45 @@ jest.mock('../subsonicService', () => ({
   // An empty page only means "end of library" when there was an API to ask; the loops
   // consult this to tell that apart from "no usable API, so everything resolves []".
   getApi: () => mockApi,
+  ensureCoverArtAuth: () => Promise.resolve(),
+  getAllArtists: () => Promise.resolve([]),
+  getAllPlaylists: () => Promise.resolve(mockPlaylists),
+}));
+jest.mock('../detailFetchService', () => ({
+  fetchPlaylistDetail: (id: string) => mockFetchPlaylistDetail(id),
+}));
+jest.mock('../musicCacheService', () => ({
+  syncCachedItemTracks: (...a: unknown[]) => mockSyncCachedItemTracks(...a),
 }));
 jest.mock('../../store/offlineModeStore', () => ({
-  offlineModeStore: { getState: () => ({ offlineMode: false }) },
+  offlineModeStore: { getState: () => ({ offlineMode: false }), subscribe: () => () => {} },
 }));
 
 const db = () => getDb()!;
 
+/** The playlist detail reconcile is deliberately fire-and-forget, so every test has to
+ *  drain it — otherwise one test's fan-out is still in flight (and holding the dedup
+ *  promise) when the next one starts. */
+const flush = async () => {
+  for (let i = 0; i < 40; i += 1) await new Promise((r) => setTimeout(r, 0));
+};
+
+afterEach(flush);
+
 beforeEach(() => {
   mockApi = {};
-  syncStatusStore.setState({ generation: 0, syncStrategy: null });
+  mockPlaylists = [];
+  // mockReset, not mockClear: one test overrides the implementation to drop the API
+  // mid-fetch, and mockClear leaves that in place for the next test.
+  mockFetchPlaylistDetail.mockReset();
+  mockFetchPlaylistDetail.mockImplementation((id: string) =>
+    Promise.resolve({ id, entry: [] } as unknown),
+  );
+  mockSyncCachedItemTracks.mockClear();
+  db().runSync('DELETE FROM playlists');
+  // Full reset: cursors/completion flags carry between tests otherwise, and a
+  // 'complete' library makes the next run short-circuit before the playlist phase.
+  syncStatusStore.setState(syncStatusStore.getInitialState(), true);
 });
 
 describe('runNormalizedLibrarySync', () => {
@@ -97,5 +131,89 @@ describe('runNormalizedLibrarySync', () => {
     syncStatusStore.setState({ librarySyncComplete: false, songSyncComplete: false });
     await runNormalizedLibrarySync({ full: true });
     expect(syncStatusStore.getState().librarySyncComplete).toBe(false);
+  });
+});
+
+describe('playlist detail reconcile', () => {
+  const pl = (id: string, changed: string, songCount: number) =>
+    ({ id, name: id, changed, songCount }) as unknown as Record<string, unknown>;
+  const marker = (id: string) =>
+    db().getFirstSync<{ c: number | null; n: number | null }>(
+      `SELECT detail_changed AS c, detail_song_count AS n FROM playlists WHERE id = '${id}'`,
+    );
+
+  it('fetches a playlist whose membership was never fetched', async () => {
+    mockPlaylists = [pl('p1', '2024-01-01T00:00:00Z', 3)];
+    await runNormalizedLibrarySync({ full: true });
+    await flush();
+    expect(mockFetchPlaylistDetail).toHaveBeenCalledWith('p1');
+    // Marker stamped from the LIST envelope, so the next pass skips it.
+    expect(marker('p1')?.n).toBe(3);
+  });
+
+  it('skips a playlist that has not changed since its last detail fetch', async () => {
+    mockPlaylists = [pl('p1', '2024-01-01T00:00:00Z', 3)];
+    await runNormalizedLibrarySync({ full: true });
+    await flush();
+    // mockReset, not mockClear: one test overrides the implementation to drop the API
+  // mid-fetch, and mockClear leaves that in place for the next test.
+  mockFetchPlaylistDetail.mockReset();
+  mockFetchPlaylistDetail.mockImplementation((id: string) =>
+    Promise.resolve({ id, entry: [] } as unknown),
+  );
+
+    await runNormalizedLibrarySync();
+    await flush();
+    expect(mockFetchPlaylistDetail).not.toHaveBeenCalled();
+  });
+
+  it('refetches when the server reports a changed track count', async () => {
+    mockPlaylists = [pl('p1', '2024-01-01T00:00:00Z', 3)];
+    await runNormalizedLibrarySync({ full: true });
+    await flush();
+    // mockReset, not mockClear: one test overrides the implementation to drop the API
+  // mid-fetch, and mockClear leaves that in place for the next test.
+  mockFetchPlaylistDetail.mockReset();
+  mockFetchPlaylistDetail.mockImplementation((id: string) =>
+    Promise.resolve({ id, entry: [] } as unknown),
+  );
+
+    mockPlaylists = [pl('p1', '2024-01-01T00:00:00Z', 4)];
+    await runNormalizedLibrarySync();
+    await flush();
+    expect(mockFetchPlaylistDetail).toHaveBeenCalledWith('p1');
+  });
+
+  it('does not stamp the marker when the fetch found no server', async () => {
+    // fetchPlaylistDetail returns LOCAL data on its offline branch, so a non-null
+    // result is not proof the server answered — stamping it would suppress the
+    // refetch permanently for exactly the playlists that needed it.
+    mockPlaylists = [pl('p1', '2024-01-01T00:00:00Z', 3)];
+    mockFetchPlaylistDetail.mockImplementation((id: string) => {
+      mockApi = null; // API vanishes mid-fetch
+      return Promise.resolve({ id, entry: [] } as unknown);
+    });
+    await runNormalizedLibrarySync({ full: true });
+    await flush();
+    expect(marker('p1')?.c).toBeNull();
+  });
+
+  it('clears the markers on a full resync so membership is re-fetched', async () => {
+    mockPlaylists = [pl('p1', '2024-01-01T00:00:00Z', 3)];
+    await runNormalizedLibrarySync({ full: true });
+    await flush();
+    expect(marker('p1')?.n).toBe(3);
+    // mockReset, not mockClear: one test overrides the implementation to drop the API
+  // mid-fetch, and mockClear leaves that in place for the next test.
+  mockFetchPlaylistDetail.mockReset();
+  mockFetchPlaylistDetail.mockImplementation((id: string) =>
+    Promise.resolve({ id, entry: [] } as unknown),
+  );
+
+    // A full resync overwrites rows in place, so without clearing, the markers would
+    // survive and the one manual repair the UI offers would skip every playlist.
+    await runNormalizedLibrarySync({ full: true });
+    await flush();
+    expect(mockFetchPlaylistDetail).toHaveBeenCalledWith('p1');
   });
 });

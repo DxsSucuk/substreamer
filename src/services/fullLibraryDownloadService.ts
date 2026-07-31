@@ -11,11 +11,9 @@
  */
 
 import i18n from '../i18n/i18n';
-import { albumLibraryStore } from '../store/albumLibraryStore';
 import { connectivityStore } from '../store/connectivityStore';
 import { fullLibraryDownloadStore } from '../store/fullLibraryDownloadStore';
 import { offlineModeStore } from '../store/offlineModeStore';
-import { playlistLibraryStore } from '../store/playlistLibraryStore';
 import { refreshPlaylistLibrary } from './normalizedLibrarySync';
 import { getDb } from '../store/persistence/db';
 import { listAlbumIds } from '../db/repository/albums';
@@ -45,11 +43,11 @@ export async function enqueueFullLibraryDownload(): Promise<void> {
   let failed = 0;
   let total = 0;
   try {
-    // Phase 1 — make sure we have the complete, current library lists so we
-    // don't miss anything added since the last sync. A failure here (e.g. the
-    // connection drops) aborts before queueing and is surfaced to the user.
+    // Phase 1 — enumerate what we already know. The album list is NOT re-fetched here:
+    // on search3 that was a no-op, and on basic servers it re-paged the whole list off
+    // the legacy `library_albums` count the normalized sync never writes. Albums added
+    // since the last sync arrive via the next sync / change-detect.
     fullLibraryDownloadStore.getState().setPhase('preparing');
-    await albumLibraryStore.getState().fetchAllAlbums();
     await refreshPlaylistLibrary();
 
     // Enumerate from the normalized model (the fetch actions above dual-write it).

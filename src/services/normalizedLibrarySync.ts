@@ -14,13 +14,20 @@
  * per-album `getAlbum` walk for basic servers (and for search3 servers whose songs
  * come back without `albumId`).
  */
-import type { AlbumID3, Child } from 'subsonic-api';
+import type { AlbumID3, Child, Playlist } from 'subsonic-api';
 
 import type { InternalDb } from '@/db/client';
 import { ensureNormalizedSchema, resetNormalizedSchema } from '@/db/createNormalizedTables';
 import { countAlbums, listAlbumIds, sumAlbumSongCounts, upsertAlbums } from '@/db/repository/albums';
 import { deleteArtistsNotIn, upsertArtists } from '@/db/repository/artists';
-import { deletePlaylistsNotIn, upsertPlaylists } from '@/db/repository/playlists';
+import {
+  clearPlaylistDetailMarkers,
+  deletePlaylistsNotIn,
+  listPlaylistDetailState,
+  stampPlaylistDetailSynced,
+  upsertPlaylists,
+  type PlaylistDetailStateRow,
+} from '@/db/repository/playlists';
 import { getProtectedIds } from '@/db/protectedIds';
 import {
   countSongs,
@@ -35,6 +42,11 @@ import { ratingStore } from '@/store/ratingStore';
 import { serverInfoStore } from '@/store/serverInfoStore';
 import { syncStatusStore } from '@/store/syncStatusStore';
 import { runPool } from '@/utils/promisePool';
+import { withTimeout } from '@/utils/withTimeout';
+import { fireAndForget } from '@/utils/fireAndForget';
+import { toEpoch } from '@/db/repository/mappers';
+import { fetchPlaylistDetail } from './detailFetchService';
+import { syncCachedItemTracks } from './musicCacheService';
 
 import {
   ensureCoverArtAuth,
@@ -233,12 +245,126 @@ export async function syncPlaylistsNormalized(
 ): Promise<void> {
   await ensureCoverArtAuth();
   const playlists = await getAllPlaylists();
+  // Read the detail markers BEFORE the upsert — they live on the same rows.
+  const markers = new Map(
+    (await listPlaylistDetailState(db)).map((r) => [r.id, r]),
+  );
   await upsertPlaylists(db, playlists, undefined, articles);
   // Prune only when the API actually answered — `getAllPlaylists` returns `[]` (not a
   // throw) when there is no usable API, and pruning against that empties the table.
+  // This is also the offline guard for the fan-out below (`getApi()` is null offline).
   if (getApi() === null) return;
   const protectedIds = await getProtectedIds(db);
   await deletePlaylistsNotIn(db, playlists.map((p) => p.id), [...protectedIds.playlistIds]);
+  // Fire-and-forget: awaiting would block the Add-to-Playlist sheet's spinner, delay the
+  // list repaint (`playlistLibraryLastFetchedAt`), and gate change-detect + the song kick
+  // behind playlist fetches, since this is the last step of `doNormalizedSync`.
+  fireAndForget(
+    reconcilePlaylistDetails(db, playlists, markers, protectedIds.playlistIds),
+    'sync.playlistDetailReconcile',
+  );
+}
+
+/** Cap on eager detail fetches per pass for NON-downloaded playlists. */
+const PLAYLIST_REFRESH_CAP = 50;
+/** Playlist detail payloads are individually large — keep well under the album walk. */
+const PLAYLIST_PREFETCH_CONCURRENCY = 2;
+/** Per-fetch budget. `runPool` awaits every worker, so one hung `getPlaylist` would
+ *  otherwise leave the in-flight promise below unsettled and disable the reconcile for
+ *  the rest of the session. */
+const PLAYLIST_FETCH_TIMEOUT_MS = 20_000;
+
+let detailReconcileInFlight: Promise<void> | null = null;
+
+/**
+ * Re-fetch the track membership of playlists the server says have changed.
+ *
+ * Nothing else does this any more: `playlist_songs` is written only by the on-demand
+ * detail fetch, and the detail screen skips its mount fetch when it already has rows — so
+ * without this a server-side track change stays invisible, and a downloaded playlist's
+ * cached files drift, until the user manually pulls.
+ *
+ * "Changed" is judged against markers only this function writes, NOT the row's
+ * `changed`/`song_count` — `fetchPlaylistDetail` rewrites those from the DETAIL envelope,
+ * so on a server whose list and detail endpoints disagree the comparison would never
+ * settle and every refresh would refetch the cap.
+ */
+async function reconcilePlaylistDetails(
+  db: InternalDb,
+  playlists: readonly Playlist[],
+  markers: Map<string, PlaylistDetailStateRow>,
+  downloadedIds: ReadonlySet<string>,
+): Promise<void> {
+  if (detailReconcileInFlight) return detailReconcileInFlight;
+  const run = (async () => {
+    const capturedGen = syncStatusStore.getState().generation;
+    // `?? 0` on both sides so NULL means exactly one thing: never fetched. `toEpoch`
+    // returns null for a missing/unparseable `changed`, which some servers omit.
+    const stale = playlists.filter((p) => {
+      const m = markers.get(p.id);
+      return (
+        (m?.detail_changed ?? null) !== (toEpoch(p.changed) ?? 0) ||
+        (m?.detail_song_count ?? null) !== (p.songCount ?? 0)
+      );
+    });
+    if (stale.length === 0) return;
+
+    // Most-recently-changed first; downloaded playlists always included regardless of cap.
+    const ordered = [...stale].sort((a, b) => (toEpoch(b.changed) ?? 0) - (toEpoch(a.changed) ?? 0));
+    const capped: Playlist[] = [];
+    let nonDownloaded = 0;
+    for (const p of ordered) {
+      if (downloadedIds.has(p.id)) capped.push(p);
+      else if (nonDownloaded < PLAYLIST_REFRESH_CAP) {
+        capped.push(p);
+        nonDownloaded += 1;
+      }
+    }
+    if (capped.length < stale.length) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[normalized-sync] playlist detail refresh capped: ${capped.length}/${stale.length}, ` +
+          `${stale.length - capped.length} deferred (markers unstamped, so they retry)`,
+      );
+    }
+
+    const ctrl = new AbortController();
+    const unsubGen = syncStatusStore.subscribe((st) => {
+      if (st.generation !== capturedGen) ctrl.abort();
+    });
+    const unsubOffline = offlineModeStore.subscribe((st) => {
+      if (st.offlineMode) ctrl.abort();
+    });
+    try {
+      await runPool(
+        capped,
+        async (p) => {
+          // Check either side of the fetch: `fetchPlaylistDetail` returns LOCAL data on
+          // its offline branch, so a non-null result is not proof the server answered —
+          // stamping that would suppress the refetch permanently.
+          if (getApi() === null) return;
+          const updated = await withTimeout(
+            () => fetchPlaylistDetail(p.id, { prefetchCovers: false }),
+            PLAYLIST_FETCH_TIMEOUT_MS,
+          );
+          if (updated === 'timeout' || !updated || getApi() === null) return;
+          await stampPlaylistDetailSynced(db, p.id, toEpoch(p.changed) ?? 0, p.songCount ?? 0);
+          if (downloadedIds.has(p.id)) syncCachedItemTracks(p.id, updated.entry ?? []);
+        },
+        { concurrency: PLAYLIST_PREFETCH_CONCURRENCY, signal: ctrl.signal },
+      );
+    } finally {
+      unsubGen();
+      unsubOffline();
+    }
+  })();
+  // Store `run` itself — assigning `run.finally(...)` would store a DIFFERENT promise,
+  // so the identity check below never matches and the slot never clears.
+  detailReconcileInFlight = run;
+  void run.finally(() => {
+    if (detailReconcileInFlight === run) detailReconcileInFlight = null;
+  });
+  return run;
 }
 
 /**
@@ -301,10 +427,14 @@ export function runNormalizedLibrarySync(
   const run = (previous ?? Promise.resolve())
     .catch(() => undefined)
     .then(() => doNormalizedSync(opts));
-  inFlight = run.finally(() => {
+  // Store `run` itself, not `run.finally(...)` — that returns a different promise, so the
+  // identity check never matches, the slot never clears, and every later call joins a
+  // stale resolved promise and silently does nothing.
+  inFlight = run;
+  void run.finally(() => {
     if (inFlight === run) inFlight = null;
   });
-  return inFlight;
+  return run;
 }
 
 async function doNormalizedSync(
@@ -330,6 +460,9 @@ async function doNormalizedSync(
       // anyway, so a restart-from-zero rebuild is equivalent without the collateral.
       syncStatusStore.getState().resetLibrarySync();
       syncStatusStore.getState().resetSongSync();
+      // The resync overwrites rows in place, so the detail markers would survive and
+      // make the one manual repair the UI offers skip every playlist.
+      await clearPlaylistDetailMarkers(db);
     }
 
     // Transport: forced (dev fast/slow timing spikes) → use as-is; else the persisted

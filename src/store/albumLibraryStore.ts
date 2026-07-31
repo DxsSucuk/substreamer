@@ -33,13 +33,6 @@ import { syncStatusStore } from './syncStatusStore';
  * Receives the OLD and NEW id lists so consumers can reap orphans from
  * downstream caches (albumDetailStore, songIndexStore) and pre-fetch new IDs.
  */
-let reconcileHook: ((oldIds: readonly string[], newIds: readonly string[]) => void) | null = null;
-export function registerAlbumLibraryReconcileHook(
-  hook: ((oldIds: readonly string[], newIds: readonly string[]) => void) | null,
-): void {
-  reconcileHook = hook;
-}
-
 /**
  * Sort an album array by the current sort preference using
  * article-stripped, accent-folded keys. Schwartzian transform — sort
@@ -324,13 +317,6 @@ export const albumLibraryStore = create<AlbumLibraryState>()((set, get) => ({
       set({ albums: sorted, loading: false });
       syncStatusStore.getState().markLibrarySyncComplete();
 
-      if (reconcileHook) {
-        try {
-          reconcileHook(oldIds, sorted.map((a) => a.id));
-        } catch {
-          /* non-critical — reconcile is best-effort */
-        }
-      }
     } catch (e) {
       // Transport failure — preserve the existing rows/list; surface the error.
       // Leaves librarySyncComplete false so the fetch resumes next launch.

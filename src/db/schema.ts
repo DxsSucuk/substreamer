@@ -224,6 +224,13 @@ export const playlists = sqliteTable(
     sortTitle: text('sort_title'),
     normName: text('norm_name'),
     dmetaName: text('dmeta_name'),
+    // Written ONLY by the playlist detail reconcile, never by an upsert: the LIST
+    // envelope's `changed`/`songCount` at the last successful detail fetch. They can't
+    // live on `changed`/`song_count` because `fetchPlaylistDetail` rewrites those from the
+    // DETAIL envelope, so a server whose two endpoints disagree would refetch forever.
+    // NULL = never fetched.
+    detailChanged: integer('detail_changed'),
+    detailSongCount: integer('detail_song_count'),
   },
   (t) => ({
     // NEW index name (not the old idx_playlists_sort on `name`): CREATE INDEX IF NOT

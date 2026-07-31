@@ -12,7 +12,7 @@ import { getSortKey } from '@/utils/sortHelpers';
 
 import type { Row } from './core';
 
-const toEpoch = (v: Date | string | number | null | undefined): number | null => {
+export const toEpoch = (v: Date | string | number | null | undefined): number | null => {
   if (v == null) return null;
   if (v instanceof Date) return v.getTime();
   if (typeof v === 'number') return v;
