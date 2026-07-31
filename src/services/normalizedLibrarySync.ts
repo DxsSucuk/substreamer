@@ -178,7 +178,15 @@ async function runSearch3SongPhase(
       firstPage = false;
       const missing = page.filter((s) => !s.albumId).length;
       if (missing / page.length > 0.01) {
-        // Songs lack albumId — fall back to the per-album walk.
+        // Songs lack albumId — fall back to the per-album walk. Record it: this
+        // branch turns a ~40-request paged sync into thousands of per-album fetches,
+        // and it has never been observed on a real server, so if it ever fires we want
+        // it visible on the sync card rather than showing as unexplained slowness.
+        syncStatusStore.getState().setSongSyncStrategy('basic');
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[normalized-sync] search3 songs missing albumId (${missing}/${page.length}) — falling back to the per-album walk`,
+        );
         // eslint-disable-next-line no-await-in-loop
         const walk = await doBasicSongWalk(db, articles, capturedGen);
         return walk === 'done' && !genChanged() && !isOffline() ? 'done' : 'bailed';
@@ -400,6 +408,7 @@ async function doNormalizedSync(
     syncStatusStore.getState().setDetailSyncTotal(totalAlbums);
     // Each song phase seeds its own progress from its resume cursor (search3) or its
     // walk position (basic) — both immune to rows a full resync hasn't rewritten yet.
+    syncStatusStore.getState().setSongSyncStrategy(strat);
     if (strat === 'basic') {
       // Basic (non-search3) server, or a forced slow-path run: songs don't carry albumId,
       // so walk each album's getAlbum song list instead of paging search3.

@@ -852,6 +852,8 @@
   "resumeSync": "Resume",
   "restartSync": "Restart",
   "fetchingAlbumList": "Fetching album list…",
+  "syncTransportFast": "search3 fast sync",
+  "syncTransportBasic": "per-album normal sync",
   "fetchingSongs": "Fetching songs…",
   "librarySync": "Library sync",
   "syncedAlbums": "Synced albums",

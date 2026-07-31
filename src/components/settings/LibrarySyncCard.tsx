@@ -32,6 +32,11 @@ export function LibrarySyncCard() {
   const albumsProcessed = syncStatusStore((s) => s.detailSyncCompleted);
   const albumsTotal = syncStatusStore((s) => s.detailSyncTotal);
   const songSyncFinalizing = syncStatusStore((s) => s.songSyncFinalizing);
+  // Which transport the run is actually using. `songSyncStrategy` wins because the
+  // song phase can fall back to the per-album walk at runtime even on a search3 server.
+  const songSyncStrategy = syncStatusStore((s) => s.songSyncStrategy);
+  const syncStrategy = syncStatusStore((s) => s.syncStrategy);
+  const transport = songSyncStrategy ?? syncStrategy;
 
   // One-time blob→normalized migration progress (bar + % + counts on the card).
   const isMigrating = migPhase === 'migrating';
@@ -183,6 +188,18 @@ export function LibrarySyncCard() {
             <Text style={[styles.progressCounts, { color: colors.textSecondary }]}>
               {albumsProcessed} / {albumsTotal}
             </Text>
+            {transport && (
+              <View style={styles.transportRow}>
+                <Ionicons
+                  name={transport === 'basic' ? 'albums-outline' : 'flash-outline'}
+                  size={12}
+                  color={colors.textSecondary}
+                />
+                <Text style={[styles.transportText, { color: colors.textSecondary }]}>
+                  {transport === 'basic' ? t('syncTransportBasic') : t('syncTransportFast')}
+                </Text>
+              </View>
+            )}
           </View>
         )}
 
@@ -257,5 +274,15 @@ const styles = StyleSheet.create({
     marginTop: 6,
     textAlign: 'center',
     fontVariant: ['tabular-nums'],
+  },
+  transportRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    marginTop: 4,
+  },
+  transportText: {
+    fontSize: 11,
   },
 });
