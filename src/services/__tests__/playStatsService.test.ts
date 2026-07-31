@@ -1,39 +1,11 @@
 jest.mock('../../store/persistence/kvStorage', () => require('../../store/persistence/__mocks__/kvStorage'));
 
-const mockAlbumDetailApply = jest.fn();
-const mockPlaylistDetailApply = jest.fn();
 const mockFavoritesApply = jest.fn();
-const mockAlbumLibraryApply = jest.fn();
-const mockArtistDetailApply = jest.fn();
 const mockApplyLocalPlayToPlayer = jest.fn();
-
-jest.mock('../../store/albumDetailStore', () => ({
-  albumDetailStore: {
-    getState: () => ({ applyLocalPlay: mockAlbumDetailApply }),
-  },
-}));
-
-jest.mock('../../store/playlistDetailStore', () => ({
-  playlistDetailStore: {
-    getState: () => ({ applyLocalPlay: mockPlaylistDetailApply }),
-  },
-}));
 
 jest.mock('../../store/favoritesStore', () => ({
   favoritesStore: {
     getState: () => ({ applyLocalPlay: mockFavoritesApply }),
-  },
-}));
-
-jest.mock('../../store/albumLibraryStore', () => ({
-  albumLibraryStore: {
-    getState: () => ({ applyLocalPlay: mockAlbumLibraryApply }),
-  },
-}));
-
-jest.mock('../../store/artistDetailStore', () => ({
-  artistDetailStore: {
-    getState: () => ({ applyLocalPlay: mockArtistDetailApply }),
   },
 }));
 
@@ -52,11 +24,7 @@ import { upsertSongs } from '../../db/repository/songs';
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
 beforeEach(() => {
-  mockAlbumDetailApply.mockClear();
-  mockPlaylistDetailApply.mockClear();
   mockFavoritesApply.mockClear();
-  mockAlbumLibraryApply.mockClear();
-  mockArtistDetailApply.mockClear();
   mockApplyLocalPlayToPlayer.mockClear();
   // Register a fresh listener for each test. playerService would normally
   // register `applyLocalPlayToPlayer` at module load; the test mirrors that
@@ -65,46 +33,29 @@ beforeEach(() => {
 });
 
 describe('playStatsService.applyLocalPlay', () => {
-  it('fans out to every store action + player helper with one shared timestamp', () => {
+  it('shares one timestamp between the favorites patch and the player helper', () => {
     const song: Child = { id: 's1', title: 'S', albumId: 'a1' } as Child;
 
     applyLocalPlay(song);
 
     // One call per store action + one player helper call.
-    expect(mockAlbumDetailApply).toHaveBeenCalledTimes(1);
-    expect(mockPlaylistDetailApply).toHaveBeenCalledTimes(1);
     expect(mockFavoritesApply).toHaveBeenCalledTimes(1);
-    expect(mockAlbumLibraryApply).toHaveBeenCalledTimes(1);
-    expect(mockArtistDetailApply).toHaveBeenCalledTimes(1);
     expect(mockApplyLocalPlayToPlayer).toHaveBeenCalledTimes(1);
 
     // All calls share the same `now` string.
-    const albumDetailNow = mockAlbumDetailApply.mock.calls[0][2];
-    const playlistNow = mockPlaylistDetailApply.mock.calls[0][1];
     const favoritesNow = mockFavoritesApply.mock.calls[0][2];
-    const libraryNow = mockAlbumLibraryApply.mock.calls[0][1];
-    const artistNow = mockArtistDetailApply.mock.calls[0][2];
     const playerNow = mockApplyLocalPlayToPlayer.mock.calls[0][1];
 
-    expect(albumDetailNow).toBe(playlistNow);
-    expect(albumDetailNow).toBe(favoritesNow);
-    expect(albumDetailNow).toBe(libraryNow);
-    expect(albumDetailNow).toBe(artistNow);
-    expect(albumDetailNow).toBe(playerNow);
-    expect(typeof albumDetailNow).toBe('string');
-    expect(Number.isFinite(Date.parse(albumDetailNow as string))).toBe(true);
+    expect(favoritesNow).toBe(playerNow);
+    expect(typeof favoritesNow).toBe('string');
+    expect(Number.isFinite(Date.parse(favoritesNow as string))).toBe(true);
   });
 
   it('forwards songId + albumId to all actions that take both', () => {
     const song: Child = { id: 'song-42', title: 'X', albumId: 'album-7' } as Child;
 
     applyLocalPlay(song);
-
-    expect(mockAlbumDetailApply).toHaveBeenCalledWith('song-42', 'album-7', expect.any(String));
     expect(mockFavoritesApply).toHaveBeenCalledWith('song-42', 'album-7', expect.any(String));
-    expect(mockArtistDetailApply).toHaveBeenCalledWith('song-42', 'album-7', expect.any(String));
-    expect(mockPlaylistDetailApply).toHaveBeenCalledWith('song-42', expect.any(String));
-    expect(mockAlbumLibraryApply).toHaveBeenCalledWith('album-7', expect.any(String));
     expect(mockApplyLocalPlayToPlayer).toHaveBeenCalledWith('song-42', expect.any(String));
   });
 
@@ -131,10 +82,6 @@ describe('playStatsService.applyLocalPlay', () => {
     const song: Child = { id: 's1', title: 'Orphan' } as Child;
 
     applyLocalPlay(song);
-
-    expect(mockAlbumDetailApply).toHaveBeenCalledWith('s1', undefined, expect.any(String));
     expect(mockFavoritesApply).toHaveBeenCalledWith('s1', undefined, expect.any(String));
-    expect(mockArtistDetailApply).toHaveBeenCalledWith('s1', undefined, expect.any(String));
-    expect(mockAlbumLibraryApply).toHaveBeenCalledWith(undefined, expect.any(String));
   });
 });

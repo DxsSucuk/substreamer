@@ -787,7 +787,6 @@
   "syncLibraryOfflineNotice": "离线 — 请重新连接服务器以同步您的资料库。",
   "pauseSync": "暂停",
   "resumeSync": "继续",
-  "syncNow": "同步",
   "librarySync": "资料库同步",
   "syncedAlbums": "已同步专辑",
   "syncedSongs": "已同步歌曲",

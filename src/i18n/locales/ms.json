@@ -787,7 +787,6 @@
   "syncLibraryOfflineNotice": "Offline — reconnect to the server to sync your library.",
   "pauseSync": "Pause",
   "resumeSync": "Resume",
-  "syncNow": "Sync",
   "librarySync": "Library sync",
   "syncedAlbums": "Synced albums",
   "syncedSongs": "Synced songs",

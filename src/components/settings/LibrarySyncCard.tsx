@@ -4,7 +4,6 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-nati
 import { useTranslation } from 'react-i18next';
 
 import { useTheme } from '../../hooks/useTheme';
-import { useThemedAlert } from '../../hooks/useThemedAlert';
 import { settingsStyles } from '../../styles/settingsStyles';
 import { cancelAllSyncs, forceFullResync, resumeSync } from '../../services/dataSyncService';
 import { countAlbums } from '../../db/repository/albums';
@@ -20,7 +19,6 @@ import type { IoniconsName } from '../../utils/iconNames';
 export function LibrarySyncCard() {
   const { t } = useTranslation();
   const { colors } = useTheme();
-  const { confirm } = useThemedAlert();
 
   const offlineMode = offlineModeStore((s) => s.offlineMode);
   const libraryLastFetchedAt = syncStatusStore((s) => s.librarySyncLastFetchedAt);
@@ -83,15 +81,13 @@ export function LibrarySyncCard() {
         ? t('fetchingSongs')
         : null;
 
+  // No confirm: the resync overwrites rows in place rather than dropping them, so
+  // nothing is destroyed, the library stays browsable throughout, and Pause is right
+  // there. The card hint below carries what the dialog used to say.
   const handleForceResync = useCallback(() => {
     if (offlineMode) return;
-    confirm({
-      title: t('syncLibrary'),
-      message: t('syncLibraryDescription'),
-      confirmLabel: t('syncNow'),
-      onConfirm: () => { void forceFullResync(); },
-    });
-  }, [confirm, offlineMode, t]);
+    void forceFullResync();
+  }, [offlineMode]);
 
   const handlePause = useCallback(() => {
     cancelAllSyncs('user-cancel');

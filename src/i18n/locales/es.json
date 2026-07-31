@@ -787,7 +787,6 @@
   "syncLibraryOfflineNotice": "Sin conexión — vuelva a conectarse al servidor para sincronizar su biblioteca.",
   "pauseSync": "Pausar",
   "resumeSync": "Reanudar",
-  "syncNow": "Sincronizar",
   "librarySync": "Sincronización de biblioteca",
   "syncedAlbums": "Álbumes sincronizados",
   "syncedSongs": "Canciones sincronizadas",

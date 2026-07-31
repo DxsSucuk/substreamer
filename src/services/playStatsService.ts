@@ -17,12 +17,8 @@
 
 import { bumpAlbumPlayStats } from '../db/repository/albums';
 import { bumpSongPlayStats } from '../db/repository/songs';
-import { albumDetailStore } from '../store/albumDetailStore';
-import { albumLibraryStore } from '../store/albumLibraryStore';
-import { artistDetailStore } from '../store/artistDetailStore';
 import { favoritesStore } from '../store/favoritesStore';
 import { getDb } from '../store/persistence/db';
-import { playlistDetailStore } from '../store/playlistDetailStore';
 import { type Child } from './subsonicService';
 
 /**
@@ -58,12 +54,11 @@ export function applyLocalPlay(song: Child): void {
   const songId = song.id;
   const albumId = song.albumId;
 
-  // Persistent stores that hold this song's metadata.
-  albumDetailStore.getState().applyLocalPlay(songId, albumId, now);
-  playlistDetailStore.getState().applyLocalPlay(songId, now);
+  // favoritesStore keeps its own in-memory copy of the starred rows and is NOT backed
+  // by the normalized tables, so it still needs the optimistic patch. The four detail /
+  // library stores that used to be patched here render from the repository now — the
+  // scalar bumps below are their update path.
   favoritesStore.getState().applyLocalPlay(songId, albumId, now);
-  albumLibraryStore.getState().applyLocalPlay(albumId, now);
-  artistDetailStore.getState().applyLocalPlay(songId, albumId, now);
 
   // Normalized model — the source the detail screens / player will read. Targeted
   // scalar +1 UPDATE for the song + its album (no child-table churn) so play stats

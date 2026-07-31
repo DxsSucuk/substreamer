@@ -787,7 +787,6 @@
   "syncLibraryOfflineNotice": "Offline — stellen Sie die Verbindung zum Server wieder her, um Ihre Mediathek zu synchronisieren.",
   "pauseSync": "Pausieren",
   "resumeSync": "Fortsetzen",
-  "syncNow": "Sync",
   "librarySync": "Mediathek-Sync",
   "syncedAlbums": "Synchronisierte Alben",
   "syncedSongs": "Synchronisierte Titel",

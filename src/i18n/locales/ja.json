@@ -787,7 +787,6 @@
   "syncLibraryOfflineNotice": "オフラインです。ライブラリを同期するにはサーバーに再接続します",
   "pauseSync": "一時停止",
   "resumeSync": "再開",
-  "syncNow": "同期",
   "librarySync": "ライブラリの同期",
   "syncedAlbums": "同期済みのアルバム",
   "syncedSongs": "同期済みの曲",
