@@ -740,10 +740,6 @@ export default function RootLayout() {
           options={{ ...blurHeaderOptions, title: i18n.t('imageCache'), headerBackTitle: i18n.t('back') }}
         />
         <Stack.Screen
-          name="metadata-cache-browser"
-          options={{ ...blurHeaderOptions, title: i18n.t('metadataCache'), headerBackTitle: i18n.t('back') }}
-        />
-        <Stack.Screen
           name="music-cache-browser"
           options={{ ...blurHeaderOptions, title: i18n.t('downloadedMusic'), headerBackTitle: i18n.t('back') }}
         />
