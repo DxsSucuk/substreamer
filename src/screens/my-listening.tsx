@@ -390,7 +390,10 @@ export function MyListeningScreen() {
               subtitle={item.artist}
               count={item.count}
               maxCount={analytics.topAlbums[0].count}
-              coverArtId={albumCoverArtById(item.albumId)}
+              // The aggregate already carries the cover art captured at scrobble time;
+              // prefer it over the album lookup, which is a synchronous cache read that
+              // returns undefined on a miss and never re-renders when the fill lands.
+              coverArtId={item.coverArt ?? albumCoverArtById(item.albumId)}
               colors={colors}
               index={i}
               onPress={onOpenAlbum(item.albumId)}

@@ -49,18 +49,22 @@ export const TopItemRow = memo(function TopItemRow({
     <>
       <Text style={[styles.rank, { color: colors.textSecondary }]}>{rank}</Text>
 
-      {coverArtId ? (
+      {initials ? (
+        <View style={[styles.initialCircle, { backgroundColor: colors.primary + '20' }]}>
+          <Text style={[styles.initialText, { color: colors.primary }]}>{initials}</Text>
+        </View>
+      ) : (
+        // Always hand the image to CachedImage, even with no id yet: it owns the cache
+        // check, the download, the branded placeholder and the re-render when art
+        // lands. Gating on `coverArtId` rendered nothing at all for a row whose art
+        // resolves late, so covers only appeared on an unrelated re-render.
         <CachedImage
           coverArtId={coverArtId}
           size={150}
           style={styles.thumbnail}
           resizeMode="cover"
         />
-      ) : initials ? (
-        <View style={[styles.initialCircle, { backgroundColor: colors.primary + '20' }]}>
-          <Text style={[styles.initialText, { color: colors.primary }]}>{initials}</Text>
-        </View>
-      ) : null}
+      )}
 
       <View style={styles.info}>
         <Text style={[styles.title, { color: colors.textPrimary }]} numberOfLines={1}>
