@@ -185,7 +185,7 @@ export function LibrarySyncCard() {
               />
             </View>
             <Text style={[styles.progressCounts, { color: colors.textSecondary }]}>
-              {albumsProcessed} / {albumsTotal} {t('albums').toLowerCase()}
+              {albumsProcessed} / {albumsTotal}
             </Text>
           </View>
         )}
@@ -259,6 +259,7 @@ const styles = StyleSheet.create({
   progressCounts: {
     fontSize: 12,
     marginTop: 6,
+    textAlign: 'center',
     fontVariant: ['tabular-nums'],
   },
 });
