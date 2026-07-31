@@ -23,6 +23,21 @@ CREATE TABLE `album_genres` (
 	FOREIGN KEY (`album_id`) REFERENCES `albums`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
+CREATE TABLE `album_info` (
+	`album_id` text PRIMARY KEY NOT NULL,
+	`notes` text,
+	`last_fm_url` text,
+	`music_brainz_id` text,
+	`image_url_small` text,
+	`image_url_medium` text,
+	`image_url_large` text,
+	`enriched_notes` text,
+	`enriched_notes_url` text,
+	`override_mbid` text,
+	`retrieved_at` integer NOT NULL,
+	FOREIGN KEY (`album_id`) REFERENCES `albums`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
 CREATE TABLE `album_moods` (
 	`album_id` text NOT NULL,
 	`pos` integer NOT NULL,
@@ -76,11 +91,6 @@ CREATE TABLE `albums` (
 	`release_year` integer,
 	`release_month` integer,
 	`release_day` integer,
-	`notes` text,
-	`last_fm_url` text,
-	`image_url_small` text,
-	`image_url_medium` text,
-	`image_url_large` text,
 	`norm_name` text,
 	`norm_artist` text,
 	`dmeta_name` text,

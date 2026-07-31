@@ -149,12 +149,6 @@ export const albums = sqliteTable(
     releaseYear: integer('release_year'),
     releaseMonth: integer('release_month'),
     releaseDay: integer('release_day'),
-    // AlbumInfo (getAlbumInfo2; fetched on demand, nullable until fetched)
-    notes: text('notes'),
-    lastFmUrl: text('last_fm_url'),
-    imageUrlSmall: text('image_url_small'),
-    imageUrlMedium: text('image_url_medium'),
-    imageUrlLarge: text('image_url_large'),
     normName: text('norm_name'),
     normArtist: text('norm_artist'),
     dmetaName: text('dmeta_name'),
@@ -239,6 +233,32 @@ export const playlists = sqliteTable(
     normNameIdx: index('idx_playlists_norm_name').on(t.normName),
   }),
 );
+
+/**
+ * `getAlbumInfo2` payload plus the client-side Wikipedia enrichment — fetched ONLY when
+ * the user opens the player's album-info panel, never by the library sync. Its own table
+ * rather than columns on `albums` because it carries state the album row has no business
+ * holding (the enrichment, the MBID override used to resolve it, and when it was
+ * fetched), and because `albums` is rewritten on every sync page.
+ */
+export const albumInfo = sqliteTable('album_info', {
+  albumId: text('album_id')
+    .primaryKey()
+    .references(() => albums.id, { onDelete: 'cascade' }),
+  notes: text('notes'),
+  lastFmUrl: text('last_fm_url'),
+  musicBrainzId: text('music_brainz_id'),
+  imageUrlSmall: text('image_url_small'),
+  imageUrlMedium: text('image_url_medium'),
+  imageUrlLarge: text('image_url_large'),
+  /** Wikipedia description, when the server returned no notes. */
+  enrichedNotes: text('enriched_notes'),
+  /** Attribution URL for the enriched notes. */
+  enrichedNotesUrl: text('enriched_notes_url'),
+  /** The MBID override this entry was resolved with, if any. */
+  overrideMbid: text('override_mbid'),
+  retrievedAt: integer('retrieved_at').notNull(),
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Song children (every typed array on `Child`)

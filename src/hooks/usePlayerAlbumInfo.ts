@@ -59,11 +59,17 @@ export function usePlayerAlbumInfo(
     if (!albumId || entry || loading) return;
     if (fetchAttemptedRef.current === albumId) return;
     fetchAttemptedRef.current = albumId;
-    albumInfoStore.getState().fetchAlbumInfo(
-      albumId,
-      artist ?? undefined,
-      album ?? undefined,
-    );
+    // Cached info now lives in `album_info`, not a preloaded KV blob — read it first
+    // and only hit the network on a genuine miss.
+    void (async () => {
+      const cached = await albumInfoStore.getState().hydrateAlbumInfo(albumId);
+      if (cached) return;
+      await albumInfoStore.getState().fetchAlbumInfo(
+        albumId,
+        artist ?? undefined,
+        album ?? undefined,
+      );
+    })();
   }, [enabled, albumId, entry, loading, artist, album]);
 
   // Reset the per-album guard when the album changes.

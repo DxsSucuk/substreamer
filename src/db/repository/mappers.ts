@@ -167,19 +167,6 @@ export function albumRow(a: AlbumID3, articles?: readonly string[]): Row {
   };
 }
 
-/** AlbumInfo columns from getAlbumInfo2 — a PARTIAL row (id + info fields only) so
- *  upserting it never clears the base AlbumID3 columns. Mirrors artistInfoRow. */
-export function albumInfoRow(id: string, info: AlbumInfo): Row {
-  return {
-    id,
-    notes: str(info.notes),
-    last_fm_url: str(info.lastFmUrl),
-    image_url_small: str(info.smallImageUrl),
-    image_url_medium: str(info.mediumImageUrl),
-    image_url_large: str(info.largeImageUrl),
-  };
-}
-
 export const albumGenreRows = (a: AlbumID3, id: string): Row[] =>
   ((a.genres ?? []) as unknown[]).map((g, pos) => ({ album_id: id, pos, name: genreName(g) }));
 export const albumArtistRows = (a: AlbumID3, id: string): Row[] =>

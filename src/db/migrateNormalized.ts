@@ -16,7 +16,7 @@ import type { AlbumID3, ArtistID3, ArtistInfo2, Child, Playlist } from 'subsonic
 
 import type { InternalDb } from './client';
 import { ensureNormalizedSchema } from './createNormalizedTables';
-import { upsertAlbums } from './repository/albums';
+import { upsertAlbumInfoRow, upsertAlbums } from './repository/albums';
 import { getSortArticles } from './sortArticles';
 import { setArtistDetailMeta, setArtistTopSongs, upsertArtistInfo, upsertArtists } from './repository/artists';
 import { setPlaylistSongs, upsertPlaylists } from './repository/playlists';
@@ -111,6 +111,7 @@ const ARTIST_LIBRARY_KEY = 'substreamer-artist-library';
 const ARTIST_DETAILS_KEY = 'substreamer-artist-details';
 const PLAYLIST_LIBRARY_KEY = 'substreamer-playlist-library';
 const PLAYLIST_DETAILS_KEY = 'substreamer-playlist-details';
+const ALBUM_INFO_KEY = 'substreamer-album-info';
 
 /** Read a Zustand-persisted store's `state` object from the KV `storage` table
  *  (the `{state, version}` envelope). Defensive: missing table/row/parse → null. */
@@ -132,6 +133,20 @@ interface ArtistDetailLite {
   topSongs?: Child[];
   resolvedMbid?: string | null;
   bioCheckedAt?: number;
+}
+interface AlbumInfoEntryLite {
+  albumInfo?: {
+    notes?: string;
+    lastFmUrl?: string;
+    musicBrainzId?: string;
+    smallImageUrl?: string;
+    mediumImageUrl?: string;
+    largeImageUrl?: string;
+  };
+  enrichedNotes?: string | null;
+  enrichedNotesUrl?: string | null;
+  overrideMbid?: string | null;
+  retrievedAt?: number;
 }
 interface PlaylistDetailLite {
   playlist?: Playlist & { entry?: Child[] };
@@ -219,6 +234,37 @@ async function migratePlaylists(
   return { source: libraryPlaylists.length, migrated, skipped: 0 };
 }
 
+/** Album info (getAlbumInfo2 + the Wikipedia enrichment) used to live in a KV blob.
+ *  Move it into `album_info`, keyed by album, so it stops being a legacy split. */
+async function migrateAlbumInfo(db: InternalDb, log?: Log): Promise<number> {
+  const state = await readKvState<{ entries?: Record<string, AlbumInfoEntryLite> }>(
+    db,
+    ALBUM_INFO_KEY,
+  );
+  const entries = Object.entries(state?.entries ?? {});
+  let migrated = 0;
+  for (const [albumId, e] of entries) {
+    if (!albumId || !e) continue;
+    const info = e.albumInfo ?? {};
+    // eslint-disable-next-line no-await-in-loop
+    await upsertAlbumInfoRow(db, albumId, {
+      notes: info.notes ?? null,
+      lastFmUrl: info.lastFmUrl ?? null,
+      musicBrainzId: info.musicBrainzId ?? null,
+      imageUrlSmall: info.smallImageUrl ?? null,
+      imageUrlMedium: info.mediumImageUrl ?? null,
+      imageUrlLarge: info.largeImageUrl ?? null,
+      enrichedNotes: e.enrichedNotes ?? null,
+      enrichedNotesUrl: e.enrichedNotesUrl ?? null,
+      overrideMbid: e.overrideMbid ?? null,
+      retrievedAt: e.retrievedAt ?? Date.now(),
+    }).catch(() => { /* album row may not exist (FK) — skip that entry */ });
+    migrated += 1;
+  }
+  log?.(`album info: ${migrated} entries`);
+  return migrated;
+}
+
 /** Migrate the album + song blob caches AND the artist/playlist KV blobs into the
  *  normalized tables. Pass `profile` (dev spike only) to accumulate read/parse time. */
 export async function migrateBlobsToNormalized(
@@ -267,6 +313,8 @@ export async function migrateBlobsToNormalized(
   // of its songs; migrating both would be redundant.
   const artists = await migrateArtists(db, articles, log);
   const playlists = await migratePlaylists(db, articles, log);
+  // Album info must run AFTER albums exist — its rows FK to `albums`.
+  await migrateAlbumInfo(db, log);
   onProgress?.(total, total); // settle at 100% (artists/playlists done)
   // NB: the WAL checkpoint is deliberately NOT run here. Folding the migration's
   // (large) WAL takes seconds and must NOT hold up "migration complete" — the

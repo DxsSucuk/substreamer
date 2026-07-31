@@ -8,7 +8,9 @@ import {
   getAlbum,
   listAlbums,
   listAlbumsBefore,
-  upsertAlbumInfo,
+  clearAlbumInfo,
+  getAlbumInfoRow,
+  upsertAlbumInfoRow,
   upsertAlbums,
 } from '../albums';
 import {
@@ -450,22 +452,48 @@ describe('schema completeness (all typed metadata captured)', () => {
     expect(row).toEqual({ parent: 'folder9', original_width: 1920, original_height: 1080, is_dir: 0, is_video: 1 });
   });
 
-  it('merges AlbumInfo (getAlbumInfo2) without clobbering base album fields', async () => {
+  it('stores album info in its own row without touching the album', async () => {
     await upsertAlbums(db(), [album('al9', 'Kind of Blue', { artist: 'Miles Davis' })]);
-    upsertAlbumInfo(db(), 'al9', {
+    await upsertAlbumInfoRow(db(), 'al9', {
       notes: 'A landmark album.',
       lastFmUrl: 'https://last.fm/al9',
-      smallImageUrl: 's.jpg',
-      mediumImageUrl: 'm.jpg',
-      largeImageUrl: 'l.jpg',
+      musicBrainzId: 'mb-9',
+      imageUrlSmall: null,
+      imageUrlMedium: null,
+      imageUrlLarge: 'l.jpg',
+      enrichedNotes: 'From Wikipedia.',
+      enrichedNotesUrl: 'https://en.wikipedia.org/al9',
+      overrideMbid: 'rg-9',
+      retrievedAt: 1234,
     });
+
+    const info = await getAlbumInfoRow(db(), 'al9');
+    expect(info?.notes).toBe('A landmark album.');
+    // The enrichment + override + timestamp are exactly what the old album columns
+    // could not hold — the reason this is its own table.
+    expect(info?.enrichedNotes).toBe('From Wikipedia.');
+    expect(info?.overrideMbid).toBe('rg-9');
+    expect(info?.retrievedAt).toBe(1234);
     const row = (await getAlbum(db(), 'al9')) as Record<string, unknown>;
-    expect(row.notes).toBe('A landmark album.');
-    expect(row.last_fm_url).toBe('https://last.fm/al9');
-    expect(row.image_url_large).toBe('l.jpg');
-    // base fields survive the partial info upsert
     expect(row.name).toBe('Kind of Blue');
-    expect(row.artist).toBe('Miles Davis');
+  });
+
+  it('cascades album info away with its album, and clears on demand', async () => {
+    const blank = {
+      notes: null, lastFmUrl: null, musicBrainzId: null,
+      imageUrlSmall: null, imageUrlMedium: null, imageUrlLarge: null,
+      enrichedNotes: null, enrichedNotesUrl: null, overrideMbid: null, retrievedAt: 1,
+    };
+    await upsertAlbums(db(), [album('al1', 'A'), album('al2', 'B')]);
+    await upsertAlbumInfoRow(db(), 'al1', blank);
+    await upsertAlbumInfoRow(db(), 'al2', blank);
+
+    db().runSync("DELETE FROM albums WHERE id = 'al1'");
+    expect(await getAlbumInfoRow(db(), 'al1')).toBeNull();
+    expect(await getAlbumInfoRow(db(), 'al2')).not.toBeNull();
+
+    await clearAlbumInfo(db());
+    expect(await getAlbumInfoRow(db(), 'al2')).toBeNull();
   });
 });
 

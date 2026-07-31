@@ -6,7 +6,6 @@ import {
   albumArtistRows,
   albumDiscTitleRows,
   albumGenreRows,
-  albumInfoRow,
   albumMoodRows,
   albumRecordLabelRows,
   albumReleaseTypeRows,
@@ -17,7 +16,6 @@ import {
   countRows,
   keysetPage,
   keysetPageBefore,
-  upsertRowSync,
   type Cursor,
   type Page,
 } from './core';
@@ -91,17 +89,93 @@ export function upsertAlbums(
   );
 }
 
-/**
- * Merge getAlbumInfo2 (notes/images/lastFmUrl) into an existing album. A partial
- * upsert — it only touches the info columns, never the base AlbumID3 fields, so a
- * later library re-sync and an info fetch don't clobber each other. Mirrors
- * upsertArtistInfo (albums have no info child arrays).
- */
-export function upsertAlbumInfo(db: InternalDb, id: string, info: AlbumInfo): void {
-  db.withTransactionSync(() => {
-    upsertRowSync(db, 'albums', albumInfoRow(id, info));
-  });
+/** On-demand album info: the getAlbumInfo2 payload + the client-side Wikipedia
+ *  enrichment. Its own row so a library re-sync (which rewrites the album row on every
+ *  page) and an info fetch can't clobber each other. */
+export interface AlbumInfoRow {
+  notes: string | null;
+  lastFmUrl: string | null;
+  musicBrainzId: string | null;
+  imageUrlSmall: string | null;
+  imageUrlMedium: string | null;
+  imageUrlLarge: string | null;
+  enrichedNotes: string | null;
+  enrichedNotesUrl: string | null;
+  overrideMbid: string | null;
+  retrievedAt: number;
 }
+
+interface AlbumInfoDbRow {
+  notes: string | null;
+  last_fm_url: string | null;
+  music_brainz_id: string | null;
+  image_url_small: string | null;
+  image_url_medium: string | null;
+  image_url_large: string | null;
+  enriched_notes: string | null;
+  enriched_notes_url: string | null;
+  override_mbid: string | null;
+  retrieved_at: number;
+}
+
+export const getAlbumInfoRow = async (
+  db: InternalDb,
+  albumId: string,
+): Promise<AlbumInfoRow | null> => {
+  const r = await db.getFirstAsync<AlbumInfoDbRow>(
+    'SELECT * FROM album_info WHERE album_id = ?',
+    [albumId],
+  );
+  if (!r) return null;
+  return {
+    notes: r.notes,
+    lastFmUrl: r.last_fm_url,
+    musicBrainzId: r.music_brainz_id,
+    imageUrlSmall: r.image_url_small,
+    imageUrlMedium: r.image_url_medium,
+    imageUrlLarge: r.image_url_large,
+    enrichedNotes: r.enriched_notes,
+    enrichedNotesUrl: r.enriched_notes_url,
+    overrideMbid: r.override_mbid,
+    retrievedAt: r.retrieved_at,
+  };
+};
+
+/** Every cached album-info row, for the one-time KV migration + the metadata browser. */
+export const listAlbumInfoIds = (db: InternalDb): Promise<string[]> =>
+  db
+    .getAllAsync<{ album_id: string }>('SELECT album_id FROM album_info')
+    .then((rows) => rows.map((r) => r.album_id));
+
+export const upsertAlbumInfoRow = (
+  db: InternalDb,
+  albumId: string,
+  info: AlbumInfoRow,
+): Promise<unknown> =>
+  db.runAsync(
+    `INSERT INTO album_info
+       (album_id, notes, last_fm_url, music_brainz_id, image_url_small, image_url_medium,
+        image_url_large, enriched_notes, enriched_notes_url, override_mbid, retrieved_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(album_id) DO UPDATE SET
+       notes = excluded.notes, last_fm_url = excluded.last_fm_url,
+       music_brainz_id = excluded.music_brainz_id,
+       image_url_small = excluded.image_url_small,
+       image_url_medium = excluded.image_url_medium,
+       image_url_large = excluded.image_url_large,
+       enriched_notes = excluded.enriched_notes,
+       enriched_notes_url = excluded.enriched_notes_url,
+       override_mbid = excluded.override_mbid, retrieved_at = excluded.retrieved_at`,
+    [
+      albumId, info.notes, info.lastFmUrl, info.musicBrainzId, info.imageUrlSmall,
+      info.imageUrlMedium, info.imageUrlLarge, info.enrichedNotes, info.enrichedNotesUrl,
+      info.overrideMbid, info.retrievedAt,
+    ],
+  );
+
+/** Drop every cached album-info row (settings "clear metadata"). */
+export const clearAlbumInfo = (db: InternalDb): Promise<unknown> =>
+  db.runAsync('DELETE FROM album_info');
 
 /** Sort by artist uses the compound key (sort_artist, sort_title, id) so albums by
  *  the same artist stay grouped and alphabetised; sort by title is the plain

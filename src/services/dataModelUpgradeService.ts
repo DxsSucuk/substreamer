@@ -23,7 +23,13 @@ import { getDb } from '@/store/persistence/db';
 import { kvStorage } from '@/store/persistence';
 import { syncStatusStore } from '@/store/syncStatusStore';
 
-/** Stamped after the first successful full migration; the sole trigger gate. */
+/** Stamped after a successful full migration; the sole trigger gate.
+ *
+ * VERSIONED rather than a boolean: this work is unshipped, so when the migration gains a
+ * step (e.g. the album-info KV blob) the fix is to bump this and let already-stamped
+ * installs re-run — `migrateBlobsToNormalized` is idempotent upserts — instead of
+ * stacking a second migration on top of the first. */
+const MIGRATION_VERSION = '2';
 const MIGRATION_DONE_KEY = 'substreamer-normalized-migration-complete';
 
 let inFlight: Promise<void> | null = null;
@@ -59,7 +65,7 @@ export function runDataModelUpgradeIfNeeded(): Promise<void> {
       // ever synced — any later shrink in normalized (a reap, an interrupted resync, or
       // the wipe on a server switch) would re-migrate that stale library back in, in the
       // server-switch case straight into a different account's tables.
-      if ((await kvStorage.getItem(MIGRATION_DONE_KEY)) === '1') return;
+      if ((await kvStorage.getItem(MIGRATION_DONE_KEY)) === MIGRATION_VERSION) return;
 
       syncStatusStore.getState().setNormalizedMigration('migrating', 0, 0);
       const result = await migrateBlobsToNormalized(db, undefined, undefined, (done, total) =>
@@ -67,7 +73,7 @@ export function runDataModelUpgradeIfNeeded(): Promise<void> {
       );
       // Stamp complete so the one-time artist/playlist migration isn't re-evaluated on
       // every launch once albums/songs are in step.
-      await kvStorage.setItem(MIGRATION_DONE_KEY, '1');
+      await kvStorage.setItem(MIGRATION_DONE_KEY, MIGRATION_VERSION);
       syncStatusStore.getState().setNormalizedMigration('idle', 0, 0);
       // Fold the (large) WAL in the background — does NOT block completion.
       void checkpointWalAsync(db);

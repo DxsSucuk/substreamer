@@ -107,6 +107,7 @@ export function ensureNormalizedSchema(db: InternalDb): void {
  */
 export const MODEL_TABLES: readonly string[] = [
   'albums',
+  'album_info',
   'songs',
   'artists',
   'playlists',
