@@ -846,7 +846,7 @@
   "syncPausedOffline": "Library sync paused — offline",
   "syncErrorTap": "Library sync error — tap to retry",
   "syncLibrary": "Sync",
-  "syncLibraryDescription": "Re-fetches your album, song, artist and playlist lists from the server, and removes anything deleted server-side. Can take a while on a large library; your music stays browsable while it runs. Use this if content is missing or out of date and pull-to-refresh hasn't fixed it.",
+  "syncLibraryDescription": "Re-fetches your album, song, artist and playlist lists. Use if content is missing or out of date.",
   "syncLibraryOfflineNotice": "Offline — reconnect to the server to sync your library.",
   "pauseSync": "Pause",
   "resumeSync": "Resume",
