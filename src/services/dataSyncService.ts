@@ -23,7 +23,8 @@ import { playlistDetailStore } from '../store/playlistDetailStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { getDb } from '../store/persistence/db';
 import { getProtectedIds } from '../db/protectedIds';
-import { countAlbums, listAlbumIds, listAlbumsByIds } from '../db/repository/albums';
+import { countAlbums, listAlbumIds, listAlbumsByIds, upsertAlbums } from '../db/repository/albums';
+import { deleteAlbumSongsNotIn, upsertSongs } from '../db/repository/songs';
 import { countArtists } from '../db/repository/artists';
 import { resetNormalizedSchema } from '../db/createNormalizedTables';
 import { connectivityStore } from '../store/connectivityStore';
@@ -158,7 +159,7 @@ async function performScope(scope: SyncScope): Promise<void> {
       // (Server-side removals / bulk metadata rewrites are handled by the explicit
       // Settings → Sync Library force-resync.)
       if (!syncStatusStore.getState().librarySyncComplete) {
-        await albumLibraryStore.getState().fetchAllAlbums();
+        await runNormalizedLibrarySync();
       } else {
         await onScanCompleted();
       }
@@ -335,12 +336,11 @@ async function startupOrResumeFlow(): Promise<void> {
       // an interrupted/partial fetch (librarySyncComplete=false) resumes the
       // pager from COUNT(*). Reads SQL COUNT (disk truth), not the in-memory
       // array, so hydration timing can't trigger a spurious full re-fetch.
-      const rowCount = await countLibraryAlbumsAsync();
+      const gateDb = getDb();
+      const rowCount = gateDb ? await countAlbums(gateDb) : 0;
       const needsLibraryFetch =
         !syncStatusStore.getState().librarySyncComplete || rowCount === 0;
-      const libPromise = needsLibraryFetch
-        ? albumLibraryStore.getState().fetchAllAlbums()
-        : Promise.resolve();
+      const libPromise = needsLibraryFetch ? runNormalizedLibrarySync() : Promise.resolve();
 
       const startupDb = getDb();
       const artistCount = startupDb ? await countArtists(startupDb) : 0;
@@ -528,30 +528,42 @@ export async function onScanCompleted(
     }
   }
   if (newAlbums.length > 0) {
-    albumLibraryStore.getState().upsertAlbums(newAlbums);
+    const articles = serverInfoStore.getState().ignoredArticles ?? undefined;
+    if (db) await upsertAlbums(db, newAlbums, undefined, articles);
   }
-  // Pull the changed albums' SONGS into song_index (album_details stays
-  // on-demand). Keeps the flat Songs list current without a full re-sync.
+  // Pull the changed albums' SONGS in. Keeps the flat Songs list current without a
+  // full re-sync.
   await fetchSongsForAlbums(changedAlbumIds);
   // Real data changed (we returned early above when changedAlbumIds was empty).
   syncStatusStore.getState().bumpLibraryUpdated();
 }
 
 /**
- * Fetch the given albums' track lists via `getAlbum` and write them into
- * `song_index` only (NOT `album_details` — that stays on-demand). Used by the
- * incremental change paths (scan-completed, reconcile-added, album-referenced)
- * so newly-surfaced albums' songs land in the flat Songs list.
+ * Fetch the given albums' track lists via `getAlbum` and write them into the
+ * normalized `songs` table. Used by the incremental change paths (scan-completed,
+ * reconcile-added, album-referenced) so newly-surfaced albums' songs land in the flat
+ * Songs list without a full re-sync.
+ *
+ * Bounded concurrency: the reconcile-added caller passes an unbounded set (every album
+ * added since the last sync), so an unpooled `Promise.all` would open one request per
+ * album at once.
  */
 async function fetchSongsForAlbums(ids: readonly string[]): Promise<void> {
   if (ids.length === 0 || offlineModeStore.getState().offlineMode) return;
-  await Promise.all(
-    ids.map(async (id) => {
-      const album = await getAlbum(id).catch(() => null);
+  const db = getDb();
+  if (!db) return;
+  const articles = serverInfoStore.getState().ignoredArticles ?? undefined;
+  await runPool(
+    [...ids],
+    async (id) => {
+      const album = await getAlbum(id);
       if (album?.song && album.song.length > 0) {
-        songIndexStore.getState().upsertSongsForAlbum(id, album.song);
+        await upsertSongs(db, album.song, undefined, articles);
+        // Drop tracks the server no longer lists for this album (re-tag re-keys ids).
+        await deleteAlbumSongsNotIn(db, id, album.song.map((sg) => sg.id));
       }
-    }),
+    },
+    { concurrency: WALK_CONCURRENCY },
   );
 }
 
@@ -815,10 +827,9 @@ export async function forceFullResync(): Promise<void> {
  */
 export async function resumeSync(): Promise<void> {
   if (offlineModeStore.getState().offlineMode) return;
-  if (!syncStatusStore.getState().librarySyncComplete) {
-    await albumLibraryStore.getState().fetchAllAlbums();
-  }
-  await syncSongLibrary();
+  // One call resumes BOTH phases from their persisted cursors — the normalized sync
+  // runs the album list then the song phase itself, so there is no separate song step.
+  await runNormalizedLibrarySync();
 }
 
 /**

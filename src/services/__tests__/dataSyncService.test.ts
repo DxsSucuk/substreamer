@@ -256,7 +256,16 @@ jest.mock('../../utils/stringHelpers', () => {
 // reach for `fetchServerInfo` via the imported namespace.
 jest.mock('../subsonicService');
 jest.mock('../normalizedLibrarySync', () => ({
-  runNormalizedLibrarySync: (opts?: unknown) => mockRunNormalizedLibrarySync(opts),
+  runNormalizedLibrarySync: (opts?: unknown) => {
+    mockRunNormalizedLibrarySync(opts);
+    // A NON-full run is exactly what `albumLibraryStore.fetchAllAlbums()` used to be
+    // (resume the album list, then the songs), so route it there — the pager/scope
+    // assertions below are about the fan-out, and stay meaningful. Returning that
+    // mock's promise also preserves the tests that control timing through it.
+    return (opts as { full?: boolean } | undefined)?.full === true
+      ? Promise.resolve()
+      : mockFetchAllAlbums();
+  },
   // The artist/playlist list refresh moved off the library stores onto the sync
   // service. Route it back at the store mocks so the existing call assertions —
   // which are about the fan-out, not the implementation — keep holding.
