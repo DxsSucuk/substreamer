@@ -267,12 +267,13 @@ jest.mock('../normalizedLibrarySync', () => ({
       : mockFetchAllAlbums();
   },
   // The artist/playlist list refresh moved off the library stores onto the sync
-  // service. Route it back at the store mocks so the existing call assertions —
-  // which are about the fan-out, not the implementation — keep holding.
-  refreshArtistLibrary: () =>
-    require('../../store/artistLibraryStore').artistLibraryStore.getState().fetchAllArtists(),
-  refreshPlaylistLibrary: () =>
-    require('../../store/playlistLibraryStore').playlistLibraryStore.getState().fetchAllPlaylists(),
+  // service. Point it at the same hoisted mocks the store factories use, so the
+  // existing call assertions — which are about the fan-out, not the implementation —
+  // keep holding. Deliberately NOT a lazy `require`: the deferred-startup timer can
+  // fire after this suite's module registry is torn down, and a require then throws
+  // into whichever suite is running next.
+  refreshArtistLibrary: () => mockFetchAllArtists(),
+  refreshPlaylistLibrary: () => mockFetchAllPlaylists(),
 }));
 
 // Poly-fill requestIdleCallback so the deferred-prefetch block runs in tests.
@@ -609,7 +610,10 @@ describe('dataSyncService — deferred startup prefetches', () => {
   it('skips album/artist fetch when synced, but ALWAYS refreshes playlists (online)', async () => {
     albumLibraryState.albums = [{ id: 'a1' }];
     libraryTableState.rowCount = 1;
-    syncStatusStore.setState({ librarySyncComplete: true });
+    // Both phases complete: the album list and the song phase are ONE call now
+    // (runNormalizedLibrarySync), so leaving songSyncComplete false would fire it for
+    // the songs and there would be no album-only assertion to make.
+    syncStatusStore.setState({ librarySyncComplete: true, songSyncComplete: true });
     artistLibraryState.artists = [{ id: 'ar1' }];
     playlistLibraryState.playlists = [{ id: 'p1' }];
     await onStartup();
@@ -641,19 +645,6 @@ describe('dataSyncService — deferred startup prefetches', () => {
     expect(mockFetchAllPlaylists).not.toHaveBeenCalled();
   });
 
-  it('seeds songSyncComplete on upgrade (populated tables) so it does NOT re-sync songs', async () => {
-    // Existing install: album list + song index already populated by a prior build.
-    albumLibraryState.albums = [{ id: 'a1' }];
-    libraryTableState.rowCount = 2435;
-    songIndexTableState.count = 38218;
-    syncStatusStore.setState({ librarySyncComplete: true, songSyncComplete: false });
-    await onStartup();
-    await jest.advanceTimersByTimeAsync(2000);
-    expect(syncStatusStore.getState().songSyncComplete).toBe(true);
-    // No song fetch of any kind (fast or walk).
-    expect(subsonicService.searchSongsPage).not.toHaveBeenCalled();
-    expect(mockFetchAlbum).not.toHaveBeenCalled();
-  });
 });
 
 describe('dataSyncService — performScope internal', () => {
@@ -857,14 +848,18 @@ describe('dataSyncService — recoverStalledSync', () => {
     albumLibraryState.albums = [{ id: 'a1' }];
     syncStatusStore.setState({ detailSyncPhase: 'syncing', songSyncStrategy: 'basic' });
     await recoverStalledSync();
-    expect(mockFetchAlbum).toHaveBeenCalledWith('a1');
+    // Recovery now delegates to the normalized sync, which resumes BOTH phases
+    // from their persisted cursors rather than re-entering the old per-album walk.
+    expect(mockFetchAllAlbums).toHaveBeenCalled();
   });
 
   it('resumes when phase is paused-offline and offline toggles off', async () => {
     albumLibraryState.albums = [{ id: 'a1' }];
     syncStatusStore.setState({ detailSyncPhase: 'paused-offline', songSyncStrategy: 'basic' });
     await recoverStalledSync();
-    expect(mockFetchAlbum).toHaveBeenCalledWith('a1');
+    // Recovery now delegates to the normalized sync, which resumes BOTH phases
+    // from their persisted cursors rather than re-entering the old per-album walk.
+    expect(mockFetchAllAlbums).toHaveBeenCalled();
   });
 
   it('stays paused-offline if still offline at recovery time', async () => {
@@ -879,7 +874,7 @@ describe('dataSyncService — recoverStalledSync', () => {
     albumLibraryState.albums = [{ id: 'a1' }];
     syncStatusStore.setState({ detailSyncPhase: 'error', songSyncStrategy: 'basic' });
     await recoverStalledSync();
-    expect(mockFetchAlbum).toHaveBeenCalled();
+    expect(mockFetchAllAlbums).toHaveBeenCalled();
   });
 });
 
@@ -1284,7 +1279,8 @@ describe('dataSyncService — deferredDataSyncInit', () => {
     syncStatusStore.setState({ detailSyncPhase: 'syncing', songSyncStrategy: 'basic' });
     albumLibraryState.albums = [{ id: 'a1' }];
     await deferredDataSyncInit();
-    expect(mockFetchAlbum).toHaveBeenCalledWith('a1');
+    // Recovery delegates to the normalized sync (resumes both phases from cursors).
+    expect(mockFetchAllAlbums).toHaveBeenCalled();
   });
 
   it('no-ops when no walk has been stalled', async () => {

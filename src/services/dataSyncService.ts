@@ -102,23 +102,6 @@ async function isLibrarySyncPending(): Promise<boolean> {
   return (await countAlbums(db)) === 0;
 }
 
-/**
- * One-time upgrade seed: `songSyncComplete` is a new flag (defaults false). An
- * existing install already has a fully-populated `song_index` from the old
- * album-detail walk, so seed it complete to avoid a needless full song re-sync
- * on the first launch after the update.
- */
-async function maybeSeedSongSyncComplete(): Promise<void> {
-  if (syncStatusStore.getState().songSyncComplete) return;
-  // Key off the actual table counts, not the persisted flag (which may not have
-  // carried from an older build): a populated song_index + library_albums means
-  // a previous version already fully synced. Seeds the count from disk truth too.
-  const [songs, albums] = await Promise.all([countSongIndexAsync(), countLibraryAlbumsAsync()]);
-  if (songs > 0 && albums > 0) {
-    syncStatusStore.getState().markSongSyncComplete();
-  }
-}
-
 export type PullToRefreshScope =
   | 'home'
   | 'albums'
@@ -419,7 +402,6 @@ async function startupOrResumeFlow(): Promise<void> {
         // One-time upgrade seed: existing installs already have a populated
         // song_index (from the old walk). Mark the new song sync complete so
         // they don't needlessly re-fetch the whole song catalog.
-        await maybeSeedSongSyncComplete();
         // Detect changes since last session (scan status or newest-album
         // probe) and surface any new albums + their songs. Detect errors are
         // swallowed — fire the song sync either way.
@@ -434,10 +416,13 @@ async function startupOrResumeFlow(): Promise<void> {
           }),
           'sync.detectChanges',
         );
-        // Populate the flat Songs list (fast paged search3, or the walk
-        // fallback) unless already done. Progress is visible via the banner.
+        // Populate the flat Songs list unless already done. The normalized sync runs
+        // the album phase then the song phase (search3 pages, or the per-album walk on
+        // a basic server), both resuming from their cursors. Progress shows on the
+        // banner. `libPromise` above already covers the incomplete-album-list case, and
+        // the in-flight guard collapses the two into one run.
         if (!syncStatusStore.getState().songSyncComplete) {
-          fireAndForget(syncSongLibrary(), 'sync.syncSongLibrary');
+          fireAndForget(runNormalizedLibrarySync(), 'sync.songSync');
         }
       }
     }, STARTUP_PREFETCH_SETTLE_MS);
@@ -1246,7 +1231,8 @@ async function doWalk(): Promise<void> {
  * Safe to call repeatedly. No-op if there's no stalled walk to recover.
  */
 export async function recoverStalledSync(): Promise<void> {
-  const phase = syncStatusStore.getState().detailSyncPhase;
+  const status = syncStatusStore.getState();
+  const phase = status.detailSyncPhase;
   const resumablePhases: Array<typeof phase> = [
     'syncing',
     'paused-offline',
@@ -1254,15 +1240,18 @@ export async function recoverStalledSync(): Promise<void> {
     'paused-metered',
     'error',
   ];
-  if (!resumablePhases.includes(phase)) return;
+  // An interrupted ALBUM phase leaves `detailSyncPhase` at 'idle' — only
+  // `librarySyncPhase` moves — so checking the song phase alone meant a sync killed
+  // during the album walk never self-healed on foreground, only on a cold boot.
+  const albumPhaseStalled = !status.librarySyncComplete && status.librarySyncPhase !== 'idle';
+  if (!resumablePhases.includes(phase) && !albumPhaseStalled) return;
   if (offlineModeStore.getState().offlineMode) {
     // Still offline — flip to the correct paused phase and stop.
     syncStatusStore.getState().setDetailSyncPhase('paused-offline');
     return;
   }
-  // Resume the song sync (fast path resumes from `songSyncCursor`; the walk
-  // fallback resumes from the detailed-ids reconciliation).
-  await syncSongLibrary();
+  // Resumes both phases from their persisted cursors.
+  await runNormalizedLibrarySync();
 }
 
 /**
