@@ -52,9 +52,11 @@ export function RestoreBackupSheet({
   useEffect(() => {
     if (!visible) return;
     (async () => {
-      const { serverUrl, username } = authStore.getState();
-      const result = serverUrl && username
-        ? await listBackups({ serverUrl, username })
+      const { serverUrl, primaryServerUrl, username } = authStore.getState();
+      // Primary slot, so backups taken while failed over still count as "this server".
+      const identityUrl = primaryServerUrl ?? serverUrl;
+      const result = identityUrl && username
+        ? await listBackups({ serverUrl: identityUrl, username })
         : await listBackups();
       setCurrentList(result.current);
       setOtherList(result.other);

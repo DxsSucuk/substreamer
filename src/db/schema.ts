@@ -504,7 +504,7 @@ export const playlistAllowedUsers = sqliteTable(
 // the `hour` column and took DB init down.
 //
 // They are classified as KEPT_TABLES in `createNormalizedTables.ts` so a resync,
-// server switch or dev spike can never drop them. Definitions transcribed 1:1 from the
+// logout or dev spike can never drop them. Definitions transcribed 1:1 from the
 // former `db.ts` block, which already includes every column ever ALTER-added.
 // ─────────────────────────────────────────────────────────────────────────────
 

@@ -61,10 +61,9 @@ export function runDataModelUpgradeIfNeeded(): Promise<void> {
       ensureNormalizedSchema(db);
       // ONE-SHOT, not a drift check. The drift form ("blobs hold more than normalized")
       // was only meaningful while both sides were written together. The blob tables are
-      // frozen now, so their counts are a permanent high-water mark of the first server
-      // ever synced — any later shrink in normalized (a reap, an interrupted resync, or
-      // the wipe on a server switch) would re-migrate that stale library back in, in the
-      // server-switch case straight into a different account's tables.
+      // frozen now, so their counts are a permanent high-water mark — any later shrink in
+      // normalized (a reap, an interrupted resync) would re-migrate that stale library
+      // back in on top of current data.
       if ((await kvStorage.getItem(MIGRATION_DONE_KEY)) === MIGRATION_VERSION) return;
 
       syncStatusStore.getState().setNormalizedMigration('migrating', 0, 0);

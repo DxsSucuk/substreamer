@@ -234,8 +234,11 @@ function serverUrlsMatch(a: string, b: string): boolean {
 export async function createBackup(): Promise<void> {
   initBackupDir();
 
-  const { serverUrl, username } = authStore.getState();
-  if (!serverUrl || !username) {
+  const { serverUrl, primaryServerUrl, username } = authStore.getState();
+  // Identity = the SERVER, so key off the primary slot. `serverUrl` is only whichever
+  // address is live, so a failover would otherwise stamp the same server as a new one.
+  const identityUrl = primaryServerUrl ?? serverUrl;
+  if (!identityUrl || !username) {
     throw new Error('Cannot create backup: no active session');
   }
 
@@ -287,7 +290,7 @@ export async function createBackup(): Promise<void> {
   const meta: BackupMetaV6 = {
     version: 6,
     createdAt: new Date().toISOString(),
-    serverUrl,
+    serverUrl: identityUrl,
     username,
     deviceId,
     deviceName,
@@ -301,7 +304,7 @@ export async function createBackup(): Promise<void> {
   const metaFile = new File(backupDir, metaFileName(stem));
   metaFile.write(JSON.stringify(meta));
 
-  const identityKey = makeBackupIdentityKey(serverUrl, username);
+  const identityKey = makeBackupIdentityKey(identityUrl, username);
   backupStore.getState().setLastBackupTime(identityKey, Date.now());
 }
 
@@ -537,11 +540,12 @@ export async function restoreBackup(
 /* ------------------------------------------------------------------ */
 
 export async function pruneBackups(keep = MAX_BACKUPS): Promise<void> {
-  const { serverUrl, username } = authStore.getState();
-  if (!serverUrl || !username) return;
+  const { serverUrl, primaryServerUrl, username } = authStore.getState();
+  const identityUrl = primaryServerUrl ?? serverUrl;
+  if (!identityUrl || !username) return;
 
   // Get all backups for the current username (across all server URLs)
-  const { current, other } = await listBackups({ serverUrl, username });
+  const { current, other } = await listBackups({ serverUrl: identityUrl, username });
   const allForUser = [...current, ...other];
   // Sort newest-first so each bucket retains the freshest `keep` entries.
   allForUser.sort((a, b) => defaultCollator.compare(b.createdAt, a.createdAt));
@@ -641,10 +645,11 @@ export async function runAutoBackupIfNeeded(): Promise<void> {
     const { autoBackupEnabled } = backupStore.getState();
     if (!autoBackupEnabled) return;
 
-    const { serverUrl, username } = authStore.getState();
-    if (!serverUrl || !username) return;
+    const { serverUrl, primaryServerUrl, username } = authStore.getState();
+    const identityUrl = primaryServerUrl ?? serverUrl;
+    if (!identityUrl || !username) return;
 
-    const identityKey = makeBackupIdentityKey(serverUrl, username);
+    const identityKey = makeBackupIdentityKey(identityUrl, username);
     const lastBackupTime = backupStore.getState().getLastBackupTime(identityKey);
 
     const now = Date.now();

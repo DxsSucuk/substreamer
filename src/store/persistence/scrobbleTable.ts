@@ -296,7 +296,7 @@ export async function backfillScrobbleColumnsAsync(): Promise<void> {
   }
 }
 
-/** Remove every row. Used on logout / server switch via resetAllStores. */
+/** Remove every row. Used on logout via resetAllStores. */
 export async function clearScrobbles(): Promise<void> {
   const db = getDb();
   if (db === null) return;

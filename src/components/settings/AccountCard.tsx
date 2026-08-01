@@ -12,7 +12,7 @@ import { clearMusicCache } from '../../services/musicCacheService';
 import { clearQueue } from '../../services/playerService';
 import { stopPolling } from '../../services/scanService';
 import { clearAllNativeTrust } from '../../services/sslTrustService';
-import { clearApiCache, login } from '../../services/subsonicService';
+import { clearApiCache, ensureCoverArtAuth, login } from '../../services/subsonicService';
 import { authStore } from '../../store/authStore';
 import { deviceIdentityStore } from '../../store/deviceIdentityStore';
 import { resetAllStores } from '../../store/resetAllStores';
@@ -59,6 +59,9 @@ export function AccountCard() {
       if (result.success) {
         authStore.getState().setLegacyAuth(next);
         clearApiCache();
+        // `legacyAuth` changes the token's FORM (enc:-hex vs salted MD5), so the dropped
+        // token is invalid rather than merely missing — re-mint it now.
+        void ensureCoverArtAuth();
         alert(t('legacyAuthentication'), t('legacyAuthVerified'));
       } else {
         alert(t('error'), result.error || t('legacyAuthValidationFailed'));

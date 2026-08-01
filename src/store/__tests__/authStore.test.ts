@@ -97,6 +97,80 @@ describe('authStore', () => {
       expect(authStore.getState().secondaryServerUrl).toBeNull();
     });
 
+    it('setPassword changes only the password', () => {
+      authStore.setState({
+        serverUrl: 'http://lan.local',
+        primaryServerUrl: 'https://remote.example.com',
+        secondaryServerUrl: 'http://lan.local',
+        activeServer: 'secondary',
+        password: 'old',
+      });
+      authStore.getState().setPassword('new');
+      const s = authStore.getState();
+      expect(s.password).toBe('new');
+      // A password change is not a session change: `setSession` would have rewritten
+      // primaryServerUrl from the ACTIVE url, destroying the remote address.
+      expect(s.primaryServerUrl).toBe('https://remote.example.com');
+      expect(s.secondaryServerUrl).toBe('http://lan.local');
+      expect(s.activeServer).toBe('secondary');
+      expect(s.serverUrl).toBe('http://lan.local');
+    });
+
+    it('setPrimaryServerUrl mirrors into serverUrl when primary is active', () => {
+      authStore.setState({
+        serverUrl: 'https://old.example.com',
+        primaryServerUrl: 'https://old.example.com',
+        activeServer: 'primary',
+      });
+      authStore.getState().setPrimaryServerUrl('https://new.example.com');
+      const s = authStore.getState();
+      expect(s.primaryServerUrl).toBe('https://new.example.com');
+      // Without the mirror the edit is inert — every request path reads `serverUrl`,
+      // and setActiveServer no-ops on the already-active slot.
+      expect(s.serverUrl).toBe('https://new.example.com');
+      expect(s.activeServer).toBe('primary');
+    });
+
+    it('setPrimaryServerUrl does NOT switch away from an active secondary', () => {
+      authStore.setState({
+        serverUrl: 'http://lan.local',
+        primaryServerUrl: 'https://old.example.com',
+        secondaryServerUrl: 'http://lan.local',
+        activeServer: 'secondary',
+      });
+      authStore.getState().setPrimaryServerUrl('https://new.example.com');
+      const s = authStore.getState();
+      expect(s.primaryServerUrl).toBe('https://new.example.com');
+      // Re-addressing a slot must not change which one is live — that is failover's job.
+      expect(s.serverUrl).toBe('http://lan.local');
+      expect(s.activeServer).toBe('secondary');
+    });
+
+    it('setSecondaryServerUrl mirrors into serverUrl when secondary is active', () => {
+      authStore.setState({
+        serverUrl: 'http://old.lan',
+        secondaryServerUrl: 'http://old.lan',
+        activeServer: 'secondary',
+      });
+      authStore.getState().setSecondaryServerUrl('http://new.lan');
+      expect(authStore.getState().serverUrl).toBe('http://new.lan');
+    });
+
+    it('setSecondaryServerUrl(null) never nulls serverUrl, even while active', () => {
+      // Mirroring a CLEAR would write serverUrl: null — a persisted field that every
+      // request path treats as "no session", leaving the app unusable short of logout.
+      authStore.setState({
+        serverUrl: 'http://lan.local',
+        primaryServerUrl: 'https://remote.example.com',
+        secondaryServerUrl: 'http://lan.local',
+        activeServer: 'secondary',
+      });
+      authStore.getState().setSecondaryServerUrl(null);
+      const s = authStore.getState();
+      expect(s.secondaryServerUrl).toBeNull();
+      expect(s.serverUrl).toBe('http://lan.local');
+    });
+
     it('setActiveServer(secondary) updates serverUrl to secondary URL', () => {
       authStore.setState({
         primaryServerUrl: 'https://primary.example.com',

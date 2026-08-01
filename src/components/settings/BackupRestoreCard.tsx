@@ -24,9 +24,12 @@ export function BackupRestoreCard() {
 
   const autoBackupEnabled = backupStore((s) => s.autoBackupEnabled);
   const serverUrl = authStore((s) => s.serverUrl);
+  const primaryServerUrl = authStore((s) => s.primaryServerUrl);
   const username = authStore((s) => s.username);
-  const backupIdentityKey = serverUrl && username
-    ? makeBackupIdentityKey(serverUrl, username)
+  // Primary slot: a failover is a different address, not a different server.
+  const identityUrl = primaryServerUrl ?? serverUrl;
+  const backupIdentityKey = identityUrl && username
+    ? makeBackupIdentityKey(identityUrl, username)
     : null;
   const lastBackupTime = backupStore((s) =>
     backupIdentityKey ? s.lastBackupTimes[backupIdentityKey] ?? null : null,

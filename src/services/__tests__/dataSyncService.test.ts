@@ -303,6 +303,7 @@ import {
 } from '../dataSyncService';
 import * as subsonicService from '../subsonicService';
 import type { Playlist } from '../subsonicService';
+import { authStore } from '../../store/authStore';
 import { syncStatusStore } from '../../store/syncStatusStore';
 import { getDb } from '../../store/persistence/db';
 
@@ -336,7 +337,6 @@ beforeEach(() => {
     detailSyncTotal: 0,
     bannerDismissedAt: null,
     lastChangeDetectionAt: null,
-    lastKnownServerUrl: null,
     lastKnownServerSongCount: null,
     lastKnownServerScanTime: null,
     lastKnownNewestAlbumId: null,
@@ -352,6 +352,38 @@ beforeEach(() => {
     songSyncStrategy: null,
     songSyncCursor: 0,
     songSyncComplete: false,
+  });
+});
+
+describe('dataSyncService — changing the server ADDRESS is not a new library', () => {
+  it('leaves the library and both cursors untouched across a serverUrl change', async () => {
+    // A primary/secondary failover, or editing the address of the same server, used to
+    // read as "different server" and drop the whole normalized model. Only logout clears.
+    authStore.setState({
+      serverUrl: 'https://remote.example.com',
+      primaryServerUrl: 'https://remote.example.com',
+      username: 'greg',
+      isLoggedIn: true,
+    } as any);
+    albumLibraryState.albums = [{ id: 'a1' } as any];
+    mockDetailState.albums = { a1: { album: { id: 'a1' } } } as any;
+    syncStatusStore.setState({
+      librarySyncComplete: true,
+      librarySyncCursor: 500,
+      songSyncCursor: 900,
+    } as any);
+
+    await onStartup();
+    // The address moves to the LAN slot — same server, same library.
+    authStore.setState({ serverUrl: 'http://192.168.1.50:4040', activeServer: 'secondary' } as any);
+    await onStartup();
+
+    expect(albumLibraryState.albums).toHaveLength(1);
+    expect(Object.keys(mockDetailState.albums)).toHaveLength(1);
+    const s = syncStatusStore.getState();
+    expect(s.librarySyncComplete).toBe(true);
+    expect(s.librarySyncCursor).toBe(500);
+    expect(s.songSyncCursor).toBe(900);
   });
 });
 
@@ -489,7 +521,7 @@ describe('dataSyncService — pass-through invocations', () => {
     const before = syncStatusStore.getState().generation;
     cancelAllSyncs('user-cancel');
     expect(syncStatusStore.getState().generation).toBe(before + 1);
-    cancelAllSyncs('logout');
+    cancelAllSyncs('force-resync');
     expect(syncStatusStore.getState().generation).toBe(before + 2);
   });
 });

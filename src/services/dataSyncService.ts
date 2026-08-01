@@ -9,7 +9,6 @@
  * matrix documented in `plans/canonical-album-data-sync.md`.
  */
 import { albumDetailStore } from '../store/albumDetailStore';
-import { albumLibraryStore } from '../store/albumLibraryStore';
 import { albumListsStore } from '../store/albumListsStore';
 import { artistLibraryStore } from '../store/artistLibraryStore';
 import { favoritesStore } from '../store/favoritesStore';
@@ -20,10 +19,8 @@ import { getDb } from '../store/persistence/db';
 import { countAlbums, listAlbumIds, listAlbumsByIds, upsertAlbums } from '../db/repository/albums';
 import { deleteAlbumSongsNotIn, upsertSongs } from '../db/repository/songs';
 import { countArtists } from '../db/repository/artists';
-import { resetNormalizedSchema } from '../db/createNormalizedTables';
 import { connectivityStore } from '../store/connectivityStore';
 import { scanStatusStore } from '../store/scanStatusStore';
-import { authStore } from '../store/authStore';
 import { runWhenIdle } from '../utils/runWhenIdle';
 import { kvStorage } from '../store/persistence';
 import { downloadedMetadataRefreshStore } from '../store/downloadedMetadataRefreshStore';
@@ -233,61 +230,7 @@ export async function onOnlineResume(): Promise<void> {
   await startupOrResumeFlow();
 }
 
-/**
- * Detects server-switch by comparing the current `authStore.serverUrl` +
- * username against the last-known values from the previous session. If
- * they differ, wipes the album-detail + song-index caches so the new
- * server's ingestion path doesn't pick up stale rows from a different
- * library. First-run (no lastKnown) is not treated as a switch.
- *
- * Called at the top of `startupOrResumeFlow`.
- */
-async function handleServerSwitchIfNeeded(): Promise<void> {
-  const { serverUrl, username } = authStore.getState();
-  if (!serverUrl || !username) return;
-  const currentIdentity = `${serverUrl}::${username}`;
-  const lastKnown = syncStatusStore.getState().lastKnownServerUrl;
-  if (lastKnown == null) {
-    // No prior identity recorded — store the current one.
-    syncStatusStore.getState().setLastKnownMarkers({
-      lastKnownServerUrl: currentIdentity,
-    });
-    return;
-  }
-  if (lastKnown === currentIdentity) return;
-  // Server or user changed — clear stale caches before the new library
-  // ingestion runs. Same store-clearing steps as `forceFullResync` minus the
-  // re-fetch (onStartup handles that).
-  cancelAllSyncs('server-switch');
-  await albumDetailStore.getState().clearAlbums();
-  await albumLibraryStore.getState().clearAlbums();
-  // Wipe the normalized model too — once it's the sole store, the new server must not
-  // inherit the previous server's library (blobs above are cleared for the same reason).
-  const normDb = getDb();
-  if (normDb) resetNormalizedSchema(normDb);
-  // Reset both sync cursors + re-probe capability for the new server. The library
-  // cursor reset currently rides along inside `albumLibraryStore.clearAlbums()` above;
-  // make it explicit so it survives that store's removal — otherwise the album loop
-  // would resume at the PREVIOUS server's offset and skip that many albums.
-  syncStatusStore.getState().resetLibrarySync();
-  syncStatusStore.getState().resetSongSync();
-  syncStatusStore.getState().setSyncStrategy(null);
-  syncStatusStore.getState().setLastKnownMarkers({
-    lastKnownServerUrl: currentIdentity,
-    // Reset content-change markers so the newest-album probe re-baselines
-    // against the new server's top album rather than chasing a phantom
-    // "new" id from the previous server.
-    lastKnownNewestAlbumId: null,
-    lastKnownNewestAlbumCreated: null,
-    lastKnownServerSongCount: null,
-    lastKnownServerScanTime: null,
-  });
-}
-
 async function startupOrResumeFlow(): Promise<void> {
-  // Detect server/user switch first so any stale cache is cleared before
-  // the ingestion chain runs against the new identity.
-  await handleServerSwitchIfNeeded();
   // Immediate chain — mirrors _layout.tsx:321-326.
   fetchServerInfo().then((info) => {
     if (info) serverInfoStore.getState().setServerInfo(info);
@@ -605,20 +548,13 @@ export async function onAlbumReferenced(albumId: string): Promise<void> {
  *  re-sync). */
 
 /**
- * User-triggered full resync from settings. Exit hatch when something has
- * gone wrong — wipes the cached library + detail + song index and refires
- * the whole ingestion path.
+ * User-triggered full resync from settings — the "something is wrong, start over" hatch.
  *
- * Steps:
- *   1. Cancel any in-flight walk by bumping generation. Worker bails on the
- *      next iteration and the walk's finally block tidies up.
- *   2. Clear `albumDetailStore` (cascades to `songIndexStore` via
- *      `clearDetailTables`) and `albumLibraryStore`.
- *   3. Refetch the album library. The reconcile hook + walk take over the
- *      rest (fresh detail for every album, fresh flat song index).
- *
- * Safe to invoke while offline — it still clears local state, which is
- * useful when the user is troubleshooting bad cached data.
+ * NON-DESTRUCTIVE: it bumps the generation to cancel any in-flight run, then restarts
+ * from cursor zero and re-upserts every row in place. It does NOT drop tables, so
+ * playlist membership, artist bios and downloaded metadata — none of which the sync can
+ * rebuild — survive. Rows the server no longer returns are pruned per-entity for artists
+ * and playlists; albums and songs wait for the epoch reap.
  */
 export async function forceFullResync(): Promise<void> {
   cancelAllSyncs('force-resync');
@@ -1085,14 +1021,14 @@ export async function recoverStalledSync(): Promise<void> {
  * workers capture a generation on entry and bail on mismatch (same pattern as
  * `musicCacheService.processingId`).
  */
-export function cancelAllSyncs(reason: 'logout' | 'force-resync' | 'server-switch' | 'user-cancel'): void {
+export function cancelAllSyncs(reason: 'force-resync' | 'user-cancel'): void {
   syncStatusStore.getState().bumpGeneration();
   // Flip phase back to idle so the pill banner doesn't stay stuck showing
   // "syncing N / total" after a user-initiated cancel — the walk's generation
   // guard will exit the pool but does NOT set phase on the cancel path.
   // Reconciliation-based recovery will still pick up missing IDs on the next
   // trigger (app foreground, pull-to-refresh, scan).
-  if (reason === 'user-cancel' || reason === 'logout' || reason === 'server-switch') {
+  if (reason === 'user-cancel') {
     syncStatusStore.getState().resetDetailSync();
   }
 }

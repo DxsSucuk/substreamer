@@ -98,7 +98,7 @@ export function ensureNormalizedSchema(db: InternalDb): void {
 }
 
 /**
- * The normalized LIBRARY model — the only tables a resync/logout/server-switch may drop.
+ * The normalized LIBRARY model — the only tables logout (or a dev spike) may drop.
  *
  * An explicit allowlist, not "everything in the DDL minus the kept ones": schema.ts also
  * defines the permanent tables (auth/settings KV, downloads, scrobble history, image
@@ -131,7 +131,7 @@ export const MODEL_TABLES: readonly string[] = [
 
 /**
  * Permanent user data that lives in schema.ts for ordered schema management but must
- * NEVER be dropped by a resync, a server switch or the dev spikes. Losing any of these
+ * NEVER be dropped by logout or the dev spikes. Losing any of these
  * means losing the login, the downloads (leaving orphaned files on disk), the listening
  * history or the image cache.
  */

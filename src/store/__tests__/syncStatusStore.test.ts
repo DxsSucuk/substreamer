@@ -9,7 +9,6 @@ function resetStore() {
     detailSyncCompleted: 0,
     bannerDismissedAt: null,
     lastChangeDetectionAt: null,
-    lastKnownServerUrl: null,
     lastKnownServerSongCount: null,
     lastKnownServerScanTime: null,
     lastKnownNewestAlbumId: null,
@@ -63,11 +62,11 @@ describe('syncStatusStore', () => {
   describe('last-known markers', () => {
     it('setLastKnownMarkers merges a partial update', () => {
       syncStatusStore.getState().setLastKnownMarkers({
-        lastKnownServerUrl: 'https://a.example',
+        lastChangeDetectionAt: 999,
         lastKnownServerSongCount: 1234,
       });
       const s = syncStatusStore.getState();
-      expect(s.lastKnownServerUrl).toBe('https://a.example');
+      expect(s.lastChangeDetectionAt).toBe(999);
       expect(s.lastKnownServerSongCount).toBe(1234);
       expect(s.lastKnownServerScanTime).toBe(null);
     });

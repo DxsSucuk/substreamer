@@ -6,7 +6,7 @@ import { BottomSheet } from '../BottomSheet';
 import { useTheme } from '../../hooks/useTheme';
 import { useThemedAlert } from '../../hooks/useThemedAlert';
 import { settingsStyles } from '../../styles/settingsStyles';
-import { changePassword, clearApiCache } from '../../services/subsonicService';
+import { changePassword, clearApiCache, ensureCoverArtAuth } from '../../services/subsonicService';
 import { authStore } from '../../store/authStore';
 
 export function ChangePasswordSheet({
@@ -66,9 +66,13 @@ export function ChangePasswordSheet({
     const success = await changePassword(username, newPw);
     setLoading(false);
     if (success) {
-      const auth = authStore.getState();
-      auth.setSession(auth.serverUrl!, username, newPw, auth.apiVersion!, auth.legacyAuth);
+      // Password only — `setSession` would also rewrite `primaryServerUrl` from the
+      // ACTIVE url, silently destroying the other address while failed over.
+      authStore.getState().setPassword(newPw);
       clearApiCache();
+      // The caches key on url|username|legacyAuth, so clearing is what makes the new
+      // password take effect; re-mint the cover-art token the clear just dropped.
+      void ensureCoverArtAuth();
       succeededRef.current = true;
       onClose();
     } else {

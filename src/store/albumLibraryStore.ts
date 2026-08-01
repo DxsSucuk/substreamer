@@ -86,7 +86,7 @@ const LEGACY_BLOB_KEY = 'substreamer-album-library';
 
 /**
  * Monotonic token identifying the currently-authoritative `fetchAllAlbums`
- * run. A generation bump (server-switch / force-resync / user-cancel) makes a
+ * run. A generation bump (force-resync / user-cancel) makes a
  * running pager bail; but `clearAlbums` resets `loading` to false, which lets a
  * fresh `fetchAllAlbums` start before the old pager has finished bailing —
  * briefly overlapping. Only the run whose token is still `activeFetchToken`
@@ -156,8 +156,6 @@ export interface AlbumLibraryState {
    *  No-op when the album isn't present or `albumId` is undefined. Persists the
    *  bumped album so the play stats survive restart. */
   applyLocalPlay: (albumId: string | undefined, now: string) => void;
-  /** Clear all album data (in-memory + the `library_albums` rows + sync markers). */
-  clearAlbums: () => Promise<void>;
 }
 
 export const albumLibraryStore = create<AlbumLibraryState>()((set, get) => ({
@@ -195,7 +193,7 @@ export const albumLibraryStore = create<AlbumLibraryState>()((set, get) => ({
     const bail = (): void => {
       if (!isStale()) set({ loading: false });
     };
-    // A server-switch / logout / force-resync bumps generation.
+    // A logout / force-resync bumps generation.
     const genChanged = (): boolean => syncStatusStore.getState().generation !== capturedGen;
 
     // Pre-fetch id set for the reconcile hook (removals/additions across the
@@ -365,14 +363,6 @@ export const albumLibraryStore = create<AlbumLibraryState>()((set, get) => ({
     // tables just to bump a scalar). The normalized play stats are kept current by a
     // TARGETED scalar UPDATE in playStatsService.applyLocalPlay (bumpAlbumPlayStats).
     void upsertLibraryAlbumsAsync([nextAlbum], titleSortKeyFor, { syncNormalized: false });
-  },
-
-  clearAlbums: async () => {
-    set({ albums: [], loading: false, error: null });
-    // Wipe the rows (awaited) so they're gone before any subsequent fetch
-    // (server-switch / force-resync await this before refetching).
-    await clearLibraryAlbumsAsync();
-    syncStatusStore.getState().resetLibrarySync();
   },
 }));
 

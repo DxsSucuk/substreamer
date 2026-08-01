@@ -43,7 +43,6 @@ export type SyncStrategy = 'search3' | 'basic';
 
 interface LastKnownMarkers {
   lastChangeDetectionAt: number | null;
-  lastKnownServerUrl: string | null;
   lastKnownServerSongCount: number | null;
   lastKnownServerScanTime: number | null;
   lastKnownNewestAlbumId: string | null;
@@ -167,7 +166,11 @@ export interface SyncStatusState extends LastKnownMarkers {
   resetSongSync: () => void;
   /** Update the ephemeral blob→normalized migration progress (banner/card). */
   setNormalizedMigration: (phase: 'idle' | 'migrating', done: number, total: number) => void;
-  /** Stamp `libraryLastUpdatedAt = now` — called at partial-update ingestion. */
+  /**
+   * Stamp `libraryLastUpdatedAt = now` — the "library data changed" signal the CarPlay
+   * browse tree refreshes on. Deliberately NOT persisted: it means "changed in this
+   * session", and restoring it on boot reads as a change to every subscriber.
+   */
   bumpLibraryUpdated: () => void;
   bumpGeneration: () => void;
   setInFlight: (scope: SyncScope, promise: Promise<void>) => void;
@@ -210,7 +213,6 @@ export const syncStatusStore = create<SyncStatusState>()(
       libraryLastUpdatedAt: null,
 
       lastChangeDetectionAt: null,
-      lastKnownServerUrl: null,
       lastKnownServerSongCount: null,
       lastKnownServerScanTime: null,
       lastKnownNewestAlbumId: null,
@@ -294,7 +296,7 @@ export const syncStatusStore = create<SyncStatusState>()(
         set({
           songSyncStrategy: null,
           songSyncCursor: 0,
-          // Both callers (full resync, server switch) want every album's songs
+          // The full resync wants every album's songs
           // re-fetched, not just the ones missing them. Persisted with the cursor
           // in this same write so an interrupted run resumes as a full walk.
           fullWalkPending: true,
@@ -353,9 +355,7 @@ export const syncStatusStore = create<SyncStatusState>()(
         playlistLibraryLastFetchedAt: state.playlistLibraryLastFetchedAt,
         songSyncComplete: state.songSyncComplete,
         fullSyncCompletedAt: state.fullSyncCompletedAt,
-        libraryLastUpdatedAt: state.libraryLastUpdatedAt,
         lastChangeDetectionAt: state.lastChangeDetectionAt,
-        lastKnownServerUrl: state.lastKnownServerUrl,
         lastKnownServerSongCount: state.lastKnownServerSongCount,
         lastKnownServerScanTime: state.lastKnownServerScanTime,
         lastKnownNewestAlbumId: state.lastKnownNewestAlbumId,

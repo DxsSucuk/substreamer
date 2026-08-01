@@ -323,13 +323,4 @@ describe('albumLibraryStore — write-through + clear', () => {
     expect(mockUpsert).not.toHaveBeenCalled();
   });
 
-  it('clearAlbums wipes memory + rows + sync markers', async () => {
-    albumLibraryStore.setState({ albums: [makeAlbum('a1', 'Test', 'Artist')], error: 'old' });
-    syncStatusStore.setState({ librarySyncComplete: true } as any);
-    await albumLibraryStore.getState().clearAlbums();
-    const state = albumLibraryStore.getState();
-    expect(state.albums).toEqual([]);
-    expect(clearLibraryAlbumsAsync).toHaveBeenCalledTimes(1);
-    expect(syncStatusStore.getState().librarySyncComplete).toBe(false);
-  });
 });

@@ -34,12 +34,22 @@ export interface AuthState {
     legacyAuth?: boolean,
   ) => void;
   setRehydrated: (value: boolean) => void;
+  /** Change the stored password only. A password change is not a session change:
+   *  it must not touch either server slot or `activeServer`. Pair with
+   *  `clearApiCache()` — the caches key on url|username|legacyAuth, not the password. */
+  setPassword: (password: string) => void;
 
   /** Atomically swap `serverUrl` to point at the requested slot. No-op if
    *  the slot has no URL configured or already active. */
   setActiveServer: (target: ServerSlot) => void;
-  /** Set or clear the secondary URL. Clearing while active='secondary'
-   *  is the caller's responsibility (failoverService handles that flow). */
+  /** Re-address the primary slot WITHOUT changing which slot is live — editing an
+   *  address and choosing to use it are separate acts (the latter is failoverService's).
+   *  Mirrors into `serverUrl` when primary is already active, since `setActiveServer`
+   *  no-ops on the active slot and nothing else would refresh it. */
+  setPrimaryServerUrl: (url: string) => void;
+  /** Set or clear the secondary URL, mirroring into `serverUrl` when that slot is live.
+   *  Clearing never mirrors — `serverUrl` must not go null (every request path bails on
+   *  it) — and switching away first stays the caller's job (failoverService). */
   setSecondaryServerUrl: (url: string | null) => void;
   /** Switch the auth scheme (token ↔ legacy plaintext) without disturbing the
    *  server slots. Callers must re-verify against the server first — see the
@@ -89,6 +99,8 @@ export const authStore = create<AuthState>()(
 
       setRehydrated: (value) => set({ rehydrated: value }),
 
+      setPassword: (password) => set({ password }),
+
       setActiveServer: (target) =>
         set((state) => {
           if (state.activeServer === target) return state;
@@ -97,7 +109,22 @@ export const authStore = create<AuthState>()(
           return { activeServer: target, serverUrl: nextUrl };
         }),
 
-      setSecondaryServerUrl: (url) => set({ secondaryServerUrl: url }),
+      setPrimaryServerUrl: (url) =>
+        set((state) =>
+          state.activeServer === 'primary'
+            ? { primaryServerUrl: url, serverUrl: url }
+            : { primaryServerUrl: url },
+        ),
+
+      setSecondaryServerUrl: (url) =>
+        set((state) =>
+          // Only mirror when SETTING a live secondary. Mirroring a clear would write
+          // `serverUrl: null`, which is persisted and which every request path treats as
+          // "no session" — unrecoverable short of logout.
+          url != null && state.activeServer === 'secondary'
+            ? { secondaryServerUrl: url, serverUrl: url }
+            : { secondaryServerUrl: url },
+        ),
 
       setLegacyAuth: (legacyAuth) => set({ legacyAuth }),
     }),

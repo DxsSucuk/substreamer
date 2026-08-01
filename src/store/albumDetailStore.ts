@@ -62,8 +62,6 @@ export interface AlbumDetailState {
   removeEntry: (id: string) => void;
   /** Reap a batch of entries — used by Phase-5 library reconciliation. */
   removeEntries: (ids: readonly string[]) => void;
-  /** Clear all cached album details (logout, force-resync). */
-  clearAlbums: () => Promise<void>;
   /** Called once at app start to load persisted rows into memory. Reads on a
    * background thread and chunks the per-row JSON.parse so a large detail
    * cache doesn't block the JS thread. Used by `rehydrateAllStores`. */
@@ -191,14 +189,6 @@ export const albumDetailStore = create<AlbumDetailState>()((set, get) => ({
     set({ albums: next });
     for (const aid of toDelete) void deleteAlbumDetail(aid);
     songIndexStore.getState().deleteSongsForAlbums(toDelete);
-  },
-
-  clearAlbums: async () => {
-    set({ albums: {} });
-    // clearDetailTables wipes both album_details and song_index atomically.
-    // Refresh the index store's counter so UI subscribers see the change.
-    await clearDetailTables();
-    await songIndexStore.getState().refreshCountFromDb();
   },
 
   hydrateFromDbAsync: async () => {

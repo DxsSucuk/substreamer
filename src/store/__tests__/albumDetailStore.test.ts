@@ -21,7 +21,7 @@ const mockGetAlbum = getAlbum as jest.MockedFunction<typeof getAlbum>;
 
 beforeEach(() => {
   jest.clearAllMocks();
-  albumDetailStore.getState().clearAlbums();
+  albumDetailStore.setState({ albums: {} });
   ratingStore.getState().clearOverrides();
 });
 
@@ -106,16 +106,6 @@ describe('albumDetailStore', () => {
 
       // userRating undefined → defaults to 0, override was 3 → reconciled to 0
       expect(ratingStore.getState().overrides['s1']!.rating).toBe(0);
-    });
-  });
-
-  describe('clearAlbums', () => {
-    it('removes all cached albums', async () => {
-      mockGetAlbum.mockResolvedValue({ id: 'a1', name: 'Test', song: [] } as any);
-      await albumDetailStore.getState().fetchAlbum('a1');
-
-      albumDetailStore.getState().clearAlbums();
-      expect(albumDetailStore.getState().albums).toEqual({});
     });
   });
 

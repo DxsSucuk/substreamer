@@ -9,7 +9,8 @@ import { useThemedAlert } from '../../hooks/useThemedAlert';
 import { settingsStyles } from '../../styles/settingsStyles';
 import { switchToServer } from '../../services/failoverService';
 import { syncProxyUpstreams, trustCertificateForHost } from '../../services/sslTrustService';
-import { clearApiCache, login, normalizeServerUrl } from '../../services/subsonicService';
+import { clearApiCache, ensureCoverArtAuth, login, normalizeServerUrl } from '../../services/subsonicService';
+import { retryRemoteImagesForServerSwitch } from '../../services/imageCacheService';
 import { clearQueue } from '../../services/playerService';
 import { authStore } from '../../store/authStore';
 import { getCertificateInfo, isSSLError, type CertificateInfo } from '../../../modules/expo-ssl-trust/src';
@@ -47,7 +48,7 @@ function extractHostname(url: string): string {
  *
  * Primary save:
  *   - Confirms with the user (queue will clear)
- *   - clearQueue + setSession + clearApiCache
+ *   - clearQueue + setPrimaryServerUrl + clearApiCache
  *   - Leaves serverInfoStore alone (same server, different address)
  *
  * Secondary save:
@@ -68,10 +69,14 @@ export function EditServerUrlSheet({
   const { colors } = useTheme();
   const { confirm } = useThemedAlert();
   const serverUrl = authStore((s) => s.serverUrl);
+  const primaryServerUrl = authStore((s) => s.primaryServerUrl);
   const secondaryServerUrl = authStore((s) => s.secondaryServerUrl);
   const activeServer = authStore((s) => s.activeServer);
 
-  const initial = target === 'primary' ? (serverUrl ?? '') : (secondaryServerUrl ?? '');
+  // The primary editor edits the PRIMARY address, which is not `serverUrl` while failed
+  // over to the secondary. Fallback for a session that predates the slots.
+  const initial =
+    target === 'primary' ? (primaryServerUrl ?? serverUrl ?? '') : (secondaryServerUrl ?? '');
 
   const [input, setInput] = useState('');
   const [saved, setSaved] = useState(false);
@@ -174,8 +179,15 @@ export function EditServerUrlSheet({
     const auth = authStore.getState();
     if (!auth.username || !auth.password || !auth.apiVersion) return;
     clearQueue();
-    auth.setSession(normalised, auth.username, auth.password, auth.apiVersion, auth.legacyAuth);
+    // Re-address the slot only. `setSession` would also flip `activeServer` to primary,
+    // silently abandoning a working secondary connection without going through
+    // failoverService (no queue rebuild, no failover-prompt clear).
+    auth.setPrimaryServerUrl(normalised);
     clearApiCache();
+    // Mirror failoverService: re-mint the cover-art token the clear dropped, and let
+    // mounted covers retry against the new address instead of staying failed.
+    void ensureCoverArtAuth();
+    retryRemoteImagesForServerSwitch();
     // Register the now-active host with the iOS streaming proxy. If it's a
     // freshly-trusted self-signed host this is what lets AVPlayer reach it —
     // otherwise getStreamUrl keeps resolving to the raw https URL until the next
@@ -199,7 +211,10 @@ export function EditServerUrlSheet({
       return;
     }
 
-    if (normalised === serverUrl) {
+    // Normalise both sides: login stores the raw trimmed input, so a user who typed
+    // `music.example.com` would otherwise never match and a no-op save would run the
+    // full apply — including the documented `clearQueue()`.
+    if (normalised === normalizeServerUrl(primaryServerUrl ?? '')) {
       onClose();
       return;
     }
@@ -209,7 +224,7 @@ export function EditServerUrlSheet({
       confirmLabel: t('save'),
       onConfirm: () => applyPrimary(normalised),
     });
-  }, [testState, target, serverUrl, confirm, t, applyPrimary, onClose]);
+  }, [testState, target, primaryServerUrl, confirm, t, applyPrimary, onClose]);
 
   const handleRemove = useCallback(async () => {
     if (activeServer === 'secondary') {
