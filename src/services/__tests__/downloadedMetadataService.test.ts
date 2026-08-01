@@ -140,7 +140,7 @@ describe('refreshDownloadedMetadata — outcome shape', () => {
     const out = await refreshDownloadedMetadata({ mode: 'missing' });
     expect(out).toEqual({ attempted: 1, remaining: 0 });
     expect(mockFetchAlbum).toHaveBeenCalledTimes(1);
-    expect(mockFetchAlbum).toHaveBeenCalledWith('a2', { prefetchCovers: true });
+    expect(mockFetchAlbum).toHaveBeenCalledWith('a2', { prefetchCovers: true, force: false });
   });
 
   it('all mode re-fetches even already-cached detail', async () => {
@@ -155,7 +155,7 @@ describe('refreshDownloadedMetadata — outcome shape', () => {
     mockCacheState.cachedItems = { s1: { type: 'song', parentAlbumId: 'albX' } };
     const out = await refreshDownloadedMetadata({ mode: 'missing' });
     expect(out).toEqual({ attempted: 1, remaining: 0 });
-    expect(mockFetchAlbum).toHaveBeenCalledWith('albX', { prefetchCovers: true });
+    expect(mockFetchAlbum).toHaveBeenCalledWith('albX', { prefetchCovers: true, force: false });
   });
 
   it('resolves favorites to parent albums of its songs', async () => {
@@ -166,7 +166,7 @@ describe('refreshDownloadedMetadata — outcome shape', () => {
     };
     const out = await refreshDownloadedMetadata({ mode: 'missing' });
     expect(out).toEqual({ attempted: 2, remaining: 0 });
-    expect(mockFetchAlbum).toHaveBeenCalledWith('albA', { prefetchCovers: true });
-    expect(mockFetchAlbum).toHaveBeenCalledWith('albB', { prefetchCovers: true });
+    expect(mockFetchAlbum).toHaveBeenCalledWith('albA', { prefetchCovers: true, force: false });
+    expect(mockFetchAlbum).toHaveBeenCalledWith('albB', { prefetchCovers: true, force: false });
   });
 });

@@ -307,6 +307,7 @@ jest.mock('../../store/persistence/musicCacheTables', () => {
 import { musicCacheStore } from '../../store/musicCacheStore';
 import { favoritesStore } from '../../store/favoritesStore';
 import { storageLimitStore } from '../../store/storageLimitStore';
+import { offlineModeStore } from '../../store/offlineModeStore';
 import { playbackSettingsStore } from '../../store/playbackSettingsStore';
 import { checkStorageLimit } from '../storageService';
 import { ensureCached, prefetchCoverArt } from '../imageCacheService';
@@ -2062,6 +2063,60 @@ describe('resumeIfSpaceAvailable', () => {
   });
 });
 
+describe('offline mode pauses the download queue', () => {
+  afterEach(async () => {
+    offlineModeStore.setState({ offlineMode: false } as any);
+    await waitForQueueIdle();
+    mockCheckStorageLimit.mockReturnValue(true);
+    await forceRecoverDownloadsAsync();
+    await waitForQueueIdle();
+  });
+
+  it('parks a newly enqueued item instead of downloading it', async () => {
+    mockCheckStorageLimit.mockReturnValue(false);
+    offlineModeStore.setState({ offlineMode: true } as any);
+    mockFileExists = true;
+    mockFileSize = 5000;
+    mockDownloadFileAsyncWithProgress.mockResolvedValue(undefined);
+    mockFetchAlbum.mockResolvedValue({
+      id: 'album-off1',
+      name: 'Offline',
+      song: [makeChild('off1-t1', { albumId: 'album-off1' })],
+    });
+
+    await enqueueAlbumDownload('album-off1');
+    await waitForQueueIdle();
+
+    // Queued, not downloading, and no bytes moved — the user told us not to talk to
+    // the server, so the queue waits rather than burning retries.
+    expect(musicCacheStore.getState().downloadQueue[0].status).toBe('queued');
+    expect(mockDownloadFileAsyncWithProgress).not.toHaveBeenCalled();
+    expect(musicCacheStore.getState().cachedItems['album-off1']).toBeUndefined();
+  });
+
+  it('resumes automatically when offline mode is turned back off', async () => {
+    mockCheckStorageLimit.mockReturnValue(false);
+    offlineModeStore.setState({ offlineMode: true } as any);
+    mockFileExists = true;
+    mockFileSize = 5000;
+    mockDownloadFileAsyncWithProgress.mockResolvedValue(undefined);
+    mockFetchAlbum.mockResolvedValue({
+      id: 'album-off2',
+      name: 'Resumes',
+      song: [makeChild('off2-t1', { albumId: 'album-off2' })],
+    });
+    await enqueueAlbumDownload('album-off2');
+    await waitForQueueIdle();
+    expect(musicCacheStore.getState().downloadQueue[0].status).toBe('queued');
+
+    // No explicit kick: the service's own offline subscription restarts the queue.
+    offlineModeStore.setState({ offlineMode: false } as any);
+    await waitForQueueIdle();
+
+    expect(musicCacheStore.getState().cachedItems['album-off2']).toBeDefined();
+  });
+});
+
 /* ------------------------------------------------------------------ */
 /*  deleteStarredSongsDownload                                         */
 /* ------------------------------------------------------------------ */
@@ -2563,7 +2618,7 @@ describe('redownloadItem', () => {
     });
     await redownloadItem('album-1');
     expect(musicCacheStore.getState().cachedItems['album-1']).toBeUndefined();
-    expect(mockFetchAlbum).toHaveBeenCalledWith('album-1');
+    expect(mockFetchAlbum).toHaveBeenCalledWith('album-1', { force: true });
   });
 
   it('re-enqueues playlist', async () => {
@@ -2575,7 +2630,7 @@ describe('redownloadItem', () => {
     });
     await redownloadItem('pl-1');
     expect(musicCacheStore.getState().cachedItems['pl-1']).toBeUndefined();
-    expect(mockFetchPlaylist).toHaveBeenCalledWith('pl-1');
+    expect(mockFetchPlaylist).toHaveBeenCalledWith('pl-1', { force: true });
   });
 
   it('re-enqueues starred via favorites path', async () => {

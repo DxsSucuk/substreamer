@@ -40,7 +40,7 @@ interface EmptyProps {
 
 /**
  * Main playlist browse — reads bounded KEYSET pages from the normalized `playlists`
- * table. Playlists fetch on demand (`fetchAllPlaylists`, which dual-writes normalized);
+ * table. Playlists fetch on demand (`refreshPlaylistLibrary`);
  * on a fresh library the table is empty on first browse, so we trigger the fetch and
  * reload the window when it lands (via the store's `lastFetchedAt`).
  */

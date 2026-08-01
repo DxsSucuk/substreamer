@@ -91,9 +91,9 @@ export async function refreshDownloadedMetadata(opts: {
       async (t) => {
         try {
           if (t.kind === 'album') {
-            await fetchAlbumDetail(t.id, { prefetchCovers: true });
+            await fetchAlbumDetail(t.id, { prefetchCovers: true, force: opts.mode === 'all' });
           } else {
-            await fetchPlaylistDetail(t.id, { prefetchCovers: true });
+            await fetchPlaylistDetail(t.id, { prefetchCovers: true, force: opts.mode === 'all' });
           }
           downloadedMetadataRefreshStore.getState().tick(true);
         } catch (e) {

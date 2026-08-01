@@ -15,8 +15,7 @@ import { deleteCachedItem } from '../services/musicCacheService';
 import { deletePlaylist, type Playlist } from '../services/subsonicService';
 import { moreOptionsStore } from '../store/moreOptionsStore';
 import { musicCacheStore } from '../store/musicCacheStore';
-import { playlistDetailStore } from '../store/playlistDetailStore';
-import { playlistLibraryStore } from '../store/playlistLibraryStore';
+import { syncStatusStore } from '../store/syncStatusStore';
 import { getDb } from '../store/persistence/db';
 import { deletePlaylist as deletePlaylistRow } from '../db/repository/playlists';
 import { bumpDetailChanged } from '../db/detailNotifier';
@@ -64,8 +63,8 @@ export const PlaylistRow = memo(function PlaylistRow({ playlist }: { playlist: P
             const db = getDb();
             if (db) await deletePlaylistRow(db, playlist.id);
             bumpDetailChanged('playlist', playlist.id);
-            playlistDetailStore.getState().removePlaylist(playlist.id);
-            playlistLibraryStore.getState().removePlaylist(playlist.id);
+            // The car browse tree renders playlists; tell it the set changed.
+            syncStatusStore.getState().bumpLibraryUpdated();
             if (playlist.id in musicCacheStore.getState().cachedItems) {
               deleteCachedItem(playlist.id);
             }

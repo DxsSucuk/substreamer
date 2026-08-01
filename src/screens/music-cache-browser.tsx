@@ -37,7 +37,10 @@ import {
   redownloadTrack,
 } from '../services/musicCacheService';
 import { clearQueue } from '../services/playerService';
-import { albumDetailStore } from '../store/albumDetailStore';
+import { getAlbumDetail } from '../db/repository/details';
+import { subscribeDetailChanged } from '../db/detailNotifier';
+import { fetchAlbumDetail } from '../services/detailFetchService';
+import { getDb } from '../store/persistence/db';
 import { offlineModeStore } from '../store/offlineModeStore';
 import {
   musicCacheStore,
@@ -184,16 +187,47 @@ const CacheRow = memo(function CacheRow({
     : t('songCount', { count: knownCount });
   const totalBytes = tracks.reduce((sum, s) => sum + (s.bytes ?? 0), 0);
 
-  // For a partial album we want to render the FULL server track list with
-  // downloaded / missing indicators. Pull from albumDetailStore reactively;
-  // if nothing cached, we fetch on expand below. The fetched entry lands in
-  // `albumDetailStore.albums[albumId]` which is persisted + subscribed, so
-  // any later store update flows back here automatically.
-  const albumDetail = albumDetailStore((s) =>
-    item.type === 'album' ? s.albums[item.itemId] : undefined,
-  );
-  const fullAlbumSongs = albumDetail?.album?.song;
+  // For a partial album we render the FULL server track list with downloaded /
+  // missing indicators, read from the normalized model on expand and kept current
+  // via `subscribeDetailChanged`. Only partial ALBUMS consume it, so nothing else
+  // pays for the read.
+  const [fullAlbumSongs, setFullAlbumSongs] = useState<Child[] | undefined>();
+  const [cacheChecked, setCacheChecked] = useState(false);
+  const fetchedRef = useRef<string | null>(null);
   const [fetchingFullList, setFetchingFullList] = useState(false);
+
+  useEffect(() => {
+    // Reset first: FlashList recycles this component instance across items
+    // (`keyExtractor` feeds the stable id, not the React key), and a collapse has to
+    // let a failed fetch retry.
+    setFullAlbumSongs(undefined);
+    fetchedRef.current = null;
+    const db = getDb();
+    if (!expanded || item.type !== 'album' || !isPartial || !db) {
+      // Must still mark the check done on every path — the track list renders behind
+      // `cacheChecked`, so leaving it false spins forever on songs/playlists/full albums.
+      setCacheChecked(true);
+      return;
+    }
+    setCacheChecked(false);
+    let alive = true;
+    const read = () =>
+      getAlbumDetail(db, item.itemId).then((d) => {
+        // `[]` means "no cached track list", not "an album with no tracks" — the albums
+        // row exists for every synced album whether or not its songs were ever written.
+        if (alive) setFullAlbumSongs(d?.songs.length ? d.songs : undefined);
+      });
+    read()
+      .catch(() => { /* treat a read failure as a miss → server fetch */ })
+      .finally(() => { if (alive) setCacheChecked(true); });
+    const unsub = subscribeDetailChanged('album', item.itemId, () => {
+      read().catch(() => { /* best-effort re-read */ });
+    });
+    return () => {
+      alive = false;
+      unsub();
+    };
+  }, [expanded, item.type, item.itemId, isPartial]);
 
   // Defer track list rendering a tick so the chevron flip and row expansion
   // feel instant before mounting potentially many TrackFileRows. setTimeout,
@@ -210,16 +244,22 @@ const CacheRow = memo(function CacheRow({
       // server-unreachable falls back to the "downloaded tracks only"
       // rendering below.
       if (
+        cacheChecked &&
         isPartial &&
         !fullAlbumSongs &&
-        !fetchingFullList &&
+        fetchedRef.current !== item.itemId &&
         !offlineMode &&
         item.type === 'album'
       ) {
+        fetchedRef.current = item.itemId;
         setFetchingFullList(true);
-        albumDetailStore
-          .getState()
-          .fetchAlbum(item.itemId, { prefetchCovers: false })
+        fetchAlbumDetail(item.itemId, { prefetchCovers: false })
+          // Guard on the ref, not just `alive`: the row's component instance is recycled,
+          // and the reset nulls the ref, so a stale item's late response can never match.
+          .then((d) => {
+            if (fetchedRef.current === item.itemId && d?.song?.length) setFullAlbumSongs(d.song);
+          })
+          .catch(() => { /* best-effort — falls back to the downloaded-only list */ })
           .finally(() => setFetchingFullList(false));
       }
     } else {
@@ -229,7 +269,7 @@ const CacheRow = memo(function CacheRow({
     return () => {
       if (deferRef.current != null) clearTimeout(deferRef.current);
     };
-  }, [expanded, isPartial, fullAlbumSongs, fetchingFullList, offlineMode, item.type, item.itemId]);
+  }, [expanded, isPartial, cacheChecked, fullAlbumSongs, offlineMode, item.type, item.itemId]);
 
   const handleDelete = useCallback(() => {
     onDelete(item.itemId);
@@ -290,7 +330,7 @@ const CacheRow = memo(function CacheRow({
 
         {expanded && (
           <View style={[styles.trackList, { borderTopColor: colors.border }]}>
-            {!tracksReady ? (
+            {!tracksReady || !cacheChecked ? (
               <ActivityIndicator
                 size="small"
                 color={colors.primary}

@@ -151,7 +151,9 @@ export function AlbumDetailScreen() {
   const load = useCallback(async (albumId: string, isRefresh: boolean) => {
     // The fetch always upserts the album row, so the viewed album is reflected in the
     // library list (#202) without a separate sync step.
-    const data = await fetchAlbumDetail(albumId);
+    // `force` only on an explicit pull-to-refresh; a normal open answers from the
+    // local database when we already hold the tracks.
+    const data = await fetchAlbumDetail(albumId, { force: isRefresh });
     setAlbum(data);
     if (isRefresh && data?.id) {
       refreshCoverArt(data.id, 'album-detail-pull').catch(() => { /* non-critical */ });

@@ -46,13 +46,11 @@ import { composeHomeAlbumSections } from './homeSectionsService';
 import { getDb } from '../store/persistence/db';
 import { listAllAlbums, albumListRowToAlbumID3 } from '../db/repository/albums';
 import { listAllPlaylists, playlistListRowToPlaylist } from '../db/repository/playlists';
-// playlistLibraryStore is kept only for the CarPlay-refresh subscription below (a
-// transitional dependency retired when the store is deleted in the subtractive phase).
-import { playlistLibraryStore } from '../store/playlistLibraryStore';
 import { favoritesStore } from '../store/favoritesStore';
 import { albumListsStore } from '../store/albumListsStore';
 import { fetchAlbumDetail, fetchPlaylistDetail } from './detailFetchService';
 import { offlineModeStore } from '../store/offlineModeStore';
+import { syncStatusStore } from '../store/syncStatusStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import { serverInfoStore } from '../store/serverInfoStore';
@@ -657,6 +655,8 @@ const handler: PlaybackServiceHandler = {
 let installed = false;
 let subscribed = false;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+/** Set once the initial hydrate-then-push has run; gates `scheduleRefresh`. */
+let dataReady = false;
 /** Store-subscription disposers, captured so `__test.reset()` can tear them down. */
 const headlessSubscriptions: Array<() => void> = [];
 /** Memoized full-hydration promise (see `ensureHeadlessDataReady`). */
@@ -667,7 +667,9 @@ let dataReadyPromise: Promise<void> | null = null;
  *  (anti-refresh-loop). `pushSnapshot` re-checks the live connection at fire time,
  *  so a mid-window disconnect makes the deferred push a no-op. */
 function scheduleRefresh(): void {
-  if (refreshTimer || !getTrackPlayer().isCarConnected()) return;
+  // Hydration replaces whole store slices, which every subscription below reads as a
+  // change. Ignore refreshes until the post-hydration push has already gone out.
+  if (!dataReady || refreshTimer || !getTrackPlayer().isCarConnected()) return;
   refreshTimer = setTimeout(() => {
     refreshTimer = null;
     void pushSnapshot();
@@ -705,6 +707,7 @@ function ensureHeadlessDataReady(): Promise<void> {
 /** Hydrate the full store set, then push the now-populated browse snapshot. */
 async function hydrateThenPush(): Promise<void> {
   await ensureHeadlessDataReady();
+  dataReady = true;
   void pushSnapshot();
 }
 
@@ -739,7 +742,21 @@ export function installHeadlessMediaService(): void {
     headlessSubscriptions.push(
       albumListsStore.subscribe(scheduleRefresh),
       favoritesStore.subscribe(scheduleRefresh),
-      playlistLibraryStore.subscribe(scheduleRefresh),
+      // Library data changed (album/artist/playlist sync, playlist create/rename/delete).
+      // Compare the stamp rather than subscribing bare: syncStatusStore ticks on every
+      // cursor write during a sync.
+      syncStatusStore.subscribe((state, prev) => {
+        if (state.libraryLastUpdatedAt !== prev.libraryLastUpdatedAt) scheduleRefresh();
+      }),
+      // Offline, the whole tree filters on the downloaded set, so a download finishing or
+      // an item being deleted while already offline otherwise never reaches the car.
+      // Totals, not `cachedItems` identity: re-hydration rebuilds that object with the
+      // same contents, which would arm a redundant whole-table rebuild on every launch.
+      musicCacheStore.subscribe((state, prev) => {
+        if (state.totalFiles !== prev.totalFiles || state.totalBytes !== prev.totalBytes) {
+          scheduleRefresh();
+        }
+      }),
     );
   }
 }
@@ -771,6 +788,7 @@ export const __test = {
     }
     installed = false;
     subscribed = false;
+    dataReady = false;
     dataReadyPromise = null;
   },
 };

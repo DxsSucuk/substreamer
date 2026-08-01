@@ -1,8 +1,6 @@
-import { albumDetailStore } from '../albumDetailStore';
 import { errMessage } from '../../utils/errorMessage';
 import { albumLibraryStore } from '../albumLibraryStore';
 import { albumListsStore } from '../albumListsStore';
-import { artistLibraryStore } from '../artistLibraryStore';
 import { autoOfflineStore } from '../autoOfflineStore';
 import { completedScrobbleStore } from '../completedScrobbleStore';
 import { favoritesStore } from '../favoritesStore';
@@ -13,11 +11,8 @@ import { musicCacheStore } from '../musicCacheStore';
 import { offlineModeStore } from '../offlineModeStore';
 import { pendingScrobbleStore } from '../pendingScrobbleStore';
 import { playbackSettingsStore } from '../playbackSettingsStore';
-import { playlistDetailStore } from '../playlistDetailStore';
-import { playlistLibraryStore } from '../playlistLibraryStore';
 import { scanStatusStore } from '../scanStatusStore';
 import { serverInfoStore } from '../serverInfoStore';
-import { songIndexStore } from '../songIndexStore';
 import { syncStatusStore } from '../syncStatusStore';
 
 export interface RehydrationResult {
@@ -61,9 +56,7 @@ export interface RehydrationResult {
 export async function rehydrateAllStores(): Promise<RehydrationResult> {
   const result: RehydrationResult = { succeeded: [], failed: [] };
   const stores: Array<[string, () => Promise<void>]> = [
-    ['albumDetail', () => albumDetailStore.getState().hydrateFromDbAsync()],
     ['albumLibrary', () => albumLibraryStore.getState().hydrateFromDbAsync()],
-    ['songIndex', () => songIndexStore.getState().hydrateFromDbAsync()],
     ['completedScrobble', () => completedScrobbleStore.getState().hydrateFromDbAsync()],
     ['pendingScrobble', () => pendingScrobbleStore.getState().hydrateFromDbAsync()],
     ['musicCache', () => musicCacheStore.getState().hydrateFromDbAsync()],
@@ -87,10 +80,6 @@ export async function rehydrateAllStores(): Promise<RehydrationResult> {
     // eslint-disable-next-line no-console
     console.warn('[rehydrateAllStores] partial failure', result.failed);
   }
-  // The songs-library list is built by `initSongLibrary` (called from the
-  // deferred-startup chain, after the data-load/refresh tasks settle) and then
-  // kept current by optimistic in-memory patches from `songIndexStore` writes —
-  // no full rebuild on every album-detail sync.
   return result;
 }
 
@@ -115,17 +104,14 @@ const STARTUP_KV_STORES = [
   // `rehydrateAllStores` above (awaited before `onStartup`), and the startup
   // "needs full fetch?" gate reads SQL `COUNT(*)` rather than the in-memory
   // array — so there's no empty-window race to guard here.
-  artistLibraryStore,
-  playlistLibraryStore,
   albumListsStore,
   favoritesStore,
   genreStore,
   serverInfoStore,
   syncStatusStore,
   scanStatusStore,
-  // Detail/settings caches the headless (car/voice) service reads offline before any
-  // UI mounts — awaited here so a headless start + the app boot both have them ready.
-  playlistDetailStore,
+  // Settings the headless (car/voice) service reads offline before any UI mounts —
+  // awaited here so a headless start + the app boot both have them ready.
   playbackSettingsStore,
 ];
 

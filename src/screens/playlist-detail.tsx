@@ -53,7 +53,7 @@ import { offlineModeStore } from '../store/offlineModeStore';
 import { fetchPlaylistDetail } from '../services/detailFetchService';
 import { getDb } from '../store/persistence/db';
 import { getPlaylistDetail } from '../db/repository/details';
-import { playlistLibraryStore } from '../store/playlistLibraryStore';
+import { syncStatusStore } from '../store/syncStatusStore';
 import { processingOverlayStore } from '../store/processingOverlayStore';
 
 import { formatCompactDuration } from '../utils/formatters';
@@ -273,7 +273,8 @@ export function PlaylistDetailScreen() {
 
   /* ---- Data fetching ---- */
   const load = useCallback(async (playlistId: string, isRefresh: boolean) => {
-    const data = await fetchPlaylistDetail(playlistId);
+    // See album-detail: local answers a normal open, pull-to-refresh forces the server.
+    const data = await fetchPlaylistDetail(playlistId, { force: isRefresh });
     setPlaylist(data);
     if (isRefresh && data?.id) {
       refreshCoverArt(data.id, 'playlist-detail-pull').catch(() => { /* non-critical */ });
@@ -385,17 +386,15 @@ export function PlaylistDetailScreen() {
 
       // 3. Reconcile from server truth; patch the library list from the refetched
       //    values so it reflects reality even on a partial (tracks-ok/props-failed) save.
-      const fresh = await fetchPlaylistDetail(id);
+      const fresh = await fetchPlaylistDetail(id, { force: true });
       if (fresh?.id) {
         await ensureCached(fresh.id);
       }
       if (fresh) {
         setPlaylist(fresh);
-        playlistLibraryStore.getState().patchPlaylistMetadata(id, {
-          name: fresh.name,
-          comment: fresh.comment,
-          public: fresh.public,
-        });
+        // `fetchPlaylistDetail` already upserted the normalized row every list reads
+        // from; the car browse tree renders the name, so signal it too.
+        syncStatusStore.getState().bumpLibraryUpdated();
       }
 
       setEditing(false);

@@ -51,7 +51,6 @@ import {
   type Playlist,
 } from '../services/subsonicService';
 import { addToPlaylistStore } from '../store/addToPlaylistStore';
-import { artistDetailStore } from '../store/artistDetailStore';
 import { scrobbleExclusionStore, type ScrobbleExclusionType } from '../store/scrobbleExclusionStore';
 import { createShareStore } from '../store/createShareStore';
 import { getOverride, mbidOverrideStore } from '../store/mbidOverrideStore';
@@ -63,8 +62,7 @@ import {
 } from '../store/moreOptionsStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { playerStore } from '../store/playerStore';
-import { playlistDetailStore } from '../store/playlistDetailStore';
-import { playlistLibraryStore } from '../store/playlistLibraryStore';
+import { syncStatusStore } from '../store/syncStatusStore';
 import { getDb } from '../store/persistence/db';
 import { getArtistDetail } from '../db/repository/details';
 import { deletePlaylist as deletePlaylistRow } from '../db/repository/playlists';
@@ -372,12 +370,8 @@ export function MoreOptionsSheet() {
       const artistName = entity.item.name;
       const override = getOverride(mbidOverrideStore.getState().overrides, 'artist', artistId);
       const db = getDb();
-      // Prefer the persisted resolved MBID; fall back to the (transitional) store since
-      // the normalized `resolved_mbid` column is only populated on a fetch since #111.
-      const resolvedMbid =
-        (db ? (await getArtistDetail(db, artistId))?.resolvedMbid : null) ??
-        artistDetailStore.getState().artists[artistId]?.resolvedMbid ??
-        null;
+      // `resolved_mbid` is populated on an artist-detail fetch; null before one has run.
+      const resolvedMbid = (db ? (await getArtistDetail(db, artistId))?.resolvedMbid : null) ?? null;
       const currentMbid = override?.mbid ?? resolvedMbid;
       await moreOptionsStore.getState().hideAndAwait();
       mbidSearchStore.getState().showArtist(artistId, artistName, currentMbid, resolveEntityCoverArt(entity.item));
@@ -578,8 +572,8 @@ export function MoreOptionsSheet() {
                 const db = getDb();
                 if (db) await deletePlaylistRow(db, playlistId);
                 bumpDetailChanged('playlist', playlistId);
-                playlistDetailStore.getState().removePlaylist(playlistId);
-                playlistLibraryStore.getState().removePlaylist(playlistId);
+                // The car browse tree renders playlists; tell it the set changed.
+                syncStatusStore.getState().bumpLibraryUpdated();
                 if (playlistId in musicCacheStore.getState().cachedItems) {
                   deleteCachedItem(playlistId);
                 }

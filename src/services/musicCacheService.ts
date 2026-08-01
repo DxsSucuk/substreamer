@@ -44,6 +44,7 @@ import {
   type CachedSongMeta,
   type DownloadQueueItem,
 } from '../store/musicCacheStore';
+import { offlineModeStore } from '../store/offlineModeStore';
 import {
   countCachedSongs,
   countRealSongRefsForSongsAsync,
@@ -129,6 +130,7 @@ function getTrackFileExtension(track: Child): string {
 let cacheDir: Directory | null = null;
 let isProcessing = false;
 let processingId = 0;
+let offlineSubscription: (() => void) | null = null;
 let appStateSubscription: { remove: () => void } | null = null;
 
 /**
@@ -200,6 +202,20 @@ export function initMusicCache(): void {
         if (!isProcessing) recoverStalledDownloadsAsync();
       });
     }
+    if (!offlineSubscription) {
+      // Same machinery as kill-mid-download recovery: bump the generation so live
+      // workers exit at their next song boundary, hand the in-flight item back to
+      // 'queued' and drop its .tmp remnants. Going offline the gate above keeps it
+      // parked there; coming back online the identical call restarts it from exactly
+      // where it stopped (and retries whatever errored while the network was gone).
+      offlineSubscription = offlineModeStore.subscribe((state, prev) => {
+        if (state.offlineMode === prev.offlineMode) return;
+        // The trailing pump is what resumes: after a pause the items sit in 'queued',
+        // so the recovery pass finds nothing to recover and would never restart on its
+        // own. Going offline it is a no-op — the gate turns it straight back.
+        void forceRecoverDownloadsAsync().then(() => processQueue());
+      });
+    }
   } catch (e) {
     // eslint-disable-next-line no-console
     console.warn(
@@ -218,6 +234,8 @@ export function initMusicCache(): void {
 export function teardownMusicCache(): void {
   appStateSubscription?.remove();
   appStateSubscription = null;
+  offlineSubscription?.();
+  offlineSubscription = null;
   cacheDir = null;
 }
 
@@ -794,7 +812,7 @@ export async function enqueueAlbumDownload(
   }
 
   await ensureCoverArtAuth();
-  const album = await fetchAlbumDetail(albumId);
+  const album = await fetchAlbumDetail(albumId, { force: true });
   if (!album?.song?.length) {
     if (isTopUp) {
       processingOverlayStore.getState().showError(i18n.t('failedToLoadAlbum'));
@@ -900,7 +918,7 @@ export async function enqueuePlaylistDownload(
   if (state.downloadQueue.some((q) => q.itemId === playlistId)) return;
 
   await ensureCoverArtAuth();
-  const playlist = await fetchPlaylistDetail(playlistId);
+  const playlist = await fetchPlaylistDetail(playlistId, { force: true });
   if (!playlist?.entry?.length) return;
 
   // Re-check after the awaits (see enqueueAlbumDownload) — avoid a duplicate row.
@@ -1011,7 +1029,14 @@ export async function enqueueSongDownload(song: Child): Promise<void> {
 /*  Queue processing                                                   */
 /* ------------------------------------------------------------------ */
 
+/** Downloads are network work: offline mode parks the queue rather than burning
+ *  retries against a server the user has told us not to talk to. */
+function isPausedForOffline(): boolean {
+  return offlineModeStore.getState().offlineMode;
+}
+
 async function processQueue(): Promise<void> {
+  if (isPausedForOffline()) return;
   if (isProcessing) return;
   isProcessing = true;
   const myId = ++processingId;
@@ -1270,7 +1295,7 @@ async function downloadItem(queueItem: DownloadQueueItem, myId: number): Promise
       );
       if (!current || current.status !== 'downloading') return;
 
-      if (checkStorageLimit()) {
+      if (checkStorageLimit() || isPausedForOffline()) {
         musicCacheStore.getState().updateQueueItem(queueItem.queueId, {
           status: 'queued',
         });

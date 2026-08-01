@@ -235,6 +235,7 @@ export async function syncArtistsNormalized(
   // hashes on some servers) would otherwise leave the old artist in the list forever.
   if (getApi() === null) return;
   await deleteArtistsNotIn(db, artists.map((a) => a.id));
+  syncStatusStore.getState().bumpLibraryUpdated();
 }
 
 /** Initial sync of the (lightweight) playlists list into the normalized `playlists`
@@ -256,6 +257,7 @@ export async function syncPlaylistsNormalized(
   if (getApi() === null) return;
   const protectedIds = await getProtectedIds(db);
   await deletePlaylistsNotIn(db, playlists.map((p) => p.id), [...protectedIds.playlistIds]);
+  syncStatusStore.getState().bumpLibraryUpdated();
   // Fire-and-forget: awaiting would block the Add-to-Playlist sheet's spinner, delay the
   // list repaint (`playlistLibraryLastFetchedAt`), and gate change-detect + the song kick
   // behind playlist fetches, since this is the last step of `doNormalizedSync`.
@@ -335,6 +337,7 @@ async function reconcilePlaylistDetails(
     const unsubOffline = offlineModeStore.subscribe((st) => {
       if (st.offlineMode) ctrl.abort();
     });
+    let stamped = 0;
     try {
       await runPool(
         capped,
@@ -344,11 +347,12 @@ async function reconcilePlaylistDetails(
           // stamping that would suppress the refetch permanently.
           if (getApi() === null) return;
           const updated = await withTimeout(
-            () => fetchPlaylistDetail(p.id, { prefetchCovers: false }),
+            () => fetchPlaylistDetail(p.id, { prefetchCovers: false, force: true }),
             PLAYLIST_FETCH_TIMEOUT_MS,
           );
           if (updated === 'timeout' || !updated || getApi() === null) return;
           await stampPlaylistDetailSynced(db, p.id, toEpoch(p.changed) ?? 0, p.songCount ?? 0);
+          stamped += 1;
           if (downloadedIds.has(p.id)) syncCachedItemTracks(p.id, updated.entry ?? []);
         },
         { concurrency: PLAYLIST_PREFETCH_CONCURRENCY, signal: ctrl.signal },
@@ -357,6 +361,9 @@ async function reconcilePlaylistDetails(
       unsubGen();
       unsubOffline();
     }
+    // Once, not per playlist: the refresh runs up to 50 fetches at concurrency 2, and a
+    // per-item bump would re-arm the car refresh every 30s for the whole run.
+    if (stamped > 0) syncStatusStore.getState().bumpLibraryUpdated();
   })();
   // Store `run` itself — assigning `run.finally(...)` would store a DIFFERENT promise,
   // so the identity check below never matches and the slot never clears.
@@ -528,6 +535,10 @@ async function doNormalizedSync(
     }
     if (genChanged()) return;
     syncStatusStore.getState().markLibrarySyncComplete();
+    // Signal the car browse tree here, not just at the artist/playlist tails: every
+    // song-phase bail below returns before them, so an interrupted sync would otherwise
+    // leave thousands of new albums invisible to CarPlay.
+    syncStatusStore.getState().bumpLibraryUpdated();
     // A resync can change album cover-art tokens — drop the bounded cover-art cache so
     // the next lookups re-read the fresh `albums.cover_art` (the cache is otherwise
     // populated on-demand and never self-invalidates).

@@ -12,8 +12,11 @@ import { SegmentControl, type Segment } from '../components/SegmentControl';
 import { SwipeableRow, type SwipeAction } from '../components/SwipeableRow';
 import { useTheme } from '../hooks/useTheme';
 import { defaultCollator } from '../utils/intl';
+import { getAlbumInfoRow } from '../db/repository/albums';
+import { getArtistDetail } from '../db/repository/details';
+import { fetchArtistDetail } from '../services/detailFetchService';
+import { getDb } from '../store/persistence/db';
 import { albumInfoStore } from '../store/albumInfoStore';
-import { artistDetailStore } from '../store/artistDetailStore';
 import { mbidOverrideStore, type MbidOverride, type MbidOverrideType } from '../store/mbidOverrideStore';
 import { mbidSearchStore } from '../store/mbidSearchStore';
 import { offlineModeStore } from '../store/offlineModeStore';
@@ -51,13 +54,21 @@ const OverrideRow = memo(function OverrideRow({
   const handleDelete = useCallback(async () => {
     const { type, entityId } = override;
     mbidOverrideStore.getState().removeOverride(type, entityId);
-    if (type === 'artist' && entityId in artistDetailStore.getState().artists) {
-      await runWithOverlay(() => artistDetailStore.getState().fetchArtist(entityId), {
+    const db = getDb();
+    // Only refetch what we actually hold: dropping an override changes the resolved bio /
+    // album info, so there is nothing to correct for an entity we never fetched detail for.
+    if (type === 'artist' && db) {
+      // Detail, not mere existence — an artist ROW exists for everything in the library
+      // after a list sync. `bioCheckedAt` alone is too narrow: a thrown MusicBrainz lookup
+      // leaves it NULL on an otherwise fully-fetched artist (detailFetchService).
+      const cached = await getArtistDetail(db, entityId);
+      if (!cached || (cached.topSongs.length === 0 && cached.bioCheckedAt == null)) return;
+      await runWithOverlay(() => fetchArtistDetail(entityId), {
         loading: t('updatingArtist'),
         success: t('artistUpdated'),
         error: t('failedToUpdateArtist'),
       });
-    } else if (type === 'album' && entityId in albumInfoStore.getState().entries) {
+    } else if (type === 'album' && db && (await getAlbumInfoRow(db, entityId)) != null) {
       await runWithOverlay(() => albumInfoStore.getState().fetchAlbumInfo(entityId), {
         loading: t('updatingAlbum'),
         success: t('albumUpdated'),

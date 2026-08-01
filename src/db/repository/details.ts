@@ -58,9 +58,6 @@ function albumRowToAlbumID3(r: Row): AlbumID3 {
     explicitStatus: str(r.explicit_status),
     originalReleaseDate: itemDate(r.original_release_year, r.original_release_month, r.original_release_day),
     releaseDate: itemDate(r.release_year, r.release_month, r.release_day),
-    // Merged getAlbumInfo2 columns (present once an album-info fetch has run).
-    notes: str(r.notes),
-    lastFmUrl: str(r.last_fm_url),
   } as AlbumID3;
 }
 

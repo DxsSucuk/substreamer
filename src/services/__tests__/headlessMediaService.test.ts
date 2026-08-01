@@ -17,13 +17,12 @@ import {
   favTrackId,
   playlistId,
 } from '../headlessMediaService.helpers';
-import { albumLibraryStore } from '../../store/albumLibraryStore';
 import { albumListsStore } from '../../store/albumListsStore';
 import { favoritesStore } from '../../store/favoritesStore';
-import { playlistLibraryStore } from '../../store/playlistLibraryStore';
 import { fetchAlbumDetail, fetchPlaylistDetail } from '../detailFetchService';
 import { offlineModeStore } from '../../store/offlineModeStore';
 import { musicCacheStore } from '../../store/musicCacheStore';
+import { syncStatusStore } from '../../store/syncStatusStore';
 import { getDb } from '../../store/persistence/db';
 import { ensureNormalizedSchema } from '../../db/createNormalizedTables';
 import { upsertAlbums } from '../../db/repository/albums';
@@ -56,7 +55,6 @@ beforeEach(async () => {
     albums: [],
     artists: [],
   } as any);
-  playlistLibraryStore.setState({ playlists: [playlist('p1', 'Roadtrip')] } as any);
 });
 
 describe('buildSnapshot', () => {
@@ -250,6 +248,42 @@ describe('scheduleRefresh — library-change gate', () => {
     tp.setBrowseSnapshot.mockClear();
 
     favoritesStore.setState({ songs: [song('s1')], albums: [], artists: [] } as any);
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(tp.setBrowseSnapshot).toHaveBeenCalled();
+  });
+
+  it('arms a push when the library-updated stamp changes', async () => {
+    installHeadlessMediaService();
+    await jest.advanceTimersByTimeAsync(0);
+    // Assert the install push landed BEFORE clearing: the negative case below depends on
+    // that ordering, and advanceTimersByTimeAsync(0) alone does not prove it.
+    expect(tp.setBrowseSnapshot).toHaveBeenCalled();
+    tp.setBrowseSnapshot.mockClear();
+
+    syncStatusStore.getState().bumpLibraryUpdated();
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(tp.setBrowseSnapshot).toHaveBeenCalled();
+  });
+
+  it('does NOT arm a push for an unrelated syncStatusStore write', async () => {
+    installHeadlessMediaService();
+    await jest.advanceTimersByTimeAsync(0);
+    expect(tp.setBrowseSnapshot).toHaveBeenCalled();
+    tp.setBrowseSnapshot.mockClear();
+
+    // A sync writes the cursor constantly; only the library stamp means "data changed".
+    syncStatusStore.getState().setLibrarySyncCursor(500);
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(tp.setBrowseSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('arms a push when the downloaded set changes (the offline tree filters on it)', async () => {
+    installHeadlessMediaService();
+    await jest.advanceTimersByTimeAsync(0);
+    expect(tp.setBrowseSnapshot).toHaveBeenCalled();
+    tp.setBrowseSnapshot.mockClear();
+
+    musicCacheStore.setState({ totalFiles: 42, totalBytes: 1234 } as any);
     await jest.advanceTimersByTimeAsync(30_000);
     expect(tp.setBrowseSnapshot).toHaveBeenCalled();
   });

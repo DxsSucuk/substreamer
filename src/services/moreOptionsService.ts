@@ -11,7 +11,6 @@ import { favoritesStore } from '../store/favoritesStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
-import { playlistLibraryStore } from '../store/playlistLibraryStore';
 import { refreshPlaylistLibrary } from './normalizedLibrarySync';
 import { getDb } from '../store/persistence/db';
 import { getAlbumDetail, getArtistDetail, getPlaylistDetail } from '../db/repository/details';

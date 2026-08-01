@@ -85,13 +85,24 @@ export interface ArtistDetailEntry {
  */
 export async function fetchAlbumDetail(
   id: string,
-  opts?: { prefetchCovers?: boolean },
+  opts?: { prefetchCovers?: boolean; force?: boolean },
 ): Promise<AlbumWithSongsID3 | null> {
   const db = getDb();
-  if (offlineModeStore.getState().offlineMode) {
+  // LOCAL FIRST — that is what the local database is for. If we already hold this album's
+  // tracks we answer from them and make no server round trip at all, reachable or not.
+  // Only `force` (pull-to-refresh, a download top-up, the sync reconcile) asks the server,
+  // and even then an unanswerable server falls back here rather than returning nothing.
+  // A row with no songs is a MISS, not an empty album: the `albums` row exists for
+  // everything in the library whether or not its tracks were ever fetched.
+  const local = async (): Promise<AlbumWithSongsID3 | null> => {
     if (!db) return null;
     const d = await getAlbumDetail(db, id);
-    return d ? ({ ...d.album, song: d.songs } as AlbumWithSongsID3) : null;
+    return d && d.songs.length > 0 ? ({ ...d.album, song: d.songs } as AlbumWithSongsID3) : null;
+  };
+  if (offlineModeStore.getState().offlineMode) return local();
+  if (!opts?.force) {
+    const cached = await local();
+    if (cached) return cached;
   }
   const prefetchCovers = opts?.prefetchCovers ?? true;
   const result = await withTimeout(async () => {
@@ -124,7 +135,8 @@ export async function fetchAlbumDetail(
     }
     return data ?? null;
   }, FETCH_TIMEOUT_MS);
-  return result === 'timeout' ? null : result;
+  // A fresh server answer always wins; anything else falls back to what we hold.
+  return result === 'timeout' || result == null ? local() : result;
 }
 
 /* ------------------------------------------------------------------ */
@@ -316,13 +328,21 @@ export async function refreshArtistTopSongs(): Promise<void> {
  */
 export async function fetchPlaylistDetail(
   id: string,
-  opts?: { prefetchCovers?: boolean },
+  opts?: { prefetchCovers?: boolean; force?: boolean },
 ): Promise<PlaylistWithSongs | null> {
   const db = getDb();
-  if (offlineModeStore.getState().offlineMode) {
+  // Local first — see `fetchAlbumDetail`. Membership we already hold answers immediately;
+  // only `force` (pull-to-refresh, post-edit reconcile, download top-up, the sync's detail
+  // refresh) asks the server.
+  const local = async (): Promise<PlaylistWithSongs | null> => {
     if (!db) return null;
     const d = await getPlaylistDetail(db, id);
-    return d ? ({ ...d.playlist, entry: d.entry } as PlaylistWithSongs) : null;
+    return d && d.entry.length > 0 ? ({ ...d.playlist, entry: d.entry } as PlaylistWithSongs) : null;
+  };
+  if (offlineModeStore.getState().offlineMode) return local();
+  if (!opts?.force) {
+    const cached = await local();
+    if (cached) return cached;
   }
   const prefetchCovers = opts?.prefetchCovers ?? true;
   await ensureCoverArtAuth();
@@ -344,6 +364,7 @@ export async function fetchPlaylistDetail(
       if (playlistArtId) ensureCached(playlistArtId).catch(() => { /* non-critical */ });
       if (data.entry?.length) prefetchCoverArt(data.entry);
     }
+    return data;
   }
-  return data ?? null;
+  return local();
 }
