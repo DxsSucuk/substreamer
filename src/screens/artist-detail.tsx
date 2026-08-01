@@ -96,6 +96,7 @@ export function ArtistDetailScreen() {
     () => layoutPreferencesStore.getState().artistAlbumSortOrder === 'newest',
   );
   const [topSongsSettled, setTopSongsSettled] = useState(false);
+  const [bioLoading, setBioLoading] = useState(false);
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [hasCache, setHasCache] = useState(false);
   const [cacheChecked, setCacheChecked] = useState(false);
@@ -152,9 +153,11 @@ export function ArtistDetailScreen() {
         setHeroFallbackUrl(info.largeImageUrl ?? undefined);
       })
       .catch(() => { /* section stays absent */ });
+    setBioLoading(true);
     void fetchArtistBio(id, { force })
       .then((bio) => { if (alive && bio) setBiography(bio.biography); })
-      .catch(() => { /* section stays absent */ });
+      .catch(() => { /* section stays absent */ })
+      .finally(() => { if (alive) setBioLoading(false); });
     setTopSongsSettled(false);
     void fetchArtistTopSongs(id, { force })
       .then((top) => { if (alive) setTopSongs(top?.songs ?? []); })
@@ -351,6 +354,20 @@ export function ArtistDetailScreen() {
         {ready && (
           <>
             {/* ---- Biography ---- */}
+            {/* The bio is the slowest part — it can fall through to MusicBrainz — so show
+                the section with a spinner while it resolves rather than leaving a gap that
+                looks like the artist simply has no bio. */}
+            {bioLoading && (biography == null || biography.length === 0) && (
+              <View style={styles.section}>
+                <SectionTitle title={t('about')} color={colors.label} />
+                <View style={styles.bioLoading}>
+                  <ActivityIndicator size="small" color={colors.primary} />
+                  <Text style={[styles.bioLoadingText, { color: colors.textSecondary }]}>
+                    {t('loadingBiography')}
+                  </Text>
+                </View>
+              </View>
+            )}
             {biography != null && biography.length > 0 && (
               <View style={styles.section}>
                 <SectionTitle title={t('about')} color={colors.label} />
@@ -619,6 +636,15 @@ const styles = StyleSheet.create({
   },
 
   /* Biography */
+  bioLoading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 6,
+  },
+  bioLoadingText: {
+    fontSize: 13,
+  },
   bioText: {
     fontSize: 16,
     lineHeight: 22,

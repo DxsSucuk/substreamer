@@ -1096,5 +1096,6 @@
   "backupBookmarkCount_many": "{{count}} bookmarks",
   "backupBookmarkCount_other": "{{count}} bookmarks",
   "downloadsPausedOffline": "Downloads are paused while Offline Mode is on. They'll resume automatically when you turn it off.",
-  "downloadsPausedUnreachable": "Your server can't be reached right now, so downloads are waiting. They'll continue once it's back."
+  "downloadsPausedUnreachable": "Your server can't be reached right now, so downloads are waiting. They'll continue once it's back.",
+  "loadingBiography": "Loading biography…"
 }
