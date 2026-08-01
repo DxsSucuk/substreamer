@@ -67,7 +67,6 @@ import { clearPendingScrobbles } from '../persistence/pendingScrobbleTable';
 import { clearScrobbles } from '../persistence/scrobbleTable';
 import { clearAllMusicCacheRows } from '../persistence/musicCacheTables';
 import { authStore } from '../authStore';
-import { albumLibraryStore } from '../albumLibraryStore';
 import { completedScrobbleStore } from '../completedScrobbleStore';
 import { mbidOverrideStore } from '../mbidOverrideStore';
 import { scrobbleExclusionStore } from '../scrobbleExclusionStore';
@@ -118,7 +117,6 @@ describe('resetAllStores', () => {
   it('resets persisted stores to initial state', async () => {
     // Populate stores with non-default data
     authStore.getState().setSession('https://example.com', 'user', 'pass', '1.16');
-    albumLibraryStore.setState({ albums: [{ id: 'a1' }] as any });
     completedScrobbleStore.setState({
       recentScrobbles: [{ id: 's1' }] as any,
     });
@@ -133,7 +131,6 @@ describe('resetAllStores', () => {
 
     expect(authStore.getState().isLoggedIn).toBe(false);
     expect(authStore.getState().serverUrl).toBeNull();
-    expect(albumLibraryStore.getState().albums).toEqual([]);
     expect(completedScrobbleStore.getState().recentScrobbles).toEqual([]);
     expect(mbidOverrideStore.getState().overrides).toEqual({});
     expect(scrobbleExclusionStore.getState().excludedAlbums).toEqual({});

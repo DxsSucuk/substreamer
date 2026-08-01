@@ -23,11 +23,8 @@ import { teardownMusicCache } from '../services/musicCacheService';
 import { clearImageCache, teardownImageCache } from '../services/imageCacheService';
 
 // Persisted stores
-import { albumDetailStore } from './albumDetailStore';
 import { albumInfoStore } from './albumInfoStore';
-import { albumLibraryStore } from './albumLibraryStore';
 import { albumListsStore } from './albumListsStore';
-import { artistLibraryStore } from './artistLibraryStore';
 import { authStore } from './authStore';
 import { autoOfflineStore } from './autoOfflineStore';
 import { backupStore } from './backupStore';
@@ -43,8 +40,6 @@ import { musicCacheStore } from './musicCacheStore';
 import { offlineModeStore } from './offlineModeStore';
 import { pendingScrobbleStore } from './pendingScrobbleStore';
 import { playbackSettingsStore } from './playbackSettingsStore';
-import { playlistDetailStore } from './playlistDetailStore';
-import { playlistLibraryStore } from './playlistLibraryStore';
 import { ratingStore } from './ratingStore';
 import { recentSearchStore } from './recentSearchStore';
 import { scanStatusStore } from './scanStatusStore';
@@ -52,8 +47,6 @@ import { scrobbleExclusionStore } from './scrobbleExclusionStore';
 import { serverInfoStore } from './serverInfoStore';
 import { shareSettingsStore } from './shareSettingsStore';
 import { sharesStore } from './sharesStore';
-import { songIndexStore } from './songIndexStore';
-import { songLibraryStore } from './songLibraryStore';
 import { sslCertStore } from './sslCertStore';
 import { localeStore } from './localeStore';
 import { storageLimitStore } from './storageLimitStore';
@@ -78,11 +71,8 @@ import { setRatingStore } from './setRatingStore';
 
 const allStores = [
   // Persisted
-  albumDetailStore,
   albumInfoStore,
-  albumLibraryStore,
   albumListsStore,
-  artistLibraryStore,
   authStore,
   autoOfflineStore,
   backupStore,
@@ -99,8 +89,6 @@ const allStores = [
   offlineModeStore,
   pendingScrobbleStore,
   playbackSettingsStore,
-  playlistDetailStore,
-  playlistLibraryStore,
   ratingStore,
   recentSearchStore,
   scanStatusStore,
@@ -108,8 +96,6 @@ const allStores = [
   serverInfoStore,
   shareSettingsStore,
   sharesStore,
-  songIndexStore,
-  songLibraryStore,
   sslCertStore,
   storageLimitStore,
   syncStatusStore,

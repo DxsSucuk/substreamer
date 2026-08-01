@@ -1,5 +1,4 @@
 import { errMessage } from '../../utils/errorMessage';
-import { albumLibraryStore } from '../albumLibraryStore';
 import { albumListsStore } from '../albumListsStore';
 import { autoOfflineStore } from '../autoOfflineStore';
 import { completedScrobbleStore } from '../completedScrobbleStore';
@@ -56,7 +55,6 @@ export interface RehydrationResult {
 export async function rehydrateAllStores(): Promise<RehydrationResult> {
   const result: RehydrationResult = { succeeded: [], failed: [] };
   const stores: Array<[string, () => Promise<void>]> = [
-    ['albumLibrary', () => albumLibraryStore.getState().hydrateFromDbAsync()],
     ['completedScrobble', () => completedScrobbleStore.getState().hydrateFromDbAsync()],
     ['pendingScrobble', () => pendingScrobbleStore.getState().hydrateFromDbAsync()],
     ['musicCache', () => musicCacheStore.getState().hydrateFromDbAsync()],

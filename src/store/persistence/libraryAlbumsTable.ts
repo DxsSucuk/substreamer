@@ -14,7 +14,6 @@
  */
 import type { AlbumID3 } from '../../services/subsonicService';
 import { deleteAlbums } from '../../db/repository/albums';
-import { writeAlbumsToNormalized } from '../../db/normalizedSyncWriter';
 import { normalize, normalizeArtist, metaphoneKey } from '../../services/searchMatch';
 
 import { getDb, serializeDbWrite } from './db';
@@ -105,17 +104,6 @@ export async function upsertLibraryAlbumsAsync(
   } catch (e) {
     // eslint-disable-next-line no-console
     console.warn('[libraryAlbumsTable] upsertLibraryAlbumsAsync failed', e);
-  }
-  // Dual-write the normalized `albums` table so the incremental sync (pager resume,
-  // scan-added albums) keeps the keyset list current — not just `forceFullResync`.
-  // A SEPARATE serialized slot (not nested in the blob txn above): `writeAlbumsToNormalized`
-  // → `upsertAlbums` runs an `executeBatch` (its own implicit txn), which must not open
-  // inside the blob's explicit BEGIN. The mutex runs slots strictly sequentially, so the
-  // blob COMMIT lands before the batch BEGIN. Best-effort (swallows its own errors).
-  // `applyLocalPlay` opts out (a play-count bump would churn the child tables for a value
-  // the list doesn't render).
-  if (opts?.syncNormalized !== false) {
-    await serializeLibraryAlbumWrite(() => writeAlbumsToNormalized(db, valid));
   }
 }
 

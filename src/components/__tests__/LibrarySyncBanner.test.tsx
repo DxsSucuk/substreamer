@@ -32,8 +32,6 @@ jest.mock('react-native-reanimated', () => {
 });
 
 import { LibrarySyncBanner } from '../LibrarySyncBanner';
-import { albumDetailStore } from '../../store/albumDetailStore';
-import { albumLibraryStore } from '../../store/albumLibraryStore';
 import { syncStatusStore } from '../../store/syncStatusStore';
 
 function setSyncState(patch: Partial<ReturnType<typeof syncStatusStore.getState>>) {
@@ -46,8 +44,6 @@ beforeEach(() => {
     detailSyncTotal: 0,
     bannerDismissedAt: null,
   });
-  albumLibraryStore.setState({ albums: [] } as any);
-  albumDetailStore.setState({ albums: {} } as any);
 });
 
 describe('LibrarySyncBanner', () => {
@@ -65,7 +61,6 @@ describe('LibrarySyncBanner', () => {
 
   it('shows the progress label when syncing a meaningful-sized library', () => {
     setSyncState({ detailSyncPhase: 'syncing', detailSyncTotal: 500 });
-    albumLibraryStore.setState({ albums: Array.from({ length: 500 }, (_, i) => ({ id: `a${i}` })) } as any);
     const { getByText } = render(<LibrarySyncBanner />);
     expect(getByText(/Syncing library/i)).toBeTruthy();
   });

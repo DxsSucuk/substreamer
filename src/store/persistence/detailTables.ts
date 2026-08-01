@@ -5,7 +5,6 @@
  */
 import type { AlbumWithSongsID3, Child } from '../../services/subsonicService';
 import { normalize, normalizeArtist, metaphoneKey } from '../../services/searchMatch';
-import { writeAlbumDetailToNormalized, writeSongsToNormalized } from '../../db/normalizedSyncWriter';
 
 import { getDb, serializeDbWrite } from './db';
 
@@ -103,7 +102,6 @@ export function upsertAlbumDetail(id: string, album: AlbumWithSongsID3, retrieve
   } catch {
     /* dropped */
   }
-  void serializeSongIndexWrite(() => writeAlbumDetailToNormalized(db, album));
 }
 
 /**
@@ -131,7 +129,6 @@ export async function upsertAlbumDetailAsync(
   }
   // Dual-write the album row + its songs into the normalized tables (serialized on
   // the shared mutex so its transaction never overlaps a blob-write transaction).
-  await serializeSongIndexWrite(() => writeAlbumDetailToNormalized(db, album));
 }
 
 /** Remove a single album detail row AND the associated song_index rows. */
@@ -211,7 +208,6 @@ export function upsertSongsForAlbum(albumId: string, songs: Child[]): void {
   } catch {
     /* dropped */
   }
-  void serializeSongIndexWrite(() => writeSongsToNormalized(db, songs));
 }
 
 /**
@@ -270,7 +266,6 @@ export async function upsertSongsForAlbumAsync(albumId: string, songs: Child[]):
     // eslint-disable-next-line no-console
     console.warn('[detailTables] upsertSongsForAlbumAsync failed albumId=' + albumId, e);
   }
-  await serializeSongIndexWrite(() => writeSongsToNormalized(db, songs));
 }
 
 /**
@@ -402,8 +397,6 @@ export async function bulkUpsertSongs(songs: readonly Child[]): Promise<number> 
   // Dual-write the songs into the normalized `songs` table (SEPARATE serialized slot,
   // not nested in the blob txn) — required so the normalized model is COMPLETE on the
   // fast sync path (previously skipped, which left normalized `songs` sparse). Bounded:
-  // `writeSongsToNormalized` → `upsertSongs` chunks id-sorted batches off the JS thread.
-  await serializeSongIndexWrite(() => writeSongsToNormalized(db, valid));
   return valid.length;
 }
 

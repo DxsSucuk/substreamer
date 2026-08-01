@@ -505,18 +505,15 @@ describe('AnimatedSplashScreen', () => {
       expect(onFinish).toHaveBeenCalledTimes(1);
     });
 
-    it('hydrates per-row stores (album library, completed scrobbles, music cache) after migrations', async () => {
+    it('hydrates per-row stores (completed scrobbles, music cache) after migrations', async () => {
       mockPendingTasks = [{ version: 1, name: 'test-migration' }];
       mockRunMigrations.mockResolvedValue(1);
 
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { albumLibraryStore } = require('../../store/albumLibraryStore');
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { completedScrobbleStore } = require('../../store/completedScrobbleStore');
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { musicCacheStore } = require('../../store/musicCacheStore');
 
-      const albumHydrate = jest.spyOn(albumLibraryStore.getState(), 'hydrateFromDbAsync').mockResolvedValue(undefined);
       const scrobbleHydrate = jest.spyOn(completedScrobbleStore.getState(), 'hydrateFromDbAsync').mockResolvedValue(undefined);
       const musicCacheHydrate = jest.spyOn(musicCacheStore.getState(), 'hydrateFromDbAsync').mockResolvedValue(undefined);
 
@@ -533,11 +530,9 @@ describe('AnimatedSplashScreen', () => {
         await Promise.resolve();
       });
 
-      expect(albumHydrate).toHaveBeenCalledTimes(1);
       expect(scrobbleHydrate).toHaveBeenCalledTimes(1);
       expect(musicCacheHydrate).toHaveBeenCalledTimes(1);
 
-      albumHydrate.mockRestore();
       scrobbleHydrate.mockRestore();
       musicCacheHydrate.mockRestore();
     });
@@ -546,18 +541,15 @@ describe('AnimatedSplashScreen', () => {
       // Regression: before this fix, the splash short-circuited with fadeOut
       // when pending was empty and never called hydrateFromDb. Symptom: on
       // every launch AFTER the last migration had already completed, per-row
-      // stores (music cache, completed scrobbles, album library)
+      // stores (music cache, completed scrobbles)
       // would render as empty even though their tables had data on disk.
       mockPendingTasks = [];
 
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { albumLibraryStore } = require('../../store/albumLibraryStore');
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { completedScrobbleStore } = require('../../store/completedScrobbleStore');
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { musicCacheStore } = require('../../store/musicCacheStore');
 
-      const albumHydrate = jest.spyOn(albumLibraryStore.getState(), 'hydrateFromDbAsync').mockResolvedValue(undefined);
       const scrobbleHydrate = jest.spyOn(completedScrobbleStore.getState(), 'hydrateFromDbAsync').mockResolvedValue(undefined);
       const musicCacheHydrate = jest.spyOn(musicCacheStore.getState(), 'hydrateFromDbAsync').mockResolvedValue(undefined);
 
@@ -568,13 +560,11 @@ describe('AnimatedSplashScreen', () => {
         completeBothFlags();
       });
 
-      expect(albumHydrate).toHaveBeenCalledTimes(1);
       expect(scrobbleHydrate).toHaveBeenCalledTimes(1);
       expect(musicCacheHydrate).toHaveBeenCalledTimes(1);
       // runMigrations must not have been called because pending was empty.
       expect(mockRunMigrations).not.toHaveBeenCalled();
 
-      albumHydrate.mockRestore();
       scrobbleHydrate.mockRestore();
       musicCacheHydrate.mockRestore();
     });

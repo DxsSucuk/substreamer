@@ -92,12 +92,6 @@ jest.mock('../../store/persistence/musicCacheTables', () => ({
 // track's album wasn't itself cached as a v1 album item. Mock with a
 // controllable getState() so tests can dial the resolution map up and down.
 let mockAlbumDetailAlbums: Record<string, any> = {};
-jest.mock('../../store/albumDetailStore', () => ({
-  albumDetailStore: {
-    getState: () => ({ albums: mockAlbumDetailAlbums }),
-  },
-}));
-
 jest.mock('expo-file-system', () => {
   class MockFile {
     uri: string;

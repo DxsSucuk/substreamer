@@ -58,20 +58,6 @@ jest.mock('../../store/albumListsStore', () => ({
   },
 }));
 
-jest.mock('../../store/albumLibraryStore', () => ({
-  __esModule: true,
-  albumLibraryStore: {
-    getState: () => ({
-      albums: albumLibraryState.albums,
-      loading: albumLibraryState.loading,
-      fetchAllAlbums: () => mockFetchAllAlbums(),
-      upsertAlbums: (albums: Array<{ id: string }>) => mockUpsertAlbums(albums),
-      clearAlbums: () => { albumLibraryState.albums = []; },
-    }),
-  },
-  registerAlbumLibraryReconcileHook: () => {},
-}));
-
 // Row-based startup gate reads the library_albums COUNT.
 const mockDeleteLibraryAlbums = jest.fn((_ids: readonly string[]) => Promise.resolve());
 jest.mock('../../store/persistence/libraryAlbumsTable', () => ({
@@ -96,20 +82,6 @@ const mockFetchAlbum = jest.fn((id: string) => {
 const mockRemoveEntries = jest.fn((ids: readonly string[]) => {
   for (const id of ids) delete mockDetailState.albums[id];
 });
-jest.mock('../../store/albumDetailStore', () => ({
-  __esModule: true,
-  albumDetailStore: {
-    getState: () => ({
-      albums: mockDetailState.albums,
-      fetchAlbum: (id: string) => mockFetchAlbum(id),
-      hasEntry: (id: string) =>
-        Object.prototype.hasOwnProperty.call(mockDetailState.albums, id),
-      removeEntries: (ids: readonly string[]) => mockRemoveEntries(ids),
-      clearAlbums: () => { mockDetailState.albums = {}; },
-    }),
-  },
-}));
-
 // The walk computes "already detailed" from SQL (getDetailedAlbumIdsAsync), not
 // the in-memory map. Mirror the mocked detail cache so seeded entries count as
 // detailed. requireActual preserves the module's other exports.
@@ -118,16 +90,6 @@ jest.mock('../../store/persistence/detailTables', () => ({
   getDetailedAlbumIdsAsync: () =>
     Promise.resolve(new Set(Object.keys(mockDetailState.albums))),
   countSongIndexAsync: () => Promise.resolve(songIndexTableState.count),
-}));
-
-jest.mock('../../store/artistLibraryStore', () => ({
-  __esModule: true,
-  artistLibraryStore: {
-    getState: () => ({
-      artists: artistLibraryState.artists,
-      fetchAllArtists: () =>mockFetchAllArtists(),
-    }),
-  },
 }));
 
 // The sync's change-detection now reads normalized counts/ids from the repository
@@ -148,26 +110,10 @@ jest.mock('../../db/repository/artists', () => ({
   countArtists: () => Promise.resolve(artistLibraryState.artists.length),
 }));
 
-jest.mock('../../store/playlistLibraryStore', () => ({
-  __esModule: true,
-  playlistLibraryStore: {
-    getState: () => ({
-      playlists: playlistLibraryState.playlists,
-      fetchAllPlaylists: () =>mockFetchAllPlaylists(),
-    }),
-  },
-  registerPlaylistLibraryReconcileHook: () => {},
-}));
-
 const mockPlaylistDetail = {
   removePlaylist: jest.fn(),
   fetchPlaylist: jest.fn((_id: string) => Promise.resolve(null as unknown)),
 };
-jest.mock('../../store/playlistDetailStore', () => ({
-  __esModule: true,
-  playlistDetailStore: { getState: () => mockPlaylistDetail },
-}));
-
 jest.mock('../../store/favoritesStore', () => ({
   __esModule: true,
   favoritesStore: {
@@ -297,8 +243,6 @@ import {
   onStartup,
   forceFullResync,
   recoverStalledSync,
-  runFullAlbumDetailSync,
-  syncSongLibrary,
   __internal,
 } from '../dataSyncService';
 import * as subsonicService from '../subsonicService';
@@ -688,187 +632,6 @@ describe('dataSyncService — performScope internal', () => {
   });
 });
 
-describe('dataSyncService — runFullAlbumDetailSync', () => {
-  it('is a no-op when offline', async () => {
-    offlineState.offline = true;
-    albumLibraryState.albums = [{ id: 'a1' }, { id: 'a2' }];
-    await runFullAlbumDetailSync();
-    expect(mockFetchAlbum).not.toHaveBeenCalled();
-    expect(syncStatusStore.getState().detailSyncPhase).toBe('paused-offline');
-  });
-
-  it('is a no-op when the album list is still fetching', async () => {
-    // The walk now gates on the sync phase (normalized-era signal), not the
-    // doomed store's `loading` flag.
-    syncStatusStore.setState({ librarySyncPhase: 'fetching' });
-    albumLibraryState.albums = [{ id: 'a1' }];
-    await runFullAlbumDetailSync();
-    expect(mockFetchAlbum).not.toHaveBeenCalled();
-    // Phase unchanged (stays idle) — we don't pre-emptively flip to syncing.
-    expect(syncStatusStore.getState().detailSyncPhase).toBe('idle');
-  });
-
-  it('is a no-op when library is empty', async () => {
-    albumLibraryState.albums = [];
-    await runFullAlbumDetailSync();
-    expect(mockFetchAlbum).not.toHaveBeenCalled();
-    expect(syncStatusStore.getState().detailSyncPhase).toBe('idle');
-  });
-
-  it('fetches every missing album once, then settles to idle', async () => {
-    albumLibraryState.albums = [{ id: 'a1' }, { id: 'a2' }, { id: 'a3' }];
-    await runFullAlbumDetailSync();
-    expect(mockFetchAlbum).toHaveBeenCalledTimes(3);
-    expect(mockDetailState.fetched.sort()).toEqual(['a1', 'a2', 'a3']);
-    expect(syncStatusStore.getState().detailSyncPhase).toBe('idle');
-    expect(syncStatusStore.getState().detailSyncTotal).toBe(0);
-  });
-
-  it('skips albums that already have a cached detail entry', async () => {
-    albumLibraryState.albums = [{ id: 'a1' }, { id: 'a2' }, { id: 'a3' }];
-    mockDetailState.albums = { a2: {} };
-    await runFullAlbumDetailSync();
-    expect(mockFetchAlbum).toHaveBeenCalledTimes(2);
-    expect(mockDetailState.fetched.sort()).toEqual(['a1', 'a3']);
-  });
-
-  it('settles to idle when nothing is missing', async () => {
-    albumLibraryState.albums = [{ id: 'a1' }, { id: 'a2' }];
-    mockDetailState.albums = { a1: {}, a2: {} };
-    syncStatusStore.setState({ detailSyncPhase: 'syncing', detailSyncTotal: 50 });
-    await runFullAlbumDetailSync();
-    expect(mockFetchAlbum).not.toHaveBeenCalled();
-    expect(syncStatusStore.getState().detailSyncPhase).toBe('idle');
-    expect(syncStatusStore.getState().detailSyncTotal).toBe(0);
-  });
-
-  it('freezes detailSyncTotal at the missing count when walk begins', async () => {
-    albumLibraryState.albums = Array.from({ length: 10 }, (_, i) => ({ id: `a${i}` }));
-    let observedDuringWalk = 0;
-    mockFetchAlbum.mockImplementationOnce((id: string) => {
-      observedDuringWalk = syncStatusStore.getState().detailSyncTotal;
-      mockDetailState.albums[id] = {};
-      return Promise.resolve({ id } as any);
-    });
-    await runFullAlbumDetailSync();
-    expect(observedDuringWalk).toBe(10);
-    // After walk finishes, total resets to 0 (resetDetailSync).
-    expect(syncStatusStore.getState().detailSyncTotal).toBe(0);
-  });
-
-  it('overlapping calls collapse via the in-flight map', async () => {
-    albumLibraryState.albums = [{ id: 'a1' }];
-    let releaseFirst: () => void;
-    mockFetchAlbum.mockImplementationOnce(
-      () => new Promise<any>((r) => { releaseFirst = () => r({ id: 'a1' }); }),
-    );
-    const first = runFullAlbumDetailSync();
-    // Yield to let the walk enter runPool and register in-flight.
-    await new Promise((r) => setImmediate(r));
-    const second = runFullAlbumDetailSync();
-    expect(mockFetchAlbum).toHaveBeenCalledTimes(1);
-    releaseFirst!();
-    await first;
-    await second;
-    expect(mockFetchAlbum).toHaveBeenCalledTimes(1);
-  });
-
-  it('synchronous double-entry collapses (no race before first await)', async () => {
-    // Two synchronous callers entering before any async boundary — critical
-    // regression test for the dedup fix: the second caller must see the
-    // in-flight Promise registered by the first and return it.
-    albumLibraryState.albums = [{ id: 'a1' }, { id: 'a2' }];
-    const first = runFullAlbumDetailSync();
-    const second = runFullAlbumDetailSync();
-    await Promise.all([first, second]);
-    expect(mockFetchAlbum).toHaveBeenCalledTimes(2); // not 4
-  });
-
-  it('treats null returns as failures and completes the walk (phase idle)', async () => {
-    albumLibraryState.albums = [{ id: 'a1' }, { id: 'a2' }, { id: 'a3' }];
-    mockFetchAlbum.mockImplementation(() => Promise.resolve(null));
-    await runFullAlbumDetailSync();
-    expect(mockFetchAlbum).toHaveBeenCalledTimes(3);
-    expect(syncStatusStore.getState().detailSyncPhase).toBe('idle');
-  });
-
-  it('aborts remaining workers when generation is bumped mid-walk', async () => {
-    albumLibraryState.albums = Array.from({ length: 20 }, (_, i) => ({ id: `a${i}` }));
-    mockFetchAlbum.mockImplementation((id: string) =>
-      new Promise((resolve) => setTimeout(() => {
-        mockDetailState.albums[id] = {};
-        resolve({ id } as any);
-      }, 10)),
-    );
-    const walk = runFullAlbumDetailSync();
-    // Let a couple of workers start, then bump the generation.
-    await new Promise((r) => setTimeout(r, 5));
-    syncStatusStore.getState().bumpGeneration();
-    await walk;
-    // Not all 20 should have been fetched — the cancel stops further work.
-    expect(mockFetchAlbum.mock.calls.length).toBeLessThan(20);
-  });
-
-  it('pauses to "paused-offline" when offline is toggled on mid-walk', async () => {
-    albumLibraryState.albums = Array.from({ length: 10 }, (_, i) => ({ id: `a${i}` }));
-    mockFetchAlbum.mockImplementation((id: string) =>
-      new Promise((resolve) => setTimeout(() => {
-        mockDetailState.albums[id] = {};
-        resolve({ id } as any);
-      }, 10)),
-    );
-    const walk = runFullAlbumDetailSync();
-    await new Promise((r) => setTimeout(r, 5));
-    setOfflineMode(true);
-    await walk;
-    expect(syncStatusStore.getState().detailSyncPhase).toBe('paused-offline');
-    expect(mockFetchAlbum.mock.calls.length).toBeLessThan(10);
-  });
-
-  it('completes the walk (phase idle) when some fetches fail', async () => {
-    albumLibraryState.albums = [{ id: 'a1' }, { id: 'a2' }];
-    mockFetchAlbum.mockImplementationOnce(() => Promise.reject(new Error('flaky')));
-    mockFetchAlbum.mockImplementationOnce((id: string) => {
-      mockDetailState.albums[id] = {};
-      return Promise.resolve({ id } as any);
-    });
-    await runFullAlbumDetailSync();
-    expect(syncStatusStore.getState().detailSyncPhase).toBe('idle');
-  });
-
-  it('increments detailSyncCompleted on each successful fetch (O(1) progress signal)', async () => {
-    albumLibraryState.albums = [{ id: 'a1' }, { id: 'a2' }, { id: 'a3' }];
-    // Spy on the increment so we can count how many times it fired.
-    const realIncrement = syncStatusStore.getState().incrementDetailSyncCompleted;
-    const incrementSpy = jest.fn(() => realIncrement());
-    syncStatusStore.setState({ incrementDetailSyncCompleted: incrementSpy });
-    mockFetchAlbum.mockImplementation((id: string) => {
-      mockDetailState.albums[id] = {};
-      return Promise.resolve({ id } as any);
-    });
-    await runFullAlbumDetailSync();
-    expect(incrementSpy).toHaveBeenCalledTimes(3);
-  });
-
-  it('resets detailSyncCompleted to 0 via setDetailSyncTotal at walk end', async () => {
-    albumLibraryState.albums = [{ id: 'a1' }];
-    await runFullAlbumDetailSync();
-    // After walk: total=0, completed=0 — ready for the next walk.
-    expect(syncStatusStore.getState().detailSyncTotal).toBe(0);
-    expect(syncStatusStore.getState().detailSyncCompleted).toBe(0);
-  });
-
-  it('does not increment completed on null-return fetches (rejected path)', async () => {
-    albumLibraryState.albums = [{ id: 'a1' }, { id: 'a2' }];
-    mockFetchAlbum.mockImplementation(() => Promise.resolve(null));
-    await runFullAlbumDetailSync();
-    // All fetches failed; completed counter should not have moved.
-    // setDetailSyncTotal at end will have reset it anyway, but this
-    // test pins that the classification-as-rejected path does not double-count.
-    expect(syncStatusStore.getState().detailSyncCompleted).toBe(0);
-  });
-});
-
 describe('dataSyncService — recoverStalledSync', () => {
   it('no-op when phase is idle', async () => {
     albumLibraryState.albums = [{ id: 'a1' }];
@@ -907,44 +670,6 @@ describe('dataSyncService — recoverStalledSync', () => {
     syncStatusStore.setState({ detailSyncPhase: 'error', songSyncStrategy: 'basic' });
     await recoverStalledSync();
     expect(mockFetchAllAlbums).toHaveBeenCalled();
-  });
-});
-
-describe('dataSyncService — syncSongLibrary', () => {
-  it('fast path: probes, pages search3 songs, marks complete', async () => {
-    (subsonicService.probeEmptySearch3 as jest.Mock).mockResolvedValue(true);
-    const mockSongs = subsonicService.searchSongsPage as jest.Mock;
-    mockSongs.mockResolvedValueOnce([{ id: 's1', albumId: 'a1' }, { id: 's2', albumId: 'a1' }]);
-    mockSongs.mockResolvedValueOnce([]); // end of results
-    await syncSongLibrary();
-    expect(mockSongs).toHaveBeenCalledWith(1000, 0);
-    expect(syncStatusStore.getState().songSyncStrategy).toBe('search3');
-    expect(syncStatusStore.getState().songSyncComplete).toBe(true);
-    expect(mockFetchAlbum).not.toHaveBeenCalled(); // no per-album walk
-  });
-
-  it('falls back to the walk when fast-path songs lack albumId', async () => {
-    (subsonicService.probeEmptySearch3 as jest.Mock).mockResolvedValue(true);
-    (subsonicService.searchSongsPage as jest.Mock).mockResolvedValue([{ id: 's1' }, { id: 's2' }]);
-    albumLibraryState.albums = [{ id: 'a1' }];
-    await syncSongLibrary();
-    expect(syncStatusStore.getState().songSyncStrategy).toBe('basic');
-    expect(mockFetchAlbum).toHaveBeenCalledWith('a1');
-  });
-
-  it('basic path (probe false) runs the walk', async () => {
-    (subsonicService.probeEmptySearch3 as jest.Mock).mockResolvedValue(false);
-    albumLibraryState.albums = [{ id: 'a1' }];
-    await syncSongLibrary();
-    expect(subsonicService.searchSongsPage).not.toHaveBeenCalled();
-    expect(mockFetchAlbum).toHaveBeenCalledWith('a1');
-  });
-
-  it('no-op when songSyncComplete', async () => {
-    syncStatusStore.setState({ songSyncComplete: true });
-    await syncSongLibrary();
-    expect(subsonicService.searchSongsPage).not.toHaveBeenCalled();
-    expect(mockFetchAlbum).not.toHaveBeenCalled();
   });
 });
 

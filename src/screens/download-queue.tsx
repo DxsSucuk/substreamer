@@ -34,6 +34,8 @@ import {
   musicCacheStore,
   type DownloadQueueItem,
 } from '../store/musicCacheStore';
+import { connectivityStore } from '../store/connectivityStore';
+import { offlineModeStore } from '../store/offlineModeStore';
 import { computeQueueItemProgress } from '../store/persistence/cachedItemHelpers';
 import { formatSpeed } from '../utils/formatters';
 
@@ -402,12 +404,42 @@ export function DownloadQueueScreen() {
     [downloadQueue],
   );
 
+  // Why is nothing downloading? Offline mode parks the queue by design; an unreachable
+  // server leaves items retrying. Either way the user sees a stalled list, so say which.
+  const offlineMode = offlineModeStore((st) => st.offlineMode);
+  const serverReachable = connectivityStore((st) => st.isServerReachable);
+  const hasConnection = connectivityStore((st) => st.hasConnection);
+  const pausedReason: 'offline' | 'unreachable' | null =
+    downloadQueue.length === 0
+      ? null
+      : offlineMode
+        ? 'offline'
+        : !hasConnection || !serverReachable
+          ? 'unreachable'
+          : null;
+
   const listHeader = useMemo(
     () =>
       downloadQueue.length > 0 ? (
-        <DownloadStatsCard colors={colors} queuedCount={queuedCount} />
+        <>
+          {pausedReason && (
+            <View style={[styles.pausedNotice, { backgroundColor: colors.card }]}>
+              <Ionicons
+                name={pausedReason === 'offline' ? 'cloud-offline-outline' : 'warning-outline'}
+                size={18}
+                color={colors.primary}
+              />
+              <Text style={[styles.pausedText, { color: colors.textSecondary }]}>
+                {pausedReason === 'offline'
+                  ? t('downloadsPausedOffline')
+                  : t('downloadsPausedUnreachable')}
+              </Text>
+            </View>
+          )}
+          <DownloadStatsCard colors={colors} queuedCount={queuedCount} />
+        </>
       ) : null,
-    [downloadQueue.length, colors, queuedCount],
+    [downloadQueue.length, colors, queuedCount, pausedReason, t],
   );
 
   const contentStyle = useMemo(
@@ -480,6 +512,19 @@ const styles = StyleSheet.create({
     width: StyleSheet.hairlineWidth,
     height: 48,
     opacity: 0.6,
+  },
+  pausedNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 12,
+  },
+  pausedText: {
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 18,
   },
   headerRight: {
     flexDirection: 'row',
