@@ -14,7 +14,7 @@ import type { AlbumID3, ArtistID3, Child, ItemDate, Playlist } from 'subsonic-ap
 
 import type { InternalDb } from '../client';
 import { ALBUM_LIST_COLS, albumListRowToAlbumID3, type AlbumListRow } from './albums';
-import { SONG_LIST_COLS, songListRowToChild, type SongListRow } from './songs';
+import { SONG_LIST_COLS, SONG_LIST_COLS_S, songListRowToChild, type SongListRow } from './songs';
 
 type Row = Record<string, unknown>;
 const str = (v: unknown): string | undefined => (v == null ? undefined : String(v));
@@ -206,7 +206,7 @@ export async function getArtistTopSongsRow(
   );
   if (!row) return null;
   const songRows = await db.getAllAsync<SongListRow>(
-    `SELECT ${SONG_LIST_COLS} FROM songs s JOIN artist_top_songs ats ON ats.song_id = s.id ` +
+    `SELECT ${SONG_LIST_COLS_S} FROM songs s JOIN artist_top_songs ats ON ats.song_id = s.id ` +
       `WHERE ats.artist_id = ? ORDER BY ats.pos`,
     [id],
   );
@@ -246,7 +246,7 @@ export async function getPlaylistDetail(db: InternalDb, id: string): Promise<Pla
   const row = await db.getFirstAsync<Row>('SELECT * FROM playlists WHERE id = ?', [id]);
   if (!row) return null;
   const songRows = await db.getAllAsync<SongListRow>(
-    `SELECT ${SONG_LIST_COLS} FROM songs s JOIN playlist_songs ps ON ps.song_id = s.id ` +
+    `SELECT ${SONG_LIST_COLS_S} FROM songs s JOIN playlist_songs ps ON ps.song_id = s.id ` +
       `WHERE ps.playlist_id = ? ORDER BY ps.position`,
     [id],
   );

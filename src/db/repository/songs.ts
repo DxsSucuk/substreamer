@@ -19,6 +19,7 @@ export interface SongListRow {
   artist: string | null;
   album: string | null;
   album_id: string | null;
+  artist_id: string | null;
   cover_art: string | null;
   duration: number | null;
   track: number | null;
@@ -29,9 +30,18 @@ export interface SongListRow {
   user_rating: number | null;
 }
 
-export const SONG_LIST_COLS =
-  '"id", "title", "artist", "album", "album_id", "cover_art", "duration", "track", ' +
-  '"disc_number", "sort_title", "sort_artist", "starred", "user_rating"';
+const SONG_LIST_FIELDS = [
+  'id', 'title', 'artist', 'album', 'album_id', 'artist_id', 'cover_art', 'duration',
+  'track', 'disc_number', 'sort_title', 'sort_artist', 'starred', 'user_rating',
+] as const;
+
+export const SONG_LIST_COLS = SONG_LIST_FIELDS.map((f) => `"${f}"`).join(', ');
+
+/** The same projection qualified to `s`, for queries that JOIN a table sharing column
+ *  names with `songs` (`artist_top_songs.artist_id`, `playlist_songs.song_id`) — an
+ *  unqualified list is ambiguous there. Derived from one field list so the two cannot
+ *  drift apart. */
+export const SONG_LIST_COLS_S = SONG_LIST_FIELDS.map((f) => `s."${f}"`).join(', ');
 
 export type SongSortOrder = 'title' | 'artist';
 
@@ -45,6 +55,9 @@ export function songListRowToChild(r: SongListRow): Child {
     artist: r.artist ?? undefined,
     album: r.album ?? undefined,
     albumId: r.album_id ?? undefined,
+    // Drives 'Go to artist' + 'More by this artist' in the options sheet, which gate
+    // on `artistId` — omitting it from the projection silently hid both.
+    artistId: r.artist_id ?? undefined,
     coverArt: r.cover_art ?? undefined,
     duration: r.duration ?? 0,
     track: r.track ?? undefined,

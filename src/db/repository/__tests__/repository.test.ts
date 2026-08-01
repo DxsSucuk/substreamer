@@ -44,6 +44,7 @@ import {
   countSongs,
   deleteAlbumSongsNotIn,
   listSongs,
+  songListRowToChild,
   listSongsBefore,
   listSongsByAlbum,
   songCursorOf,
@@ -197,6 +198,19 @@ describe('albums repository', () => {
 });
 
 describe('songs repository', () => {
+  it('the lean list projection carries artistId (Go to artist / More by this artist)', async () => {
+    // The options sheet gates both on `artistId`; omitting `artist_id` from the
+    // projection silently hid them everywhere the list feeds — songs list, search,
+    // favourites, album and playlist tracks.
+    await upsertSongs(db(), [
+      { id: 's1', title: 'Song', artistId: 'ar1', albumId: 'al1', isDir: false } as Child,
+    ]);
+    const page = await listSongs(db(), { limit: 10 });
+    expect(page.rows[0].artist_id).toBe('ar1');
+    expect(songListRowToChild(page.rows[0]).artistId).toBe('ar1');
+  });
+
+
   it('upserts + A–Z lists + orders album detail by disc/track', async () => {
     await upsertSongs(db(), [
       song('s1', 'Zed', { albumId: 'a1', track: 2, discNumber: 1 }),
