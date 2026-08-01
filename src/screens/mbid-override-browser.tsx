@@ -13,8 +13,8 @@ import { SwipeableRow, type SwipeAction } from '../components/SwipeableRow';
 import { useTheme } from '../hooks/useTheme';
 import { defaultCollator } from '../utils/intl';
 import { getAlbumInfoRow } from '../db/repository/albums';
-import { getArtistDetail } from '../db/repository/details';
-import { fetchArtistDetail } from '../services/detailFetchService';
+import { getArtistBioRow } from '../db/repository/details';
+import { fetchArtistBio } from '../services/detailFetchService';
 import { getDb } from '../store/persistence/db';
 import { albumInfoStore } from '../store/albumInfoStore';
 import { mbidOverrideStore, type MbidOverride, type MbidOverrideType } from '../store/mbidOverrideStore';
@@ -58,12 +58,11 @@ const OverrideRow = memo(function OverrideRow({
     // Only refetch what we actually hold: dropping an override changes the resolved bio /
     // album info, so there is nothing to correct for an entity we never fetched detail for.
     if (type === 'artist' && db) {
-      // Detail, not mere existence — an artist ROW exists for everything in the library
-      // after a list sync. `bioCheckedAt` alone is too narrow: a thrown MusicBrainz lookup
-      // leaves it NULL on an otherwise fully-fetched artist (detailFetchService).
-      const cached = await getArtistDetail(db, entityId);
-      if (!cached || (cached.topSongs.length === 0 && cached.bioCheckedAt == null)) return;
-      await runWithOverlay(() => fetchArtistDetail(entityId), {
+      // A bio row exists iff we have attempted this artist — nothing to correct otherwise.
+      if (!(await getArtistBioRow(db, entityId))) return;
+      // `reresolve`: the override just changed, so the resolution has to be redone even
+      // though we already hold a bio.
+      await runWithOverlay(() => fetchArtistBio(entityId, { reresolve: true }), {
         loading: t('updatingArtist'),
         success: t('artistUpdated'),
         error: t('failedToUpdateArtist'),

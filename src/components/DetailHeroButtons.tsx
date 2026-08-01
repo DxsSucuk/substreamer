@@ -13,15 +13,24 @@ import { useTheme } from '../hooks/useTheme';
 export function ShufflePlayButton({
   onPress,
   style,
+  disabled,
 }: {
   onPress: () => void;
   style?: StyleProp<ViewStyle>;
+  /** Dimmed + inert while the content it would play has not settled yet. */
+  disabled?: boolean;
 }) {
   const { t } = useTranslation();
   return (
     <Pressable
       onPress={onPress}
-      style={({ pressed }) => [styles.shuffleButton, style, pressed && styles.pressed]}
+      disabled={disabled}
+      style={({ pressed }) => [
+        styles.shuffleButton,
+        style,
+        disabled && styles.disabled,
+        pressed && styles.pressed,
+      ]}
       accessibilityRole="button"
       accessibilityLabel={t('shufflePlay')}
     >
@@ -34,18 +43,23 @@ export function ShufflePlayButton({
 export function PlayAllButton({
   onPress,
   style,
+  disabled,
 }: {
   onPress: () => void;
   style?: StyleProp<ViewStyle>;
+  /** See {@link ShufflePlayButton}. */
+  disabled?: boolean;
 }) {
   const { colors } = useTheme();
   return (
     <Pressable
       onPress={onPress}
+      disabled={disabled}
       style={({ pressed }) => [
         styles.playAllButton,
         { backgroundColor: colors.primary },
         style,
+        disabled && styles.disabled,
         pressed && styles.pressed,
       ]}
     >
@@ -72,6 +86,9 @@ const styles = StyleSheet.create({
   },
   playAllIcon: {
     marginLeft: 3,
+  },
+  disabled: {
+    opacity: 0.4,
   },
   pressed: {
     opacity: 0.7,

@@ -5,24 +5,33 @@
  * offline, and before the fallback existed a headless drill-down into an album or
  * playlist we already held locally resolved to an empty track list.
  */
-import { fetchAlbumDetail, fetchPlaylistDetail } from '../detailFetchService';
+import {
+  fetchAlbumDetail,
+  fetchArtistBio,
+  fetchArtistTopSongs,
+  fetchPlaylistDetail,
+} from '../detailFetchService';
 
 const mockGetAlbum = jest.fn();
 const mockGetPlaylist = jest.fn();
+const mockGetTopSongs = jest.fn();
+const mockSearchMbid = jest.fn();
+const mockGetMbBio = jest.fn();
+let mockIsVA = false;
 jest.mock('../subsonicService', () => ({
   ensureCoverArtAuth: () => Promise.resolve(),
   getAlbum: (id: string) => mockGetAlbum(id),
   getPlaylist: (id: string) => mockGetPlaylist(id),
-  getArtist: jest.fn(),
-  getArtistInfo2: jest.fn(),
-  getTopSongs: jest.fn(),
-  getVariousArtistsBio: jest.fn(),
-  isVariousArtists: () => false,
+  getArtist: jest.fn(async (id: string) => ({ id, name: 'Artist' })),
+  getArtistInfo2: jest.fn(async () => null),
+  getTopSongs: (...a: unknown[]) => mockGetTopSongs(...a),
+  getVariousArtistsBio: () => 'VA bio',
+  isVariousArtists: () => mockIsVA,
   VARIOUS_ARTISTS_COVER_ART_ID: 'va',
 }));
 jest.mock('../musicbrainzService', () => ({
-  getArtistBiography: jest.fn(),
-  searchArtistMBID: jest.fn(),
+  getArtistBiography: (...a: unknown[]) => mockGetMbBio(...a),
+  searchArtistMBID: (...a: unknown[]) => mockSearchMbid(...a),
 }));
 jest.mock('../imageCacheService', () => ({
   ensureCached: () => Promise.resolve(),
@@ -36,10 +45,18 @@ jest.mock('../../store/offlineModeStore', () => ({
 
 const mockLocalAlbum = jest.fn();
 const mockLocalPlaylist = jest.fn();
+const mockLocalBio = jest.fn();
+const mockLocalTop = jest.fn();
 jest.mock('../../db/repository/details', () => ({
   getAlbumDetail: (_db: unknown, id: string) => mockLocalAlbum(id),
   getPlaylistDetail: (_db: unknown, id: string) => mockLocalPlaylist(id),
-  getArtistDetail: jest.fn(),
+  getArtistBase: jest.fn(async (_db: unknown, id: string) => ({
+    artist: { id, name: 'Artist' },
+    albums: [],
+  })),
+  getArtistBioRow: (_db: unknown, id: string) => mockLocalBio(id),
+  getArtistInfoRow: jest.fn(async () => null),
+  getArtistTopSongsRow: (_db: unknown, id: string) => mockLocalTop(id),
 }));
 
 jest.mock('../../store/persistence/db', () => ({
@@ -58,10 +75,11 @@ jest.mock('../../db/repository/playlists', () => ({
   upsertPlaylists: () => Promise.resolve(0),
   setPlaylistSongs: jest.fn(),
 }));
+const mockSetTopSongs = jest.fn();
+const mockUpsertBio = jest.fn();
 jest.mock('../../db/repository/artists', () => ({
-  listArtistsWithTopSongs: jest.fn(),
-  setArtistDetailMeta: jest.fn(),
-  setArtistTopSongs: jest.fn(),
+  setArtistTopSongs: (...a: unknown[]) => mockSetTopSongs(...a),
+  upsertArtistBio: (...a: unknown[]) => mockUpsertBio(...a),
   upsertArtistInfo: jest.fn(),
   upsertArtists: jest.fn(),
 }));
@@ -72,6 +90,14 @@ beforeEach(() => {
   mockGetPlaylist.mockReset();
   mockLocalAlbum.mockReset();
   mockLocalPlaylist.mockReset();
+  mockGetTopSongs.mockReset();
+  mockSearchMbid.mockReset();
+  mockGetMbBio.mockReset();
+  mockSetTopSongs.mockReset();
+  mockUpsertBio.mockReset();
+  mockLocalBio.mockReset().mockResolvedValue(null);
+  mockLocalTop.mockReset().mockResolvedValue(null);
+  mockIsVA = false;
 });
 
 describe('fetchAlbumDetail — local first', () => {
@@ -176,5 +202,77 @@ describe('fetchPlaylistDetail — local first', () => {
     mockLocalPlaylist.mockResolvedValue(null);
 
     expect(await fetchPlaylistDetail('p1', { prefetchCovers: false })).toBeNull();
+  });
+});
+
+describe('fetchArtistTopSongs', () => {
+  it('does NOT stamp a presence marker when the call failed', async () => {
+    // getTopSongs returns null for a failed call and [] for a genuine "none". Stamping
+    // the former would leave a permanently empty section with no TTL to recover from.
+    mockGetTopSongs.mockResolvedValue(null);
+    await fetchArtistTopSongs('ar1', { prefetchCovers: false });
+    expect(mockSetTopSongs).not.toHaveBeenCalled();
+  });
+
+  it('stamps a marker for a genuine empty result', async () => {
+    mockGetTopSongs.mockResolvedValue([]);
+    await fetchArtistTopSongs('ar1', { prefetchCovers: false });
+    expect(mockSetTopSongs).toHaveBeenCalled();
+    expect(mockSetTopSongs.mock.calls[0][3]).toEqual({ listLength: expect.any(Number) });
+  });
+
+  it('treats a list-length change as a miss and refetches', async () => {
+    mockLocalTop.mockResolvedValue({ songs: [], retrievedAt: 1, listLength: 999, songCount: 0 });
+    mockGetTopSongs.mockResolvedValue([]);
+    await fetchArtistTopSongs('ar1', { prefetchCovers: false });
+    expect(mockGetTopSongs).toHaveBeenCalled();
+  });
+
+  it('treats a reaped junction (resolved < songCount) as a miss', async () => {
+    mockLocalTop.mockResolvedValue({
+      songs: [{ id: 's1' }],
+      retrievedAt: 1,
+      listLength: 20,
+      songCount: 2,
+    });
+    mockGetTopSongs.mockResolvedValue([]);
+    await fetchArtistTopSongs('ar1', { prefetchCovers: false });
+    expect(mockGetTopSongs).toHaveBeenCalled();
+  });
+});
+
+describe('fetchArtistBio', () => {
+  it('serves a stored bio without touching MusicBrainz', async () => {
+    mockLocalBio.mockResolvedValue({ biography: 'Cached', resolvedMbid: 'm1', checkedAt: 1 });
+    const bio = await fetchArtistBio('ar1');
+    expect(bio?.biography).toBe('Cached');
+    expect(mockSearchMbid).not.toHaveBeenCalled();
+  });
+
+  it('honours the negative cache — a fresh NULL bio does not re-hammer MusicBrainz', async () => {
+    mockLocalBio.mockResolvedValue({ biography: null, resolvedMbid: null, checkedAt: Date.now() });
+    await fetchArtistBio('ar1');
+    expect(mockSearchMbid).not.toHaveBeenCalled();
+  });
+
+  it('reresolve ignores BOTH the stored bio and the negative cache', async () => {
+    // This is the MBID-override flow: the inputs changed, so the chain must rerun even
+    // though we already hold a bio.
+    mockLocalBio.mockResolvedValue({ biography: 'Stale', resolvedMbid: 'old', checkedAt: Date.now() });
+    mockSearchMbid.mockResolvedValue('new-mbid');
+    mockGetMbBio.mockResolvedValue('Fresh bio');
+    await fetchArtistBio('ar1', { reresolve: true });
+    expect(mockGetMbBio).toHaveBeenCalled();
+    expect(mockUpsertBio).toHaveBeenCalled();
+    expect(mockUpsertBio.mock.calls[0][2].biography).toBe('Fresh bio');
+  });
+
+  it('Various Artists persists a static bio and makes no remote call', async () => {
+    mockIsVA = true;
+    await fetchArtistBio('va');
+    expect(mockSearchMbid).not.toHaveBeenCalled();
+    expect(mockUpsertBio.mock.calls[0][2].biography).toBe('VA bio');
+    // A row must exist, or the override screens read VA as never-attempted.
+    expect(mockUpsertBio.mock.calls[0][2].checkedAt).toEqual(expect.any(Number));
   });
 });

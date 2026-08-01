@@ -21,7 +21,7 @@ import {
   type MusicBrainzReleaseGroup,
 } from '../services/musicbrainzService';
 import { albumInfoStore } from '../store/albumInfoStore';
-import { fetchArtistDetail } from '../services/detailFetchService';
+import { fetchArtistBio } from '../services/detailFetchService';
 import { bumpDetailChanged } from '../db/detailNotifier';
 import { mbidOverrideStore } from '../store/mbidOverrideStore';
 import { mbidSearchStore } from '../store/mbidSearchStore';
@@ -214,7 +214,7 @@ export function MbidSearchSheet() {
       hide();
 
       if (type === 'artist') {
-        await runWithOverlay(() => fetchArtistDetail(entityId), {
+        await runWithOverlay(() => fetchArtistBio(entityId, { reresolve: true }), {
           loading: t('updatingArtist'),
           success: t('mbidOverrideSaved'),
           error: t('failedToUpdateArtist'),

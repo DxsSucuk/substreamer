@@ -17,8 +17,9 @@ import type { AlbumID3, ArtistID3, ArtistInfo2, Child, Playlist } from 'subsonic
 import type { InternalDb } from './client';
 import { ensureNormalizedSchema } from './createNormalizedTables';
 import { upsertAlbumInfoRow, upsertAlbums } from './repository/albums';
+import { nonEmptyBio } from '../utils/formatters';
 import { getSortArticles } from './sortArticles';
-import { setArtistDetailMeta, setArtistTopSongs, upsertArtistInfo, upsertArtists } from './repository/artists';
+import { setArtistTopSongs, upsertArtistBio, upsertArtistInfo, upsertArtists } from './repository/artists';
 import { setPlaylistSongs, upsertPlaylists } from './repository/playlists';
 import { upsertSongs } from './repository/songs';
 
@@ -174,27 +175,42 @@ async function migrateArtists(
   for (const e of entries) {
     const id = e?.artist?.id;
     if (!id) continue;
-    if (e.artistInfo || e.biography) {
-      const info = {
-        ...(e.artistInfo ?? {}),
-        biography: e.biography ?? e.artistInfo?.biography ?? undefined,
-      } as ArtistInfo2;
-      upsertArtistInfo(db, id, info);
+    const info = e.artistInfo;
+    if (info) {
+      upsertArtistInfo(
+        db,
+        id,
+        {
+          // Normalise empties: a blob bio that sanitises to nothing must read as "this
+          // server has none", or it becomes a permanent local hit that renders blank and
+          // suppresses the MusicBrainz fallback forever.
+          biography: nonEmptyBio(info.biography),
+          lastFmUrl: info.lastFmUrl ?? null,
+          musicBrainzId: info.musicBrainzId ?? null,
+          imageUrlSmall: info.smallImageUrl ?? null,
+          imageUrlMedium: info.mediumImageUrl ?? null,
+          imageUrlLarge: info.largeImageUrl ?? null,
+          retrievedAt: Date.now(),
+        },
+        info,
+      );
     }
     const top = e.topSongs ?? [];
     if (top.length > 0) {
       // eslint-disable-next-line no-await-in-loop
       await upsertSongs(db, top, undefined, articles);
+      // Stamp the state row too, or the migrated artist reads as never-fetched and
+      // re-fetches on first open. `listLength` is unknown here, so use what was stored.
       // eslint-disable-next-line no-await-in-loop
-      await setArtistTopSongs(db, id, top.map((s) => s.id));
+      await setArtistTopSongs(db, id, top.map((s) => s.id), { listLength: top.length });
     }
-    // Resolved bio + negative-cache markers last, so they win over info.biography.
+    // The RESOLVED bio is its own table now.
     if (e.biography != null || e.resolvedMbid != null || e.bioCheckedAt != null) {
       // eslint-disable-next-line no-await-in-loop
-      await setArtistDetailMeta(db, id, {
-        biography: e.biography ?? null,
-        bioCheckedAt: e.bioCheckedAt ?? null,
+      await upsertArtistBio(db, id, {
+        biography: nonEmptyBio(e.biography),
         resolvedMbid: e.resolvedMbid ?? null,
+        checkedAt: e.bioCheckedAt ?? null,
       });
     }
   }

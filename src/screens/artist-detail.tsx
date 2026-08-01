@@ -38,9 +38,14 @@ import { PillToggle } from '../components/PillToggle';
 import { playAllByArtist, playMoreByArtist, toggleStar } from '../services/moreOptionsService';
 import { shuffleArray } from '../utils/arrayHelpers';
 import { playTrack } from '../services/playerService';
-import { fetchArtistDetail } from '../services/detailFetchService';
+import {
+  fetchArtistBase,
+  fetchArtistBio,
+  fetchArtistInfo,
+  fetchArtistTopSongs,
+} from '../services/detailFetchService';
 import { getDb } from '../store/persistence/db';
-import { getArtistDetail } from '../db/repository/details';
+import { getArtistBase } from '../db/repository/details';
 import { subscribeDetailChanged } from '../db/detailNotifier';
 import { layoutPreferencesStore, LIST_LENGTH_DISPLAY_CAP } from '../store/layoutPreferencesStore';
 import { moreOptionsStore } from '../store/moreOptionsStore';
@@ -90,6 +95,8 @@ export function ArtistDetailScreen() {
   const [albumSortDesc, setAlbumSortDesc] = useState(
     () => layoutPreferencesStore.getState().artistAlbumSortOrder === 'newest',
   );
+  const [topSongsSettled, setTopSongsSettled] = useState(false);
+  const [refreshNonce, setRefreshNonce] = useState(0);
   const [hasCache, setHasCache] = useState(false);
   const [cacheChecked, setCacheChecked] = useState(false);
 
@@ -113,32 +120,48 @@ export function ArtistDetailScreen() {
     }
     let alive = true;
     const read = () =>
-      getArtistDetail(db, id).then((d) => {
+      getArtistBase(db, id).then((d) => {
         if (!alive || !d) return;
         setArtist({ ...d.artist, album: d.albums } as ArtistWithAlbumsID3);
-        setSimilarArtists(d.similarArtist);
-        setHeroFallbackUrl(d.artistInfo?.largeImageUrl ?? undefined);
-        setTopSongs(d.topSongs);
-        setBiography(d.biography);
-        // "Cached" only once we've actually fetched detail (topSongs present or a bio check
-        // ran): an artist ROW can exist from a list sync without its detail children yet.
-        setHasCache(d.topSongs.length > 0 || d.bioCheckedAt != null);
+        // Presence is the repository's rule (albums present, or a known-empty artist) —
+        // never "the row exists", which is true for everything after a list sync.
+        setHasCache(true);
       });
     read()
-      .catch(() => {
-        /* treat a read failure as a miss → server fetch */
-      })
-      .finally(() => {
-        if (alive) setCacheChecked(true);
-      });
-    const unsub = subscribeDetailChanged('artist', id, () => {
-      void read();
-    });
+      .catch(() => { /* treat a read failure as a miss → server fetch */ })
+      .finally(() => { if (alive) setCacheChecked(true); });
+    const unsub = subscribeDetailChanged('artist', id, () => { void read(); });
     return () => {
       alive = false;
       unsub();
     };
   }, [id]);
+
+  // The other three parts load independently — `useDetailFetch` only calls `load` on a
+  // base MISS, so routing them through it would leave them unfetched for every artist we
+  // already hold. Each owns its own state and its own failure; none may set the shared
+  // `error`, which would blank a screen that has already rendered its albums.
+  useEffect(() => {
+    if (!id) return;
+    let alive = true;
+    const force = refreshNonce > 0;
+    void fetchArtistInfo(id, { force })
+      .then((info) => {
+        if (!alive || !info) return;
+        setSimilarArtists(info.similarArtist);
+        setHeroFallbackUrl(info.largeImageUrl ?? undefined);
+      })
+      .catch(() => { /* section stays absent */ });
+    void fetchArtistBio(id, { force })
+      .then((bio) => { if (alive && bio) setBiography(bio.biography); })
+      .catch(() => { /* section stays absent */ });
+    setTopSongsSettled(false);
+    void fetchArtistTopSongs(id, { force })
+      .then((top) => { if (alive) setTopSongs(top?.songs ?? []); })
+      .catch(() => { /* section stays absent */ })
+      .finally(() => { if (alive) setTopSongsSettled(true); });
+    return () => { alive = false; };
+  }, [id, refreshNonce]);
 
   /* ---- Header right: more options button ---- */
   useEffect(() => {
@@ -169,8 +192,12 @@ export function ArtistDetailScreen() {
 
   /* ---- Data fetching ---- */
   const load = useCallback(async (artistId: string, isRefresh: boolean) => {
-    const entry = await fetchArtistDetail(artistId);
-    if (!entry) {
+    // Base only. The other three parts have their own effect; a pull bumps the nonce so
+    // they re-run forced. `force` here is the local-row bypass — it deliberately does NOT
+    // re-resolve the bio, which would re-hammer MusicBrainz on every pull.
+    if (isRefresh) setRefreshNonce((n) => n + 1);
+    const base = await fetchArtistBase(artistId, { force: isRefresh });
+    if (!base) {
       setArtist(null);
       setSimilarArtists([]);
       setHeroFallbackUrl(undefined);
@@ -178,13 +205,9 @@ export function ArtistDetailScreen() {
       setBiography(null);
       return t('artistNotFound');
     }
-    setArtist(entry.artist);
-    setSimilarArtists(entry.artistInfo?.similarArtist ?? []);
-    setHeroFallbackUrl(entry.artistInfo?.largeImageUrl ?? undefined);
-    setTopSongs(entry.topSongs);
-    setBiography(entry.biography);
-    if (isRefresh && entry.artist.id) {
-      refreshCoverArt(entry.artist.id, 'artist-detail-pull').catch(() => { /* non-critical */ });
+    setArtist({ ...base.artist, album: base.albums } as ArtistWithAlbumsID3);
+    if (isRefresh && base.artist.id) {
+      refreshCoverArt(base.artist.id, 'artist-detail-pull').catch(() => { /* non-critical */ });
     }
     return null;
   }, [t]);
@@ -292,7 +315,12 @@ export function ArtistDetailScreen() {
             colors={colors}
           />
           <View style={styles.heroPlayButtons}>
+            {/* Top songs arrive after the base, so an unarrived list must not read as an
+                empty one — that would silently fall through to "more by artist" and play
+                the wrong thing. Only the topSongs mode depends on it; allSongs needs the
+                base alone and stays live. */}
             <ShufflePlayButton
+              disabled={artistPlayMode === 'topSongs' && !topSongsSettled}
               onPress={() => {
                 if (artistPlayMode === 'allSongs') {
                   playAllByArtist(artist.id, artist.name, true);
@@ -305,6 +333,7 @@ export function ArtistDetailScreen() {
               }}
             />
             <PlayAllButton
+              disabled={artistPlayMode === 'topSongs' && !topSongsSettled}
               onPress={() => {
                 if (artistPlayMode === 'allSongs') {
                   playAllByArtist(artist.id, artist.name, false);

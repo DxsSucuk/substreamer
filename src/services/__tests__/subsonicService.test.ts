@@ -1548,13 +1548,16 @@ describe('getTopSongs (success and error paths)', () => {
     expect(result).toEqual([]);
   });
 
-  it('returns empty array on exception', async () => {
+  it('returns NULL on exception — callers must not stamp a presence marker', async () => {
+    // `[]` is a genuine "this artist has no top songs"; a failed call must stay
+    // distinguishable, or fetchArtistTopSongs records "fetched, 0 songs" with no TTL and
+    // the section is empty until a manual pull.
     const { default: SubsonicAPI } = require('subsonic-api');
     SubsonicAPI.prototype.getTopSongs = jest.fn().mockRejectedValue(new Error('fail'));
     const { getTopSongs, getApi } = require('../subsonicService');
     getApi();
     const result = await getTopSongs('Radiohead');
-    expect(result).toEqual([]);
+    expect(result).toBeNull();
   });
 });
 

@@ -24,7 +24,12 @@ const NORMALIZED_TABLES = [
   'album_record_labels',
   'album_disc_titles',
   'artist_roles',
+  'album_info',
+  'artist_info',
+  'artist_bio',
   'artist_similar',
+  'artist_top_songs',
+  'artist_top_songs_state',
   'playlist_songs',
   'playlist_allowed_users',
 ];

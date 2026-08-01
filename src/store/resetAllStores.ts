@@ -27,7 +27,6 @@ import { albumDetailStore } from './albumDetailStore';
 import { albumInfoStore } from './albumInfoStore';
 import { albumLibraryStore } from './albumLibraryStore';
 import { albumListsStore } from './albumListsStore';
-import { artistDetailStore } from './artistDetailStore';
 import { artistLibraryStore } from './artistLibraryStore';
 import { authStore } from './authStore';
 import { autoOfflineStore } from './autoOfflineStore';
@@ -83,7 +82,6 @@ const allStores = [
   albumInfoStore,
   albumLibraryStore,
   albumListsStore,
-  artistDetailStore,
   artistLibraryStore,
   authStore,
   autoOfflineStore,

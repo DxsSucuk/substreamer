@@ -7,7 +7,7 @@ import { countAlbums, listAlbums } from '../repository/albums';
 import { countArtists } from '../repository/artists';
 import { countPlaylists, listPlaylistSongIds } from '../repository/playlists';
 import { countSongs } from '../repository/songs';
-import { getArtistDetail, getPlaylistDetail } from '../repository/details';
+import { getArtistBioRow, getArtistTopSongsRow, getPlaylistDetail } from '../repository/details';
 
 const db = () => getDb()!;
 
@@ -36,6 +36,9 @@ beforeEach(() => {
   for (const t of [
     'library_albums', 'song_index', 'albums', 'songs', 'artists', 'playlists',
     'playlist_songs', 'artist_top_songs', 'artist_similar',
+    'artist_info',
+    'artist_bio',
+    'artist_top_songs_state',
   ]) {
     db().runSync(`DELETE FROM ${t}`);
   }
@@ -161,10 +164,13 @@ describe('migrateBlobsToNormalized', () => {
 
     await migrateBlobsToNormalized(db());
 
-    const detail = await getArtistDetail(db(), 'ar1');
-    expect(detail?.topSongs.map((s) => s.id)).toEqual(['t1', 't2']);
-    expect(detail?.biography).toBe('A resolved bio');
-    expect(detail?.resolvedMbid).toBe('mbid-123');
-    expect(detail?.bioCheckedAt).toBe(1_700_000_000_000);
+    const top = await getArtistTopSongsRow(db(), 'ar1');
+    expect(top?.songs.map((sg) => sg.id)).toEqual(['t1', 't2']);
+    // A state row must be stamped too, or the migrated artist reads as never-fetched.
+    expect(top?.songCount).toBe(2);
+    const bio = await getArtistBioRow(db(), 'ar1');
+    expect(bio?.biography).toBe('A resolved bio');
+    expect(bio?.resolvedMbid).toBe('mbid-123');
+    expect(bio?.checkedAt).toBe(1_700_000_000_000);
   });
 });

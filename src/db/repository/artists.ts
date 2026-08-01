@@ -72,12 +72,66 @@ export function upsertArtists(
  * A partial upsert — it only touches the bio columns, never the base ArtistID3
  * fields, so a later library re-sync and a bio fetch don't clobber each other.
  */
-export function upsertArtistInfo(db: InternalDb, id: string, info: ArtistInfo2): void {
+/** The getArtistInfo2 envelope. `biography` is the SERVER bio; NULL means this server has
+ *  none — empty and markup-only stubs are normalised away by the caller, so a non-null
+ *  value always renders. Hand-written SQL rather than a mapper so `retrieved_at` is an
+ *  explicit input, matching `upsertAlbumInfoRow`. */
+export interface ArtistInfoWrite {
+  biography: string | null;
+  lastFmUrl: string | null;
+  musicBrainzId: string | null;
+  imageUrlSmall: string | null;
+  imageUrlMedium: string | null;
+  imageUrlLarge: string | null;
+  retrievedAt: number;
+}
+
+/** Sole writer of `artist_info` + `artist_similar`, in one transaction. The bio
+ *  RESOLUTION is a different concern and lives in `artist_bio`. */
+export function upsertArtistInfo(
+  db: InternalDb,
+  id: string,
+  info: ArtistInfoWrite,
+  similar: ArtistInfo2,
+): void {
   db.withTransactionSync(() => {
-    upsertRowSync(db, 'artists', artistInfoRow(id, info));
-    replaceChildrenSync(db, 'artist_similar', 'artist_id', id, artistSimilarRows(info, id));
+    db.runSync(
+      `INSERT INTO artist_info
+         (artist_id, biography, last_fm_url, music_brainz_id,
+          image_url_small, image_url_medium, image_url_large, retrieved_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(artist_id) DO UPDATE SET
+         biography = excluded.biography, last_fm_url = excluded.last_fm_url,
+         music_brainz_id = excluded.music_brainz_id,
+         image_url_small = excluded.image_url_small,
+         image_url_medium = excluded.image_url_medium,
+         image_url_large = excluded.image_url_large,
+         retrieved_at = excluded.retrieved_at`,
+      [
+        id, info.biography, info.lastFmUrl, info.musicBrainzId,
+        info.imageUrlSmall, info.imageUrlMedium, info.imageUrlLarge, info.retrievedAt,
+      ],
+    );
+    replaceChildrenSync(db, 'artist_similar', 'artist_id', id, artistSimilarRows(similar, id));
   });
 }
+
+/** The RESOLVED biography (server, else MusicBrainz) + its negative cache. A present row
+ *  means "we attempted this artist" — the presence predicate the MBID-override screens use.
+ *  `checked_at` is nullable so that marker can exist without claiming a cache timestamp. */
+export const upsertArtistBio = (
+  db: InternalDb,
+  id: string,
+  bio: { biography: string | null; resolvedMbid: string | null; checkedAt: number | null },
+): Promise<unknown> =>
+  db.runAsync(
+    `INSERT INTO artist_bio (artist_id, biography, resolved_mbid, checked_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(artist_id) DO UPDATE SET
+       biography = excluded.biography, resolved_mbid = excluded.resolved_mbid,
+       checked_at = excluded.checked_at`,
+    [id, bio.biography, bio.resolvedMbid, bio.checkedAt],
+  );
 
 export function listArtists(
   db: InternalDb,
@@ -142,33 +196,17 @@ export const getArtist = (db: InternalDb, id: string): Promise<Record<string, un
 
 /** Artists that already have persisted top songs — the set whose top-song lists a
  *  list-length change refreshes (replaces the doomed detail store's in-memory map). */
-export const listArtistsWithTopSongs = (
-  db: InternalDb,
-): Promise<{ id: string; name: string | null }[]> =>
-  db.getAllAsync<{ id: string; name: string | null }>(
-    'SELECT DISTINCT a.id, a.name FROM artists a JOIN artist_top_songs ats ON ats.artist_id = a.id',
-  );
-
-/**
- * Persist the artist-detail RESOLVED metadata: the final biography (Subsonic →
- * MusicBrainz fallback — NOT necessarily `info.biography`), the `bio_checked_at`
- * detail-fetch/negative-cache marker, and the `resolved_mbid` actually used. A targeted
- * UPDATE (no-op if the artist row isn't present yet).
- */
-export const setArtistDetailMeta = (
-  db: InternalDb,
-  id: string,
-  meta: { biography: string | null; bioCheckedAt: number | null; resolvedMbid: string | null },
-): Promise<unknown> =>
-  db.runAsync(
-    'UPDATE artists SET biography = ?, bio_checked_at = ?, resolved_mbid = ? WHERE id = ?',
-    [meta.biography, meta.bioCheckedAt, meta.resolvedMbid, id],
-  );
-
 /** Replace an artist's ordered top-song membership (position = array index). The songs
  *  themselves must already be upserted into `songs` by the caller. Async batch (no
  *  sync transaction) so it can't collide with a concurrent write. */
-export const setArtistTopSongs = (db: InternalDb, artistId: string, songIds: string[]): Promise<unknown> =>
+export const setArtistTopSongs = (
+  db: InternalDb,
+  artistId: string,
+  songIds: string[],
+  /** Present = also record presence/freshness. OMIT when the fetch failed: stamping then
+   *  would mark the artist "fetched, 0 songs" with no TTL to recover from. */
+  state?: { listLength: number },
+): Promise<unknown> =>
   db.runBatchAsync([
     ['DELETE FROM artist_top_songs WHERE artist_id = ?', [artistId]],
     ...songIds.map(
@@ -177,4 +215,16 @@ export const setArtistTopSongs = (db: InternalDb, artistId: string, songIds: str
         [artistId, pos, songId],
       ],
     ),
+    ...(state
+      ? ([
+          [
+            `INSERT INTO artist_top_songs_state (artist_id, retrieved_at, list_length, song_count)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(artist_id) DO UPDATE SET
+               retrieved_at = excluded.retrieved_at, list_length = excluded.list_length,
+               song_count = excluded.song_count`,
+            [artistId, Date.now(), state.listLength, songIds.length],
+          ],
+        ] as [string, (string | number)[]][])
+      : []),
   ]);

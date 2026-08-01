@@ -713,9 +713,13 @@ export async function getArtistInfo2(id: string): Promise<ArtistInfo2 | null> {
 
 /**
  * Fetch top songs for a given artist by name.
- * Returns an empty array if the server does not support this endpoint.
+ *
+ * `[]` = a genuine answer of "none" (Various Artists, no API, or a server without the
+ * endpoint). `null` = the CALL FAILED. Callers persist a presence marker off this, so the
+ * two must stay distinguishable: stamping a failed call as "fetched, 0 songs" would leave
+ * a permanently empty Top Songs section with no TTL to recover from.
  */
-export async function getTopSongs(artistName: string, count = 20): Promise<Child[]> {
+export async function getTopSongs(artistName: string, count = 20): Promise<Child[] | null> {
   if (isVariousArtists(artistName)) return [];
   const api = getApi();
   if (!api) return [];
@@ -723,7 +727,7 @@ export async function getTopSongs(artistName: string, count = 20): Promise<Child
     const response = await api.getTopSongs({ artist: artistName, count });
     return response.topSongs?.song ?? [];
   } catch {
-    return [];
+    return null;
   }
 }
 

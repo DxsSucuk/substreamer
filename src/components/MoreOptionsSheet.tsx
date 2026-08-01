@@ -64,7 +64,7 @@ import { offlineModeStore } from '../store/offlineModeStore';
 import { playerStore } from '../store/playerStore';
 import { syncStatusStore } from '../store/syncStatusStore';
 import { getDb } from '../store/persistence/db';
-import { getArtistDetail } from '../db/repository/details';
+import { getArtistBioRow } from '../db/repository/details';
 import { deletePlaylist as deletePlaylistRow } from '../db/repository/playlists';
 import { bumpDetailChanged } from '../db/detailNotifier';
 import { runWithOverlay } from '../store/processingOverlayStore';
@@ -370,8 +370,8 @@ export function MoreOptionsSheet() {
       const artistName = entity.item.name;
       const override = getOverride(mbidOverrideStore.getState().overrides, 'artist', artistId);
       const db = getDb();
-      // `resolved_mbid` is populated on an artist-detail fetch; null before one has run.
-      const resolvedMbid = (db ? (await getArtistDetail(db, artistId))?.resolvedMbid : null) ?? null;
+      // `resolved_mbid` is written by the bio fetch; null before one has run.
+      const resolvedMbid = (db ? (await getArtistBioRow(db, artistId))?.resolvedMbid : null) ?? null;
       const currentMbid = override?.mbid ?? resolvedMbid;
       await moreOptionsStore.getState().hideAndAwait();
       mbidSearchStore.getState().showArtist(artistId, artistName, currentMbid, resolveEntityCoverArt(entity.item));

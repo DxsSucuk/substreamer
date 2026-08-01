@@ -105,6 +105,26 @@ CREATE INDEX `idx_albums_created` ON `albums` (`created`);--> statement-breakpoi
 CREATE INDEX `idx_albums_norm_name` ON `albums` (`norm_name`);--> statement-breakpoint
 CREATE INDEX `idx_albums_dmeta_name` ON `albums` (`dmeta_name`);--> statement-breakpoint
 CREATE INDEX `idx_albums_dmeta_artist` ON `albums` (`dmeta_artist`);--> statement-breakpoint
+CREATE TABLE `artist_bio` (
+	`artist_id` text PRIMARY KEY NOT NULL,
+	`biography` text,
+	`resolved_mbid` text,
+	`checked_at` integer,
+	FOREIGN KEY (`artist_id`) REFERENCES `artists`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `artist_info` (
+	`artist_id` text PRIMARY KEY NOT NULL,
+	`biography` text,
+	`last_fm_url` text,
+	`music_brainz_id` text,
+	`image_url_small` text,
+	`image_url_medium` text,
+	`image_url_large` text,
+	`retrieved_at` integer NOT NULL,
+	FOREIGN KEY (`artist_id`) REFERENCES `artists`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
 CREATE TABLE `artist_roles` (
 	`artist_id` text NOT NULL,
 	`pos` integer NOT NULL,
@@ -133,6 +153,14 @@ CREATE TABLE `artist_top_songs` (
 	FOREIGN KEY (`artist_id`) REFERENCES `artists`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
+CREATE TABLE `artist_top_songs_state` (
+	`artist_id` text PRIMARY KEY NOT NULL,
+	`retrieved_at` integer NOT NULL,
+	`list_length` integer NOT NULL,
+	`song_count` integer NOT NULL,
+	FOREIGN KEY (`artist_id`) REFERENCES `artists`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
 CREATE TABLE `artists` (
 	`id` text PRIMARY KEY NOT NULL,
 	`name` text,
@@ -144,13 +172,6 @@ CREATE TABLE `artists` (
 	`starred` integer,
 	`user_rating` integer,
 	`music_brainz_id` text,
-	`biography` text,
-	`bio_checked_at` integer,
-	`resolved_mbid` text,
-	`last_fm_url` text,
-	`image_url_small` text,
-	`image_url_medium` text,
-	`image_url_large` text,
 	`norm_name` text,
 	`dmeta_name` text
 );

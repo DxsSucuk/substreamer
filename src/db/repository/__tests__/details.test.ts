@@ -8,10 +8,17 @@ import type { AlbumID3, ArtistID3, ArtistInfo2, Child, Playlist } from 'subsonic
 import { getDb } from '../../../store/persistence/db';
 import { ensureNormalizedSchema } from '../../createNormalizedTables';
 import { upsertAlbums } from '../albums';
-import { setArtistDetailMeta, setArtistTopSongs, upsertArtistInfo, upsertArtists } from '../artists';
+import { setArtistTopSongs, upsertArtistBio, upsertArtistInfo, upsertArtists } from '../artists';
 import { setPlaylistSongs, upsertPlaylists } from '../playlists';
 import { upsertSongs } from '../songs';
-import { getAlbumDetail, getArtistDetail, getPlaylistDetail } from '../details';
+import {
+  getAlbumDetail,
+  getArtistBase,
+  getArtistBioRow,
+  getArtistInfoRow,
+  getArtistTopSongsRow,
+  getPlaylistDetail,
+} from '../details';
 
 const db = () => getDb()!;
 
@@ -64,40 +71,94 @@ describe('getAlbumDetail', () => {
   });
 });
 
-describe('getArtistDetail', () => {
-  it('returns the artist + its albums (newest first) + similar + bio + topSongs', async () => {
+describe('artist detail parts', () => {
+  it('getArtistBase returns the artist + albums, newest first', async () => {
     await upsertArtists(db(), [artist('ar1', 'The Beatles', { albumCount: 2 })]);
     await upsertAlbums(db(), [
       album('al1', 'Please Please Me', { artistId: 'ar1', year: 1963 }),
       album('al2', 'Abbey Road', { artistId: 'ar1', year: 1969 }),
       album('alX', 'Not Theirs', { artistId: 'ar2', year: 1970 }),
     ]);
-    upsertArtistInfo(db(), 'ar1', {
-      biography: 'The Beatles were an English rock band.',
-      similarArtist: [{ id: 'ar9', name: 'The Rolling Stones', albumCount: 1, coverArt: 'ca9' }],
-    } as ArtistInfo2);
-    // Persist top songs (junction) + resolved bio meta.
-    await upsertSongs(db(), [song('t1', 'Hey Jude'), song('t2', 'Let It Be')]);
-    await setArtistTopSongs(db(), 'ar1', ['t2', 't1']); // deliberate non-id order
-    await setArtistDetailMeta(db(), 'ar1', {
-      biography: 'Resolved bio.',
-      bioCheckedAt: 42,
-      resolvedMbid: 'mbid-beatles',
-    });
-
-    const detail = await getArtistDetail(db(), 'ar1');
-    expect(detail?.artist.name).toBe('The Beatles');
-    expect(detail?.albums.map((a) => a.id)).toEqual(['al2', 'al1']); // year DESC (newest first)
-    expect(detail?.biography).toBe('Resolved bio.'); // detail meta wins
-    expect(detail?.bioCheckedAt).toBe(42);
-    expect(detail?.resolvedMbid).toBe('mbid-beatles');
-    expect(detail?.similarArtist.map((s) => ({ id: s.id, name: s.name, coverArt: s.coverArt, albumCount: s.albumCount })))
-      .toEqual([{ id: 'ar9', name: 'The Rolling Stones', coverArt: 'ca9', albumCount: 1 }]);
-    expect(detail?.topSongs.map((s) => s.id)).toEqual(['t2', 't1']); // junction position order
+    const base = await getArtistBase(db(), 'ar1');
+    expect(base?.artist.name).toBe('The Beatles');
+    expect(base?.albums.map((a) => a.id)).toEqual(['al2', 'al1']);
   });
 
-  it('returns null for an un-synced artist', async () => {
-    expect(await getArtistDetail(db(), 'nope')).toBeNull();
+  it('getArtistBase is a MISS when the row exists but its albums have not synced', async () => {
+    // A row exists for every artist after a list sync; that is not "we have this artist".
+    await upsertArtists(db(), [artist('ar2', 'Pending', { albumCount: 5 })]);
+    expect(await getArtistBase(db(), 'ar2')).toBeNull();
+  });
+
+  it('getArtistBase is a HIT for a genuinely album-less artist', async () => {
+    await upsertArtists(db(), [artist('ar3', 'Empty', { albumCount: 0 })]);
+    expect(await getArtistBase(db(), 'ar3')).not.toBeNull();
+  });
+
+  it('getArtistInfoRow returns the server envelope + similar artists', async () => {
+    await upsertArtists(db(), [artist('ar1', 'The Beatles')]);
+    upsertArtistInfo(
+      db(),
+      'ar1',
+      {
+        biography: 'Server bio.',
+        lastFmUrl: 'https://last.fm/x',
+        musicBrainzId: 'mb-1',
+        imageUrlSmall: null,
+        imageUrlMedium: null,
+        imageUrlLarge: 'https://img/large',
+        retrievedAt: 111,
+      },
+      { similarArtist: [{ id: 'ar9', name: 'The Rolling Stones', albumCount: 1, coverArt: 'ca9' }] } as ArtistInfo2,
+    );
+    const info = await getArtistInfoRow(db(), 'ar1');
+    expect(info?.biography).toBe('Server bio.');
+    expect(info?.musicBrainzId).toBe('mb-1');
+    expect(info?.largeImageUrl).toBe('https://img/large');
+    expect(info?.similarArtist.map((sa) => sa.id)).toEqual(['ar9']);
+    expect(await getArtistInfoRow(db(), 'nope')).toBeNull();
+  });
+
+  it('getArtistBioRow distinguishes never-attempted from looked-and-found-none', async () => {
+    await upsertArtists(db(), [artist('ar1', 'The Beatles')]);
+    expect(await getArtistBioRow(db(), 'ar1')).toBeNull(); // never attempted
+    await upsertArtistBio(db(), 'ar1', { biography: null, resolvedMbid: 'mb-1', checkedAt: 42 });
+    const bio = await getArtistBioRow(db(), 'ar1');
+    expect(bio).not.toBeNull();            // attempted...
+    expect(bio?.biography).toBeNull();     // ...and this artist has none
+    expect(bio?.resolvedMbid).toBe('mb-1');
+    expect(bio?.checkedAt).toBe(42);
+  });
+
+  it('getArtistTopSongsRow reports the junction order and the written count', async () => {
+    await upsertArtists(db(), [artist('ar1', 'The Beatles')]);
+    await upsertSongs(db(), [song('t1', 'Hey Jude'), song('t2', 'Let It Be')]);
+    expect(await getArtistTopSongsRow(db(), 'ar1')).toBeNull(); // no state row = never fetched
+    await setArtistTopSongs(db(), 'ar1', ['t2', 't1'], { listLength: 20 });
+    const top = await getArtistTopSongsRow(db(), 'ar1');
+    expect(top?.songs.map((sg) => sg.id)).toEqual(['t2', 't1']); // position order
+    expect(top?.listLength).toBe(20);
+    expect(top?.songCount).toBe(2);
+  });
+
+  it('getArtistTopSongsRow exposes a reaped song as resolved < songCount', async () => {
+    // `artist_top_songs.song_id` has no FK, so a song removed by deleteAlbumSongsNotIn
+    // drops out of the JOIN while its junction row survives. Only comparing the RESOLVED
+    // count against `song_count` catches that.
+    await upsertArtists(db(), [artist('ar1', 'The Beatles')]);
+    await upsertSongs(db(), [song('t1', 'Hey Jude'), song('t2', 'Let It Be')]);
+    await setArtistTopSongs(db(), 'ar1', ['t1', 't2'], { listLength: 20 });
+    db().runSync("DELETE FROM songs WHERE id = 't2'");
+    const top = await getArtistTopSongsRow(db(), 'ar1');
+    expect(top?.songCount).toBe(2);
+    expect(top?.songs).toHaveLength(1);
+  });
+
+  it('omitting the state argument records NO presence — a failed fetch must not stamp', async () => {
+    await upsertArtists(db(), [artist('ar1', 'The Beatles')]);
+    await upsertSongs(db(), [song('t1', 'Hey Jude')]);
+    await setArtistTopSongs(db(), 'ar1', ['t1']);
+    expect(await getArtistTopSongsRow(db(), 'ar1')).toBeNull();
   });
 });
 

@@ -111,7 +111,10 @@ describe('runNormalizedLibrarySync', () => {
     db().runSync(
       "INSERT OR REPLACE INTO playlist_songs (playlist_id, position, song_id) VALUES ('pl1', 0, 's0')",
     );
-    db().runSync("INSERT OR REPLACE INTO artists (id, name, biography) VALUES ('ar1', 'A', 'bio')");
+    db().runSync("INSERT OR REPLACE INTO artists (id, name) VALUES ('ar1', 'A')");
+    db().runSync(
+      "INSERT OR REPLACE INTO artist_bio (artist_id, biography, checked_at) VALUES ('ar1', 'bio', 1)",
+    );
 
     await runNormalizedLibrarySync({ full: true });
 
@@ -119,8 +122,9 @@ describe('runNormalizedLibrarySync', () => {
       db().getFirstSync<{ n: number }>('SELECT COUNT(*) AS n FROM playlist_songs')?.n,
     ).toBe(1);
     expect(
-      db().getFirstSync<{ bio: string }>("SELECT biography AS bio FROM artists WHERE id = 'ar1'")
-        ?.bio,
+      db().getFirstSync<{ bio: string }>(
+        "SELECT biography AS bio FROM artist_bio WHERE artist_id = 'ar1'",
+      )?.bio,
     ).toBe('bio');
   });
 

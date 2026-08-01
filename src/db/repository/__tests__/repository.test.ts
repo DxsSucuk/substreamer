@@ -1,4 +1,4 @@
-import type { AlbumID3, ArtistID3, Child, Playlist } from 'subsonic-api';
+import type { AlbumID3, ArtistInfo2, ArtistID3, Child, Playlist } from 'subsonic-api';
 
 import { getDb } from '../../../store/persistence/db';
 import { ensureNormalizedSchema } from '../../createNormalizedTables';
@@ -279,14 +279,27 @@ describe('artists repository', () => {
     const page = await listArtists(db(), { limit: 10 });
     expect(page.rows.map((r) => r.name)).toEqual(['ABBA', 'Beatles']);
 
-    // bio merge is a partial upsert — the base field (name) must survive
-    upsertArtistInfo(db(), 'ar1', {
-      biography: 'Swedish pop',
-      similarArtist: [{ id: 'ar2', name: 'Beatles', albumCount: 1 }],
-    });
+    // Info lives in its own table now, so it cannot clobber the base row at all.
+    upsertArtistInfo(
+      db(),
+      'ar1',
+      {
+        biography: 'Swedish pop',
+        lastFmUrl: null,
+        musicBrainzId: null,
+        imageUrlSmall: null,
+        imageUrlMedium: null,
+        imageUrlLarge: null,
+        retrievedAt: 1,
+      },
+      { similarArtist: [{ id: 'ar2', name: 'Beatles', albumCount: 1 }] } as ArtistInfo2,
+    );
     const full = await getArtist(db(), 'ar1');
     expect(full?.name).toBe('ABBA');
-    expect(full?.biography).toBe('Swedish pop');
+    const info = db().getFirstSync<{ biography: string }>(
+      "SELECT biography FROM artist_info WHERE artist_id='ar1'",
+    );
+    expect(info?.biography).toBe('Swedish pop');
     const similar = db().getAllSync<{ name: string }>(
       "SELECT name FROM artist_similar WHERE artist_id='ar1'",
     );

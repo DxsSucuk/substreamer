@@ -6,14 +6,14 @@
  */
 
 import i18n from '../i18n/i18n';
-import { fetchArtistDetail } from './detailFetchService';
+import { fetchArtistBase, fetchArtistTopSongs } from './detailFetchService';
 import { favoritesStore } from '../store/favoritesStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import { refreshPlaylistLibrary } from './normalizedLibrarySync';
 import { getDb } from '../store/persistence/db';
-import { getAlbumDetail, getArtistDetail, getPlaylistDetail } from '../db/repository/details';
+import { getAlbumDetail, getPlaylistDetail } from '../db/repository/details';
 import { processingOverlayStore } from '../store/processingOverlayStore';
 import { shuffleArray } from '../utils/arrayHelpers';
 import {
@@ -287,12 +287,8 @@ export async function saveArtistTopSongsPlaylist(artist: ArtistID3): Promise<voi
   processingOverlayStore.getState().show(i18n.t('creating'));
 
   try {
-    const db = getDb();
-    let topSongs = db ? (await getArtistDetail(db, artist.id))?.topSongs : undefined;
-    if (!topSongs?.length) {
-      const entry = await fetchArtistDetail(artist.id);
-      topSongs = entry?.topSongs ?? [];
-    }
+    // Local-first inside the fetcher: this only hits the server on a genuine miss.
+    const topSongs = (await fetchArtistTopSongs(artist.id))?.songs ?? [];
 
     if (topSongs.length === 0) {
       processingOverlayStore.getState().showError(i18n.t('noTopSongsAvailable'));
@@ -363,13 +359,9 @@ async function fetchAllArtistSongs(
     return songs;
   }
 
-  // Get the artist's albums from the normalized detail (fall back to a server fetch).
+  // Local-first inside the fetcher: only hits the server when we don't hold the albums.
   const db = getDb();
-  let albums = db ? (await getArtistDetail(db, artistId))?.albums : undefined;
-  if (!albums?.length) {
-    const entry = await fetchArtistDetail(artistId);
-    albums = entry?.artist?.album;
-  }
+  const albums = (await fetchArtistBase(artistId))?.albums;
   if (!albums?.length) {
     processingOverlayStore.getState().showError(i18n.t('noSongsFoundByArtist', { artist: artistName }));
     return null;

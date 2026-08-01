@@ -182,16 +182,6 @@ export const artists = sqliteTable(
     starred: integer('starred'),
     userRating: integer('user_rating'),
     musicBrainzId: text('music_brainz_id'),
-    // ArtistInfo2 (fetched on demand; nullable until fetched). `biography` holds the
-    // RESOLVED bio (Subsonic → MusicBrainz fallback). `bioCheckedAt` is the detail-fetch
-    // marker + MB negative-cache timestamp; `resolvedMbid` the MBID actually used.
-    biography: text('biography'),
-    bioCheckedAt: integer('bio_checked_at'),
-    resolvedMbid: text('resolved_mbid'),
-    lastFmUrl: text('last_fm_url'),
-    imageUrlSmall: text('image_url_small'),
-    imageUrlMedium: text('image_url_medium'),
-    imageUrlLarge: text('image_url_large'),
     normName: text('norm_name'),
     dmetaName: text('dmeta_name'),
   },
@@ -429,6 +419,60 @@ export const artistRoles = sqliteTable(
   },
   (t) => ({ pk: primaryKey({ columns: [t.artistId, t.pos] }) }),
 );
+
+/**
+ * getArtistInfo2, on demand and with its own lifecycle — `artists` is rewritten by every
+ * artist-list sync page, this is not. Parent (conceptually) of `artist_similar`, which
+ * keeps its FK to `artists` because repointing it would need a table rebuild that
+ * `ensureNormalizedSchema` cannot do.
+ *
+ * `biography` is the SERVER bio verbatim; NULL means this server has none (empty and
+ * markup-only stubs are normalised to NULL on write, so a non-null value always renders).
+ * The RESOLVED bio — which may have come from MusicBrainz instead — lives in `artist_bio`.
+ */
+export const artistInfo = sqliteTable('artist_info', {
+  artistId: text('artist_id')
+    .primaryKey()
+    .references(() => artists.id, { onDelete: 'cascade' }),
+  biography: text('biography'),
+  lastFmUrl: text('last_fm_url'),
+  musicBrainzId: text('music_brainz_id'),
+  imageUrlSmall: text('image_url_small'),
+  imageUrlMedium: text('image_url_medium'),
+  imageUrlLarge: text('image_url_large'),
+  retrievedAt: integer('retrieved_at').notNull(),
+});
+
+/**
+ * The RESOLVED artist biography (server, else MusicBrainz) plus its negative cache.
+ * A present row means "we have attempted this artist" — the presence predicate the MBID
+ * override screens need. `biography` NULL = we looked and found none; `checkedAt` is
+ * nullable so that marker can exist without claiming a negative-cache timestamp.
+ */
+export const artistBio = sqliteTable('artist_bio', {
+  artistId: text('artist_id')
+    .primaryKey()
+    .references(() => artists.id, { onDelete: 'cascade' }),
+  biography: text('biography'),
+  resolvedMbid: text('resolved_mbid'),
+  checkedAt: integer('checked_at'),
+});
+
+/**
+ * Presence + freshness for `artist_top_songs`, which is a bare junction and cannot carry
+ * either. `listLength` is the size REQUESTED (so an artist with fewer tracks than the
+ * setting is not a permanent miss); `songCount` is the number of rows written, compared
+ * against the count the read actually resolves — `artist_top_songs.song_id` has no FK, so
+ * a song reaped by `deleteAlbumSongsNotIn` silently drops out of the join.
+ */
+export const artistTopSongsState = sqliteTable('artist_top_songs_state', {
+  artistId: text('artist_id')
+    .primaryKey()
+    .references(() => artists.id, { onDelete: 'cascade' }),
+  retrievedAt: integer('retrieved_at').notNull(),
+  listLength: integer('list_length').notNull(),
+  songCount: integer('song_count').notNull(),
+});
 
 export const artistSimilar = sqliteTable(
   'artist_similar',

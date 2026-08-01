@@ -74,23 +74,39 @@ export async function getAlbumDetail(db: InternalDb, id: string): Promise<AlbumD
 
 // ── Artist ────────────────────────────────────────────────────────────────────
 
-export interface ArtistDetail {
+export interface ArtistBase {
   artist: ArtistID3;
   /** The artist's albums (by `albums.artist_id`), newest first. */
   albums: AlbumID3[];
-  /** getArtistInfo2 similar artists (id/name + denormalized art/count/rating), in stored order. */
-  similarArtist: ArtistID3[];
-  /** Bio text from getArtistInfo2, or null before an info fetch has run. */
+}
+
+export interface ArtistInfoRow {
+  /** The SERVER bio. NULL = this server has none (empties are normalised away on write). */
   biography: string | null;
-  /** getArtistInfo2 image URLs (the artist-detail hero uses `largeImageUrl` as the
-   *  fallback when there's no cover-art token). Null before an info fetch has run. */
-  artistInfo: { smallImageUrl?: string; mediumImageUrl?: string; largeImageUrl?: string } | null;
-  /** Subsonic getTopSongs (persisted via `artist_top_songs`), in stored order. */
-  topSongs: Child[];
-  /** Detail-fetch marker + MB negative-cache timestamp (epoch ms), null if never fetched. */
-  bioCheckedAt: number | null;
-  /** The MBID used to resolve the bio (override > server > MB search), null if unknown. */
+  lastFmUrl: string | null;
+  musicBrainzId: string | null;
+  smallImageUrl?: string;
+  mediumImageUrl?: string;
+  largeImageUrl?: string;
+  similarArtist: ArtistID3[];
+  retrievedAt: number;
+}
+
+export interface ArtistBioRow {
+  /** The RESOLVED bio (server, else MusicBrainz). NULL = looked, found none. */
+  biography: string | null;
   resolvedMbid: string | null;
+  /** Negative-cache stamp; NULL = attempted without a usable timestamp. */
+  checkedAt: number | null;
+}
+
+export interface ArtistTopSongsRow {
+  songs: Child[];
+  retrievedAt: number;
+  /** The size REQUESTED, so an artist with fewer tracks is not a permanent miss. */
+  listLength: number;
+  /** Rows written — compare against `songs.length` to catch a reaped junction. */
+  songCount: number;
 }
 
 function artistRowToArtistID3(r: Row): ArtistID3 {
@@ -107,58 +123,98 @@ function artistRowToArtistID3(r: Row): ArtistID3 {
   } as ArtistID3;
 }
 
-/** Artist detail: artist row + its albums + similar artists + bio. `null` if not synced. */
-export async function getArtistDetail(db: InternalDb, id: string): Promise<ArtistDetail | null> {
+/** Base artist: the row + its albums. `null` = we do not hold this artist's albums yet.
+ *
+ *  Presence is NOT "the row exists" — a row exists for every artist after a list sync, and
+ *  `refreshArtistLibrary` populates that table from one call while the album sync is still
+ *  paging, so there is a long window where every artist has zero albums. `album_count === 0`
+ *  is checked STRICTLY: a NULL count is unknown, so it must read as a miss rather than as a
+ *  known-empty artist that never fetches. */
+export async function getArtistBase(db: InternalDb, id: string): Promise<ArtistBase | null> {
   const row = await db.getFirstAsync<Row>('SELECT * FROM artists WHERE id = ?', [id]);
   if (!row) return null;
-  const [albumRows, similarRows, topSongRows] = await Promise.all([
-    db.getAllAsync<AlbumListRow>(
-      `SELECT ${ALBUM_LIST_COLS} FROM albums WHERE artist_id = ? ORDER BY year DESC, sort_title`,
-      [id],
-    ),
-    db.getAllAsync<{
-      similar_artist_id: string | null;
-      name: string | null;
-      cover_art: string | null;
-      album_count: number | null;
-      user_rating: number | null;
-    }>(
-      'SELECT similar_artist_id, name, cover_art, album_count, user_rating ' +
-        'FROM artist_similar WHERE artist_id = ? ORDER BY pos',
-      [id],
-    ),
-    db.getAllAsync<SongListRow>(
-      `SELECT ${SONG_LIST_COLS} FROM songs s JOIN artist_top_songs ats ON ats.song_id = s.id ` +
-        `WHERE ats.artist_id = ? ORDER BY ats.pos`,
-      [id],
-    ),
-  ]);
-  const largeImageUrl = str(row.image_url_large);
-  const mediumImageUrl = str(row.image_url_medium);
-  const smallImageUrl = str(row.image_url_small);
+  const albumRows = await db.getAllAsync<AlbumListRow>(
+    `SELECT ${ALBUM_LIST_COLS} FROM albums WHERE artist_id = ? ORDER BY year DESC, sort_title`,
+    [id],
+  );
+  if (albumRows.length === 0 && num(row.album_count) !== 0) return null;
+  return { artist: artistRowToArtistID3(row), albums: albumRows.map(albumListRowToAlbumID3) };
+}
+
+/** getArtistInfo2 envelope + its similar artists. `null` = never fetched. */
+export async function getArtistInfoRow(db: InternalDb, id: string): Promise<ArtistInfoRow | null> {
+  const row = await db.getFirstAsync<Row>('SELECT * FROM artist_info WHERE artist_id = ?', [id]);
+  if (!row) return null;
+  const similarRows = await db.getAllAsync<{
+    similar_artist_id: string | null;
+    name: string | null;
+    cover_art: string | null;
+    album_count: number | null;
+    user_rating: number | null;
+  }>(
+    'SELECT similar_artist_id, name, cover_art, album_count, user_rating ' +
+      'FROM artist_similar WHERE artist_id = ? ORDER BY pos',
+    [id],
+  );
   return {
-    artist: artistRowToArtistID3(row),
-    albums: albumRows.map(albumListRowToAlbumID3),
+    biography: str(row.biography) ?? null,
+    lastFmUrl: str(row.last_fm_url) ?? null,
+    musicBrainzId: str(row.music_brainz_id) ?? null,
+    smallImageUrl: str(row.image_url_small),
+    mediumImageUrl: str(row.image_url_medium),
+    largeImageUrl: str(row.image_url_large),
     similarArtist: similarRows
-      .filter((s) => s.similar_artist_id != null)
+      .filter((sa) => sa.similar_artist_id != null)
       .map(
-        (s) =>
+        (sa) =>
           ({
-            id: String(s.similar_artist_id),
-            name: s.name ?? '',
-            coverArt: str(s.cover_art),
-            albumCount: num(s.album_count) ?? 0,
-            userRating: num(s.user_rating),
+            id: String(sa.similar_artist_id),
+            name: sa.name ?? '',
+            coverArt: str(sa.cover_art),
+            albumCount: num(sa.album_count) ?? 0,
+            userRating: num(sa.user_rating),
           }) as ArtistID3,
       ),
+    retrievedAt: num(row.retrieved_at) ?? 0,
+  };
+}
+
+/** The RESOLVED biography + negative cache. `null` = never attempted. */
+export async function getArtistBioRow(db: InternalDb, id: string): Promise<ArtistBioRow | null> {
+  const row = await db.getFirstAsync<Row>('SELECT * FROM artist_bio WHERE artist_id = ?', [id]);
+  if (!row) return null;
+  return {
     biography: str(row.biography) ?? null,
-    artistInfo:
-      largeImageUrl || mediumImageUrl || smallImageUrl
-        ? { smallImageUrl, mediumImageUrl, largeImageUrl }
-        : null,
-    topSongs: topSongRows.map(songListRowToChild),
-    bioCheckedAt: num(row.bio_checked_at) ?? null,
     resolvedMbid: str(row.resolved_mbid) ?? null,
+    checkedAt: num(row.checked_at) ?? null,
+  };
+}
+
+/** Top songs + the freshness the junction cannot carry. `null` = never fetched.
+ *
+ *  `songCount` is what was written; the caller compares it against `songs.length` (what the
+ *  JOIN actually resolved). `artist_top_songs.song_id` has no FK, so a song reaped by
+ *  `deleteAlbumSongsNotIn` silently drops out of the join while the junction row survives —
+ *  a junction-row count would therefore never detect it. */
+export async function getArtistTopSongsRow(
+  db: InternalDb,
+  id: string,
+): Promise<ArtistTopSongsRow | null> {
+  const row = await db.getFirstAsync<Row>(
+    'SELECT * FROM artist_top_songs_state WHERE artist_id = ?',
+    [id],
+  );
+  if (!row) return null;
+  const songRows = await db.getAllAsync<SongListRow>(
+    `SELECT ${SONG_LIST_COLS} FROM songs s JOIN artist_top_songs ats ON ats.song_id = s.id ` +
+      `WHERE ats.artist_id = ? ORDER BY ats.pos`,
+    [id],
+  );
+  return {
+    songs: songRows.map(songListRowToChild),
+    retrievedAt: num(row.retrieved_at) ?? 0,
+    listLength: num(row.list_length) ?? 0,
+    songCount: num(row.song_count) ?? 0,
   };
 }
 
