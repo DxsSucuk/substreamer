@@ -1,11 +1,11 @@
 import Ionicons from '@react-native-vector-icons/ionicons/static';
 import i18next from 'i18next';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 
+import { BottomSheet } from '../BottomSheet';
 import { useTheme } from '../../hooks/useTheme';
 import { useThemedAlert } from '../../hooks/useThemedAlert';
 import { settingsStyles } from '../../styles/settingsStyles';
@@ -35,7 +35,6 @@ export function RestoreBackupSheet({
   const { t } = useTranslation();
   const { colors } = useTheme();
   const { alert, confirm } = useThemedAlert();
-  const insets = useSafeAreaInsets();
   const localDeviceId = deviceIdentityStore((s) => s.deviceId);
 
   const [currentList, setCurrentList] = useState<BackupEntry[]>([]);
@@ -225,24 +224,16 @@ export function RestoreBackupSheet({
   }
 
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="slide"
-      onRequestClose={handleClose}
-    >
-      <Pressable style={settingsStyles.sheetBackdrop} onPress={handleClose} />
-      <View
-        style={[
-          settingsStyles.sheet,
-          { backgroundColor: colors.card, paddingBottom: Math.max(insets.bottom, 16) },
-        ]}
-      >
-        <View style={[settingsStyles.sheetHandle, { backgroundColor: colors.border }]} />
-        <Text style={[styles.title, { color: colors.textPrimary }]}>{t('restoreBackup')}</Text>
-        <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
-          {t('restoreBackupHint')}
-        </Text>
+    // The shared sheet, not a raw Modal: with more than a few backups the old
+    // unbounded View grew past the screen, pushing the title under the status bar and
+    // the Restore button off the bottom where it could not be tapped. `scrollable={false}`
+    // because the list below supplies its own scroll container — the header and the
+    // action stay pinned so Restore is always reachable.
+    <BottomSheet visible={visible} onClose={handleClose} maxHeight="80%" scrollable={false}>
+      <Text style={[styles.title, { color: colors.textPrimary }]}>{t('restoreBackup')}</Text>
+      <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
+        {t('restoreBackupHint')}
+      </Text>
         {currentList.length === 0 && otherList.length === 0 ? (
           <View style={styles.empty}>
             <Ionicons name="cloud-offline-outline" size={32} color={colors.primary} />
@@ -252,7 +243,8 @@ export function RestoreBackupSheet({
           </View>
         ) : (
           <>
-            {currentList.map((entry) => renderRow(entry, false))}
+            <ScrollView style={styles.list} bounces={false} showsVerticalScrollIndicator>
+              {currentList.map((entry) => renderRow(entry, false))}
 
             {otherList.length > 0 && (
               <>
@@ -275,6 +267,7 @@ export function RestoreBackupSheet({
                 {otherExpanded && otherList.map((entry) => renderRow(entry, true))}
               </>
             )}
+            </ScrollView>
 
             <View style={styles.actions}>
               <Pressable
@@ -309,12 +302,16 @@ export function RestoreBackupSheet({
             </View>
           </>
         )}
-      </View>
-    </Modal>
+    </BottomSheet>
   );
 }
 
 const styles = StyleSheet.create({
+  // flexShrink so the list collapses to the space left once the sheet hits its cap,
+  // which is what makes it scroll instead of pushing the action off-screen.
+  list: {
+    flexShrink: 1,
+  },
   title: {
     fontSize: 18,
     fontWeight: '700',
