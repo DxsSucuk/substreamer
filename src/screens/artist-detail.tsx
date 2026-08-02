@@ -47,7 +47,7 @@ import {
 import { getDb } from '../store/persistence/db';
 import { getArtistBase } from '../db/repository/details';
 import { subscribeDetailChanged } from '../db/detailNotifier';
-import { layoutPreferencesStore, LIST_LENGTH_DISPLAY_CAP } from '../store/layoutPreferencesStore';
+import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import { moreOptionsStore } from '../store/moreOptionsStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { playbackSettingsStore, type ArtistPlayMode } from '../store/playbackSettingsStore';
@@ -392,8 +392,10 @@ export function ArtistDetailScreen() {
             {topSongs.length > 0 && (
               <View style={styles.section}>
                 <SectionTitle title={t('topSongs')} color={colors.label} />
+                {/* Uncapped: the fetch is already bounded by the list-length setting, so what
+                    renders matches what Play/Shuffle queue from. */}
                 <FlashList
-                  data={topSongs.slice(0, LIST_LENGTH_DISPLAY_CAP)}
+                  data={topSongs}
                   renderItem={topSongsRenderItem}
                   keyExtractor={topSongsKeyExtractor}
                   drawDistance={LIST_DRAW_DISTANCE}
