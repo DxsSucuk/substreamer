@@ -46,9 +46,12 @@ import {
 } from '../store/musicCacheStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import {
+  albumMetaFromAlbumID3,
   countCachedSongs,
   countRealSongRefsForSongsAsync,
   insertCachedItemSong,
+  playlistMetaFromPlaylist,
+  promotedSongFieldsFromChild,
 } from '../store/persistence/musicCacheTables';
 import { logImageCache } from './imageCacheLogger';
 import { processingOverlayStore } from '../store/processingOverlayStore';
@@ -833,10 +836,10 @@ export async function enqueueAlbumDownload(
     const haveIds = new Set(existing.songIds);
     const missingSongs = album.song.filter((s) => s.id && !haveIds.has(s.id));
 
-    // We just fetched a fresh album — carry its envelope into the row so
-    // any previously stored thin/null `rawJson` gets upgraded.
-    const { song: _albumSongsIgnored, ...albumMeta } = album;
-    const refreshedEnvelope = JSON.stringify(albumMeta);
+    // We just fetched a fresh album — carry its metadata into the row, reduced
+    // to the same `cached_albums` scalars the primary download path stores so
+    // the two writers can't diverge (see the plan's §2.3 decision).
+    const albumMeta = albumMetaFromAlbumID3(album);
 
     if (missingSongs.length === 0) {
       // No missing songs — refresh `expectedSongCount` so the defensive
@@ -846,7 +849,7 @@ export async function enqueueAlbumDownload(
       musicCacheStore.getState().upsertCachedItem({
         ...existing,
         expectedSongCount: album.song.length,
-        rawJson: refreshedEnvelope,
+        albumMeta,
         derived: false,
       });
       return;
@@ -856,18 +859,15 @@ export async function enqueueAlbumDownload(
     // total BEFORE enqueueing. The top-up queue row's `songsJson` only
     // contains the missing delta, so the worker's derived count would be
     // wrong — `markItemComplete` preserves this existing value on merge.
-    if (
-      existing.expectedSongCount !== album.song.length ||
-      existing.rawJson !== refreshedEnvelope
-    ) {
-      musicCacheStore.getState().upsertCachedItem({
-        ...existing,
-        expectedSongCount: album.song.length,
-        rawJson: refreshedEnvelope,
-        // Explicit album download — upgrade a possibly-derived partial to real.
-        derived: false,
-      });
-    }
+    // Written unconditionally: the fresh metadata and the derived→real upgrade
+    // both belong on the row, and this runs once per explicit album top-up.
+    musicCacheStore.getState().upsertCachedItem({
+      ...existing,
+      expectedSongCount: album.song.length,
+      albumMeta,
+      // Explicit album download — upgrade a possibly-derived partial to real.
+      derived: false,
+    });
 
     // Cover art keys off the album's `coverArt` value, never the entity ID
     // (see src/utils/coverArtId.ts) — so the warmed/stored key matches what
@@ -981,13 +981,14 @@ export async function enqueueSongDownload(song: Child): Promise<void> {
   const state = musicCacheStore.getState();
   // If the underlying song is already fully cached, don't transfer bytes —
   // just create the `song:` item + edge so it shows up in the browser, and
-  // refresh the `cached_songs` envelope with whatever the caller supplied.
+  // refresh the promoted metadata with whatever the caller supplied. The real
+  // `Child` goes along, so the `cached_song_*` mirrors are rebuilt too.
   if (song.id in state.cachedSongs) {
     const existing = state.cachedSongs[song.id];
-    musicCacheStore.getState().upsertCachedSong({
-      ...existing,
-      rawJson: JSON.stringify(song),
-    });
+    musicCacheStore.getState().upsertCachedSong(
+      { ...existing, ...promotedSongFieldsFromChild(song) },
+      song,
+    );
     musicCacheStore.getState().upsertCachedItem(
       {
         itemId,
@@ -1070,36 +1071,35 @@ function registerTrackToItem(songId: string, itemId: string): void {
 }
 
 /**
- * Serialise the "envelope" for a `cached_items` row — the full Subsonic
- * entity metadata minus any per-song list. Songs live authoritatively in
- * `cached_songs.raw_json`; carrying `AlbumWithSongsID3.song[]` or
- * `PlaylistWithSongs.entry[]` on the parent row would be a stale
- * duplicate that could drift, so we strip them.
+ * Build the per-type component-row metadata for a `cached_items` row — the
+ * Subsonic entity's scalars minus any per-song list. Songs live authoritatively
+ * in `cached_songs` + `cached_item_songs`; carrying `AlbumWithSongsID3.song[]`
+ * or `PlaylistWithSongs.entry[]` on the parent row would be a stale duplicate.
  *
- * Returns `undefined` when the corresponding detail store is empty (e.g.
- * first download where the user hasn't opened the album). Callers pass
- * `undefined` straight through to the row; Migration 18/19 will backfill
- * later from local caches, and future writes will populate it when the
- * store warms up.
+ * Returns an EMPTY object when the normalized model has no row for the item
+ * (first download of an unsynced album, or mid-`forceFullResync` when `albums`
+ * has been dropped and is repopulating): callers spread the result, so a write
+ * with no metadata leaves the existing component row untouched instead of
+ * blanking it with NULLs.
  */
-async function buildCachedItemEnvelope(
+async function buildCachedItemMetadata(
   itemId: string,
   type: CachedItemMeta['type'],
-): Promise<string | undefined> {
+): Promise<Pick<CachedItemMeta, 'albumMeta' | 'playlistMeta'>> {
   const db = getDb();
-  if (!db) return undefined;
+  if (!db) return {};
   if (type === 'album') {
-    // `getAlbumDetail().album` is the AlbumID3 meta WITHOUT songs (they live in
-    // cached_item_songs), exactly the envelope shape.
+    // `getAlbumDetail().album` is the AlbumID3 WITHOUT songs (they live in
+    // cached_item_songs), exactly the `cached_albums` shape.
     const detail = await getAlbumDetail(db, itemId);
-    return detail ? JSON.stringify(detail.album) : undefined;
+    return detail ? { albumMeta: albumMetaFromAlbumID3(detail.album) } : {};
   }
   if (type === 'playlist') {
     const detail = await getPlaylistDetail(db, itemId);
-    return detail ? JSON.stringify(detail.playlist) : undefined;
+    return detail ? { playlistMeta: playlistMetaFromPlaylist(detail.playlist) } : {};
   }
-  // `favorites` (__starred__) and `song` intents have no natural envelope.
-  return undefined;
+  // `favorites` (__starred__) and `song` intents have no per-type metadata.
+  return {};
 }
 
 /**
@@ -1149,20 +1149,22 @@ async function ensurePartialAlbumEdge(
 
   if (existing) {
     // Refresh expectedSongCount to match the authoritative server count
-    // when we have it (corrects any historical `?? 1` write). Also
-    // refresh `rawJson` if the existing row is missing its envelope.
-    const envelope = existing.rawJson
-      ? undefined
-      : await buildCachedItemEnvelope(albumId, 'album');
+    // when we have it (corrects any historical `?? 1` write). Also fill the
+    // component row if the existing one carries no metadata in either form —
+    // a legacy envelope still counts, the conversion promotes it in place.
+    const metadata =
+      existing.albumMeta || existing.rawJson
+        ? {}
+        : await buildCachedItemMetadata(albumId, 'album');
     if (
       (authoritativeCount !== undefined && authoritativeCount !== existing.expectedSongCount) ||
-      envelope !== undefined
+      metadata.albumMeta !== undefined
     ) {
       musicCacheStore.getState().upsertCachedItem({
         ...existing,
         expectedSongCount:
           authoritativeCount !== undefined ? authoritativeCount : existing.expectedSongCount,
-        rawJson: envelope ?? existing.rawJson,
+        ...metadata,
       });
     }
 
@@ -1205,7 +1207,7 @@ async function ensurePartialAlbumEdge(
       parentAlbumId: undefined,
       lastSyncAt: now,
       downloadedAt: now,
-      rawJson: await buildCachedItemEnvelope(albumId, 'album'),
+      ...(await buildCachedItemMetadata(albumId, 'album')),
       // Auto-created partial-album grouping — NOT a real download holder. Songs
       // here orphan when their last real holder (playlist/favorites/song/full
       // album) is removed; this row is pruned once empty.
@@ -1250,6 +1252,11 @@ async function downloadItem(queueItem: DownloadQueueItem, myId: number): Promise
   const itemEdges: Array<{ position: number; songId: string }> = [];
   // Accumulated song metadata to upsert at markItemComplete.
   const itemSongsForCommit = new Map<string, CachedSongMeta>();
+  // The real server `Child` behind each row this run actually downloaded — the
+  // only thing that rebuilds the `cached_song_*` mirrors. Pre-scanned songs
+  // commit an in-memory row instead and are deliberately absent, so their
+  // mirrors are left as the download that created them wrote them.
+  const childBySongId = new Map<string, Child>();
 
   const seen = new Set<string>();
   let trackIndex = 0;
@@ -1314,6 +1321,10 @@ async function downloadItem(queueItem: DownloadQueueItem, myId: number): Promise
         if (!result) result = await downloadSong(song);
         if (result) {
           itemSongsForCommit.set(song.id, result);
+          // Membership comes from the loop's source `song`, not from `result` —
+          // `downloadSong` early-returns the in-memory row for an id that got
+          // cached in the meantime, and this queue entry is still a real `Child`.
+          childBySongId.set(song.id, song);
           itemEdges.push({ position, songId: song.id });
           trackUriMap.set(song.id, resolveSongFile(result).uri);
 
@@ -1361,7 +1372,7 @@ async function downloadItem(queueItem: DownloadQueueItem, myId: number): Promise
       parentAlbumId: queueItem.type === 'song' ? songs[0]?.albumId : undefined,
       lastSyncAt: Date.now(),
       downloadedAt: Date.now(),
-      rawJson: await buildCachedItemEnvelope(queueItem.itemId, queueItem.type),
+      ...(await buildCachedItemMetadata(queueItem.itemId, queueItem.type)),
     };
     const songsToCommit = Array.from(itemSongsForCommit.values());
     const edgesForCommit = itemEdges.map((e) => ({
@@ -1373,6 +1384,7 @@ async function downloadItem(queueItem: DownloadQueueItem, myId: number): Promise
       cachedItem,
       songsToCommit,
       edgesForCommit,
+      childBySongId,
     );
 
     for (const e of edgesForCommit) {
@@ -1457,16 +1469,18 @@ async function downloadSong(track: Child): Promise<CachedSongMeta | null> {
       samplingRate: effectiveFmt.samplingRate,
       formatCapturedAt: effectiveFmt.capturedAt,
       downloadedAt: now,
-      // Preserve the full Subsonic envelope next to the indexed columns.
-      // Any future feature reading from `getSongEnvelope()` sees discNumber,
-      // track, genre, MusicBrainz id, ReplayGain, contributors, moods,
-      // explicitStatus, etc. — every optional field the server returned.
-      rawJson: JSON.stringify(track),
+      // The server's `Child` promoted into typed columns alongside the file
+      // facts above — discNumber, track, genre, MusicBrainz id, ReplayGain,
+      // explicitStatus, and the `src_*` pairs for the five whose names here
+      // describe the DOWNLOADED file rather than the source.
+      ...promotedSongFieldsFromChild(track),
     };
 
     // Upsert to the pool immediately so subsequent dedup checks within this
     // same item (e.g. playlist with the song twice) short-circuit cleanly.
-    musicCacheStore.getState().upsertCachedSong(meta);
+    // `track` comes along so the `cached_song_*` mirrors (genres, artists,
+    // albumArtists, contributors, moods) are rebuilt from the real `Child`.
+    musicCacheStore.getState().upsertCachedSong(meta, track);
 
     return meta;
   } catch {
@@ -1610,6 +1624,10 @@ export async function redownloadTrack(
     };
 
     trackUriMap.set(trackId, dest.uri);
+    // No `Child` — this rewrites the FILE facts from an in-memory row. The
+    // promoted metadata columns survive via the upsert's COALESCE and the
+    // `cached_song_*` mirrors are left alone; rebuilding them from a row that
+    // only carries the `genres` projection would empty the other four.
     musicCacheStore.getState().upsertCachedSong(updated);
 
     return true;

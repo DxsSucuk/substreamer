@@ -57,6 +57,8 @@ interface SongRec {
   sampling_rate: number | null;
   format_captured_at: number;
   downloaded_at: number;
+  raw_json: string | null;
+  meta_v: number | null;
 }
 
 interface ItemRec {
@@ -70,6 +72,7 @@ interface ItemRec {
   last_sync_at: number;
   downloaded_at: number;
   raw_json: string | null;
+  meta_v: number | null;
   derived: number | null;
 }
 
@@ -99,14 +102,41 @@ function normalize(sql: string): string {
   return sql.replace(/\s+/g, ' ').trim();
 }
 
+/** 1:1 per-type metadata, cascading from `cached_items`. */
+const ITEM_COMPONENT_TABLES = ['cached_albums', 'cached_playlists'] as const;
+/** `Child` multi-valued mirrors, cascading from `cached_songs`. */
+const SONG_CHILD_TABLES = [
+  'cached_song_genres',
+  'cached_song_artists',
+  'cached_song_album_artists',
+  'cached_song_contributors',
+  'cached_song_moods',
+] as const;
+const AUX_TABLES = [...ITEM_COMPONENT_TABLES, ...SONG_CHILD_TABLES];
+
+/** A component / child row: its parent id (always the first bind) + the raw binds.
+ *  Column-level fidelity isn't needed — the assertions are about lifecycle. */
+interface AuxRec {
+  parent: string;
+  params: readonly unknown[];
+}
+
 function makeFakeDb() {
   const songs = new Map<string, SongRec>();
   const items = new Map<string, ItemRec>();
   // Edges keyed by `${item_id}::${position}` for composite PK.
   const edges = new Map<string, EdgeRec>();
   const queue = new Map<string, QueueRec>();
+  const aux = new Map<string, AuxRec[]>(AUX_TABLES.map((t): [string, AuxRec[]] => [t, []]));
 
   const edgeKey = (item_id: string, position: number) => `${item_id}::${position}`;
+
+  /** Emulate ON DELETE CASCADE for the given tables. */
+  const cascadeAux = (tables: readonly string[], parent: string): void => {
+    for (const table of tables) {
+      aux.set(table, (aux.get(table) ?? []).filter((r) => r.parent !== parent));
+    }
+  };
 
   const runSync = (rawSql: string, params: readonly unknown[] = []): void => {
     const s = normalize(rawSql);
@@ -134,6 +164,7 @@ function makeFakeDb() {
         sampling_rate,
         format_captured_at,
         downloaded_at,
+        raw_json,
       ] = params as [
         string,
         string,
@@ -149,7 +180,12 @@ function makeFakeDb() {
         number | null,
         number,
         number,
+        string | null,
       ];
+      // Mirror the real ON CONFLICT clause for the envelope + its marker:
+      // `raw_json = COALESCE(excluded.raw_json, raw_json)` and `meta_v` re-arming
+      // to NULL only when a genuinely NEW envelope lands.
+      const prevSong = songs.get(song_id);
       songs.set(song_id, {
         song_id,
         title,
@@ -165,15 +201,32 @@ function makeFakeDb() {
         sampling_rate,
         format_captured_at,
         downloaded_at,
+        raw_json: raw_json ?? prevSong?.raw_json ?? null,
+        meta_v:
+          raw_json !== null && raw_json !== (prevSong?.raw_json ?? null)
+            ? null
+            : prevSong?.meta_v ?? null,
       });
       return;
     }
     if (s.startsWith('DELETE FROM cached_songs WHERE song_id = ?')) {
-      songs.delete(params[0] as string);
+      const songId = params[0] as string;
+      songs.delete(songId);
+      cascadeAux(SONG_CHILD_TABLES, songId);
       return;
     }
     if (s === 'DELETE FROM cached_songs;') {
       songs.clear();
+      return;
+    }
+    if (s.startsWith('UPDATE cached_songs SET')) {
+      // The one-time conversion: promoted columns (+ meta_v), or the bare stamp
+      // for a row whose envelope failed to parse. Only the marker is modelled.
+      const songId = params[params.length - 1] as string;
+      const existingSong = songs.get(songId);
+      if (existingSong) {
+        songs.set(songId, { ...existingSong, meta_v: params[params.length - 2] as number });
+      }
       return;
     }
 
@@ -227,6 +280,7 @@ function makeFakeDb() {
         last_sync_at,
         downloaded_at,
         raw_json: raw_json ?? null,
+        meta_v: null,
         derived: derived ?? null,
       });
       return;
@@ -262,6 +316,7 @@ function makeFakeDb() {
       // Mirror the real ON CONFLICT clause:
       //   raw_json = COALESCE(excluded.raw_json, raw_json) — preserve a richer
       //     existing envelope when the incoming write has none.
+      //   meta_v re-arms to NULL only for a genuinely NEW envelope.
       //   derived  = excluded.derived — always overwrite.
       const prev = items.get(item_id);
       items.set(item_id, {
@@ -275,6 +330,10 @@ function makeFakeDb() {
         last_sync_at,
         downloaded_at,
         raw_json: (raw_json ?? null) !== null ? raw_json ?? null : prev?.raw_json ?? null,
+        meta_v:
+          (raw_json ?? null) !== null && (raw_json ?? null) !== (prev?.raw_json ?? null)
+            ? null
+            : prev?.meta_v ?? null,
         derived: derived ?? null,
       });
       return;
@@ -282,15 +341,46 @@ function makeFakeDb() {
     if (s.startsWith('DELETE FROM cached_items WHERE item_id = ?')) {
       const id = params[0] as string;
       items.delete(id);
-      // Emulate FK ON DELETE CASCADE for the edge table.
+      // Emulate FK ON DELETE CASCADE for the edge + component tables.
       for (const [k, edge] of edges) {
         if (edge.item_id === id) edges.delete(k);
       }
+      cascadeAux(ITEM_COMPONENT_TABLES, id);
       return;
     }
     if (s === 'DELETE FROM cached_items;') {
       items.clear();
       return;
+    }
+    if (s.startsWith('UPDATE cached_items SET meta_v = ? WHERE item_id = ?')) {
+      const [metaV, itemId] = params as [number, string];
+      const existingItem = items.get(itemId);
+      if (existingItem) items.set(itemId, { ...existingItem, meta_v: metaV });
+      return;
+    }
+
+    // ---- component + child tables ----
+    // Generic: the parent id is always the first bind, and a component row
+    // UPSERTs on it while a child row appends after its table was cleared.
+    for (const table of AUX_TABLES) {
+      if (s === `DELETE FROM ${table};`) {
+        aux.set(table, []);
+        return;
+      }
+      if (s.startsWith(`DELETE FROM ${table} WHERE `)) {
+        cascadeAux([table], params[0] as string);
+        return;
+      }
+      if (s.startsWith(`INSERT INTO ${table} `)) {
+        const parent = params[0] as string;
+        const rows = aux.get(table) ?? [];
+        const next = s.includes('ON CONFLICT')
+          ? rows.filter((r) => r.parent !== parent)
+          : rows;
+        next.push({ parent, params });
+        aux.set(table, next);
+        return;
+      }
     }
 
     // ---- cached_item_songs ----
@@ -547,6 +637,7 @@ function makeFakeDb() {
     items,
     edges,
     queue,
+    aux,
 
     getFirstSync<T>(rawSql: string, params: readonly unknown[] = []): T | undefined {
       const s = normalize(rawSql);
@@ -804,6 +895,8 @@ describe('musicCacheTables — cached_songs', () => {
       sampling_rate: null,
       format_captured_at: 0,
       downloaded_at: 0,
+      raw_json: null,
+      meta_v: null,
     });
     const hydrated = hydrateCachedSongs();
     expect(Object.keys(hydrated)).toEqual(['s1']);

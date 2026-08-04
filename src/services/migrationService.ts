@@ -647,8 +647,11 @@ async function backfillCachedSongEnvelopes(
     db.withTransactionSync(() => {
       for (const [songId, { child, source }] of lookup) {
         const json = JSON.stringify(child);
+        // `meta_v = NULL` alongside the envelope re-arms the one-time promotion:
+        // this row is written after a hydrate may already have converted, so it
+        // has to look unconverted again for the next one to pick it up.
         db.runSync(
-          'UPDATE cached_songs SET raw_json = ? WHERE song_id = ? AND raw_json IS NULL;',
+          'UPDATE cached_songs SET raw_json = ?, meta_v = NULL WHERE song_id = ? AND raw_json IS NULL;',
           [json, songId],
         );
         if (source === 'album') viaAlbum++;
@@ -742,8 +745,9 @@ async function backfillCachedItemEnvelopes(
           }
         }
         if (envelope !== null) {
+          // `meta_v = NULL` re-arms the one-time promotion — see Migration 18.
           db.runSync(
-            'UPDATE cached_items SET raw_json = ? WHERE item_id = ? AND raw_json IS NULL;',
+            'UPDATE cached_items SET raw_json = ?, meta_v = NULL WHERE item_id = ? AND raw_json IS NULL;',
             [envelope, row.item_id],
           );
           if (row.type === 'album') albumsDone++;
@@ -1025,12 +1029,14 @@ async function backfillMissingPartialAlbums(
           return defaultCollator.compare(a.songId, b.songId);
         });
 
-        // Insert album row.
+        // Insert album row. `meta_v` is written NULL explicitly so the envelope
+        // this migration lands is re-converted by the next hydrate — see
+        // Migration 18.
         db.runSync(
           `INSERT INTO cached_items
              (item_id, type, name, artist, cover_art_id, expected_song_count,
-              parent_album_id, last_sync_at, downloaded_at, raw_json)
-             VALUES (?, 'album', ?, ?, ?, ?, NULL, ?, ?, ?)
+              parent_album_id, last_sync_at, downloaded_at, raw_json, meta_v)
+             VALUES (?, 'album', ?, ?, ?, ?, NULL, ?, ?, ?, NULL)
              ON CONFLICT(item_id) DO NOTHING;`,
           [albumId, name, artist, coverArt, expectedSongCount, now, now, envelope],
         );

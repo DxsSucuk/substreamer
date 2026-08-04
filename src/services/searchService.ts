@@ -383,10 +383,10 @@ export async function findArtistSongs(name: string): Promise<Child[]> {
  * aggregate) → `songIds` → `cachedSongs`. Dedup by song id so a track
  * that lives under multiple cached items appears once.
  *
- * Genre filtering reads each song's full envelope via `getSongEnvelope()`
- * (lazy JSON parse with WeakMap memoisation) since the `cached_songs` hot
- * columns don't carry genre. For text-only paths (no genre filter) we
- * never touch the envelope, so the call is essentially free.
+ * Genre filtering reads each song's full `Child` via `getSongEnvelope()`
+ * (built from the row's promoted columns + its `genres` projection, memoised on
+ * the row), since the lean `childFromCachedSong` projection carries no genre.
+ * For text-only paths (no genre filter) we never call it, so it stays free.
  */
 function collectOfflineSongs(genreFilter?: string): Child[] {
   const g = genreFilter?.toLowerCase();
@@ -419,7 +419,7 @@ export function getOfflineSongsByGenre(genre: string): Child[] {
 
 /**
  * The set of genre names (lowercased) present anywhere in the offline (cached)
- * library. Single pass over all cached songs, parsing each envelope once.
+ * library. Single pass over all cached songs, building each `Child` once.
  *
  * Replaces the O(genres × songs) pattern of calling `getOfflineSongsByGenre`
  * once per candidate genre (which re-walks the whole library per genre) — used

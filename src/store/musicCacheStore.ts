@@ -23,7 +23,9 @@ import { create } from 'zustand';
 import { type Child } from 'subsonic-api';
 
 import {
+  childGenreNames,
   clearAllMusicCacheRows,
+  convertLegacyMetadataAsync,
   orphanSongIfUnreferencedAsync,
   deleteCachedItem as deleteCachedItemRow,
   deleteCachedSong as deleteCachedSongRow,
@@ -43,6 +45,7 @@ import {
   type CachedSongRow,
   type DownloadQueueRow,
 } from './persistence/musicCacheTables';
+import { readsLegacyEnvelope } from './persistence/cachedItemHelpers';
 // Synchronous adapter: the settings blob (maxConcurrentDownloads) is read via
 // a synchronous helper; the bulk cache data hydrates via per-row tables.
 import { kvStorageSync as kvStorage } from './persistence';
@@ -155,12 +158,16 @@ export interface MusicCacheState {
   /**
    * Finalise a download: remove the queue row, upsert the item + songs, and
    * insert the edges -- atomic in SQL, then mirrored in memory.
+   *
+   * `childBySongId` carries the real server `Child` for the songs that have one;
+   * only those get their `cached_song_*` mirrors rewritten.
    */
   markItemComplete: (
     queueId: string,
     item: Omit<CachedItemMeta, 'songIds'>,
     songs: CachedSongMeta[],
     edges: Array<{ songId: string; position: number }>,
+    childBySongId?: Map<string, Child>,
   ) => void;
 
   /* Cached item / song actions */
@@ -188,7 +195,9 @@ export interface MusicCacheState {
     fromPosition: number,
     toPosition: number,
   ) => void;
-  upsertCachedSong: (song: CachedSongMeta) => void;
+  /** `child` is the real server `Child` behind this write, when there is one —
+   *  the only thing that rewrites the song's `cached_song_*` mirrors. */
+  upsertCachedSong: (song: CachedSongMeta, child?: Child) => void;
   deleteCachedSong: (songId: string) => void;
 
   /* Settings + aggregates */
@@ -211,6 +220,56 @@ export interface MusicCacheState {
 function generateQueueId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
+
+/**
+ * Mirror the disk write's metadata-preservation rules in memory: a write with no
+ * metadata must not blank what the row already carries (on disk that's the
+ * `raw_json` COALESCE plus "skip the component row"), and `metaV` is owned by
+ * the conversion so no write path may drop it.
+ */
+function preserveItemMetadata(
+  item: Omit<CachedItemMeta, 'songIds'>,
+  existing: CachedItemMeta | undefined,
+): Omit<CachedItemMeta, 'songIds'> {
+  if (!existing) return item;
+  return {
+    ...item,
+    rawJson: item.rawJson ?? existing.rawJson,
+    metaV: item.metaV ?? existing.metaV,
+    albumMeta: item.albumMeta ?? existing.albumMeta,
+    playlistMeta: item.playlistMeta ?? existing.playlistMeta,
+  };
+}
+
+/**
+ * In-memory counterpart of the song upsert: promoted columns absent from the
+ * incoming row survive (the disk COALESCE), and the `genres` projection is
+ * refreshed only when a real `Child` came with the write — the same rule the
+ * `cached_song_*` tables follow.
+ */
+function mergeCachedSong(
+  existing: CachedSongMeta | undefined,
+  song: CachedSongMeta,
+  child?: Child,
+): CachedSongMeta {
+  if (!existing) return child ? { ...song, genres: childGenreNames(child) } : song;
+  // Spread-skip `undefined`: a mapper emits keys for fields the server omitted, and a
+  // plain spread would clear them in memory while the disk COALESCE keeps them — the
+  // two would disagree until the next hydrate.
+  const merged = { ...existing };
+  for (const [k, v] of Object.entries(song)) {
+    if (v !== undefined) (merged as Record<string, unknown>)[k] = v;
+  }
+  return child ? { ...merged, genres: childGenreNames(child) } : merged;
+}
+
+/**
+ * In-flight `hydrateFromDbAsync` promise. A cold boot fires it 2–4× concurrently
+ * (root layout, splash ×2, headless bootstrap); memoising only the IN-FLIGHT
+ * promise collapses those without turning it into a permanent memo — `reset()`
+ * clears `hasHydrated` and a server switch must re-read.
+ */
+let hydrateInFlight: Promise<void> | null = null;
 
 export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
   cachedSongs: {},
@@ -307,7 +366,7 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
     }));
   },
 
-  markItemComplete: (queueId, item, songs, edges) => {
+  markItemComplete: (queueId, item, songs, edges, childBySongId) => {
     const existing = get().cachedItems[item.itemId];
     // For top-ups (existing row):
     //   - preserve `downloadedAt` (user "downloaded" this earlier).
@@ -320,13 +379,13 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
     //     partial.
     const itemToPersist: Omit<CachedItemMeta, 'songIds'> = existing
       ? {
-          ...item,
+          ...preserveItemMetadata(item, existing),
           downloadedAt: existing.downloadedAt,
           expectedSongCount: existing.expectedSongCount,
         }
       : item;
 
-    markDownloadComplete(queueId, itemToPersist, songs, edges);
+    markDownloadComplete(queueId, itemToPersist, songs, edges, childBySongId);
 
     // New songIds from this run, in caller-supplied position order.
     const newSongIdsInOrder = [...edges]
@@ -346,7 +405,7 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
     set((state) => {
       const nextSongs = { ...state.cachedSongs };
       for (const s of songs) {
-        nextSongs[s.id] = s;
+        nextSongs[s.id] = mergeCachedSong(state.cachedSongs[s.id], s, childBySongId?.get(s.id));
       }
       return {
         downloadQueue: state.downloadQueue.filter((q) => q.queueId !== queueId),
@@ -370,7 +429,7 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
       return {
         cachedItems: {
           ...state.cachedItems,
-          [item.itemId]: { ...item, songIds: nextSongIds },
+          [item.itemId]: { ...preserveItemMetadata(item, existing), songIds: nextSongIds },
         },
       };
     });
@@ -515,10 +574,13 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
     }));
   },
 
-  upsertCachedSong: (song) => {
-    void upsertCachedSongRow(song);
+  upsertCachedSong: (song, child) => {
+    void upsertCachedSongRow(song, child);
     set((state) => ({
-      cachedSongs: { ...state.cachedSongs, [song.id]: song },
+      cachedSongs: {
+        ...state.cachedSongs,
+        [song.id]: mergeCachedSong(state.cachedSongs[song.id], song, child),
+      },
     }));
   },
 
@@ -563,30 +625,42 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
     });
   },
 
-  hydrateFromDbAsync: async () => {
-    // Idempotent re-read; the per-row tables are the source of truth. SQLite
-    // reads run on a background thread; `readSettingsBlob` stays sync (small
-    // kvStorage blob).
-    const cachedSongs = await hydrateCachedSongsAsync();
-    const cachedItems = await hydrateCachedItemsAsync();
-    const downloadQueue = await hydrateDownloadQueueAsync();
-    const settings = readSettingsBlob();
+  hydrateFromDbAsync: () => {
+    if (hydrateInFlight) return hydrateInFlight;
+    const run = (async () => {
+      // Idempotent re-read; the per-row tables are the source of truth. SQLite
+      // reads run on a background thread; `readSettingsBlob` stays sync (small
+      // kvStorage blob).
+      const cachedSongs = await hydrateCachedSongsAsync();
+      const cachedItems = await hydrateCachedItemsAsync();
+      const downloadQueue = await hydrateDownloadQueueAsync();
+      const settings = readSettingsBlob();
 
-    let totalBytes = 0;
-    for (const songId of Object.keys(cachedSongs)) {
-      totalBytes += cachedSongs[songId].bytes;
-    }
-    const totalFiles = Object.keys(cachedSongs).length;
+      let totalBytes = 0;
+      for (const songId of Object.keys(cachedSongs)) {
+        totalBytes += cachedSongs[songId].bytes;
+      }
+      const totalFiles = Object.keys(cachedSongs).length;
 
-    set({
-      cachedSongs,
-      cachedItems,
-      downloadQueue,
-      maxConcurrentDownloads: settings.maxConcurrentDownloads,
-      totalBytes,
-      totalFiles,
-      hasHydrated: true,
+      set({
+        cachedSongs,
+        cachedItems,
+        downloadQueue,
+        maxConcurrentDownloads: settings.maxConcurrentDownloads,
+        totalBytes,
+        totalFiles,
+        hasHydrated: true,
+      });
+
+      // Detached ON PURPOSE: this function is the gate CarPlay browse, playback
+      // and voice all await, and the conversion is a chunked pass over the whole
+      // download set. It fills columns on disk; the next hydrate picks them up.
+      void convertLegacyMetadataAsync();
+    })().finally(() => {
+      hydrateInFlight = null;
     });
+    hydrateInFlight = run;
+    return run;
   },
 }));
 
@@ -607,9 +681,9 @@ export async function clearMusicCacheTables(): Promise<void> {
 /* ------------------------------------------------------------------ */
 
 /**
- * Lazy-parse memoisation for song envelopes, keyed by the ROW object. A row is
+ * Lazy-build memoisation for song envelopes, keyed by the ROW object. A row is
  * replaced with a fresh object on every upsert and dropped on reset/clear, so
- * its WeakMap entry (the parsed `Child`) becomes unreachable and GCs naturally —
+ * its WeakMap entry (the built `Child`) becomes unreachable and GCs naturally —
  * no manual invalidation. The previous design keyed a WeakMap off a per-`rawJson`
  * wrapper held in a plain Map that was never pruned, which pinned every parsed
  * envelope for the whole session (an unbounded leak that defeated the WeakMap).
@@ -617,20 +691,107 @@ export async function clearMusicCacheTables(): Promise<void> {
 const songEnvelopeCache = new WeakMap<object, Child>();
 
 /**
- * Return the full Subsonic `Child` envelope for a cached song, or `null`
- * when the row has no envelope yet (pre-Migration-18 rows that haven't
- * been backfilled, or a malformed `raw_json` value).
+ * Rebuild the server's `Child` from a row's promoted columns. `albumId`,
+ * `suffix`, `bitRate`, `bitDepth` and `samplingRate` come from their `src*`
+ * twins — the same-named row fields describe the DOWNLOADED file, not the track
+ * the server sent. Where a column holds a download-time placeholder
+ * (`'Unknown Artist'`, `'Unknown'`) this returns the placeholder rather than the
+ * `undefined` the envelope had: the placeholder IS the stored data.
+ */
+function childFromPromotedColumns(row: CachedSongMeta): Child {
+  const hasReplayGain =
+    row.rgTrackGain !== undefined ||
+    row.rgAlbumGain !== undefined ||
+    row.rgTrackPeak !== undefined ||
+    row.rgAlbumPeak !== undefined ||
+    row.rgBaseGain !== undefined ||
+    row.rgFallbackGain !== undefined;
+  return {
+    id: row.id,
+    title: row.title,
+    artist: row.artist,
+    album: row.album,
+    albumId: row.srcAlbumId,
+    coverArt: row.coverArt,
+    duration: row.duration,
+    suffix: row.srcSuffix,
+    bitRate: row.srcBitRate,
+    bitDepth: row.srcBitDepth,
+    samplingRate: row.srcSamplingRate,
+    artistId: row.artistId,
+    displayArtist: row.displayArtist,
+    displayAlbumArtist: row.displayAlbumArtist,
+    displayComposer: row.displayComposer,
+    track: row.track,
+    discNumber: row.discNumber,
+    year: row.year,
+    genre: row.genre,
+    genres: row.genres,
+    size: row.size,
+    contentType: row.contentType,
+    transcodedContentType: row.transcodedContentType,
+    transcodedSuffix: row.transcodedSuffix,
+    channelCount: row.channelCount,
+    path: row.path,
+    userRating: row.userRating,
+    averageRating: row.averageRating,
+    playCount: row.playCount,
+    created: row.created === undefined ? undefined : new Date(row.created),
+    starred: row.starred === undefined ? undefined : new Date(row.starred),
+    played: row.played,
+    type: row.type as Child['type'],
+    bpm: row.bpm,
+    comment: row.comment,
+    sortName: row.sortName,
+    musicBrainzId: row.musicBrainzId,
+    explicitStatus: row.explicitStatus,
+    bookmarkPosition: row.bookmarkPosition,
+    isVideo: row.isVideo,
+    isDir: row.isDir ?? false,
+    parent: row.parent,
+    originalWidth: row.originalWidth,
+    originalHeight: row.originalHeight,
+    // The five gains are one server object; rebuild it only when at least one
+    // column survived, so a track with no ReplayGain data keeps `undefined`.
+    replayGain: hasReplayGain
+      ? ({
+          trackGain: row.rgTrackGain,
+          albumGain: row.rgAlbumGain,
+          trackPeak: row.rgTrackPeak,
+          albumPeak: row.rgAlbumPeak,
+          baseGain: row.rgBaseGain,
+          fallbackGain: row.rgFallbackGain,
+        } as Child['replayGain'])
+      : undefined,
+  };
+}
+
+/**
+ * Return the full Subsonic `Child` for a cached song. Synchronous by contract —
+ * both consumers (`searchService`, feeding Tuned-In's offline mixes) are sync,
+ * so this reads the in-memory row and never touches the DB.
+ *
+ * Precedence per {@link readsLegacyEnvelope}: the legacy envelope for rows the
+ * detached conversion hasn't reached, otherwise the promoted columns. `null`
+ * when there is no row, or when the envelope it points at is malformed. The four
+ * non-genre `Child` arrays live in `cached_song_*` but are deliberately not
+ * hydrated, so they are absent here.
  */
 export function getSongEnvelope(songId: string): Child | null {
   const row = musicCacheStore.getState().cachedSongs[songId];
-  if (!row?.rawJson) return null;
+  if (!row) return null;
   const cached = songEnvelopeCache.get(row);
   if (cached) return cached;
-  try {
-    const parsed = JSON.parse(row.rawJson) as Child;
-    songEnvelopeCache.set(row, parsed);
-    return parsed;
-  } catch {
-    return null;
+  let child: Child;
+  if (readsLegacyEnvelope(row)) {
+    try {
+      child = JSON.parse(row.rawJson) as Child;
+    } catch {
+      return null;
+    }
+  } else {
+    child = childFromPromotedColumns(row);
   }
+  songEnvelopeCache.set(row, child);
+  return child;
 }

@@ -20,6 +20,7 @@ export interface SongListRow {
   album: string | null;
   album_id: string | null;
   artist_id: string | null;
+  sort_name: string | null;
   cover_art: string | null;
   duration: number | null;
   track: number | null;
@@ -32,7 +33,7 @@ export interface SongListRow {
 
 const SONG_LIST_FIELDS = [
   'id', 'title', 'artist', 'album', 'album_id', 'artist_id', 'cover_art', 'duration',
-  'track', 'disc_number', 'sort_title', 'sort_artist', 'starred', 'user_rating',
+  'track', 'disc_number', 'sort_name', 'sort_title', 'sort_artist', 'starred', 'user_rating',
 ] as const;
 
 export const SONG_LIST_COLS = SONG_LIST_FIELDS.map((f) => `"${f}"`).join(', ');
@@ -58,6 +59,9 @@ export function songListRowToChild(r: SongListRow): Child {
     // Drives 'Go to artist' + 'More by this artist' in the options sheet, which gate
     // on `artistId` — omitting it from the projection silently hid both.
     artistId: r.artist_id ?? undefined,
+    // The alphabet scroller recomputes the sort key in JS; without `sortName` it
+    // disagrees with the `sort_title` the list was actually ordered by.
+    sortName: r.sort_name ?? undefined,
     coverArt: r.cover_art ?? undefined,
     duration: r.duration ?? 0,
     track: r.track ?? undefined,

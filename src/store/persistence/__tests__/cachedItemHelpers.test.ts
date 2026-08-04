@@ -149,6 +149,44 @@ describe('downloadedAlbumsFromCache', () => {
     const map = { a1: makeItem({ itemId: 'a1', songIds: ['s'], expectedSongCount: 1, rawJson: '{not json' }) };
     expect(downloadedAlbumsFromCache(map, true)).toEqual([]);
   });
+
+  it('rebuilds from the component row when the row has neither envelope nor metaV', () => {
+    // A row written by THIS build: both null, so it must fall through to its
+    // component row rather than be skipped as "no envelope".
+    const map = {
+      a1: makeItem({
+        itemId: 'a1',
+        songIds: ['s'],
+        expectedSongCount: 1,
+        albumMeta: { name: 'Fresh', artist: 'A', songCount: 1, duration: 60, year: 1999 },
+      }),
+    };
+    const [album] = downloadedAlbumsFromCache(map, true);
+    expect(album.id).toBe('a1');
+    expect(album.name).toBe('Fresh');
+    expect(album.year).toBe(1999);
+  });
+
+  it('reads the component row, not the retained envelope, once metaV is stamped', () => {
+    const map = {
+      a1: makeItem({
+        itemId: 'a1',
+        songIds: ['s'],
+        expectedSongCount: 1,
+        metaV: 1,
+        rawJson: JSON.stringify({ id: 'a1', name: 'Stale' }),
+        albumMeta: { name: 'Promoted' },
+      }),
+    };
+    expect(downloadedAlbumsFromCache(map, true)[0].name).toBe('Promoted');
+  });
+
+  it('keeps a metadata-less derived row hidden — never substitutes cached_items.name', () => {
+    const map = {
+      a1: makeItem({ itemId: 'a1', name: 'Grouping row', songIds: ['s'], expectedSongCount: 1, derived: true }),
+    };
+    expect(downloadedAlbumsFromCache(map, true)).toEqual([]);
+  });
 });
 
 describe('downloadedPlaylistsFromCache', () => {
@@ -159,6 +197,21 @@ describe('downloadedPlaylistsFromCache', () => {
       p2: makeItem({ itemId: 'p2', type: 'playlist' /* no rawJson */ }),
     };
     expect(downloadedPlaylistsFromCache(map).map((p) => p.id)).toEqual(['p1']);
+  });
+
+  it('rebuilds from the component row when the row has neither envelope nor metaV', () => {
+    const map = {
+      p1: makeItem({
+        itemId: 'p1',
+        type: 'playlist',
+        playlistMeta: { name: 'Mix', owner: 'dave', songCount: 3, duration: 600 },
+      }),
+      p2: makeItem({ itemId: 'p2', type: 'playlist' /* no metadata in either form */ }),
+    };
+    const out = downloadedPlaylistsFromCache(map);
+    expect(out.map((p) => p.id)).toEqual(['p1']);
+    expect(out[0].owner).toBe('dave');
+    expect(out[0].songCount).toBe(3);
   });
 });
 

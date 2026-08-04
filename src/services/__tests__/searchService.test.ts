@@ -416,8 +416,8 @@ describe('searchLibrary — data-state routing', () => {
     // Regression: local search used to hardcode artists:[] — "pearl" showed
     // albums + songs but never the Pearl Jam artist row.
     mockSearchArtists.mockResolvedValue([
-      { id: 'ar1', name: 'Pearl Jam', album_count: 57, cover_art: null, sort_title: 'pearl jam', starred: null, user_rating: null },
-      { id: 'ar2', name: 'Metallica', album_count: 12, cover_art: null, sort_title: 'metallica', starred: null, user_rating: null },
+      { id: 'ar1', name: 'Pearl Jam', album_count: 57, cover_art: null, sort_name: null, sort_title: 'pearl jam', starred: null, user_rating: null },
+      { id: 'ar2', name: 'Metallica', album_count: 12, cover_art: null, sort_name: null, sort_title: 'metallica', starred: null, user_rating: null },
     ]);
     const res = await searchLibrary('pearl');
     expect(res.artists.map((a) => a.id)).toEqual(['ar1']);

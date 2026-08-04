@@ -596,27 +596,158 @@ export const pendingScrobbleEvents = sqliteTable(
   (t) => ({ timeIdx: index('idx_pending_scrobble_events_time').on(t.time) }),
 );
 
-/** Downloaded tracks. `raw_json` preserves the full Subsonic `Child` envelope. */
+/**
+ * Downloaded tracks — the full Subsonic `Child` in typed columns, alongside the
+ * facts about the file on disk.
+ *
+ * THE FIRST SIX COLUMNS DESCRIBE THE FILE, NOT THE SERVER'S TRACK, and five of them
+ * collide by name with `Child` fields — hence the `src_*` pairs below:
+ *   - `album_id` is the file's DIRECTORY (`_unknown` when the server gave none)
+ *   - `suffix` is the file's EXTENSION, post-transcode
+ *   - `bit_rate`/`bit_depth`/`sampling_rate` are the EFFECTIVE downloaded format
+ * `resolveSongFile` builds `{cache}/{album_id}/{song_id}.{suffix}`, and the reconcile
+ * passes delete any file whose row disagrees — so a server value must never land here.
+ *
+ * `raw_json` is the legacy envelope, retained for rows the one-time promotion has not
+ * converted yet and for rollback safety. `meta_v` is that promotion's marker: NULL means
+ * "columns not populated yet, read the envelope". Only the promotion ever sets it.
+ */
 export const cachedSongs = sqliteTable(
   'cached_songs',
   {
     songId: text('song_id').primaryKey(),
-    title: text('title').notNull(),
-    artist: text('artist'),
-    album: text('album'),
+    // --- the file on disk ---
     albumId: text('album_id').notNull(),
-    coverArt: text('cover_art'),
-    bytes: integer('bytes').notNull(),
-    duration: integer('duration').notNull(),
     suffix: text('suffix').notNull(),
     bitRate: integer('bit_rate'),
     bitDepth: integer('bit_depth'),
     samplingRate: integer('sampling_rate'),
+    bytes: integer('bytes').notNull(),
     formatCapturedAt: integer('format_captured_at').notNull(),
     downloadedAt: integer('downloaded_at').notNull(),
+    // --- the server's track (Child) ---
+    title: text('title').notNull(),
+    artist: text('artist'),
+    album: text('album'),
+    coverArt: text('cover_art'),
+    duration: integer('duration').notNull(),
+    srcAlbumId: text('src_album_id'),
+    srcSuffix: text('src_suffix'),
+    srcBitRate: integer('src_bit_rate'),
+    srcBitDepth: integer('src_bit_depth'),
+    srcSamplingRate: integer('src_sampling_rate'),
+    artistId: text('artist_id'),
+    displayArtist: text('display_artist'),
+    displayAlbumArtist: text('display_album_artist'),
+    displayComposer: text('display_composer'),
+    track: integer('track'),
+    discNumber: integer('disc_number'),
+    year: integer('year'),
+    genre: text('genre'),
+    size: integer('size'),
+    contentType: text('content_type'),
+    transcodedContentType: text('transcoded_content_type'),
+    transcodedSuffix: text('transcoded_suffix'),
+    channelCount: integer('channel_count'),
+    path: text('path'),
+    userRating: integer('user_rating'),
+    averageRating: real('average_rating'),
+    playCount: integer('play_count'),
+    created: integer('created'),
+    starred: integer('starred'),
+    played: text('played'),
+    type: text('type'),
+    bpm: integer('bpm'),
+    comment: text('comment'),
+    sortName: text('sort_name'),
+    musicBrainzId: text('music_brainz_id'),
+    explicitStatus: text('explicit_status'),
+    bookmarkPosition: integer('bookmark_position'),
+    isVideo: integer('is_video', { mode: 'boolean' }),
+    isDir: integer('is_dir', { mode: 'boolean' }),
+    parent: text('parent'),
+    originalWidth: integer('original_width'),
+    originalHeight: integer('original_height'),
+    rgTrackGain: real('rg_track_gain'),
+    rgAlbumGain: real('rg_album_gain'),
+    rgTrackPeak: real('rg_track_peak'),
+    rgAlbumPeak: real('rg_album_peak'),
+    rgBaseGain: real('rg_base_gain'),
+    rgFallbackGain: real('rg_fallback_gain'),
+    // --- legacy envelope + promotion marker ---
     rawJson: text('raw_json'),
+    metaV: integer('meta_v'),
   },
   (t) => ({ albumIdx: index('idx_cached_songs_album_id').on(t.albumId) }),
+);
+
+// Child's multi-valued fields, mirroring the library's song child tables. Written
+// ONLY from a real `Child` — never rebuilt from an in-memory row, which carries the
+// genres projection alone.
+
+export const cachedSongGenres = sqliteTable(
+  'cached_song_genres',
+  {
+    songId: text('song_id')
+      .notNull()
+      .references(() => cachedSongs.songId, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    name: text('name').notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.songId, t.pos] }) }),
+);
+
+export const cachedSongArtists = sqliteTable(
+  'cached_song_artists',
+  {
+    songId: text('song_id')
+      .notNull()
+      .references(() => cachedSongs.songId, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    artistId: text('artist_id'),
+    artistName: text('artist_name'),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.songId, t.pos] }) }),
+);
+
+export const cachedSongAlbumArtists = sqliteTable(
+  'cached_song_album_artists',
+  {
+    songId: text('song_id')
+      .notNull()
+      .references(() => cachedSongs.songId, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    artistId: text('artist_id'),
+    artistName: text('artist_name'),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.songId, t.pos] }) }),
+);
+
+export const cachedSongContributors = sqliteTable(
+  'cached_song_contributors',
+  {
+    songId: text('song_id')
+      .notNull()
+      .references(() => cachedSongs.songId, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    role: text('role').notNull(),
+    subRole: text('sub_role'),
+    artistId: text('artist_id'),
+    artistName: text('artist_name'),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.songId, t.pos] }) }),
+);
+
+export const cachedSongMoods = sqliteTable(
+  'cached_song_moods',
+  {
+    songId: text('song_id')
+      .notNull()
+      .references(() => cachedSongs.songId, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    mood: text('mood').notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.songId, t.pos] }) }),
 );
 
 /** A downloaded album / playlist / favorites set / single song. `derived` marks a row
@@ -626,13 +757,70 @@ export const cachedItems = sqliteTable('cached_items', {
   type: text('type').notNull(),
   name: text('name').notNull(),
   artist: text('artist'),
+  // Captured at download time per the user's then-current per-track-vs-album cover-art
+  // setting, so it matches the file actually in the image cache. NOT reconstructible
+  // from `albums.cover_art` — the image-cache purge protection depends on it.
   coverArtId: text('cover_art_id'),
   expectedSongCount: integer('expected_song_count').notNull(),
   parentAlbumId: text('parent_album_id'),
   lastSyncAt: integer('last_sync_at').notNull(),
   downloadedAt: integer('downloaded_at').notNull(),
   rawJson: text('raw_json'),
+  /** Promotion marker — NULL means the component row isn't populated yet, read `raw_json`. */
+  metaV: integer('meta_v'),
   derived: integer('derived').default(0),
+});
+
+/**
+ * Per-type metadata for a downloaded item, 1:1 with `cached_items`. Component tables
+ * rather than a wide union: `favorites` and `song` items have no metadata at all, so a
+ * union would leave 40-odd permanently-NULL columns and force everything nullable.
+ * Mirrors the `artists` + `artist_info` pattern.
+ */
+export const cachedAlbums = sqliteTable('cached_albums', {
+  itemId: text('item_id')
+    .primaryKey()
+    .references(() => cachedItems.itemId, { onDelete: 'cascade' }),
+  artistId: text('artist_id'),
+  name: text('name'),
+  artist: text('artist'),
+  displayArtist: text('display_artist'),
+  coverArt: text('cover_art'),
+  songCount: integer('song_count'),
+  duration: integer('duration'),
+  playCount: integer('play_count'),
+  created: integer('created'),
+  starred: integer('starred'),
+  year: integer('year'),
+  genre: text('genre'),
+  played: text('played'),
+  userRating: integer('user_rating'),
+  version: text('version'),
+  musicBrainzId: text('music_brainz_id'),
+  sortName: text('sort_name'),
+  isCompilation: integer('is_compilation', { mode: 'boolean' }),
+  explicitStatus: text('explicit_status'),
+  originalReleaseYear: integer('original_release_year'),
+  originalReleaseMonth: integer('original_release_month'),
+  originalReleaseDay: integer('original_release_day'),
+  releaseYear: integer('release_year'),
+  releaseMonth: integer('release_month'),
+  releaseDay: integer('release_day'),
+});
+
+export const cachedPlaylists = sqliteTable('cached_playlists', {
+  itemId: text('item_id')
+    .primaryKey()
+    .references(() => cachedItems.itemId, { onDelete: 'cascade' }),
+  name: text('name'),
+  comment: text('comment'),
+  coverArt: text('cover_art'),
+  created: integer('created'),
+  changed: integer('changed'),
+  duration: integer('duration'),
+  owner: text('owner'),
+  public: integer('public', { mode: 'boolean' }),
+  songCount: integer('song_count'),
 });
 
 /** Ordered membership of a cached item. The UNIQUE index enforces one edge per

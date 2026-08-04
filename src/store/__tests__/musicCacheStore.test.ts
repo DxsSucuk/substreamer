@@ -25,6 +25,8 @@ jest.mock('../persistence/musicCacheTables', () => ({
     prunedItems: [],
   })),
   clearAllMusicCacheRows: jest.fn(),
+  convertLegacyMetadataAsync: jest.fn(async () => {}),
+  childGenreNames: jest.fn((child: { genres?: string[] }) => child.genres ?? []),
 }));
 
 jest.mock('../persistence/kvStorage', () => require('../persistence/__mocks__/kvStorage'));
@@ -396,7 +398,8 @@ describe('markItemComplete', () => {
 
     musicCacheStore.getState().markItemComplete(qid, item, songs, edges);
 
-    expect(mockMarkDownloadComplete).toHaveBeenCalledWith(qid, item, songs, edges);
+    // Trailing `undefined` = no `childBySongId`: these rows carry no real `Child`.
+    expect(mockMarkDownloadComplete).toHaveBeenCalledWith(qid, item, songs, edges, undefined);
     const state = musicCacheStore.getState();
     expect(state.downloadQueue).toHaveLength(0);
     expect(state.cachedItems['a']).toBeDefined();
@@ -922,7 +925,7 @@ describe('upsertCachedSong', () => {
   it('writes to SQL and merges into cachedSongs', () => {
     const song = makeSong('new');
     musicCacheStore.getState().upsertCachedSong(song);
-    expect(mockUpsertCachedSong).toHaveBeenCalledWith(song);
+    expect(mockUpsertCachedSong).toHaveBeenCalledWith(song, undefined);
     expect(musicCacheStore.getState().cachedSongs['new']).toEqual(song);
   });
 
@@ -1155,13 +1158,42 @@ describe('getSongEnvelope', () => {
     expect(getSongEnvelope('nope')).toBeNull();
   });
 
-  it('returns null when raw_json is absent', () => {
+  it('builds from the promoted columns when the row has neither envelope nor metaV', () => {
+    // A row written by THIS build: `rawJson` AND `metaV` both null. A bare
+    // `metaV == null` test would send it to a null envelope and drop it.
     musicCacheStore.setState({
       cachedSongs: {
-        s1: makeSong('s1'), // no rawJson
+        s1: makeSong('s1', {
+          artist: 'Unknown Artist',
+          srcAlbumId: 'server-album',
+          track: 3,
+          genre: 'Rock',
+          genres: ['Folk, World, & Country'],
+          rgTrackGain: -7.5,
+        }),
       } as any,
     });
-    expect(getSongEnvelope('s1')).toBeNull();
+    const c = getSongEnvelope('s1');
+    expect(c.track).toBe(3);
+    // `albumId` is the SERVER's album (`src_album_id`), not the file's directory.
+    expect(c.albumId).toBe('server-album');
+    expect(c.genres).toEqual(['Folk, World, & Country']);
+    expect(c.replayGain.trackGain).toBe(-7.5);
+    // The download-time placeholder IS the stored data — no `undefined` here.
+    expect(c.artist).toBe('Unknown Artist');
+  });
+
+  it('reads the columns, not the retained envelope, once metaV is stamped', () => {
+    musicCacheStore.setState({
+      cachedSongs: {
+        s1: {
+          ...makeSong('s1', { track: 7 }),
+          metaV: 1,
+          rawJson: '{"id":"s1","isDir":false,"title":"Stale","track":99}',
+        },
+      } as any,
+    });
+    expect(getSongEnvelope('s1')?.track).toBe(7);
   });
 
   it('parses and caches the Child envelope; repeated calls return the same object', () => {

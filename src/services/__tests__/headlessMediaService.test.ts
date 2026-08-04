@@ -37,7 +37,7 @@ beforeAll(() => ensureNormalizedSchema(db()));
 
 beforeEach(async () => {
   offlineModeStore.setState({ offlineMode: false } as any);
-  musicCacheStore.setState({ cachedItems: {} } as any);
+  musicCacheStore.setState({ cachedItems: {}, cachedSongs: {} } as any);
   // Headless now reads the normalized tables (not the doomed library stores) — seed
   // the DB so the CarPlay/Auto browse + voice vocab resolve.
   db().runSync('DELETE FROM albums');
@@ -124,6 +124,7 @@ describe('resolveBrowseChildren', () => {
   it('playlist:<id> offline → tracks from the persisted detail cache (shared fetchPlaylist)', async () => {
     // Offline: fetchPlaylistDetail returns the persisted normalized detail — the same
     // shared fetch the app's playlist screen uses. No headless-specific fallback.
+    // Playlists are never partially downloaded, so their entries are not filtered.
     offlineModeStore.setState({ offlineMode: true } as any);
     (fetchPlaylistDetail as jest.Mock).mockResolvedValueOnce({ id: 'p1', entry: [song('s1'), song('s2')] });
     const rows = await __test.resolveBrowseChildren(playlistId('p1'));
@@ -133,10 +134,37 @@ describe('resolveBrowseChildren', () => {
 
   it('album:<id> offline → tracks from the persisted detail cache (shared fetchAlbum)', async () => {
     offlineModeStore.setState({ offlineMode: true } as any);
+    musicCacheStore.setState({ cachedSongs: { s1: {}, s2: {} } } as any);
     (fetchAlbumDetail as jest.Mock).mockResolvedValueOnce({ id: 'al-a', song: [song('s1'), song('s2')] });
     const rows = await __test.resolveBrowseChildren(albumId('al-a'));
     expect(rows).toHaveLength(2);
     expect(rows.every((r) => r.playable && !r.hasChildren)).toBe(true);
+  });
+
+  it('album:<id> offline → a PARTIALLY downloaded album lists only its downloaded tracks', async () => {
+    // The app greys undownloaded rows out; a car list has no useful disabled state,
+    // so it shows only what will actually play. The filter lives in the shared
+    // `albumSongs`, so the browse ids stay index-aligned with playback.
+    offlineModeStore.setState({ offlineMode: true } as any);
+    musicCacheStore.setState({ cachedSongs: { s2: {} } } as any);
+    (fetchAlbumDetail as jest.Mock).mockResolvedValueOnce({
+      id: 'al-a',
+      song: [song('s1'), song('s2'), song('s3')],
+    });
+    const rows = await __test.resolveBrowseChildren(albumId('al-a'));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe('track:album:al-a:0');
+  });
+
+  it('album:<id> ONLINE → the full track list, unfiltered', async () => {
+    offlineModeStore.setState({ offlineMode: false } as any);
+    musicCacheStore.setState({ cachedSongs: {} } as any);
+    (fetchAlbumDetail as jest.Mock).mockResolvedValueOnce({
+      id: 'al-a',
+      song: [song('s1'), song('s2'), song('s3')],
+    });
+    const rows = await __test.resolveBrowseChildren(albumId('al-a'));
+    expect(rows).toHaveLength(3);
   });
 });
 

@@ -35,6 +35,7 @@ jest.mock('../detailFetchService', () => ({
 
 import { __test } from '../headlessMediaService';
 import { offlineModeStore } from '../../store/offlineModeStore';
+import { musicCacheStore } from '../../store/musicCacheStore';
 import { fetchAlbumDetail } from '../detailFetchService';
 
 const korn = { id: 'sk', title: 'Freak on a Leash', artist: 'Korn', albumId: 'al-1' };
@@ -60,6 +61,13 @@ beforeEach(() => {
   mockFindArtistSongs.mockReset();
   mockLogVoiceSearch.mockReset();
   offlineModeStore.setState({ offlineMode: true } as any);
+  // These run offline, and album/playlist track lists are filtered to downloaded
+  // songs there — seed the fixtures as downloaded so the filter is a no-op and the
+  // tests stay about intent resolution. Offline filtering itself is covered in
+  // headlessMediaService.test.ts.
+  musicCacheStore.setState({
+    cachedSongs: Object.fromEntries(['sk', 'so', 't1', 't2'].map((id) => [id, {}])),
+  } as any);
 });
 
 describe('resolveVoice — structured-field handling', () => {

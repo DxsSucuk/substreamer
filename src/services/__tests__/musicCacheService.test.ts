@@ -187,6 +187,9 @@ jest.mock('../../store/persistence/kvStorage', () => require('../../store/persis
 // Mock the SQL persistence layer with identity-style no-ops so the store
 // can mutate in-memory state without touching a real DB.
 jest.mock('../../store/persistence/musicCacheTables', () => {
+  // The `Child`/`AlbumID3`/`Playlist` → row mappers are pure and are what the
+  // service under test writes with, so use the real ones.
+  const actual = jest.requireActual('../../store/persistence/musicCacheTables');
   const edges: Array<{ itemId: string; position: number; songId: string }> = [];
   // Item ids stamped `derived = true` (auto-created partial-album grouping
   // rows). Tracked here because the SQL layer's REAL-ref count and the
@@ -296,6 +299,11 @@ jest.mock('../../store/persistence/musicCacheTables', () => {
       edges.length = 0;
       derivedItems.clear();
     }),
+    convertLegacyMetadataAsync: jest.fn(async () => {}),
+    childGenreNames: actual.childGenreNames,
+    promotedSongFieldsFromChild: actual.promotedSongFieldsFromChild,
+    albumMetaFromAlbumID3: actual.albumMetaFromAlbumID3,
+    playlistMetaFromPlaylist: actual.playlistMetaFromPlaylist,
     // Test helpers
     __edges: edges,
     __derivedItems: derivedItems,
@@ -2325,7 +2333,7 @@ describe('download pipeline', () => {
     expect(partial.songIds.sort()).toEqual(['p1', 'p2']);
   });
 
-  it('partial-album: cached_songs row captures full Child envelope via raw_json', async () => {
+  it('partial-album: cached_songs row captures the full Child in promoted columns', async () => {
     mockFileExists = true;
     mockFileSize = 5000;
     mockDownloadFileAsyncWithProgress.mockResolvedValue(undefined);
@@ -2335,6 +2343,7 @@ describe('download pipeline', () => {
       track: 4,
       discNumber: 2,
       genre: 'Jazz',
+      genres: ['Jazz', 'Folk, World, & Country'] as any,
       bpm: 120,
       musicBrainzId: 'mbid-abc',
       contributors: [{ role: 'producer', artist: { id: 'a1', name: 'X' } }] as any,
@@ -2350,17 +2359,24 @@ describe('download pipeline', () => {
 
     const cached = musicCacheStore.getState().cachedSongs['rich-1'];
     expect(cached).toBeDefined();
-    expect(cached.rawJson).toBeDefined();
-    const env = JSON.parse(cached.rawJson!);
-    expect(env.track).toBe(4);
-    expect(env.discNumber).toBe(2);
-    expect(env.genre).toBe('Jazz');
-    expect(env.bpm).toBe(120);
-    expect(env.musicBrainzId).toBe('mbid-abc');
-    expect(env.contributors).toBeDefined();
+    // No envelope written any more — the metadata lives in typed columns.
+    expect(cached.rawJson).toBeUndefined();
+    expect(cached.track).toBe(4);
+    expect(cached.discNumber).toBe(2);
+    expect(cached.genre).toBe('Jazz');
+    expect(cached.bpm).toBe(120);
+    expect(cached.musicBrainzId).toBe('mbid-abc');
+    expect(cached.genres).toEqual(['Jazz', 'Folk, World, & Country']);
+    // `srcAlbumId` is the SERVER's album; `albumId` stays the file's directory.
+    expect(cached.srcAlbumId).toBe('album-rich');
+    // The real `Child` is handed to the persistence layer so it can rebuild the
+    // `cached_song_*` mirrors (contributors et al. have no in-memory projection).
+    const { upsertCachedSong } = require('../../store/persistence/musicCacheTables');
+    const call = upsertCachedSong.mock.calls.find((c: any[]) => c[0]?.id === 'rich-1');
+    expect(call?.[1]?.contributors).toEqual(richChild.contributors);
   });
 
-  it('partial-album: row carries AlbumID3 envelope when album detail is cached', async () => {
+  it('partial-album: row carries AlbumID3 metadata when album detail is cached', async () => {
     mockFileExists = true;
     mockFileSize = 5000;
     mockDownloadFileAsyncWithProgress.mockResolvedValue(undefined);
@@ -2386,16 +2402,18 @@ describe('download pipeline', () => {
     await waitForQueueIdle();
 
     const partial = musicCacheStore.getState().cachedItems['album-env'];
-    expect(partial.rawJson).toBeDefined();
-    const env = JSON.parse(partial.rawJson!);
-    expect(env.genre).toBe('Classical');
-    expect(env.moods).toEqual(['calm']);
-    expect(env.recordLabels).toEqual([{ name: 'DG' }]);
-    // `.song` stripped — songs live on cached_songs.raw_json.
-    expect('song' in env).toBe(false);
+    expect(partial.rawJson).toBeUndefined();
+    expect(partial.albumMeta).toBeDefined();
+    expect(partial.albumMeta!.name).toBe('Env Album');
+    expect(partial.albumMeta!.genre).toBe('Classical');
+    // Reduced to the `cached_albums` scalars — the multi-valued fields are not
+    // mirrored on the download side (plan §2.3); the library keeps them.
+    expect('moods' in partial.albumMeta!).toBe(false);
+    expect('recordLabels' in partial.albumMeta!).toBe(false);
+    expect('song' in partial.albumMeta!).toBe(false);
   });
 
-  it('partial-album: row upgraded with envelope when an earlier partial existed without one', async () => {
+  it('partial-album: row upgraded with metadata when an earlier partial existed without any', async () => {
     mockFileExists = true;
     mockFileSize = 5000;
     mockDownloadFileAsyncWithProgress.mockResolvedValue(undefined);
@@ -2429,9 +2447,9 @@ describe('download pipeline', () => {
     await waitForQueueIdle();
 
     const partial = musicCacheStore.getState().cachedItems['album-up'];
-    expect(partial.rawJson).toBeDefined();
-    const env = JSON.parse(partial.rawJson!);
-    expect(env.genre).toBe('Folk');
+    expect(partial.albumMeta).toBeDefined();
+    expect(partial.albumMeta!.genre).toBe('Folk');
+    expect(partial.albumMeta!.name).toBe('Upgraded');
   });
 
   it('partial-album: no-op when triggering item IS the album', async () => {

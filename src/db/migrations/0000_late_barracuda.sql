@@ -180,6 +180,36 @@ CREATE INDEX `idx_artists_sort` ON `artists` (`sort_title`,`id`);--> statement-b
 CREATE INDEX `idx_artists_starred` ON `artists` (`starred`,`sort_title`,`id`) WHERE "artists"."starred" IS NOT NULL;--> statement-breakpoint
 CREATE INDEX `idx_artists_norm_name` ON `artists` (`norm_name`);--> statement-breakpoint
 CREATE INDEX `idx_artists_dmeta_name` ON `artists` (`dmeta_name`);--> statement-breakpoint
+CREATE TABLE `cached_albums` (
+	`item_id` text PRIMARY KEY NOT NULL,
+	`artist_id` text,
+	`name` text,
+	`artist` text,
+	`display_artist` text,
+	`cover_art` text,
+	`song_count` integer,
+	`duration` integer,
+	`play_count` integer,
+	`created` integer,
+	`starred` integer,
+	`year` integer,
+	`genre` text,
+	`played` text,
+	`user_rating` integer,
+	`version` text,
+	`music_brainz_id` text,
+	`sort_name` text,
+	`is_compilation` integer,
+	`explicit_status` text,
+	`original_release_year` integer,
+	`original_release_month` integer,
+	`original_release_day` integer,
+	`release_year` integer,
+	`release_month` integer,
+	`release_day` integer,
+	FOREIGN KEY (`item_id`) REFERENCES `cached_items`(`item_id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
 CREATE TABLE `cached_images` (
 	`cover_art_id` text NOT NULL,
 	`size` integer NOT NULL,
@@ -213,25 +243,129 @@ CREATE TABLE `cached_items` (
 	`last_sync_at` integer NOT NULL,
 	`downloaded_at` integer NOT NULL,
 	`raw_json` text,
+	`meta_v` integer,
 	`derived` integer DEFAULT 0
+);
+--> statement-breakpoint
+CREATE TABLE `cached_playlists` (
+	`item_id` text PRIMARY KEY NOT NULL,
+	`name` text,
+	`comment` text,
+	`cover_art` text,
+	`created` integer,
+	`changed` integer,
+	`duration` integer,
+	`owner` text,
+	`public` integer,
+	`song_count` integer,
+	FOREIGN KEY (`item_id`) REFERENCES `cached_items`(`item_id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `cached_song_album_artists` (
+	`song_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`artist_id` text,
+	`artist_name` text,
+	PRIMARY KEY(`song_id`, `pos`),
+	FOREIGN KEY (`song_id`) REFERENCES `cached_songs`(`song_id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `cached_song_artists` (
+	`song_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`artist_id` text,
+	`artist_name` text,
+	PRIMARY KEY(`song_id`, `pos`),
+	FOREIGN KEY (`song_id`) REFERENCES `cached_songs`(`song_id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `cached_song_contributors` (
+	`song_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`role` text NOT NULL,
+	`sub_role` text,
+	`artist_id` text,
+	`artist_name` text,
+	PRIMARY KEY(`song_id`, `pos`),
+	FOREIGN KEY (`song_id`) REFERENCES `cached_songs`(`song_id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `cached_song_genres` (
+	`song_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`name` text NOT NULL,
+	PRIMARY KEY(`song_id`, `pos`),
+	FOREIGN KEY (`song_id`) REFERENCES `cached_songs`(`song_id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `cached_song_moods` (
+	`song_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`mood` text NOT NULL,
+	PRIMARY KEY(`song_id`, `pos`),
+	FOREIGN KEY (`song_id`) REFERENCES `cached_songs`(`song_id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
 CREATE TABLE `cached_songs` (
 	`song_id` text PRIMARY KEY NOT NULL,
-	`title` text NOT NULL,
-	`artist` text,
-	`album` text,
 	`album_id` text NOT NULL,
-	`cover_art` text,
-	`bytes` integer NOT NULL,
-	`duration` integer NOT NULL,
 	`suffix` text NOT NULL,
 	`bit_rate` integer,
 	`bit_depth` integer,
 	`sampling_rate` integer,
+	`bytes` integer NOT NULL,
 	`format_captured_at` integer NOT NULL,
 	`downloaded_at` integer NOT NULL,
-	`raw_json` text
+	`title` text NOT NULL,
+	`artist` text,
+	`album` text,
+	`cover_art` text,
+	`duration` integer NOT NULL,
+	`src_album_id` text,
+	`src_suffix` text,
+	`src_bit_rate` integer,
+	`src_bit_depth` integer,
+	`src_sampling_rate` integer,
+	`artist_id` text,
+	`display_artist` text,
+	`display_album_artist` text,
+	`display_composer` text,
+	`track` integer,
+	`disc_number` integer,
+	`year` integer,
+	`genre` text,
+	`size` integer,
+	`content_type` text,
+	`transcoded_content_type` text,
+	`transcoded_suffix` text,
+	`channel_count` integer,
+	`path` text,
+	`user_rating` integer,
+	`average_rating` real,
+	`play_count` integer,
+	`created` integer,
+	`starred` integer,
+	`played` text,
+	`type` text,
+	`bpm` integer,
+	`comment` text,
+	`sort_name` text,
+	`music_brainz_id` text,
+	`explicit_status` text,
+	`bookmark_position` integer,
+	`is_video` integer,
+	`is_dir` integer,
+	`parent` text,
+	`original_width` integer,
+	`original_height` integer,
+	`rg_track_gain` real,
+	`rg_album_gain` real,
+	`rg_track_peak` real,
+	`rg_album_peak` real,
+	`rg_base_gain` real,
+	`rg_fallback_gain` real,
+	`raw_json` text,
+	`meta_v` integer
 );
 --> statement-breakpoint
 CREATE INDEX `idx_cached_songs_album_id` ON `cached_songs` (`album_id`);--> statement-breakpoint

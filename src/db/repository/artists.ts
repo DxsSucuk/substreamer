@@ -19,6 +19,7 @@ export interface ArtistListRow {
   id: string;
   name: string | null;
   cover_art: string | null;
+  sort_name: string | null;
   album_count: number | null;
   sort_title: string | null;
   starred: number | null;
@@ -26,7 +27,7 @@ export interface ArtistListRow {
 }
 
 export const ARTIST_LIST_COLS =
-  '"id", "name", "cover_art", "album_count", "sort_title", "starred", "user_rating"';
+  '"id", "name", "cover_art", "sort_name", "album_count", "sort_title", "starred", "user_rating"';
 
 /** Adapt a lean list row to the `ArtistID3` shape the row/card components render
  *  (they read `coverArt`, not `artistImageUrl`, so the lean projection suffices). */
@@ -34,6 +35,8 @@ export function artistListRowToArtistID3(r: ArtistListRow): ArtistID3 {
   return {
     id: r.id,
     name: r.name ?? '',
+    // See songListRowToChild — the scroller's letter must match `sort_title`.
+    sortName: r.sort_name ?? undefined,
     coverArt: r.cover_art ?? undefined,
     albumCount: r.album_count ?? 0,
     userRating: r.user_rating ?? undefined,

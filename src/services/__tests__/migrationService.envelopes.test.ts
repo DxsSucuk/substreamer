@@ -168,19 +168,23 @@ function makeFakeDb() {
     runSync(sql: string, params: readonly unknown[] = []) {
       const s = sql.replace(/\s+/g, ' ').trim();
 
-      if (/^UPDATE cached_songs SET raw_json = \? WHERE song_id = \?/i.test(s)) {
+      // The envelope backfills also NULL `meta_v` so the one-time promotion
+      // re-converts what they wrote.
+      if (/^UPDATE cached_songs SET raw_json = \?, meta_v = NULL WHERE song_id = \?/i.test(s)) {
         const [json, id] = params as [string, string];
         const row = dumpRows('cached_songs').find((r) => r.song_id === id);
         if (row && (row.raw_json === null || row.raw_json === undefined)) {
           row.raw_json = json;
+          row.meta_v = null;
         }
         return;
       }
-      if (/^UPDATE cached_items SET raw_json = \? WHERE item_id = \?/i.test(s)) {
+      if (/^UPDATE cached_items SET raw_json = \?, meta_v = NULL WHERE item_id = \?/i.test(s)) {
         const [json, id] = params as [string, string];
         const row = dumpRows('cached_items').find((r) => r.item_id === id);
         if (row && (row.raw_json === null || row.raw_json === undefined)) {
           row.raw_json = json;
+          row.meta_v = null;
         }
         return;
       }
@@ -191,7 +195,8 @@ function makeFakeDb() {
         return;
       }
 
-      // INSERT into cached_items (for Migration 20).
+      // INSERT into cached_items (for Migration 20). `meta_v` is a literal NULL
+      // in the statement, not a bound parameter.
       if (/^INSERT INTO cached_items/i.test(s)) {
         const [item_id, name, artist, cover_art_id, expected_song_count, last_sync_at, downloaded_at, raw_json] = params;
         const existing = dumpRows('cached_items').find((r) => r.item_id === item_id);
@@ -207,6 +212,7 @@ function makeFakeDb() {
             last_sync_at,
             downloaded_at,
             raw_json,
+            meta_v: /meta_v/i.test(s) ? null : undefined,
           });
         }
         return;
@@ -274,9 +280,11 @@ describe('migrations 17–20: raw_json backfill', () => {
 
   test('18: backfills cached_songs.raw_json from album_details / playlists / favorites in priority order', async () => {
     fake.seed('cached_songs', [
-      'song_id', 'album_id', 'title', 'artist', 'album', 'cover_art', 'raw_json',
+      'song_id', 'album_id', 'title', 'artist', 'album', 'cover_art', 'raw_json', 'meta_v',
     ], [
-      { song_id: 's-album', album_id: 'a1', title: 'Track A', artist: 'X', album: 'Album1', cover_art: 'c1', raw_json: null },
+      // `meta_v: 1` — a hydrate already ran the promotion before migrations did
+      // (they're splash-only), so the backfill has to re-arm this row.
+      { song_id: 's-album', album_id: 'a1', title: 'Track A', artist: 'X', album: 'Album1', cover_art: 'c1', raw_json: null, meta_v: 1 },
       { song_id: 's-pl',    album_id: 'a2', title: 'Track P', artist: 'Y', album: 'Album2', cover_art: 'c2', raw_json: null },
       { song_id: 's-fav',   album_id: 'a3', title: 'Track F', artist: 'Z', album: 'Album3', cover_art: 'c3', raw_json: null },
       { song_id: 's-none',  album_id: 'a4', title: 'Track N', artist: 'W', album: 'Album4', cover_art: 'c4', raw_json: null },
@@ -334,6 +342,8 @@ describe('migrations 17–20: raw_json backfill', () => {
     expect(envelopeAlbum.track).toBe(3);
     expect(envelopeAlbum.discNumber).toBe(1);
     expect(envelopeAlbum.genre).toBe('Rock');
+    // ...and is re-armed for the promotion that already stamped it.
+    expect(byId.get('s-album')!.meta_v).toBeNull();
 
     // s-pl: filled from playlist blob
     const envelopePl = JSON.parse(byId.get('s-pl')!.raw_json as string);
@@ -351,8 +361,9 @@ describe('migrations 17–20: raw_json backfill', () => {
   });
 
   test('19: backfills cached_items.raw_json for albums and playlists, strips song/entry arrays', async () => {
-    fake.seed('cached_items', ['item_id', 'type', 'name', 'raw_json'], [
-      { item_id: 'a1', type: 'album', name: 'Album1', raw_json: null },
+    fake.seed('cached_items', ['item_id', 'type', 'name', 'raw_json', 'meta_v'], [
+      // `meta_v: 1` — already promoted by an earlier hydrate; see Migration 18.
+      { item_id: 'a1', type: 'album', name: 'Album1', raw_json: null, meta_v: 1 },
       { item_id: 'pl1', type: 'playlist', name: 'P1', raw_json: null },
       { item_id: '__starred__', type: 'favorites', name: 'Favourites', raw_json: null },
       { item_id: 'song:x', type: 'song', name: 'Song X', raw_json: null },
@@ -396,6 +407,7 @@ describe('migrations 17–20: raw_json backfill', () => {
     const albumEnv = JSON.parse(byId.get('a1')!.raw_json as string);
     expect(albumEnv.moods).toEqual(['chill']);
     expect('song' in albumEnv).toBe(false); // stripped
+    expect(byId.get('a1')!.meta_v).toBeNull(); // re-armed for the promotion
 
     const playlistEnv = JSON.parse(byId.get('pl1')!.raw_json as string);
     expect(playlistEnv.owner).toBe('alice');
@@ -477,10 +489,12 @@ describe('migrations 17–20: raw_json backfill', () => {
     expect(aPart!.name).toBe('Part Album'); // from album_details
     expect(aPart!.expected_song_count).toBe(10);
 
-    // Envelope present, stripped of .song[]
+    // Envelope present, stripped of .song[], and unpromoted so the next
+    // hydrate converts it.
     const env = JSON.parse(aPart!.raw_json as string);
     expect('song' in env).toBe(false);
     expect(env.name).toBe('Part Album');
+    expect(aPart!.meta_v).toBeNull();
 
     // Edges in discNumber + track order: s2 (d1,t1), s1 (d1,t2), s3 (d2,t1)
     const edges = fake

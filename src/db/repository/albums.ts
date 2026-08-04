@@ -29,6 +29,7 @@ export interface AlbumListRow {
   artist_id: string | null;
   display_artist: string | null;
   cover_art: string | null;
+  sort_name: string | null;
   year: number | null;
   duration: number | null;
   song_count: number | null;
@@ -40,7 +41,7 @@ export interface AlbumListRow {
 
 export const ALBUM_LIST_COLS =
   '"id", "name", "artist_id", "display_artist", "cover_art", "year", "duration", "song_count", ' +
-  '"sort_title", "sort_artist", "starred", "user_rating"';
+  '"sort_name", "sort_title", "sort_artist", "starred", "user_rating"';
 
 export type AlbumSortOrder = 'title' | 'artist';
 
@@ -53,6 +54,8 @@ export function albumListRowToAlbumID3(r: AlbumListRow): AlbumID3 {
     name: r.name ?? '',
     artistId: r.artist_id ?? undefined,
     artist: r.display_artist ?? undefined,
+    // See songListRowToChild — the scroller's letter must match `sort_title`.
+    sortName: r.sort_name ?? undefined,
     coverArt: r.cover_art ?? undefined,
     year: r.year ?? undefined,
     duration: r.duration ?? 0,

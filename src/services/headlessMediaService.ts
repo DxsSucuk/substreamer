@@ -298,11 +298,30 @@ async function buildSnapshot(): Promise<BrowseSnapshot> {
 /*  Drilldown resolution                                               */
 /* ------------------------------------------------------------------ */
 
+/**
+ * In offline mode, drop album tracks with no downloaded file. The app greys these
+ * out instead (`TrackRow`'s `isOfflineUnplayable`), but a car list has no useful
+ * disabled state — an unplayable row just invites a tap that does nothing.
+ *
+ * Albums only: they are the sole item type with a partial download state
+ * (`isPartialAlbum`), so a downloaded playlist or favorites set always holds every
+ * track and has nothing to filter.
+ *
+ * Applied inside `albumSongs` so browse, play and voice see the SAME list — the
+ * browse media ids encode a position (`albumTrackId(id, i)`) that playback resolves
+ * against, so filtering one caller and not another would play the wrong track.
+ */
+function playableOffline(songs: Child[]): Child[] {
+  if (!offlineModeStore.getState().offlineMode) return songs;
+  const cached = musicCacheStore.getState().cachedSongs;
+  return songs.filter((s) => s.id in cached);
+}
+
 /** Album tracks via the SHARED offline-aware `fetchAlbum` — same function + source
  *  the app's album screen uses (online → server; offline → persisted detail cache). */
 async function albumSongs(id: string): Promise<Child[]> {
   try {
-    return (await fetchAlbumDetail(id))?.song ?? [];
+    return playableOffline((await fetchAlbumDetail(id))?.song ?? []);
   } catch (e) {
     console.warn(`${LOG_TAG} fetchAlbum(${id}) failed:`, e);
     return [];
