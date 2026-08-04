@@ -588,6 +588,38 @@ describe('dataSyncService — deferred startup prefetches', () => {
     expect(mockFetchAllPlaylists).not.toHaveBeenCalled();
   });
 
+  it('syncs online when the album list is complete but the song phase is not', async () => {
+    // Per the upgrade framing: a complete list with an incomplete song walk still has
+    // gaps, so the local migration alone is not enough.
+    albumLibraryState.albums = [{ id: 'a1' }];
+    syncStatusStore.setState({ librarySyncComplete: true, songSyncComplete: false });
+    artistLibraryState.artists = [{ id: 'ar1' }];
+    playlistLibraryState.playlists = [{ id: 'p1' }];
+    await onStartup();
+    await jest.advanceTimersByTimeAsync(2000);
+    expect(mockFetchAllAlbums).toHaveBeenCalled();
+  });
+
+  it('syncs online when both phases are complete but an album has no songs', async () => {
+    // The flags can both be true and the data still be short — a bailed walk, or a
+    // migrated library whose album detail never arrived. Detect it and backfill.
+    const db = getDb()!;
+    db.runSync(
+      "INSERT OR REPLACE INTO albums (id, name, sort_title) VALUES ('gap1', 'Gap', 'gap')",
+    );
+    albumLibraryState.albums = [{ id: 'gap1' }];
+    syncStatusStore.setState({ librarySyncComplete: true, songSyncComplete: true });
+    artistLibraryState.artists = [{ id: 'ar1' }];
+    playlistLibraryState.playlists = [{ id: 'p1' }];
+    try {
+      await onStartup();
+      await jest.advanceTimersByTimeAsync(2000);
+      expect(mockFetchAllAlbums).toHaveBeenCalled();
+    } finally {
+      db.runSync("DELETE FROM albums WHERE id = 'gap1'");
+    }
+  });
+
   it('does NOT refresh playlists on startup when the server is unreachable', async () => {
     mockConnectivity.isServerReachable = false;
     albumLibraryState.albums = [{ id: 'a1' }];

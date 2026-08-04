@@ -411,6 +411,16 @@ export const listSongAlbumIds = (db: InternalDb): Promise<string[]> =>
     )
     .then((rows) => rows.map((r) => r.album_id));
 
+/** Is there any album with no songs? The gate-cheap form of the walk's
+ *  `listAlbumIds − listSongAlbumIds` diff: an indexed `NOT EXISTS` probe that stops at the
+ *  first hit, so it stays flat on a 200k-album library instead of materialising two id lists. */
+export const hasAlbumWithoutSongs = (db: InternalDb): Promise<boolean> =>
+  db
+    .getFirstAsync<{ x: number }>(
+      'SELECT 1 AS x FROM albums a WHERE NOT EXISTS (SELECT 1 FROM songs s WHERE s.album_id = a.id) LIMIT 1',
+    )
+    .then((r) => r != null);
+
 /** Which of the given album ids already have their detail (≥1 song) in the normalized
  *  model — the "has detail cached" presence check the downloaded-metadata refresh uses.
  *  Ids pass as a JSON array via `json_each` to dodge the bound-variable limit. */

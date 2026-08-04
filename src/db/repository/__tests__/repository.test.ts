@@ -57,6 +57,7 @@ import {
   songCursorOf,
   upsertSongs,
   type SongListRow,
+  hasAlbumWithoutSongs,
 } from '../songs';
 import { keysetPageBefore } from '../core';
 import { getAlbumDetail } from '../details';
@@ -798,6 +799,32 @@ describe('schema completeness (all typed metadata captured)', () => {
 
     await clearAlbumInfo(db());
     expect(await getAlbumInfoRow(db(), 'al2')).toBeNull();
+  });
+});
+
+describe('hasAlbumWithoutSongs', () => {
+  beforeEach(async () => {
+    db().runSync('DELETE FROM songs');
+    db().runSync('DELETE FROM albums');
+  });
+
+  it('is false when there are no albums at all', async () => {
+    expect(await hasAlbumWithoutSongs(db())).toBe(false);
+  });
+
+  it('is false when every album has at least one song', async () => {
+    await upsertAlbums(db(), [album('alA', 'A'), album('alB', 'B')]);
+    await upsertSongs(db(), [
+      song('s1', 'one', { albumId: 'alA' }),
+      song('s2', 'two', { albumId: 'alB' }),
+    ]);
+    expect(await hasAlbumWithoutSongs(db())).toBe(false);
+  });
+
+  it('is true when any album has no songs — the gap the online sync backfills', async () => {
+    await upsertAlbums(db(), [album('alA', 'A'), album('alB', 'B')]);
+    await upsertSongs(db(), [song('s1', 'one', { albumId: 'alA' })]);
+    expect(await hasAlbumWithoutSongs(db())).toBe(true);
   });
 });
 

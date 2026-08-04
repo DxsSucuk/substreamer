@@ -14,7 +14,7 @@ import { genreStore } from '../store/genreStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { getDb } from '../store/persistence/db';
 import { albumIdsPresent, countAlbums, listAlbumIds, upsertAlbums } from '../db/repository/albums';
-import { deleteAlbumSongsNotIn, upsertSongs } from '../db/repository/songs';
+import { deleteAlbumSongsNotIn, hasAlbumWithoutSongs, upsertSongs } from '../db/repository/songs';
 import { countArtists } from '../db/repository/artists';
 import { connectivityStore } from '../store/connectivityStore';
 import { scanStatusStore } from '../store/scanStatusStore';
@@ -237,8 +237,16 @@ async function startupOrResumeFlow(): Promise<void> {
       // array, so hydration timing can't trigger a spurious full re-fetch.
       const gateDb = getDb();
       const rowCount = gateDb ? await countAlbums(gateDb) : 0;
+      const sync = syncStatusStore.getState();
+      // The local migration alone is enough ONLY when the previous sync ran to completion
+      // AND every album has its songs. Anything else means gaps, so back it with an online
+      // sync — async, never blocking the splash, filling in behind the user as they browse.
+      // Ordered cheapest-first: the `NOT EXISTS` probe only runs once the flags and count pass.
       const needsLibraryFetch =
-        !syncStatusStore.getState().librarySyncComplete || rowCount === 0;
+        !sync.librarySyncComplete ||
+        !sync.songSyncComplete ||
+        rowCount === 0 ||
+        (gateDb ? await hasAlbumWithoutSongs(gateDb) : false);
       const libPromise = needsLibraryFetch ? runNormalizedLibrarySync() : Promise.resolve();
 
       const startupDb = getDb();
