@@ -174,8 +174,8 @@ function relevance(query: string, name: string, artist?: string | null): number 
 }
 
 /**
- * Local fuzzy search over the ENTIRE synced library (`song_index` +
- * `library_albums`) via candidate SQL + JS re-rank. Distinct from
+ * Local fuzzy search over the ENTIRE synced library (the normalized `songs` +
+ * `albums` tables) via candidate SQL + JS re-rank. Distinct from
  * `performOfflineSearch`, which scans only the downloaded set held in memory.
  * Returns the ranked results plus the top relevance score — the routing gate for
  * whether the server is still worth consulting. `shouldAbort` bails a superseded
@@ -333,9 +333,9 @@ export async function searchLibrary(
 
 /**
  * Best local album match for a voice "play album" intent. Fuzzy-matches the
- * album name over `library_albums`, weighting the (optional) artist via
+ * album name over the normalized `albums` table, weighting the (optional) artist via
  * `scoreCandidate` so "Ten by Pearl Jam" picks Pearl Jam's Ten, not some other
- * "Ten". Local-only (library_albums is on-device, so it works offline too);
+ * "Ten". Local-only (the album table is on-device, so it works offline too);
  * null when nothing clears the reject floor. The caller fetches + plays the
  * album's tracks in order.
  */

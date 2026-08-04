@@ -84,7 +84,7 @@ export interface SyncStatusState extends LastKnownMarkers {
    *  empty-query `search3` probe. Persisted for resume routing. */
   syncStrategy: SyncStrategy | null;
 
-  // --- Song sync (populates `song_index`) ---
+  // --- Song sync (populates the normalized `songs` table) ---
   /** Strategy the song fetch actually uses — normally `syncStrategy`, but forced
    *  to `basic` (the walk) if fast-path songs come back without `albumId`. */
   songSyncStrategy: SyncStrategy | null;
@@ -106,7 +106,7 @@ export interface SyncStatusState extends LastKnownMarkers {
    *  no-op now that it no longer drops the tables first. Persisted so an interrupted
    *  full resync still re-walks on resume instead of silently completing. */
   fullWalkPending: boolean;
-  /** True once every song has been fetched into `song_index`. Startup gate. */
+  /** True once every song has been fetched into the `songs` table. Startup gate. */
   songSyncComplete: boolean;
   /** EPHEMERAL — the fetch loop finished and the in-memory index is rebuilding
    *  (`rebuildFromDb`), which can take seconds. Drives a "Finalizing…" label so the

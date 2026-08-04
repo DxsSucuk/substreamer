@@ -25,13 +25,6 @@ jest.mock('../../services/imageCacheService', () => ({
 jest.mock('../../services/musicCacheService', () => ({
   teardownMusicCache: jest.fn(),
 }));
-jest.mock('../persistence/detailTables', () => ({
-  clearDetailTables: jest.fn(),
-  hydrateAlbumDetails: jest.fn(() => ({})),
-  upsertAlbumDetail: jest.fn(),
-  deleteAlbumDetail: jest.fn(),
-  upsertSongsForAlbum: jest.fn(),
-}));
 jest.mock('../persistence/scrobbleTable', () => ({
   clearScrobbles: jest.fn(),
   insertScrobble: jest.fn(),
@@ -62,7 +55,7 @@ jest.mock('../persistence/musicCacheTables', () => ({
 }));
 
 import { kvStorage, clearKvStorage } from '../persistence';
-import { clearDetailTables } from '../persistence/detailTables';
+import { getDb, __setDbForTests } from '../persistence/db';
 import { clearPendingScrobbles } from '../persistence/pendingScrobbleTable';
 import { clearScrobbles } from '../persistence/scrobbleTable';
 import { clearAllMusicCacheRows } from '../persistence/musicCacheTables';
@@ -76,7 +69,6 @@ import { resetAllStores } from '../resetAllStores';
 
 beforeEach(() => {
   (clearKvStorage as jest.Mock).mockClear();
-  (clearDetailTables as jest.Mock).mockClear();
   (clearScrobbles as jest.Mock).mockClear();
   (clearPendingScrobbles as jest.Mock).mockClear();
   (clearAllMusicCacheRows as jest.Mock).mockClear();
@@ -89,9 +81,28 @@ describe('resetAllStores', () => {
     expect(clearKvStorage).toHaveBeenCalledTimes(1);
   });
 
-  it('truncates the per-row detail tables (album_details + song_index)', async () => {
+  // `clearKvStorage()` wipes the blob→normalized ETL's one-shot flag, so any row left
+  // in these tables gets re-imported into the NEXT server's library on the following
+  // launch. `resetNormalizedSchema` doesn't cover them — they aren't in schema.ts.
+  it('truncates the legacy blob tables (album_details + song_index + library_albums)', async () => {
+    const handle = getDb()!;
+    const runAsync = jest.spyOn(handle, 'runAsync');
     await resetAllStores();
-    expect(clearDetailTables).toHaveBeenCalledTimes(1);
+    expect(runAsync.mock.calls.map((c) => c[0] as string)).toEqual(
+      expect.arrayContaining([
+        'DELETE FROM album_details;',
+        'DELETE FROM song_index;',
+        'DELETE FROM library_albums;',
+      ]),
+    );
+    runAsync.mockRestore();
+  });
+
+  it('skips the legacy-table clear when SQLite is unavailable', async () => {
+    const handle = getDb();
+    __setDbForTests(null);
+    await expect(resetAllStores()).resolves.toBeUndefined();
+    __setDbForTests(handle);
   });
 
   it('truncates the scrobble_events table', async () => {

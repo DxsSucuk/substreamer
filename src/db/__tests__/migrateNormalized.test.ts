@@ -1,6 +1,7 @@
 import type { AlbumID3, Child } from 'subsonic-api';
 
 import { getDb } from '../../store/persistence/db';
+import { createLegacyBlobTables } from '../../test-utils/legacyBlobTables';
 import { ensureNormalizedSchema } from '../createNormalizedTables';
 import { migrateBlobsToNormalized } from '../migrateNormalized';
 import { countAlbums, listAlbums } from '../repository/albums';
@@ -40,6 +41,9 @@ const putKv = (key: string, state: unknown) =>
 
 beforeAll(() => ensureNormalizedSchema(db()));
 beforeEach(() => {
+  // db.ts no longer creates the legacy blob tables at boot; the suite seeds them, so it
+  // creates them. In beforeEach, not beforeAll, so a test that drops one gets it back.
+  createLegacyBlobTables(db());
   for (const t of [
     'library_albums', 'song_index', 'album_details', 'albums', 'songs', 'artists', 'playlists',
     'playlist_songs', 'artist_top_songs', 'artist_similar',
@@ -266,5 +270,43 @@ describe('migrateBlobsToNormalized', () => {
     expect(bio?.biography).toBe('A resolved bio');
     expect(bio?.resolvedMbid).toBe('mbid-123');
     expect(bio?.checkedAt).toBe(1_700_000_000_000);
+  });
+});
+
+// The legacy tables are no longer created at boot, so which of them exist depends on how
+// old the install is. The probe is per-table for exactly this reason: an all-or-nothing
+// guard would silently discard a v8.0.84-lineage install's entire song catalogue.
+describe('migrateBlobsToNormalized — absent legacy tables', () => {
+  afterEach(() => {
+    createLegacyBlobTables(db());
+    db().runSync('DELETE FROM storage WHERE key = ?', ['substreamer-album-library']);
+  });
+
+  it('migrates songs + album details when only library_albums is absent (v8.0.84 lineage)', async () => {
+    seedSong('s1', 'a1', { title: 'Track One' });
+    seedAlbumDetail('a1', { song: [{ id: 's1', title: 'Track One', isDir: false }] });
+    // That lineage kept its album list in the KV blob, not the table.
+    putKv('substreamer-album-library', { albums: [{ id: 'a1', name: 'Alpha' }] });
+    db().execSync('DROP TABLE library_albums');
+
+    const result = await migrateBlobsToNormalized(db());
+
+    expect(result.songs.migrated).toBe(1);
+    expect(await countSongs(db())).toBe(1);
+    // The KV album source stays unconditional — it is this cohort's only album source.
+    expect(await countAlbums(db())).toBe(1);
+  });
+
+  it('returns zero counts without throwing when none of the three exist (fresh install)', async () => {
+    for (const t of ['library_albums', 'song_index', 'album_details']) {
+      db().execSync(`DROP TABLE ${t}`);
+    }
+
+    const result = await migrateBlobsToNormalized(db());
+
+    expect(result.albums).toEqual({ source: 0, migrated: 0, skipped: 0 });
+    expect(result.songs).toEqual({ source: 0, migrated: 0, skipped: 0 });
+    expect(await countAlbums(db())).toBe(0);
+    expect(await countSongs(db())).toBe(0);
   });
 });

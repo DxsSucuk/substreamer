@@ -581,8 +581,8 @@ export async function searchAlbumsPage(count: number, offset: number): Promise<A
 /**
  * Fetch one page of songs via empty-query `search3` (fast path). Paged with
  * `songOffset`; the caller loops until a page returns 0 and bulk-inserts each
- * page into `song_index`. Each `Child` carries `albumId` (verified per-page by
- * the caller, since the field is optional in the spec).
+ * page into the normalized `songs` table. Each `Child` carries `albumId`
+ * (verified per-page by the caller, since the field is optional in the spec).
  */
 export async function searchSongsPage(count: number, offset: number): Promise<Child[]> {
   const api = getApi();

@@ -85,10 +85,6 @@ describe('runNormalizedLibrarySync', () => {
     expect(await countAlbums(db())).toBe(5);
     expect(await countSongs(db())).toBe(10);
 
-    // Single writer: the legacy blob table was NOT written.
-    const blobSongs = db().getFirstSync<{ n: number }>('SELECT COUNT(*) AS n FROM song_index')?.n ?? 0;
-    expect(blobSongs).toBe(0);
-
     // Both phases marked complete (the transient detailSync* progress fields are
     // reset to 0 by markSongSyncComplete, so we assert the completion outcome).
     const s = syncStatusStore.getState();

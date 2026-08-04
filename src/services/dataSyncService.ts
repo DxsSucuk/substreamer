@@ -27,10 +27,6 @@ import { syncStatusStore, type SyncScope } from '../store/syncStatusStore';
 import { fireAndForget } from '../utils/fireAndForget';
 import { runPool } from '../utils/promisePool';
 import { minDelay } from '../utils/stringHelpers';
-import {
-} from '../store/persistence/libraryAlbumsTable';
-import {
-} from '../store/persistence/detailTables';
 import { registerMusicCacheOnAlbumReferencedHook } from './musicCacheService';
 import {
   refreshArtistLibrary,

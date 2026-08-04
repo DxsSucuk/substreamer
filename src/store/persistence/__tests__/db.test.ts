@@ -70,7 +70,7 @@ describe('persistence/db (happy path)', () => {
     ]);
   });
 
-  it('hand-creates ONLY the legacy blob tables', () => {
+  it('hand-writes no CREATE TABLE at boot', () => {
     const creates = mockExecuteSync.mock.calls
       .map((c) => c[0] as string)
       // The normalized model + the permanent kept tables live in schema.ts and are
@@ -80,9 +80,9 @@ describe('persistence/db (happy path)', () => {
       const match = sql.match(/CREATE TABLE IF NOT EXISTS (\w+)/);
       return match?.[1];
     });
-    // Only the three temporary blob tables. They stay hand-written because the DROP
-    // migration removes them — in schema.ts they would be recreated on the next boot.
-    expect(tableNames).toEqual(['album_details', 'song_index', 'library_albums']);
+    // Every table is declared in schema.ts now. The legacy blob tables are created only
+    // by Migration 12, off the boot path.
+    expect(tableNames).toEqual([]);
   });
 
   it('declares every permanent table in the generated DDL, not by hand', () => {
@@ -105,7 +105,7 @@ describe('persistence/db (happy path)', () => {
     );
   });
 
-  it('hand-creates only the legacy blob indexes', () => {
+  it('hand-writes no CREATE INDEX at boot', () => {
     const indexNames = mockExecuteSync.mock.calls
       .map((c) => c[0] as string)
       .filter((sql) => sql.trim().startsWith('CREATE INDEX') && !sql.includes('`'))
@@ -113,20 +113,7 @@ describe('persistence/db (happy path)', () => {
         const match = sql.match(/CREATE INDEX IF NOT EXISTS (\w+)/);
         return match?.[1];
       });
-    expect(indexNames.sort()).toEqual(
-      [
-        'idx_library_albums_dmeta_artist',
-        'idx_library_albums_dmeta_name',
-        'idx_library_albums_norm_name',
-        'idx_library_albums_sortKey',
-        'idx_song_index_albumId',
-        'idx_song_index_dmeta_artist',
-        'idx_song_index_dmeta_title',
-        'idx_song_index_norm_title',
-        'idx_song_index_sort',
-        'idx_song_index_starred',
-      ].sort(),
-    );
+    expect(indexNames).toEqual([]);
   });
 
   it('the kept tables index via the generated DDL, after their columns exist', () => {

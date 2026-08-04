@@ -38,7 +38,7 @@ function warnFallbackOnce(op: string, key: string): void {
  * `db.ts` so the UI can still render. Writes in that mode don't survive a
  * relaunch — `isDbHealthy()` lets the UI surface the degraded state.
  *
- * Row-table modules (musicCacheTables, scrobbleTable, detailTables) don't
+ * Row-table modules (musicCacheTables, scrobbleTable) don't
  * get this memory fallback — silently writing per-row data nowhere is worse
  * than not writing at all. They treat `getDb() === null` as a no-op.
  */

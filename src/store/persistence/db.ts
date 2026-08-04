@@ -47,131 +47,6 @@ try {
   // diagnostic (engine + resolved path). See src/db/client.ts.
   const conn = openDbConnection();
   db = conn.db;
-  // ---- Schema ----
-  // Only the LEGACY BLOB tables are created here. Every permanent table (KV storage,
-  // scrobbles, downloads, image cache) is declared in `src/db/schema.ts` and created by
-  // `ensureNormalizedSchema` at the end of this block, which orders tables → missing
-  // columns → indexes in one pass. The blob tables stay hand-written precisely because
-  // they are temporary: the DROP migration removes them, and anything in `schema.ts`
-  // would be recreated on the very next boot so the DROP would never stick.
-  // Every CREATE is `IF NOT EXISTS` so a second launch against an existing DB is a no-op.
-
-  // album_details + song_index — detail cache for albums/songs.
-  db.execSync(
-    `CREATE TABLE IF NOT EXISTS album_details (
-       id TEXT PRIMARY KEY NOT NULL,
-       json TEXT NOT NULL,
-       retrievedAt INTEGER NOT NULL
-     );`,
-  );
-  db.execSync(
-    `CREATE TABLE IF NOT EXISTS song_index (
-       id TEXT PRIMARY KEY NOT NULL,
-       albumId TEXT NOT NULL,
-       title TEXT,
-       artist TEXT,
-       album TEXT,
-       duration INTEGER,
-       coverArt TEXT,
-       userRating INTEGER,
-       starred INTEGER,
-       year INTEGER,
-       track INTEGER,
-       disc INTEGER,
-       raw_json TEXT
-     );`,
-  );
-  // Forward-compat: add columns to pre-existing installs. SQLite's ADD COLUMN
-  // is non-destructive and idempotent via the try/catch.
-  try {
-    db.execSync('ALTER TABLE song_index ADD COLUMN album TEXT;');
-  } catch {
-    /* column already exists */
-  }
-  // `raw_json` preserves the full Subsonic `Child` envelope so the Songs list
-  // returns the real song object (artistId, genre, format, ReplayGain, …)
-  // instead of a reconstruction from the indexed columns. The other columns
-  // exist only for sort/filter (title, starred) and as a legacy fallback for
-  // rows written before this column. Backfilled by a migration; written by
-  // every upsert going forward.
-  try {
-    db.execSync('ALTER TABLE song_index ADD COLUMN raw_json TEXT;');
-  } catch {
-    /* column already exists */
-  }
-  db.execSync(
-    'CREATE INDEX IF NOT EXISTS idx_song_index_albumId ON song_index (albumId);',
-  );
-  // Full sort-key index for the Songs library list. The list orders by
-  // `(title IS NULL), lower(title), id` (NULL titles last, then case-insensitive
-  // title, then a stable id tiebreak) — a leading `(title IS NULL)` term the old
-  // single-column `idx_song_index_title` could NOT serve, so every render did a
-  // full ~38k-row SCAN + TEMP B-TREE sort (confirmed via EXPLAIN QUERY PLAN).
-  // This composite matches the ORDER BY exactly → ordered index scan, no sort;
-  // it also serves the downloaded-only JOIN's ordering.
-  db.execSync(
-    'CREATE INDEX IF NOT EXISTS idx_song_index_sort ON song_index((title IS NULL), lower(title), id);',
-  );
-  // Retire the superseded single-column index on existing installs: it never
-  // served the list sort (leading `(title IS NULL)` term) and no query filters
-  // on `lower(title)`, so it was pure write-cost dead weight.
-  db.execSync('DROP INDEX IF EXISTS idx_song_index_title;');
-  // Partial index for the Favorites filter (`WHERE starred = 1`): indexes only
-  // starred rows, pre-sorted to the list ORDER BY, so the Favorites view reads
-  // just those rows with no scan and no sort.
-  db.execSync(
-    'CREATE INDEX IF NOT EXISTS idx_song_index_starred ON song_index((title IS NULL), lower(title), id) WHERE starred = 1;',
-  );
-  // Fuzzy-search columns (populated by the upsert fns + a backfill migration).
-  // Nullable — a headless-first boot before backfill degrades to exact/prefix on
-  // raw columns. `norm_*` = normalized (accent-folded, punctuation-stripped) text
-  // for exact/prefix/infix; `dmeta_*` = per-token Double-Metaphone for phonetic
-  // recall (empty codes excluded so non-Latin titles never collide). See searchMatch.ts.
-  for (const col of ['norm_title', 'norm_artist', 'dmeta_title', 'dmeta_artist']) {
-    try {
-      db.execSync(`ALTER TABLE song_index ADD COLUMN ${col} TEXT;`);
-    } catch {
-      /* column already exists */
-    }
-  }
-  db.execSync('CREATE INDEX IF NOT EXISTS idx_song_index_norm_title ON song_index (norm_title);');
-  db.execSync('CREATE INDEX IF NOT EXISTS idx_song_index_dmeta_title ON song_index (dmeta_title);');
-  db.execSync('CREATE INDEX IF NOT EXISTS idx_song_index_dmeta_artist ON song_index (dmeta_artist);');
-
-  // library_albums — the lean album-browse LIST (all albums, song-less
-  // `AlbumID3`). Replaces the old `substreamer-album-library` KV blob: written
-  // progressively one page at a time by the paginated album-list sync so a
-  // very large library persists as it arrives (no monolithic blob that fails
-  // at ~100k) and resumes across restarts. `raw_json` is the full `AlbumID3`
-  // envelope (repo convention — never drop fields); the other columns are hot
-  // paths only: `sortKey` for ordered hydration (`ORDER BY sortKey`), and
-  // `starred`/`userRating` so ratings reconcile without parsing every blob.
-  // No FK. Headless-safe: this CREATE runs on every getDb(), so the table
-  // exists even on a headless-first boot (migrations don't run headless).
-  db.execSync(
-    `CREATE TABLE IF NOT EXISTS library_albums (
-       id TEXT PRIMARY KEY NOT NULL,
-       sortKey TEXT NOT NULL,
-       starred INTEGER,
-       userRating INTEGER,
-       created INTEGER,
-       raw_json TEXT NOT NULL
-     );`,
-  );
-  db.execSync(
-    'CREATE INDEX IF NOT EXISTS idx_library_albums_sortKey ON library_albums (sortKey, id);',
-  );
-  // Fuzzy-search columns for album/artist matching (see song_index above).
-  for (const col of ['norm_name', 'norm_artist', 'dmeta_name', 'dmeta_artist']) {
-    try {
-      db.execSync(`ALTER TABLE library_albums ADD COLUMN ${col} TEXT;`);
-    } catch {
-      /* column already exists */
-    }
-  }
-  db.execSync('CREATE INDEX IF NOT EXISTS idx_library_albums_norm_name ON library_albums (norm_name);');
-  db.execSync('CREATE INDEX IF NOT EXISTS idx_library_albums_dmeta_name ON library_albums (dmeta_name);');
-  db.execSync('CREATE INDEX IF NOT EXISTS idx_library_albums_dmeta_artist ON library_albums (dmeta_artist);');
 
   // cached_item_songs dedup — a one-time heal, NOT schema, so it stays here. It must
   // run BEFORE the UNIQUE (item_id, song_id) index, which `ensureNormalizedSchema`
@@ -225,8 +100,8 @@ export function getDb(): InternalDb | null {
  *
  * Every row-table module shares ONE connection (`getDb()`), so a per-module
  * mutex only serializes a module against itself and lets cross-module
- * transactions collide (e.g. the library-album page write vs the song_index
- * write during a sync). ALL async transactions must funnel through this single
+ * transactions collide (e.g. a `cached_items` download write vs a `scrobble_events`
+ * flush at the same moment). ALL async transactions must funnel through this single
  * chain so at most one is ever in flight connection-wide. (`withTransactionSync`
  * is exempt — it runs to completion without yielding, so it can't interleave.)
  * A thrown task can't break the chain (the settle-to-undefined always resolves).

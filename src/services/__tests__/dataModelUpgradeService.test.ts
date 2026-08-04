@@ -3,6 +3,7 @@ import { countAlbums } from '../../db/repository/albums';
 import { countArtists } from '../../db/repository/artists';
 import { countSongs } from '../../db/repository/songs';
 import { getDb } from '../../store/persistence/db';
+import { createLegacyBlobTables } from '../../test-utils/legacyBlobTables';
 import { syncStatusStore } from '../../store/syncStatusStore';
 import { runDataModelUpgradeIfNeeded } from '../dataModelUpgradeService';
 import { LATEST_MIGRATION_ID } from '../migrationService';
@@ -30,6 +31,9 @@ const seedSong = (id: string, albumId: string) =>
 
 beforeEach(() => {
   ensureNormalizedSchema(db());
+  // db.ts no longer creates the legacy blob tables at boot; the suite seeds them, so it
+  // creates them.
+  createLegacyBlobTables(db());
   for (const t of ['library_albums', 'song_index', 'albums', 'songs', 'artists', 'playlists']) {
     db().runSync(`DELETE FROM ${t}`);
   }

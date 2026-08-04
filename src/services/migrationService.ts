@@ -26,12 +26,7 @@ import { mbidOverrideStore, type MbidOverride } from '../store/mbidOverrideStore
 import { type PendingScrobble } from '../store/pendingScrobbleStore';
 import { playbackSettingsStore } from '../store/playbackSettingsStore';
 import { localeStore } from '../store/localeStore';
-import {
-  upsertAlbumDetail,
-  upsertSongsForAlbum,
-} from '../store/persistence/detailTables';
-import { getDb, isDbHealthy, serializeDbWrite } from '../store/persistence/db';
-import { normalize, normalizeArtist, metaphoneKey } from './searchMatch';
+import { getDb, isDbHealthy } from '../store/persistence/db';
 import {
   addColumnIfMissing,
   bulkReplace as bulkReplaceMusicCache,
@@ -1488,56 +1483,6 @@ const MIGRATION_TASKS: MigrationTask[] = [
   },
 
   {
-    id: 12,
-    name: 'Move album details to per-row SQLite tables',
-    run: async (log) => {
-      // albumDetailStore moved off the generic `persist(createJSONStorage)`
-      // blob model to per-row tables (`album_details`, `song_index`) owned
-      // by `src/store/persistence/detailTables.ts`. This task reads the old
-      // blob once, upserts each album into the new tables, and deletes the
-      // old blob key. Idempotent: if the blob is missing or already been
-      // migrated, it's a no-op.
-      const raw = await kvStorage.getItem('substreamer-album-details');
-      if (!raw) {
-        log('No persisted album-details blob — nothing to migrate.');
-        return;
-      }
-      let parsed: any;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        // Corrupt blob — drop it so the new tables start clean.
-        await kvStorage.removeItem('substreamer-album-details');
-        log('Failed to parse album-details blob — removed.');
-        return;
-      }
-      const albums: Record<string, { album: any; retrievedAt?: number }> =
-        parsed?.state?.albums ?? {};
-      const ids = Object.keys(albums);
-      if (ids.length === 0) {
-        await kvStorage.removeItem('substreamer-album-details');
-        log('Album-details blob was empty — removed.');
-        return;
-      }
-      let albumCount = 0;
-      let songCount = 0;
-      for (const id of ids) {
-        const entry = albums[id];
-        const album = entry?.album;
-        if (!album || typeof album !== 'object' || !album.id) continue;
-        const retrievedAt = typeof entry.retrievedAt === 'number' ? entry.retrievedAt : Date.now();
-        upsertAlbumDetail(id, album, retrievedAt);
-        const songs = Array.isArray(album.song) ? album.song : [];
-        upsertSongsForAlbum(id, songs);
-        albumCount++;
-        songCount += songs.length;
-      }
-      await kvStorage.removeItem('substreamer-album-details');
-      log(`Migrated ${albumCount} album detail(s) and ${songCount} song(s) to per-row tables.`);
-    },
-  },
-
-  {
     id: 13,
     name: 'Move completed scrobbles to per-row SQLite table',
     run: async (log) => {
@@ -2045,60 +1990,6 @@ const MIGRATION_TASKS: MigrationTask[] = [
         );
       } catch (e) {
         log(`[m27] backfill failed: ${errMessage(e)}`);
-      }
-    },
-  },
-
-  {
-    id: 28,
-    name: 'Backfill song_index.raw_json from album_details',
-    run: async (log) => {
-      // `raw_json` (the full Subsonic Child envelope) was added to song_index
-      // so the Songs list returns the complete song object instead of a
-      // reconstruction from the indexed columns (which dropped artistId, genre,
-      // etc. — breaking "Go to artist"). Pre-existing rows have NULL until the
-      // next album fetch re-upserts them; backfill from the locally cached
-      // album_details envelope (which holds every song's full Child) so the
-      // fix applies immediately, no network required.
-      try {
-        const { getDb } = require('./../store/persistence/db') as {
-          getDb: () => any;
-        };
-        const db = getDb();
-        if (db === null) {
-          log('[m28] db unavailable — skipping');
-          return;
-        }
-        const details = db.getAllSync(
-          'SELECT json FROM album_details;',
-        ) as { json: string }[];
-        if (details.length === 0) {
-          log('[m28] no album_details rows — nothing to backfill');
-          return;
-        }
-        let updated = 0;
-        db.withTransactionSync(() => {
-          for (const row of details) {
-            let songs: any[];
-            try {
-              const parsed = JSON.parse(row.json);
-              songs = Array.isArray(parsed?.song) ? parsed.song : [];
-            } catch {
-              continue;
-            }
-            for (const song of songs) {
-              if (!song?.id) continue;
-              const res = db.runSync(
-                'UPDATE song_index SET raw_json = ? WHERE id = ? AND raw_json IS NULL;',
-                [JSON.stringify(song), song.id],
-              );
-              updated += res.changes ?? 0;
-            }
-          }
-        });
-        log(`[m28] backfilled raw_json on ${updated} song_index rows`);
-      } catch (e) {
-        log(`[m28] backfill failed: ${errMessage(e)}`);
       }
     },
   },

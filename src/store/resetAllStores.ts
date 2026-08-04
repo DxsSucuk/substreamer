@@ -12,9 +12,7 @@ import {
   clearKvStorage,
   dropAllPendingPersistWrites,
 } from './persistence';
-import { clearDetailTables } from './persistence/detailTables';
-import { clearLibraryAlbumsAsync } from './persistence/libraryAlbumsTable';
-import { getDb } from './persistence/db';
+import { getDb, serializeDbWrite } from './persistence/db';
 import { resetNormalizedSchema } from '../db/createNormalizedTables';
 import { clearPendingScrobbles } from './persistence/pendingScrobbleTable';
 import { clearScrobbles } from './persistence/scrobbleTable';
@@ -117,6 +115,27 @@ const allStores = [
   setRatingStore,
 ];
 
+/**
+ * Truncate the legacy blob tables on logout. They are not in `schema.ts`, so
+ * `resetNormalizedSchema` does not touch them, and `clearKvStorage()` wipes the blob→
+ * normalized ETL's one-shot flag — so rows left here get re-imported into the NEXT
+ * server's library on the following launch. One serialized slot per table with its own
+ * try/catch: a table missing (fresh install, or a lineage that never had `library_albums`)
+ * must not abort the others.
+ */
+async function clearLegacyBlobTables(): Promise<void> {
+  const db = getDb();
+  if (db === null) return;
+  for (const table of ['album_details', 'song_index', 'library_albums']) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await serializeDbWrite(() => db.runAsync(`DELETE FROM ${table};`));
+    } catch {
+      /* table absent on this install — nothing to clear */
+    }
+  }
+}
+
 export async function resetAllStores(): Promise<void> {
   // (Native SSL trust + proxy teardown happens in the logout handler, awaited
   // before this runs — see AccountCard.handleLogout.)
@@ -127,14 +146,7 @@ export async function resetAllStores(): Promise<void> {
   teardownMusicCache();
   teardownImageCache();
   await clearKvStorage();
-  // Clear the per-row SQLite tables used by albumDetailStore + songIndexStore.
-  // These live in a separate connection (`detailTables.ts`) from the generic
-  // `storage` key-value table that `clearKvStorage()` wipes, so they would
-  // otherwise persist stale rows across logout.
-  await clearDetailTables();
-  // albumLibraryStore is row-based now (`library_albums`), in its own table;
-  // wipe it here so the browse list doesn't survive logout.
-  await clearLibraryAlbumsAsync();
+  await clearLegacyBlobTables();
   // The normalized model is (becoming) the sole source of truth — wipe it too so a
   // different account/server can't see the previous account's library after logout
   // (downloads + blobs are cleared here as well, so a full reset is consistent).

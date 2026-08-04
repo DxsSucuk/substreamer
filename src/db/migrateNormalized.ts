@@ -458,15 +458,30 @@ export async function migrateBlobsToNormalized(
   const start = Date.now();
   ensureNormalizedSchema(db);
   log?.('normalized schema ensured');
+  // The legacy blob tables are no longer created at boot (F2d). Which of them exist
+  // depends on how old the install is — a pre-2026-07-11 upgrader has album_details +
+  // song_index but no library_albums — so probe each one independently. A fresh install
+  // has none and skips all three.
+  const present = new Set(
+    (
+      await db.getAllAsync<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('library_albums','song_index','album_details')",
+      )
+    ).map((r) => r.name),
+  );
+  const EMPTY: TableMigration = { source: 0, migrated: 0, skipped: 0 };
   // Progress total = the three blob tables (albums + songs + the album-detail scan).
   // Artists/playlists come from small KV blobs and finish fast at the end (folded to
   // 100% below).
-  const totalAlbums =
-    (await db.getFirstAsync<{ n: number }>('SELECT COUNT(*) AS n FROM library_albums'))?.n ?? 0;
-  const totalSongs =
-    (await db.getFirstAsync<{ n: number }>('SELECT COUNT(*) AS n FROM song_index'))?.n ?? 0;
-  const totalDetails =
-    (await db.getFirstAsync<{ n: number }>('SELECT COUNT(*) AS n FROM album_details'))?.n ?? 0;
+  const totalAlbums = present.has('library_albums')
+    ? (await db.getFirstAsync<{ n: number }>('SELECT COUNT(*) AS n FROM library_albums'))?.n ?? 0
+    : 0;
+  const totalSongs = present.has('song_index')
+    ? (await db.getFirstAsync<{ n: number }>('SELECT COUNT(*) AS n FROM song_index'))?.n ?? 0
+    : 0;
+  const totalDetails = present.has('album_details')
+    ? (await db.getFirstAsync<{ n: number }>('SELECT COUNT(*) AS n FROM album_details'))?.n ?? 0
+    : 0;
   const total = totalAlbums + totalSongs + totalDetails;
   let done = 0;
   const bump = (n: number): void => {
@@ -475,15 +490,17 @@ export async function migrateBlobsToNormalized(
   };
   // Article-aware sort keys (server list, else local default) — same as the sync.
   const articles = getSortArticles();
-  let albums = await migrateBlobTable<AlbumID3>(
-    db,
-    'library_albums',
-    'raw_json',
-    (d, items) => upsertAlbums(d, items, undefined, articles),
-    log,
-    profile,
-    bump,
-  );
+  let albums = present.has('library_albums')
+    ? await migrateBlobTable<AlbumID3>(
+        db,
+        'library_albums',
+        'raw_json',
+        (d, items) => upsertAlbums(d, items, undefined, articles),
+        log,
+        profile,
+        bump,
+      )
+    : EMPTY;
   // Union the pre-table KV blob. Installs older than `library_albums` (2026-07-11)
   // have an empty table and their entire album list in this key; the table wins where
   // both exist, so this only fills gaps. Upserts, so re-running is harmless.
@@ -498,20 +515,27 @@ export async function migrateBlobsToNormalized(
       skipped: albums.skipped,
     };
   }
-  let songs = await migrateBlobTable<Child>(
-    db,
-    'song_index',
-    'raw_json',
-    (d, items) => upsertSongs(d, items, undefined, articles),
-    log,
-    profile,
-    bump,
-  );
+  let songs = present.has('song_index')
+    ? await migrateBlobTable<Child>(
+        db,
+        'song_index',
+        'raw_json',
+        (d, items) => upsertSongs(d, items, undefined, articles),
+        log,
+        profile,
+        bump,
+      )
+    : EMPTY;
   // Gap-fill from the album-detail envelopes (table, then the pre-table KV blob) — the
   // only local source for albums missing from the list and for songs whose `song_index`
   // row predates `raw_json`. See `migrateAlbumDetailsTable` for why reading this is
   // redundant for a recent upgrader but load-bearing for an old one.
-  const detailTable = await migrateAlbumDetailsTable(db, articles, log, bump);
+  // Its page query reads BOTH tables, so both must exist. (They shipped together, so
+  // gating on `album_details` alone is only incidentally safe — make it explicit.)
+  const detailTable =
+    present.has('album_details') && present.has('song_index')
+      ? await migrateAlbumDetailsTable(db, articles, log, bump)
+      : { albums: 0, songs: 0 };
   const detailKv = await migrateAlbumDetailsKv(db, articles, log);
   const detailAlbums = detailTable.albums + detailKv.albums;
   const detailSongs = detailTable.songs + detailKv.songs;

@@ -18,10 +18,6 @@ const albumLibraryState = {
   albums: [] as Array<{ id: string }>,
   loading: false,
 };
-// Drives the row-based startup gate (`countLibraryAlbumsAsync`).
-const libraryTableState = { rowCount: 0 };
-// Drives the song-index count (`countSongIndexAsync`) for the upgrade seed.
-const songIndexTableState = { count: 0 };
 const artistLibraryState = { artists: [] as Array<{ id: string }> };
 const playlistLibraryState = { playlists: [] as Array<{ id: string }> };
 
@@ -58,15 +54,6 @@ jest.mock('../../store/albumListsStore', () => ({
   },
 }));
 
-// Row-based startup gate reads the library_albums COUNT.
-const mockDeleteLibraryAlbums = jest.fn((_ids: readonly string[]) => Promise.resolve());
-jest.mock('../../store/persistence/libraryAlbumsTable', () => ({
-  __esModule: true,
-  countLibraryAlbumsAsync: () => Promise.resolve(libraryTableState.rowCount),
-  sumAlbumSongCountsAsync: () => Promise.resolve(libraryTableState.rowCount * 10),
-  deleteLibraryAlbumsAsync: (ids: readonly string[]) => mockDeleteLibraryAlbums(ids),
-}));
-
 // Walk engine reads the detail cache and fetches missing albums through
 // the store's action. We stub a mutable record + a jest.fn so tests can
 // seed the cache and assert fetch invocations.
@@ -82,16 +69,6 @@ const mockFetchAlbum = jest.fn((id: string) => {
 const mockRemoveEntries = jest.fn((ids: readonly string[]) => {
   for (const id of ids) delete mockDetailState.albums[id];
 });
-// The walk computes "already detailed" from SQL (getDetailedAlbumIdsAsync), not
-// the in-memory map. Mirror the mocked detail cache so seeded entries count as
-// detailed. requireActual preserves the module's other exports.
-jest.mock('../../store/persistence/detailTables', () => ({
-  ...jest.requireActual('../../store/persistence/detailTables'),
-  getDetailedAlbumIdsAsync: () =>
-    Promise.resolve(new Set(Object.keys(mockDetailState.albums))),
-  countSongIndexAsync: () => Promise.resolve(songIndexTableState.count),
-}));
-
 // The sync's change-detection now reads normalized counts/ids from the repository
 // instead of the (doomed) library-store arrays. Derive those from the SAME mock
 // state the tests drive, so change-detection behaves as before. requireActual
@@ -265,8 +242,6 @@ beforeEach(() => {
   getOfflineSubscribers().clear();
   albumLibraryState.albums = [];
   albumLibraryState.loading = false;
-  libraryTableState.rowCount = 0;
-  songIndexTableState.count = 0;
   artistLibraryState.artists = [];
   playlistLibraryState.playlists = [];
   mockDetailState.albums = {};
@@ -277,7 +252,6 @@ beforeEach(() => {
   mockSyncCachedItemTracks.mockClear();
   for (const k of Object.keys(mockCachedItems)) delete mockCachedItems[k];
   for (const k of Object.keys(mockCachedSongs)) delete mockCachedSongs[k];
-  mockDeleteLibraryAlbums.mockClear();
   mockConnectivity.hasConnection = true;
   mockConnectivity.isServerReachable = true;
   mockFetchAlbum.mockClear();
@@ -575,7 +549,6 @@ describe('dataSyncService — deferred startup prefetches', () => {
 
   it('deferred block kicks off library prefetches when the list sync is incomplete', async () => {
     albumLibraryState.albums = [];
-    libraryTableState.rowCount = 0;
     syncStatusStore.setState({ librarySyncComplete: false });
     artistLibraryState.artists = [];
     playlistLibraryState.playlists = [];
@@ -591,7 +564,6 @@ describe('dataSyncService — deferred startup prefetches', () => {
 
   it('skips album/artist fetch when synced, but ALWAYS refreshes playlists (online)', async () => {
     albumLibraryState.albums = [{ id: 'a1' }];
-    libraryTableState.rowCount = 1;
     // Both phases complete: the album list and the song phase are ONE call now
     // (runNormalizedLibrarySync), so leaving songSyncComplete false would fire it for
     // the songs and there would be no album-only assertion to make.
@@ -619,7 +591,6 @@ describe('dataSyncService — deferred startup prefetches', () => {
   it('does NOT refresh playlists on startup when the server is unreachable', async () => {
     mockConnectivity.isServerReachable = false;
     albumLibraryState.albums = [{ id: 'a1' }];
-    libraryTableState.rowCount = 1;
     syncStatusStore.setState({ librarySyncComplete: true });
     playlistLibraryState.playlists = [{ id: 'p1' }];
     await onStartup();
