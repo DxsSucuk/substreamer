@@ -18,7 +18,6 @@ import { defaultCollator } from '../utils/intl';
 
 import { migrateV3BackupMetas, migrateV4BackupMetas } from './backupService';
 import { deviceIdentityStore } from '../store/deviceIdentityStore';
-import { getAllSongAlbumIds } from '../store/persistence/detailTables';
 import {
   completedScrobbleStore,
   type CompletedScrobble,
@@ -28,7 +27,6 @@ import { type PendingScrobble } from '../store/pendingScrobbleStore';
 import { playbackSettingsStore } from '../store/playbackSettingsStore';
 import { localeStore } from '../store/localeStore';
 import {
-  hydrateAlbumDetails,
   upsertAlbumDetail,
   upsertSongsForAlbum,
 } from '../store/persistence/detailTables';
@@ -77,6 +75,33 @@ interface MigrationTask {
 /* ------------------------------------------------------------------ */
 /*  Shared helpers                                                     */
 /* ------------------------------------------------------------------ */
+
+/**
+ * Every `album_details` row parsed into the `{ album, retrievedAt }` shape
+ * Migrations 18/19/20 consume. Raw SQL local to the chain: the legacy blob tables
+ * outlive the store-persistence module that used to wrap them, so the migrations
+ * must not depend on it. Unparseable rows are skipped, like the reader it replaces.
+ */
+function readAlbumDetailRows(): Record<string, { album: any; retrievedAt: number }> {
+  const out: Record<string, { album: any; retrievedAt: number }> = {};
+  const db = getDb();
+  if (db === null) return out;
+  try {
+    const rows = db.getAllSync<{ id: string; json: string; retrievedAt: number }>(
+      'SELECT id, json, retrievedAt FROM album_details;',
+    );
+    for (const row of rows) {
+      try {
+        out[row.id] = { album: JSON.parse(row.json), retrievedAt: row.retrievedAt };
+      } catch {
+        /* skip unparseable row */
+      }
+    }
+  } catch {
+    /* table unavailable — callers treat an empty map as "no local source" */
+  }
+  return out;
+}
 
 /**
  * Shared body for Migration 14 (forward run) and Migration 15 (recovery).
@@ -179,10 +204,14 @@ async function migrateMusicCacheFromBlob(
 
   // Source 2: song_index SQL table.
   try {
-    const sqlMap = getAllSongAlbumIds();
-    for (const [songId, albumId] of sqlMap) {
-      if (!trackIdToAlbumId.has(songId)) {
-        trackIdToAlbumId.set(songId, albumId);
+    const db = getDb();
+    const rows =
+      db?.getAllSync<{ id: string; albumId: string }>(
+        'SELECT id, albumId FROM song_index;',
+      ) ?? [];
+    for (const row of rows) {
+      if (row.id && row.albumId && !trackIdToAlbumId.has(row.id)) {
+        trackIdToAlbumId.set(row.id, row.albumId);
         resolvedVia2++;
       }
     }
@@ -593,7 +622,7 @@ async function backfillCachedSongEnvelopes(
 
   // Source 1: album_details rows.
   try {
-    const albums = hydrateAlbumDetails();
+    const albums = readAlbumDetailRows();
     for (const entry of Object.values(albums)) {
       const songs = entry?.album?.song;
       if (!Array.isArray(songs)) continue;
@@ -704,7 +733,7 @@ async function backfillCachedItemEnvelopes(
   // Pre-build lookups once so we don't re-parse the playlist blob per row.
   let albumDetails: Record<string, { album: unknown; retrievedAt: number }> = {};
   try {
-    albumDetails = hydrateAlbumDetails();
+    albumDetails = readAlbumDetailRows();
   } catch (e) {
     log(`[diag] album_details hydrate threw: ${errMessage(e)}`);
   }
@@ -957,7 +986,7 @@ async function backfillMissingPartialAlbums(
   // Step 3: preload album_details once so we can enrich every group.
   let albumDetails: Record<string, { album: any; retrievedAt: number }> = {};
   try {
-    albumDetails = hydrateAlbumDetails();
+    albumDetails = readAlbumDetailRows();
   } catch (e) {
     log(`[diag] album_details hydrate threw: ${errMessage(e)}`);
   }

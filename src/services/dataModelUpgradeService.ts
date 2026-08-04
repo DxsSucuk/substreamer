@@ -6,10 +6,13 @@
  *
  * Runs POST-splash via the idle scheduler — NEVER on the blocking splash (on a
  * 200k-album library the migration is minutes long). It is completeness-agnostic:
- * it converts whatever the legacy blob caches (`library_albums`, `song_index`) +
- * the artist/playlist KV blobs currently hold. A partial prior sync is fine — the
- * user manually re-syncs if songs are missing (see the plan's deferred
+ * it converts whatever the legacy blob caches (`library_albums`, `song_index`,
+ * `album_details`) + the KV blobs they replaced currently hold. A partial prior sync is
+ * fine — the user manually re-syncs if songs are missing (see the plan's deferred
  * "reliable-completeness" item; the sync-complete flags are known to lie at scale).
+ *
+ * Gated on the migration chain having completed: it reads the legacy tables directly,
+ * and a chain halted part-way leaves rows later tasks were meant to backfill.
  *
  * Trigger = a ONE-SHOT flag. It was a drift check ("blobs hold more rows than
  * normalized") while both models were written together; the blob tables are frozen now,
@@ -22,6 +25,7 @@ import { checkpointWalAsync, migrateBlobsToNormalized } from '@/db/migrateNormal
 import { getDb } from '@/store/persistence/db';
 import { kvStorage } from '@/store/persistence';
 import { syncStatusStore } from '@/store/syncStatusStore';
+import { LATEST_MIGRATION_ID } from './migrationService';
 
 /** Stamped after a successful full migration; the sole trigger gate.
  *
@@ -29,10 +33,34 @@ import { syncStatusStore } from '@/store/syncStatusStore';
  * step (e.g. the album-info KV blob) the fix is to bump this and let already-stamped
  * installs re-run — `migrateBlobsToNormalized` is idempotent upserts — instead of
  * stacking a second migration on top of the first. */
-const MIGRATION_VERSION = '2';
+const MIGRATION_VERSION = '3';
 const MIGRATION_DONE_KEY = 'substreamer-normalized-migration-complete';
 
+/** `migrationStore`'s persisted KV row — read directly rather than through the store,
+ *  which may not have rehydrated yet (the splash reads it the same way). */
+const MIGRATION_VERSION_KEY = 'substreamer-migration';
+
 let inFlight: Promise<void> | null = null;
+
+/**
+ * Has the migration chain run to the end? `runMigrations` stops at the FIRST failure and
+ * persists the version of the last success, so a halted chain leaves legacy rows the
+ * later tasks never backfilled — the ETL would read those as empty, count them
+ * `skipped`, and stamp itself complete. Defer instead; the next launch retries the chain.
+ * `>=`, not `==`: a downgrade leaves the counter above this build's latest id, and that
+ * chain is complete by definition. A fresh install passes — the runner fast-tracks the
+ * counter to the latest id.
+ */
+async function migrationChainComplete(): Promise<boolean> {
+  try {
+    const raw = await kvStorage.getItem(MIGRATION_VERSION_KEY);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw) as { state?: { completedVersion?: number } };
+    return (parsed?.state?.completedVersion ?? 0) >= LATEST_MIGRATION_ID;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Convert any un-migrated legacy blob/KV data into the normalized tables, in the
@@ -57,6 +85,10 @@ export function runDataModelUpgradeIfNeeded(): Promise<void> {
         });
         return;
       }
+
+      // The ETL reads the legacy tables directly, so it must not run against
+      // half-migrated legacy data — see `migrationChainComplete`.
+      if (!(await migrationChainComplete())) return;
 
       ensureNormalizedSchema(db);
       // ONE-SHOT, not a drift check. The drift form ("blobs hold more than normalized")

@@ -2,8 +2,11 @@
  * In-place migration: legacy blob tables → normalized tables.
  *
  * Reads the cached full-object envelopes we already hold — `library_albums.raw_json`
- * (AlbumID3) and `song_index.raw_json` (Child) — and upserts them into the
- * normalized schema. NO network. The SOURCE is read keyset-paginated by id so a
+ * (AlbumID3), `song_index.raw_json` (Child), `album_details.json`
+ * (AlbumWithSongsID3) and the Zustand KV blobs each of those tables replaced — and
+ * upserts them into the normalized schema. Every legacy location is read HERE, so the
+ * ETL stands alone: it does not need the migration chain to have replayed the moves
+ * between them. NO network. The SOURCE is read keyset-paginated by id so a
  * 200k-album / 467k-song library never loads whole tables into JS (the very OOM
  * this rebuild fixes); each page is parsed, upserted (id-sorted chunked txns),
  * freed, and the JS thread yields between pages.
@@ -12,7 +15,14 @@
  * does for validation. Not yet wired into the boot migration runner; that happens
  * once it's validated on-device.
  */
-import type { AlbumID3, ArtistID3, ArtistInfo2, Child, Playlist } from 'subsonic-api';
+import type {
+  AlbumID3,
+  AlbumWithSongsID3,
+  ArtistID3,
+  ArtistInfo2,
+  Child,
+  Playlist,
+} from 'subsonic-api';
 
 import type { InternalDb } from './client';
 import { ensureNormalizedSchema } from './createNormalizedTables';
@@ -117,6 +127,9 @@ const ALBUM_INFO_KEY = 'substreamer-album-info';
  *  Its table seeder lived in the since-deleted `albumLibraryStore`, so without this
  *  read an upgrade from those versions loses the whole album library. */
 const ALBUM_LIBRARY_KEY = 'substreamer-album-library';
+/** Pre-`album_details` installs kept the same `{album, retrievedAt}` entries here.
+ *  Read directly so this ETL doesn't need the migration that moved them to the table. */
+const ALBUM_DETAILS_KEY = 'substreamer-album-details';
 
 /** Read a Zustand-persisted store's `state` object from the KV `storage` table
  *  (the `{state, version}` envelope). Defensive: missing table/row/parse → null. */
@@ -285,6 +298,155 @@ async function migrateAlbumInfo(db: InternalDb, log?: Log): Promise<number> {
   return migrated;
 }
 
+/** Album-detail ids scanned per gate query. The gate is index-only, so the page is
+ *  wide; the ENVELOPES are fetched in a much smaller batch — each is 50-200KB, so a
+ *  whole page of them would be tens of MB parsed in one tick. */
+const DETAIL_ID_PAGE = 500;
+const DETAIL_ENVELOPE_BATCH = 25;
+
+interface AlbumDetailEntryLite {
+  album?: AlbumWithSongsID3;
+  retrievedAt?: number;
+}
+
+/** Upsert a batch of `AlbumWithSongsID3` envelopes: album rows for `needAlbum` ids,
+ *  their `song[]` for `needSongs` ids. Returns what each side wrote. */
+async function upsertDetailEnvelopes(
+  db: InternalDb,
+  envelopes: readonly { album: AlbumWithSongsID3; needAlbum: boolean; needSongs: boolean }[],
+  articles: readonly string[] | undefined,
+): Promise<{ albums: number; songs: number }> {
+  const albumRows: AlbumID3[] = [];
+  const songRows: Child[] = [];
+  for (const { album, needAlbum, needSongs } of envelopes) {
+    if (needAlbum) albumRows.push(album);
+    if (!needSongs) continue;
+    for (const s of album.song ?? []) if (s?.id) songRows.push(s);
+  }
+  const albums = albumRows.length ? await upsertAlbums(db, albumRows, undefined, articles) : 0;
+  const songs = songRows.length ? await upsertSongs(db, songRows, undefined, articles) : 0;
+  return { albums, songs };
+}
+
+/**
+ * `album_details` (`AlbumWithSongsID3` envelopes) as a DIRECT source.
+ *
+ * NB: this table used to be skipped deliberately, and the reasoning still holds for a
+ * RECENT upgrader — it is written atomically alongside `song_index` (one disk write per
+ * album-detail fetch), so `song_index` is a superset and reading both is redundant. It
+ * INVERTS for an old one: rows written before `song_index.raw_json` existed (pre
+ * 2026-06-04) carry NULL, the song pass skips them, and `album_details.song[]` is their
+ * only local source. So each id is gated on an actual gap — no `albums` row, no
+ * `song_index` rows, or a NULL `raw_json` among them — and the redundant case costs
+ * three index probes per row with no JSON parsed at all.
+ */
+async function migrateAlbumDetailsTable(
+  db: InternalDb,
+  articles: readonly string[] | undefined,
+  log?: Log,
+  bump?: (rowsProcessed: number) => void,
+): Promise<{ albums: number; songs: number }> {
+  let albums = 0;
+  let songs = 0;
+  let scanned = 0;
+  let cursor = '';
+
+  for (;;) {
+    // eslint-disable-next-line no-await-in-loop
+    const page = await db.getAllAsync<{
+      id: string;
+      has_album: number;
+      has_song_json: number;
+      has_null_json: number;
+    }>(
+      `SELECT d.id AS id,
+              EXISTS(SELECT 1 FROM albums a WHERE a.id = d.id) AS has_album,
+              EXISTS(SELECT 1 FROM song_index s WHERE s.albumId = d.id AND s.raw_json IS NOT NULL)
+                AS has_song_json,
+              EXISTS(SELECT 1 FROM song_index s WHERE s.albumId = d.id AND s.raw_json IS NULL)
+                AS has_null_json
+         FROM album_details d
+        WHERE d.id > ? ORDER BY d.id LIMIT ?`,
+      [cursor, DETAIL_ID_PAGE],
+    );
+    if (page.length === 0) break;
+    cursor = page[page.length - 1].id;
+    scanned += page.length;
+    bump?.(page.length);
+
+    const gaps = new Map<string, { needAlbum: boolean; needSongs: boolean }>();
+    for (const r of page) {
+      const needAlbum = !r.has_album;
+      const needSongs = !r.has_song_json || !!r.has_null_json;
+      if (needAlbum || needSongs) gaps.set(r.id, { needAlbum, needSongs });
+    }
+    const ids = [...gaps.keys()];
+    for (let i = 0; i < ids.length; i += DETAIL_ENVELOPE_BATCH) {
+      const batch = ids.slice(i, i + DETAIL_ENVELOPE_BATCH);
+      // eslint-disable-next-line no-await-in-loop
+      const rows = await db.getAllAsync<{ id: string; json: string | null }>(
+        `SELECT id, json FROM album_details WHERE id IN (${batch.map(() => '?').join(',')})`,
+        batch,
+      );
+      const parsed: { album: AlbumWithSongsID3; needAlbum: boolean; needSongs: boolean }[] = [];
+      for (const r of rows) {
+        if (!r.json) continue;
+        try {
+          const album = JSON.parse(r.json) as AlbumWithSongsID3;
+          if (album?.id) parsed.push({ album, ...gaps.get(r.id)! });
+        } catch {
+          /* unparseable envelope — nothing recoverable in it */
+        }
+      }
+      // eslint-disable-next-line no-await-in-loop
+      const wrote = await upsertDetailEnvelopes(db, parsed, articles);
+      albums += wrote.albums;
+      songs += wrote.songs;
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  if (scanned > 0) {
+    log?.(`album_details: scanned ${scanned}, filled ${albums} album(s) + ${songs} song(s)`);
+  }
+  return { albums, songs };
+}
+
+/** The pre-table location of the same album-detail envelopes, as a `{albums: Record<id,
+ *  {album, retrievedAt}>}` KV state. Unconditional (upserts): it only survives on
+ *  installs whose move-to-table migration never ran, so nothing else holds this data. */
+async function migrateAlbumDetailsKv(
+  db: InternalDb,
+  articles: readonly string[] | undefined,
+  log?: Log,
+): Promise<{ albums: number; songs: number }> {
+  const state = await readKvState<{ albums?: Record<string, AlbumDetailEntryLite> }>(
+    db,
+    ALBUM_DETAILS_KEY,
+  );
+  const entries = state?.albums ? Object.values(state.albums) : [];
+  let albums = 0;
+  let songs = 0;
+  for (let i = 0; i < entries.length; i += DETAIL_ENVELOPE_BATCH) {
+    const batch = entries
+      .slice(i, i + DETAIL_ENVELOPE_BATCH)
+      .map((e) => e?.album)
+      .filter((a): a is AlbumWithSongsID3 => !!a?.id)
+      .map((album) => ({ album, needAlbum: true, needSongs: true }));
+    // eslint-disable-next-line no-await-in-loop
+    const wrote = await upsertDetailEnvelopes(db, batch, articles);
+    albums += wrote.albums;
+    songs += wrote.songs;
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  if (entries.length > 0) {
+    log?.(`album-details KV: ${albums} album(s) + ${songs} song(s)`);
+  }
+  return { albums, songs };
+}
+
 /** Migrate the album + song blob caches AND the artist/playlist KV blobs into the
  *  normalized tables. Pass `profile` (dev spike only) to accumulate read/parse time. */
 export async function migrateBlobsToNormalized(
@@ -296,13 +458,16 @@ export async function migrateBlobsToNormalized(
   const start = Date.now();
   ensureNormalizedSchema(db);
   log?.('normalized schema ensured');
-  // Progress total = the two big blob tables (albums + songs). Artists/playlists
-  // come from small KV blobs and finish fast at the end (folded to 100% below).
+  // Progress total = the three blob tables (albums + songs + the album-detail scan).
+  // Artists/playlists come from small KV blobs and finish fast at the end (folded to
+  // 100% below).
   const totalAlbums =
     (await db.getFirstAsync<{ n: number }>('SELECT COUNT(*) AS n FROM library_albums'))?.n ?? 0;
   const totalSongs =
     (await db.getFirstAsync<{ n: number }>('SELECT COUNT(*) AS n FROM song_index'))?.n ?? 0;
-  const total = totalAlbums + totalSongs;
+  const totalDetails =
+    (await db.getFirstAsync<{ n: number }>('SELECT COUNT(*) AS n FROM album_details'))?.n ?? 0;
+  const total = totalAlbums + totalSongs + totalDetails;
   let done = 0;
   const bump = (n: number): void => {
     done += n;
@@ -333,7 +498,7 @@ export async function migrateBlobsToNormalized(
       skipped: albums.skipped,
     };
   }
-  const songs = await migrateBlobTable<Child>(
+  let songs = await migrateBlobTable<Child>(
     db,
     'song_index',
     'raw_json',
@@ -342,9 +507,24 @@ export async function migrateBlobsToNormalized(
     profile,
     bump,
   );
-  // NB: `album_details` is intentionally NOT read — it was written atomically alongside
-  // `song_index` (one disk write per album-detail fetch), so `song_index` is a superset
-  // of its songs; migrating both would be redundant.
+  // Gap-fill from the album-detail envelopes (table, then the pre-table KV blob) — the
+  // only local source for albums missing from the list and for songs whose `song_index`
+  // row predates `raw_json`. See `migrateAlbumDetailsTable` for why reading this is
+  // redundant for a recent upgrader but load-bearing for an old one.
+  const detailTable = await migrateAlbumDetailsTable(db, articles, log, bump);
+  const detailKv = await migrateAlbumDetailsKv(db, articles, log);
+  const detailAlbums = detailTable.albums + detailKv.albums;
+  const detailSongs = detailTable.songs + detailKv.songs;
+  albums = {
+    source: albums.source + detailAlbums,
+    migrated: albums.migrated + detailAlbums,
+    skipped: albums.skipped,
+  };
+  songs = {
+    source: songs.source + detailSongs,
+    migrated: songs.migrated + detailSongs,
+    skipped: songs.skipped,
+  };
   const artists = await migrateArtists(db, articles, log);
   const playlists = await migratePlaylists(db, articles, log);
   // Album info must run AFTER albums exist — its rows FK to `albums`.

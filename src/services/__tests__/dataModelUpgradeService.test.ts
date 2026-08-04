@@ -5,8 +5,15 @@ import { countSongs } from '../../db/repository/songs';
 import { getDb } from '../../store/persistence/db';
 import { syncStatusStore } from '../../store/syncStatusStore';
 import { runDataModelUpgradeIfNeeded } from '../dataModelUpgradeService';
+import { LATEST_MIGRATION_ID } from '../migrationService';
 
 const db = () => getDb()!;
+
+/** The upgrade defers until the migration chain has run to the end. */
+const stampMigrationChain = (completedVersion: number) =>
+  db().runSync("INSERT OR REPLACE INTO storage (key, value) VALUES ('substreamer-migration', ?)", [
+    JSON.stringify({ state: { completedVersion }, version: 0 }),
+  ]);
 
 const seedAlbum = (id: string) =>
   db().runSync('INSERT OR REPLACE INTO library_albums (id, sortKey, raw_json) VALUES (?, ?, ?)', [
@@ -28,6 +35,7 @@ beforeEach(() => {
   }
   // Reset the one-time completion flag + any seeded KV so each test starts unstamped.
   db().runSync("DELETE FROM storage WHERE key IN ('substreamer-normalized-migration-complete', 'substreamer-artist-library')");
+  stampMigrationChain(LATEST_MIGRATION_ID);
   syncStatusStore.setState({
     inFlight: new Map(),
     normalizedMigrationPhase: 'idle',
@@ -88,6 +96,22 @@ describe('runDataModelUpgradeIfNeeded', () => {
     db().runSync('DELETE FROM artists');
     await runDataModelUpgradeIfNeeded();
     expect(await countArtists(db())).toBe(0);
+  });
+
+  it('defers while the migration chain is halted part-way', async () => {
+    // A chain that stopped on a failed task leaves rows its later tasks were meant to
+    // backfill; migrating them now would count the gaps as `skipped` and stamp done.
+    stampMigrationChain(LATEST_MIGRATION_ID - 1);
+    seedAlbum('a1');
+    seedSong('s1', 'a1');
+
+    await runDataModelUpgradeIfNeeded();
+    expect(await countSongs(db())).toBe(0);
+
+    // Chain finishes on a later launch → the deferred upgrade runs.
+    stampMigrationChain(LATEST_MIGRATION_ID);
+    await runDataModelUpgradeIfNeeded();
+    expect(await countSongs(db())).toBe(1);
   });
 
   it('does not race an in-flight library sync', async () => {

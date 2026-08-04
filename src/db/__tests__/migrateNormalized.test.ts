@@ -25,6 +25,13 @@ const seedSong = (id: string, albumId: string, c: Partial<Child>) =>
     JSON.stringify({ id, albumId, title: id, isDir: false, ...c }),
   ]);
 
+const seedAlbumDetail = (id: string, album: Record<string, unknown>) =>
+  db().runSync('INSERT OR REPLACE INTO album_details (id, json, retrievedAt) VALUES (?, ?, ?)', [
+    id,
+    JSON.stringify({ id, name: id, created: '2020-01-01', duration: 1, songCount: 1, ...album }),
+    1,
+  ]);
+
 const putKv = (key: string, state: unknown) =>
   db().runSync('INSERT OR REPLACE INTO storage (key, value) VALUES (?, ?)', [
     key,
@@ -34,7 +41,7 @@ const putKv = (key: string, state: unknown) =>
 beforeAll(() => ensureNormalizedSchema(db()));
 beforeEach(() => {
   for (const t of [
-    'library_albums', 'song_index', 'albums', 'songs', 'artists', 'playlists',
+    'library_albums', 'song_index', 'album_details', 'albums', 'songs', 'artists', 'playlists',
     'playlist_songs', 'artist_top_songs', 'artist_similar',
     'artist_info',
     'artist_bio',
@@ -47,6 +54,7 @@ beforeEach(() => {
     'substreamer-artist-details',
     'substreamer-playlist-library',
     'substreamer-playlist-details',
+    'substreamer-album-details',
   ]) {
     db().runSync('DELETE FROM storage WHERE key = ?', [k]);
   }
@@ -144,6 +152,92 @@ describe('migrateBlobsToNormalized', () => {
     const detail = await getPlaylistDetail(db(), 'pl1');
     expect(detail?.entry.map((e) => e.id)).toEqual(['s1', 's2']);
     expect(detail?.entry.map((e) => e.title)).toEqual(['One', 'Two']);
+  });
+
+  it('fills songs from album_details when the song_index row predates raw_json', async () => {
+    // The pre-2026-06-04 shape: a song_index row with no envelope. The song pass skips
+    // it, so `album_details.song[]` is the only local source for that track.
+    seedAlbum('a1', { name: 'Alpha' });
+    db().runSync("INSERT INTO song_index (id, albumId, raw_json) VALUES ('s1', 'a1', NULL)");
+    seedAlbumDetail('a1', {
+      name: 'Alpha',
+      song: [{ id: 's1', albumId: 'a1', title: 'Recovered', genres: ['Rock'], isDir: false }],
+    });
+
+    await migrateBlobsToNormalized(db());
+
+    const row = db().getFirstSync<{ title: string }>("SELECT title FROM songs WHERE id = 's1'");
+    expect(row?.title).toBe('Recovered');
+    // The child tables come along with it, so it isn't a lean reconstruction.
+    const genres = db().getAllSync<{ name: string }>(
+      "SELECT name FROM song_genres WHERE song_id='s1'",
+    );
+    expect(genres.map((g) => g.name)).toEqual(['Rock']);
+  });
+
+  it('leaves album_details alone when song_index already carries every envelope', async () => {
+    // The redundant case: song_index is a superset, so the envelope is never parsed and
+    // the already-migrated album row is not rewritten from it.
+    seedAlbum('a1', { name: 'Alpha' });
+    seedSong('s1', 'a1', { title: 'From song_index' });
+    seedAlbumDetail('a1', {
+      name: 'Stale detail name',
+      song: [{ id: 's1', albumId: 'a1', title: 'From album_details', isDir: false }],
+    });
+
+    const result = await migrateBlobsToNormalized(db());
+
+    expect(result.albums).toEqual({ source: 1, migrated: 1, skipped: 0 });
+    expect(result.songs).toEqual({ source: 1, migrated: 1, skipped: 0 });
+    const album = db().getFirstSync<{ name: string }>("SELECT name FROM albums WHERE id = 'a1'");
+    expect(album?.name).toBe('Alpha');
+    const song = db().getFirstSync<{ title: string }>("SELECT title FROM songs WHERE id = 's1'");
+    expect(song?.title).toBe('From song_index');
+  });
+
+  it('recovers an album that only ever reached album_details', async () => {
+    seedAlbumDetail('a9', {
+      name: 'Detail Only',
+      song: [{ id: 's9', albumId: 'a9', title: 'Only Track', isDir: false }],
+    });
+
+    const result = await migrateBlobsToNormalized(db());
+
+    expect(result.albums.migrated).toBe(1);
+    expect(result.songs.migrated).toBe(1);
+    expect(await countAlbums(db())).toBe(1);
+    expect(await countSongs(db())).toBe(1);
+
+    // Re-running must not duplicate — the gap is closed, so the envelope is skipped.
+    const second = await migrateBlobsToNormalized(db());
+    expect(second.albums.migrated).toBe(0);
+    expect(await countAlbums(db())).toBe(1);
+    expect(await countSongs(db())).toBe(1);
+  });
+
+  it('migrates the pre-table album-details KV blob', async () => {
+    putKv('substreamer-album-details', {
+      albums: {
+        a1: {
+          album: {
+            id: 'a1',
+            name: 'From KV',
+            created: '2020-01-01',
+            duration: 1,
+            songCount: 1,
+            song: [{ id: 's1', albumId: 'a1', title: 'KV Track', isDir: false }],
+          },
+          retrievedAt: 1,
+        },
+      },
+    });
+
+    await migrateBlobsToNormalized(db());
+
+    const album = db().getFirstSync<{ name: string }>("SELECT name FROM albums WHERE id = 'a1'");
+    expect(album?.name).toBe('From KV');
+    const song = db().getFirstSync<{ title: string }>("SELECT title FROM songs WHERE id = 's1'");
+    expect(song?.title).toBe('KV Track');
   });
 
   it('migrates artist detail: top songs + resolved bio & negative-cache markers', async () => {
