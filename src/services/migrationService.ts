@@ -1717,7 +1717,7 @@ const MIGRATION_TASKS: MigrationTask[] = [
       if (rows.length > 0) {
         await bulkInsertCachedImages(rows);
       }
-      const persisted = countCachedImagesRow();
+      const persisted = await countCachedImagesRow();
       const uniqueCovers = new Set(rows.map((r) => r.coverArtId)).size;
       log(
         `Indexed ${uniqueCovers} cover art item(s), ${rows.length} variant file(s) ` +
@@ -1954,52 +1954,6 @@ const MIGRATION_TASKS: MigrationTask[] = [
     },
   },
 
-  {
-    id: 26,
-    name: 'Backfill song_index.album from album_details',
-    run: async (log) => {
-      // The `album` column on `song_index` was added in v8.0.61 alongside
-      // the Library → Songs segment. Pre-existing rows have NULL; without
-      // backfill, every existing song would display "Unknown album" until
-      // the next natural runFullAlbumDetailSync overwrites them. Use the
-      // cached `album_details.json` (parsed AlbumWithSongsID3 envelope) to
-      // derive the album name per albumId — no network required.
-      try {
-        const { getDb } = require('./../store/persistence/db') as {
-          getDb: () => any;
-        };
-        const db = getDb();
-        if (db === null) {
-          log('[m26] db unavailable — skipping');
-          return;
-        }
-        const rows = db.getAllSync(
-          'SELECT id, json FROM album_details;',
-        ) as { id: string; json: string }[];
-        let updated = 0;
-        db.withTransactionSync(() => {
-          for (const row of rows) {
-            let name: string | null = null;
-            try {
-              const parsed = JSON.parse(row.json);
-              if (parsed && typeof parsed.name === 'string') name = parsed.name;
-            } catch {
-              continue;
-            }
-            if (!name) continue;
-            const res = db.runSync(
-              'UPDATE song_index SET album = ? WHERE albumId = ? AND (album IS NULL OR album = "");',
-              [name, row.id],
-            );
-            updated += res.changes ?? 0;
-          }
-        });
-        log(`[m26] backfilled album name on ${updated} song_index rows`);
-      } catch (e) {
-        log(`[m26] backfill failed: ${errMessage(e)}`);
-      }
-    },
-  },
 
   {
     id: 27,
@@ -2212,89 +2166,6 @@ const MIGRATION_TASKS: MigrationTask[] = [
     },
   },
 
-  {
-    id: 32,
-    name: 'Backfill fuzzy-search columns',
-    run: async (log) => {
-      // Backfill norm_/dmeta_ on existing rows so fuzzy candidate SQL works
-      // without a re-sync. Async-chunked (per-batch async txn + macrotask yield)
-      // so a 38k-row pass doesn't freeze the splash / ANR. NULL norm is the "not
-      // yet done" marker; every UPDATE writes non-null so rows leave the set.
-      const db = getDb();
-      if (!db) {
-        log('[m32] no db — skipped');
-        return;
-      }
-      const BATCH = 1000;
-
-      let songTotal = 0;
-      for (let guard = 0; guard < 1000; guard++) {
-        // eslint-disable-next-line no-await-in-loop
-        const rows = await db.getAllAsync<{
-          id: string;
-          title: string | null;
-          artist: string | null;
-        }>('SELECT id, title, artist FROM song_index WHERE norm_title IS NULL LIMIT ?;', [BATCH]);
-        if (rows.length === 0) break;
-        // eslint-disable-next-line no-await-in-loop
-        await serializeDbWrite(() =>
-          db.withTransactionAsync(async () => {
-            for (const r of rows) {
-              const title = r.title ?? '';
-              const artist = r.artist ?? '';
-              // eslint-disable-next-line no-await-in-loop
-              await db.runAsync(
-                'UPDATE song_index SET norm_title = ?, norm_artist = ?, dmeta_title = ?, dmeta_artist = ? WHERE id = ?;',
-                [normalize(title), normalizeArtist(artist), metaphoneKey(title), metaphoneKey(artist), r.id],
-              );
-            }
-          }),
-        );
-        songTotal += rows.length;
-        // eslint-disable-next-line no-await-in-loop
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        if (rows.length < BATCH) break;
-      }
-      log(`[m32] song_index backfilled ${songTotal} rows`);
-
-      let albumTotal = 0;
-      for (let guard = 0; guard < 1000; guard++) {
-        // library_albums has no name/artist column — parse the raw_json envelope.
-        // eslint-disable-next-line no-await-in-loop
-        const rows = await db.getAllAsync<{ id: string; raw_json: string }>(
-          'SELECT id, raw_json FROM library_albums WHERE norm_name IS NULL LIMIT ?;',
-          [BATCH],
-        );
-        if (rows.length === 0) break;
-        // eslint-disable-next-line no-await-in-loop
-        await serializeDbWrite(() =>
-          db.withTransactionAsync(async () => {
-            for (const r of rows) {
-              let name = '';
-              let artist = '';
-              try {
-                const a = JSON.parse(r.raw_json) as { name?: string; artist?: string };
-                name = a?.name ?? '';
-                artist = a?.artist ?? '';
-              } catch {
-                /* unparseable — store empties so the row leaves the backfill set */
-              }
-              // eslint-disable-next-line no-await-in-loop
-              await db.runAsync(
-                'UPDATE library_albums SET norm_name = ?, norm_artist = ?, dmeta_name = ?, dmeta_artist = ? WHERE id = ?;',
-                [normalize(name), normalizeArtist(artist), metaphoneKey(name), metaphoneKey(artist), r.id],
-              );
-            }
-          }),
-        );
-        albumTotal += rows.length;
-        // eslint-disable-next-line no-await-in-loop
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        if (rows.length < BATCH) break;
-      }
-      log(`[m32] library_albums backfilled ${albumTotal} rows`);
-    },
-  },
 
   {
     id: 33,

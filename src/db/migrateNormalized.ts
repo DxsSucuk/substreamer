@@ -113,6 +113,10 @@ const ARTIST_DETAILS_KEY = 'substreamer-artist-details';
 const PLAYLIST_LIBRARY_KEY = 'substreamer-playlist-library';
 const PLAYLIST_DETAILS_KEY = 'substreamer-playlist-details';
 const ALBUM_INFO_KEY = 'substreamer-album-info';
+/** Pre-`library_albums` installs (before 2026-07-11) kept the album list ONLY here.
+ *  Its table seeder lived in the since-deleted `albumLibraryStore`, so without this
+ *  read an upgrade from those versions loses the whole album library. */
+const ALBUM_LIBRARY_KEY = 'substreamer-album-library';
 
 /** Read a Zustand-persisted store's `state` object from the KV `storage` table
  *  (the `{state, version}` envelope). Defensive: missing table/row/parse → null. */
@@ -306,7 +310,7 @@ export async function migrateBlobsToNormalized(
   };
   // Article-aware sort keys (server list, else local default) — same as the sync.
   const articles = getSortArticles();
-  const albums = await migrateBlobTable<AlbumID3>(
+  let albums = await migrateBlobTable<AlbumID3>(
     db,
     'library_albums',
     'raw_json',
@@ -315,6 +319,20 @@ export async function migrateBlobsToNormalized(
     profile,
     bump,
   );
+  // Union the pre-table KV blob. Installs older than `library_albums` (2026-07-11)
+  // have an empty table and their entire album list in this key; the table wins where
+  // both exist, so this only fills gaps. Upserts, so re-running is harmless.
+  const legacyAlbums = await readKvState<{ albums?: AlbumID3[] }>(db, ALBUM_LIBRARY_KEY);
+  const kvAlbums = legacyAlbums?.albums?.filter((a) => a?.id) ?? [];
+  if (kvAlbums.length > 0) {
+    await upsertAlbums(db, kvAlbums, undefined, articles);
+    log?.(`[normalized] album-library KV: ${kvAlbums.length} album(s)`);
+    albums = {
+      source: albums.source + kvAlbums.length,
+      migrated: albums.migrated + kvAlbums.length,
+      skipped: albums.skipped,
+    };
+  }
   const songs = await migrateBlobTable<Child>(
     db,
     'song_index',
