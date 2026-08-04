@@ -15,6 +15,28 @@ import type { BatchCommand, InternalDb } from '../client';
 export type Value = string | number | null;
 export type Row = Record<string, Value>;
 
+/**
+ * Mark `K` as PRESENT on `T` without making it non-nullable — "the projection
+ * populates this key", which is what a widened read guarantees. `Required<Pick<>>`
+ * would strip `undefined` along with the `?` and force an adapter to invent
+ * `new Date(0)`/`0` for a field the server never sent.
+ *
+ * `Omit` + `Extract` rather than `T & { [P in K]-?: … }`: the `-?` modifier strips
+ * `undefined` from the property type exactly like `Required` does, and re-widening
+ * with `| undefined` inside a HOMOMORPHIC mapped type is undone by the same modifier.
+ * Mapping over `Extract<keyof T, K>` is non-homomorphic, so the keys come out
+ * required with `undefined` intact.
+ */
+export type Complete<T, K extends keyof T> = Omit<T, K> & {
+  [P in Extract<keyof T, K>]: T[P] | undefined;
+};
+
+/** Join a projection field list into a SELECT column list, optionally table-qualified
+ *  (`s."title"`) for queries that JOIN a table sharing column names. Every COLS string
+ *  derives from its entity's one field list, so the SQL cannot drift from the row type. */
+export const colsOf = <C extends string>(fields: readonly C[], alias?: string): string =>
+  fields.map((f) => (alias ? `${alias}."${f}"` : `"${f}"`)).join(', ');
+
 const nowMs = (): number => {
   const p = (globalThis as { performance?: { now?: () => number } }).performance;
   return p && typeof p.now === 'function' ? p.now() : Date.now();
@@ -284,6 +306,39 @@ export async function keysetPageBefore<R extends { id: string }>(
     prevCursor:
       hasMore && first ? { sortKey: sortKeyOf(first), id: first.id, sortKey2: sortKey2Of?.(first) } : null,
   };
+}
+
+/**
+ * One child table fetched for a whole page of parents and grouped by parent id, in
+ * `pos` order. Ids pass as a JSON array via `json_each` rather than a literal `IN (…)`
+ * list because several widened reads are unpaged (a whole playlist, a whole
+ * discography, the whole downloaded set) and would blow the bound-variable limit.
+ *
+ * Cost is N index probes per table either way — the child tables are
+ * `PRIMARY KEY(parent_id, pos)` — so the win is one statement per table per page
+ * instead of one per row.
+ */
+export async function fetchChildren<R extends Record<string, unknown>, T>(
+  db: InternalDb,
+  opts: { table: string; parentCol: string; columns: readonly string[]; orderBy?: string },
+  parentIds: readonly string[],
+  map: (row: R) => T,
+): Promise<Map<string, T[]>> {
+  const out = new Map<string, T[]>();
+  if (parentIds.length === 0) return out;
+  const { table, parentCol, columns, orderBy = 'pos' } = opts;
+  const rows = await db.getAllAsync<R & { parent_key: string }>(
+    `SELECT ${ident(parentCol)} AS parent_key, ${colsOf(columns)} FROM ${ident(table)} ` +
+      `WHERE ${ident(parentCol)} IN (SELECT value FROM json_each(?)) ` +
+      `ORDER BY ${ident(parentCol)}, ${ident(orderBy)}`,
+    [JSON.stringify(parentIds)],
+  );
+  for (const row of rows) {
+    const list = out.get(row.parent_key);
+    if (list) list.push(map(row));
+    else out.set(row.parent_key, [map(row)]);
+  }
+  return out;
 }
 
 /** COUNT(*) of a table (optionally filtered) — never loads rows to count. */

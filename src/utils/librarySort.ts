@@ -5,21 +5,30 @@
  * preference so this stays free of store imports (and survives the removal of
  * the legacy library stores).
  */
-import type { AlbumID3, ArtistID3, Playlist } from 'subsonic-api';
+import type { ArtistID3, Playlist } from 'subsonic-api';
 
 import { baseCollator } from './intl';
 import { getSortKey } from './sortHelpers';
 
 export type AlbumSortOrder = 'title' | 'artist';
 
+/** The album fields this sort reads — structural, not `AlbumID3`, so a narrow browse
+ *  row sorts without being widened into a full entity first. */
+export interface SortableAlbum {
+  id: string;
+  name?: string;
+  artist?: string;
+  sortName?: string;
+}
+
 /** Sort albums by the user's preference (title OR artist) — mirrors the library
  *  list's A-Z so the alphabet scroller aligns. */
-export function sortAlbumsByPreference(
-  albums: readonly AlbumID3[],
+export function sortAlbumsByPreference<T extends SortableAlbum>(
+  albums: readonly T[],
   sortOrder: AlbumSortOrder,
   articles?: readonly string[],
-): AlbumID3[] {
-  const decorated = albums.map((a): [string, AlbumID3] => [
+): T[] {
+  const decorated = albums.map((a): [string, T] => [
     sortOrder === 'title'
       ? getSortKey(a.name ?? '', a.sortName, articles)
       : getSortKey(a.artist ?? '', undefined, articles),

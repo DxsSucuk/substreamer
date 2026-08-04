@@ -69,6 +69,27 @@ describe('getAlbumDetail', () => {
   it('returns null for an un-synced album', async () => {
     expect(await getAlbumDetail(db(), 'nope')).toBeNull();
   });
+
+  it('carries the array children on both the album and its songs', async () => {
+    // Detail and the list reads share one projection + adapter, so the fields a
+    // consumer gets cannot depend on which screen it arrived from.
+    await upsertAlbums(db(), [
+      album('al1', 'Abbey Road', { genres: ['Rock'], recordLabels: [{ name: 'Apple' }] }),
+    ]);
+    await upsertSongs(db(), [
+      song('s1', 'Come Together', {
+        albumId: 'al1',
+        track: 1,
+        genres: ['Rock', 'Blues'],
+        contributors: [{ role: 'composer', artist: { id: 'c1', name: 'Lennon', albumCount: 0 } }],
+      }),
+    ]);
+    const detail = await getAlbumDetail(db(), 'al1');
+    expect(detail?.album.genres).toEqual(['Rock']);
+    expect(detail?.album.recordLabels).toEqual([{ name: 'Apple' }]);
+    expect(detail?.songs[0].genres).toEqual(['Rock', 'Blues']);
+    expect(detail?.songs[0].contributors?.[0].artist?.name).toBe('Lennon');
+  });
 });
 
 describe('artist detail parts', () => {
@@ -182,5 +203,15 @@ describe('getPlaylistDetail', () => {
 
   it('returns null for an un-synced playlist', async () => {
     expect(await getPlaylistDetail(db(), 'nope')).toBeNull();
+  });
+
+  it('hydrates a track listed twice without losing its children', async () => {
+    // A playlist may hold the same song at two positions; the batched child fetch
+    // must serve both rows rather than only the first occurrence.
+    await upsertPlaylists(db(), [playlist('p1', 'Repeat')]);
+    await upsertSongs(db(), [song('s1', 'Encore', { genres: ['Live'] })]);
+    setPlaylistSongs(db(), 'p1', ['s1', 's1']);
+    const detail = await getPlaylistDetail(db(), 'p1');
+    expect(detail?.entry.map((e) => e.genres)).toEqual([['Live'], ['Live']]);
   });
 });

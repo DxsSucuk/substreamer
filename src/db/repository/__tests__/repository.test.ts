@@ -3,17 +3,22 @@ import type { AlbumID3, ArtistInfo2, ArtistID3, Child, Playlist } from 'subsonic
 import { getDb } from '../../../store/persistence/db';
 import { ensureNormalizedSchema } from '../../createNormalizedTables';
 import {
+  ALBUM_LIST_COLS,
   albumCursorOf,
+  albumIdsPresent,
+  albumListRowToAlbumID3,
   countAlbums,
   getAlbum,
   listAlbums,
   listAlbumsBefore,
+  listAllAlbums,
   clearAlbumInfo,
   getAlbumInfoRow,
   upsertAlbumInfoRow,
   upsertAlbums,
 } from '../albums';
 import {
+  ARTIST_LIST_COLS,
   artistCursorOf,
   artistListRowToArtistID3,
   countArtists,
@@ -26,8 +31,10 @@ import {
   upsertArtists,
 } from '../artists';
 import {
+  PLAYLIST_LIST_COLS,
   clearPlaylistDetailMarkers,
   countPlaylists,
+  listAllPlaylists,
   listPlaylistDetailState,
   stampPlaylistDetailSynced,
   deletePlaylist,
@@ -41,16 +48,18 @@ import {
   upsertPlaylists,
 } from '../playlists';
 import {
+  SONG_LIST_COLS,
   countSongs,
   deleteAlbumSongsNotIn,
   listSongs,
   songListRowToChild,
   listSongsBefore,
-  listSongsByAlbum,
   songCursorOf,
   upsertSongs,
+  type SongListRow,
 } from '../songs';
 import { keysetPageBefore } from '../core';
+import { getAlbumDetail } from '../details';
 import { searchAlbums, searchArtists, searchSongs } from '../search';
 
 const db = () => getDb()!;
@@ -185,6 +194,79 @@ describe('albums repository', () => {
     expect(await countAlbums(db())).toBe(1);
   });
 
+  it('maps a projected row to AlbumID3, array children and all', async () => {
+    await upsertAlbums(db(), [
+      album('a1', 'Abbey Road', {
+        artist: 'The Beatles',
+        artistId: 'ar1',
+        year: 1969,
+        playCount: 4,
+        version: 'Remaster',
+        musicBrainzId: 'mb-a1',
+        isCompilation: false,
+        explicitStatus: 'clean',
+        originalReleaseDate: { year: 1969, month: 9, day: 26 },
+        genres: ['Rock', 'Folk, World, & Country'],
+        artists: [{ id: 'ar1', name: 'The Beatles', albumCount: 0 }],
+        recordLabels: [{ name: 'Apple' }],
+        releaseTypes: ['album'],
+        moods: ['upbeat'],
+        discTitles: [
+          { disc: 2, title: 'Side B' },
+          { disc: 1, title: 'Side A' },
+        ],
+      }),
+    ]);
+    const a = albumListRowToAlbumID3((await listAlbums(db(), { limit: 1 })).rows[0]);
+    expect(a).toMatchObject({
+      id: 'a1',
+      name: 'Abbey Road',
+      artist: 'The Beatles',
+      artistId: 'ar1',
+      year: 1969,
+      playCount: 4,
+      version: 'Remaster',
+      musicBrainzId: 'mb-a1',
+      isCompilation: false,
+      explicitStatus: 'clean',
+      genres: ['Rock', 'Folk, World, & Country'],
+      recordLabels: [{ name: 'Apple' }],
+      releaseTypes: ['album'],
+      moods: ['upbeat'],
+    });
+    expect(a.originalReleaseDate).toEqual({ year: 1969, month: 9, day: 26 });
+    expect(a.created).toEqual(new Date('2020-01-01'));
+    // Disc titles are keyed (album_id, disc), so they come back in disc order.
+    expect(a.discTitles).toEqual([
+      { disc: 1, title: 'Side A' },
+      { disc: 2, title: 'Side B' },
+    ]);
+  });
+
+  it('leaves `created` undefined rather than defaulting to the epoch', async () => {
+    // `new Date(0)` is truthy, so the details sheet rendered "Added 1 January 1970"
+    // instead of omitting the row.
+    db().runSync("INSERT INTO albums (id, name, sort_title) VALUES ('a9', 'Undated', 'undated')");
+    const row = (await listAlbums(db(), { limit: 10 })).rows.find((r) => r.id === 'a9');
+    expect(albumListRowToAlbumID3(row!).created).toBeUndefined();
+  });
+
+  it('omits empty array children and keeps per-row hydration correct across a page', async () => {
+    await upsertAlbums(db(), [
+      album('a1', 'Alpha', { genres: ['Rock'] }),
+      album('a2', 'Bravo'),
+    ]);
+    const rows = (await listAlbums(db(), { limit: 10 })).rows;
+    expect(rows.map((r) => r.genres)).toEqual([['Rock'], undefined]);
+    expect(rows.every((r) => r.moods === undefined)).toBe(true);
+  });
+
+  it('albumIdsPresent answers presence without fetching a row', async () => {
+    await upsertAlbums(db(), [album('a1', 'Alpha'), album('a2', 'Bravo')]);
+    expect([...(await albumIdsPresent(db(), ['a1', 'a3']))]).toEqual(['a1']);
+    expect((await albumIdsPresent(db(), [])).size).toBe(0);
+  });
+
   it('accepts object-shaped genres (real OpenSubsonic ItemGenre), not just strings', async () => {
     await upsertAlbums(db(), [
       // real servers return genres as {name}[] even though our type says string[]
@@ -198,20 +280,124 @@ describe('albums repository', () => {
 });
 
 describe('songs repository', () => {
-  it('the lean list projection carries artistId (Go to artist / More by this artist)', async () => {
-    // The options sheet gates both on `artistId`; omitting `artist_id` from the
-    // projection silently hid them everywhere the list feeds — songs list, search,
-    // favourites, album and playlist tracks.
+  it('the list projection carries every field a consumer downstream reads', async () => {
+    // The lean projection dropped most of these, and each omission surfaced as a
+    // consumer silently rendering less: `artistId` gated 'Go to artist' and 'More by
+    // this artist', `suffix`/`bitRate` emptied the details sheets, `genre`/`year`
+    // scrobbled NULL.
     await upsertSongs(db(), [
-      { id: 's1', title: 'Song', artistId: 'ar1', albumId: 'al1', isDir: false } as Child,
+      song('s1', 'Song', {
+        artistId: 'ar1',
+        albumId: 'al1',
+        suffix: 'flac',
+        bitRate: 1411,
+        bitDepth: 16,
+        samplingRate: 44100,
+        size: 12345,
+        contentType: 'audio/flac',
+        genre: 'Rock',
+        year: 1994,
+        playCount: 3,
+        path: 'Artist/Album/01.flac',
+        musicBrainzId: 'mb-s1',
+        comment: 'a note',
+        bpm: 120,
+        replayGain: { trackGain: -6.5 } as Child['replayGain'],
+      }),
     ]);
     const page = await listSongs(db(), { limit: 10 });
-    expect(page.rows[0].artist_id).toBe('ar1');
-    expect(songListRowToChild(page.rows[0]).artistId).toBe('ar1');
+    const c = songListRowToChild(page.rows[0]);
+    expect(c).toMatchObject({
+      id: 's1',
+      artistId: 'ar1',
+      albumId: 'al1',
+      suffix: 'flac',
+      bitRate: 1411,
+      bitDepth: 16,
+      samplingRate: 44100,
+      size: 12345,
+      contentType: 'audio/flac',
+      genre: 'Rock',
+      year: 1994,
+      playCount: 3,
+      path: 'Artist/Album/01.flac',
+      musicBrainzId: 'mb-s1',
+      comment: 'a note',
+      bpm: 120,
+    });
+    // A ReplayGain member the server never sent stays ABSENT — a fabricated 0 would
+    // print as a real 0.0 dB in the track details sheet.
+    expect(c.replayGain?.trackGain).toBe(-6.5);
+    expect(c.replayGain?.albumGain).toBeUndefined();
+  });
+
+  it('never defaults `created` to the epoch (the "Added 1 January 1970" bug)', async () => {
+    await upsertSongs(db(), [song('s1', 'Dated', { created: new Date('2021-03-04') })]);
+    await upsertSongs(db(), [song('s2', 'Undated')]);
+    const rows = (await listSongs(db(), { limit: 10 })).rows;
+    const byId = Object.fromEntries(rows.map((r) => [r.id, songListRowToChild(r)]));
+    expect(byId.s1.created?.getTime()).toBe(new Date('2021-03-04').getTime());
+    expect(byId.s2.created).toBeUndefined();
+  });
+
+  it('round-trips the array children in order, commas and all', async () => {
+    await upsertSongs(db(), [
+      song('s1', 'Track', {
+        // A single genre name that itself contains commas — it must survive as ONE
+        // element, which a joined-string column could not express.
+        genres: ['Folk, World, & Country', 'Rock'],
+        artists: [
+          { id: 'ar2', name: 'Second', albumCount: 0 },
+          { id: 'ar1', name: 'First', albumCount: 0 },
+        ],
+        albumArtists: [{ id: 'aa1', name: 'Album Artist', albumCount: 0 }],
+        contributors: [
+          { role: 'composer', subRole: 'lyrics', artist: { id: 'c1', name: 'Writer', albumCount: 0 } },
+          { role: 'producer' },
+        ],
+        moods: ['mellow', 'brooding'],
+      }),
+    ]);
+    const c = songListRowToChild((await listSongs(db(), { limit: 10 })).rows[0]);
+    expect(c.genres).toEqual(['Folk, World, & Country', 'Rock']);
+    // Server order, not id order.
+    expect(c.artists?.map((a) => a.id)).toEqual(['ar2', 'ar1']);
+    expect(c.albumArtists?.map((a) => a.name)).toEqual(['Album Artist']);
+    expect(c.contributors?.[0]).toEqual({
+      role: 'composer',
+      subRole: 'lyrics',
+      // A reference stub: the child table holds no album count of its own.
+      artist: { id: 'c1', name: 'Writer', albumCount: 0 },
+    });
+    // A contributor with no artist keeps the role and omits the artist entirely.
+    expect(c.contributors?.[1]).toEqual({ role: 'producer', subRole: undefined, artist: undefined });
+    expect(c.moods).toEqual(['mellow', 'brooding']);
+  });
+
+  it('omits an empty array child rather than materialising []', async () => {
+    // Most songs have one genre and no contributors; `getGenreNames` and friends test
+    // `.length > 0`, so absent and empty read identically — absent costs nothing.
+    await upsertSongs(db(), [song('s1', 'Bare')]);
+    const row = (await listSongs(db(), { limit: 10 })).rows[0];
+    expect(row.genres).toBeUndefined();
+    expect(row.contributors).toBeUndefined();
+    expect(songListRowToChild(row).moods).toBeUndefined();
+  });
+
+  it('hydrates children for a whole page in one query per table, keyed per row', async () => {
+    await upsertSongs(db(), [
+      song('s1', 'Alpha', { genres: ['Rock'], moods: ['loud'] }),
+      song('s2', 'Bravo', { genres: ['Jazz', 'Blues'] }),
+      song('s3', 'Charlie'),
+    ]);
+    const rows = (await listSongs(db(), { limit: 10 })).rows;
+    expect(rows.map((r) => r.genres)).toEqual([['Rock'], ['Jazz', 'Blues'], undefined]);
+    expect(rows.map((r) => r.moods)).toEqual([['loud'], undefined, undefined]);
   });
 
 
   it('upserts + A–Z lists + orders album detail by disc/track', async () => {
+    await upsertAlbums(db(), [album('a1', 'Alpha')]);
     await upsertSongs(db(), [
       song('s1', 'Zed', { albumId: 'a1', track: 2, discNumber: 1 }),
       song('s2', 'Ache', { albumId: 'a1', track: 1, discNumber: 1 }),
@@ -219,8 +405,10 @@ describe('songs repository', () => {
     expect(await countSongs(db())).toBe(2);
     const page = await listSongs(db(), { limit: 10 });
     expect(page.rows.map((r) => r.title)).toEqual(['Ache', 'Zed']);
-    const byAlbum = await listSongsByAlbum(db(), 'a1');
-    expect(byAlbum.map((r) => r.title)).toEqual(['Ache', 'Zed']);
+    // Track order comes from the album detail read (disc, then track) — the songs
+    // above are deliberately upserted in the opposite order.
+    const detail = await getAlbumDetail(db(), 'a1');
+    expect(detail?.songs.map((s) => s.title)).toEqual(['Ache', 'Zed']);
   });
 
   it('sorts by artist (compound key) — groups by artist then title, both directions', async () => {
@@ -345,21 +533,42 @@ describe('artists repository', () => {
     expect(back.rows.map((r) => r.name)).toEqual(['ABBA', 'The Beatles']);
   });
 
-  it('maps a lean row to ArtistID3 (fields the row/card render)', async () => {
-    await upsertArtists(db(), [artist('ar1', 'Radiohead', { coverArt: 'c1', albumCount: 9 })]);
+  it('maps a projected row to ArtistID3, roles and all', async () => {
+    await upsertArtists(db(), [
+      artist('ar1', 'Radiohead', {
+        coverArt: 'c1',
+        albumCount: 9,
+        artistImageUrl: 'https://img/ar1',
+        musicBrainzId: 'mb-ar1',
+        sortName: 'Radiohead',
+        roles: ['artist', 'albumartist'],
+      }),
+    ]);
     const page = await listArtists(db(), { limit: 1 });
     const a = artistListRowToArtistID3(page.rows[0]);
-    expect(a).toMatchObject({ id: 'ar1', name: 'Radiohead', coverArt: 'c1', albumCount: 9 });
+    expect(a).toMatchObject({
+      id: 'ar1',
+      name: 'Radiohead',
+      coverArt: 'c1',
+      albumCount: 9,
+      artistImageUrl: 'https://img/ar1',
+      musicBrainzId: 'mb-ar1',
+      sortName: 'Radiohead',
+      roles: ['artist', 'albumartist'],
+    });
   });
 
-  it('listArtistsByIds returns the lean rows for a set of ids (downloaded-artist hydrate)', async () => {
+  it('listArtistsByIds returns full rows for a set of ids (downloaded-artist hydrate)', async () => {
     await upsertArtists(db(), [
-      artist('ar1', 'ABBA', { albumCount: 3 }),
+      artist('ar1', 'ABBA', { albumCount: 3, roles: ['artist'] }),
       artist('ar2', 'Beatles', { albumCount: 12 }),
       artist('ar3', 'Cure'),
     ]);
     const rows = await listArtistsByIds(db(), ['ar1', 'ar3', 'missing']);
     expect(rows.map((r) => r.id).sort()).toEqual(['ar1', 'ar3']);
+    // The by-ids read hydrates children too — it feeds offline search, not a lean list.
+    expect(rows.find((r) => r.id === 'ar1')?.roles).toEqual(['artist']);
+    expect(rows.find((r) => r.id === 'ar3')?.roles).toBeUndefined();
     expect(await listArtistsByIds(db(), [])).toEqual([]);
   });
 });
@@ -367,7 +576,14 @@ describe('artists repository', () => {
 describe('playlists repository', () => {
   it('upserts rows + allowed users, article-stripped A–Z, letter seek, counts', async () => {
     await upsertPlaylists(db(), [
-      playlist('p1', 'Chill', { allowedUser: ['alice', 'bob'], owner: 'me', duration: 120, songCount: 5 }),
+      playlist('p1', 'Chill', {
+        allowedUser: ['alice', 'bob'],
+        owner: 'me',
+        duration: 120,
+        songCount: 5,
+        comment: 'summer mix',
+        public: true,
+      }),
       playlist('p2', 'Bangers'),
       playlist('p3', 'The Best Of'), // "The" stripped → sorts under B (between Bangers and Chill)
     ]);
@@ -379,12 +595,31 @@ describe('playlists repository', () => {
     // article-stripped: bangers, best of, chill
     const page = await listPlaylists(db(), { limit: 10 });
     expect(page.rows.map((r) => r.name)).toEqual(['Bangers', 'The Best Of', 'Chill']);
-    // lean projection carries duration (rendered by the row/card)
+    // the projection carries everything the row/card + detail header render
     const chill = page.rows.find((r) => r.name === 'Chill');
-    expect(playlistListRowToPlaylist(chill!)).toMatchObject({ name: 'Chill', duration: 120, songCount: 5 });
+    expect(playlistListRowToPlaylist(chill!)).toMatchObject({
+      name: 'Chill',
+      duration: 120,
+      songCount: 5,
+      owner: 'me',
+      comment: 'summer mix',
+      public: true,
+      created: new Date('2020-01-01'),
+      changed: new Date('2020-01-01'),
+    });
     // A–Z letter seek on 'c'
     const fromC = await listPlaylists(db(), { letter: 'c', limit: 10 });
     expect(fromC.rows.map((r) => r.name)).toEqual(['Chill']);
+  });
+
+  it('leaves created/changed undefined rather than defaulting to the epoch', async () => {
+    // `new Date(0)` is truthy, so the epoch default rendered as a real "1 January 1970"
+    // rather than being omitted.
+    db().runSync("INSERT INTO playlists (id, name, sort_title) VALUES ('p9', 'Undated', 'undated')");
+    const row = (await listPlaylists(db(), { limit: 10 })).rows.find((r) => r.id === 'p9');
+    const pl = playlistListRowToPlaylist(row!);
+    expect(pl.created).toBeUndefined();
+    expect(pl.changed).toBeUndefined();
   });
 
   it('pages backward and prunes/deletes', async () => {
@@ -471,6 +706,45 @@ describe('search (tiered candidate generation)', () => {
   });
 });
 
+describe('projection totality (the widened reads select every column)', () => {
+  /** The columns a projection string actually names. */
+  const projected = (cols: string): string[] => cols.split(', ').map((c) => c.replace(/"/g, ''));
+
+  /** The table's real columns minus the internal derivatives, which deliberately have
+   *  no API counterpart: the `norm_*`/`dmeta_*` accent-folded search copies, and
+   *  `playlists.detail_*`, whose own read is `listPlaylistDetailState`. */
+  const apiColumns = (table: string): string[] =>
+    db()
+      .getAllSync<{ name: string }>(`PRAGMA table_info(${table})`)
+      .map((c) => c.name)
+      .filter((n) => !/^(norm_|dmeta_|detail_)/.test(n));
+
+  // The failure this guards: a column added to the schema but not to the field list
+  // is `undefined` at runtime with no type error — the bug class that shipped three
+  // times (artistId, sortName, suffix/bitRate).
+  it.each([
+    ['songs', () => SONG_LIST_COLS],
+    ['albums', () => ALBUM_LIST_COLS],
+    ['artists', () => ARTIST_LIST_COLS],
+    ['playlists', () => PLAYLIST_LIST_COLS],
+  ])('%s: the projection names every non-derivative column', (table, cols) => {
+    expect(projected(cols()).sort()).toEqual(apiColumns(table).sort());
+  });
+
+  it('the whole-table browse reads stay NARROW (they have no LIMIT)', async () => {
+    // `listAllAlbums`/`listAllPlaylists` run over every row in the table on the
+    // headless boot path. Widening them would mean ~28 columns plus six child-table
+    // hydrations per row at a ~200k-album target.
+    await upsertAlbums(db(), [album('a1', 'Alpha', { artist: 'Band', genres: ['Rock'] })]);
+    await upsertPlaylists(db(), [playlist('p1', 'Mix', { owner: 'me', comment: 'c' })]);
+
+    const [albumRow] = await listAllAlbums(db());
+    expect(Object.keys(albumRow).sort()).toEqual(['cover_art', 'display_artist', 'id', 'name']);
+    const [playlistRow] = await listAllPlaylists(db());
+    expect(Object.keys(playlistRow).sort()).toEqual(['cover_art', 'id', 'name', 'song_count']);
+  });
+});
+
 describe('schema completeness (all typed metadata captured)', () => {
   it('stores the Child video/folder fields (parent, originalWidth/Height, isDir)', async () => {
     await upsertSongs(db(), [
@@ -531,6 +805,14 @@ describe('deleteAlbumSongsNotIn', () => {
   const song = (id: string, albumId: string): Child =>
     ({ id, title: id, albumId, isDir: false }) as unknown as Child;
 
+  /** Read the album's surviving tracks back the way `getAlbumDetail` does. These cases
+   *  only write song rows, so they assert on membership rather than on an album row. */
+  const songsOfAlbum = (albumId: string): Promise<SongListRow[]> =>
+    db().getAllAsync<SongListRow>(
+      `SELECT ${SONG_LIST_COLS} FROM songs WHERE album_id = ? ORDER BY disc_number, track, sort_title`,
+      [albumId],
+    );
+
   beforeEach(async () => {
     db().runSync('DELETE FROM songs');
     db().runSync('DELETE FROM cached_songs');
@@ -542,10 +824,10 @@ describe('deleteAlbumSongsNotIn', () => {
     await upsertSongs(db(), [song('s9', 'alA')]);
     await deleteAlbumSongsNotIn(db(), 'alA', ['s1', 's9']);
 
-    const remaining = (await listSongsByAlbum(db(), 'alA')).map((s) => s.id).sort();
+    const remaining = (await songsOfAlbum('alA')).map((s) => s.id).sort();
     expect(remaining).toEqual(['s1', 's9']);
     // A different album is untouched.
-    expect((await listSongsByAlbum(db(), 'alB')).map((s) => s.id)).toEqual(['s3']);
+    expect((await songsOfAlbum('alB')).map((s) => s.id)).toEqual(['s3']);
   });
 
   it('never deletes a downloaded track', async () => {
@@ -557,7 +839,7 @@ describe('deleteAlbumSongsNotIn', () => {
     );
     // s2 vanished from the server, but its file is on disk and backs the offline list.
     await deleteAlbumSongsNotIn(db(), 'alA', ['s1']);
-    expect((await listSongsByAlbum(db(), 'alA')).map((s) => s.id).sort()).toEqual(['s1', 's2']);
+    expect((await songsOfAlbum('alA')).map((s) => s.id).sort()).toEqual(['s1', 's2']);
   });
 
   it('is a no-op for songs with a null album_id', async () => {

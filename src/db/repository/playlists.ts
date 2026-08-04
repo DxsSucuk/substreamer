@@ -4,38 +4,69 @@ import type { Playlist } from 'subsonic-api';
 
 import type { InternalDb } from '../client';
 import { playlistAllowedUserRows, playlistRow } from './mappers';
-import { bulkUpsert, countRows, keysetPage, keysetPageBefore, type Cursor, type Page } from './core';
+import {
+  bulkUpsert,
+  colsOf,
+  countRows,
+  keysetPage,
+  keysetPageBefore,
+  type Complete,
+  type Cursor,
+  type Page,
+} from './core';
 
-/** Lean projection for list rendering (the fields PlaylistRow/PlaylistCard read:
- *  name, cover art, song count, duration). `owner` is carried so offline search can
- *  render a downloaded playlist as an album row with its owner on the artist line
- *  (AlbumRow shows `artist ?? unknownArtist`). */
+/** The `playlists` columns every list read projects: the full row MINUS the internal
+ *  derivatives — the `norm_*`/`dmeta_*` search copies and the `detail_*` sync markers,
+ *  which have no API counterpart and have their own read (`listPlaylistDetailState`).
+ *  `sort_title` stays — the keyset cursor and the A–Z scroller read it. */
 export interface PlaylistListRow {
   id: string;
   name: string | null;
+  comment: string | null;
   cover_art: string | null;
-  song_count: number | null;
+  created: number | null;
+  changed: number | null;
   duration: number | null;
   owner: string | null;
+  public: number | null;
+  song_count: number | null;
   sort_title: string | null;
 }
 
-const PLAYLIST_LIST_COLS =
-  '"id", "name", "cover_art", "song_count", "duration", "owner", "sort_title"';
+/** Typed against the row so a stale or misspelled column is a compile error, and the
+ *  COLS string derives from it so the SQL cannot drift from the row type. */
+const PLAYLIST_LIST_FIELDS: readonly (keyof PlaylistListRow)[] = [
+  'id', 'name', 'comment', 'cover_art', 'created', 'changed', 'duration', 'owner',
+  'public', 'song_count', 'sort_title',
+];
 
-/** Adapt a lean row to the `Playlist` shape the row/card components render.
- *  Required scalars get harmless defaults (list rows never show created/changed). */
-export function playlistListRowToPlaylist(r: PlaylistListRow): Playlist {
+/** Exported for `details.ts`, which projects the same columns for playlist detail. */
+export const PLAYLIST_LIST_COLS = colsOf(PLAYLIST_LIST_FIELDS);
+
+/** A `Playlist` built from a projected row: every field the `playlists` table holds is
+ *  present (possibly `undefined`). `allowedUser` is NOT hydrated — it is a permissions
+ *  list no list or detail consumer reads. */
+export type LibraryPlaylist = Complete<
+  Playlist,
+  'changed' | 'comment' | 'coverArt' | 'created' | 'owner' | 'public'
+>;
+
+/** Adapt a projected row to the `Playlist` the row/card components and the playlist
+ *  screen read. `created`/`changed` stay `undefined` when unknown — an epoch-0 default
+ *  is truthy and renders as a real 1970 date. */
+export function playlistListRowToPlaylist(r: PlaylistListRow): LibraryPlaylist {
   return {
     id: r.id,
     name: r.name ?? '',
+    comment: r.comment ?? undefined,
     coverArt: r.cover_art ?? undefined,
     songCount: r.song_count ?? 0,
     duration: r.duration ?? 0,
     owner: r.owner ?? undefined,
-    created: new Date(0),
-    changed: new Date(0),
-  } as Playlist;
+    public: r.public == null ? undefined : Boolean(r.public),
+    created: r.created ? new Date(r.created) : undefined,
+    changed: r.changed ? new Date(r.changed) : undefined,
+  };
 }
 
 /** Keyset cursor for a playlist row (name A–Z). */
@@ -161,17 +192,46 @@ export function listPlaylistsBefore(
 
 export const countPlaylists = (db: InternalDb): Promise<number> => countRows(db, 'playlists');
 
-/** All playlist lean rows, sort-title order — the normalized replacement for reading
- *  `playlistLibraryStore.playlists` (CarPlay/headless browse + voice vocabulary). */
 /** Every playlist id — the normalized replacement for enumerating
  *  `playlistLibraryStore.playlists` (e.g. the full-library download). */
 export const listPlaylistIds = (db: InternalDb): Promise<string[]> =>
   db.getAllAsync<{ id: string }>('SELECT id FROM playlists').then((rows) => rows.map((r) => r.id));
 
-export const listAllPlaylists = (db: InternalDb): Promise<PlaylistListRow[]> =>
-  db.getAllAsync<PlaylistListRow>(`SELECT ${PLAYLIST_LIST_COLS} FROM playlists ORDER BY sort_title, "id"`);
+/** The columns the whole-table browse read projects. Deliberately NOT
+ *  `PlaylistListRow`: `listAllPlaylists` has no LIMIT and runs on the headless boot
+ *  path and in the add-to-playlist sheet, neither of which reads anything past the
+ *  name, artwork and track count. Its own type so a browse row can never be mistaken
+ *  for a full playlist. */
+export interface PlaylistBrowseRow {
+  id: string;
+  name: string | null;
+  cover_art: string | null;
+  song_count: number | null;
+}
 
-/** Lean rows for a set of playlist ids (unordered) — the downloaded set for offline
+const PLAYLIST_BROWSE_COLS = colsOf<keyof PlaylistBrowseRow>([
+  'id', 'name', 'cover_art', 'song_count',
+]);
+
+/** Adapt a browse row for the CarPlay/add-to-playlist consumers. Intentionally
+ *  minimal — the required `Playlist` scalars past `songCount` are placeholders. */
+export const playlistBrowseRowToPlaylist = (r: PlaylistBrowseRow): Playlist => ({
+  id: r.id,
+  name: r.name ?? '',
+  coverArt: r.cover_art ?? undefined,
+  songCount: r.song_count ?? 0,
+  duration: 0,
+});
+
+/** Every playlist as a browse row, sort-title order — the normalized replacement for
+ *  reading `playlistLibraryStore.playlists` (CarPlay/headless browse + voice
+ *  vocabulary, and the add-to-playlist sheet). */
+export const listAllPlaylists = (db: InternalDb): Promise<PlaylistBrowseRow[]> =>
+  db.getAllAsync<PlaylistBrowseRow>(
+    `SELECT ${PLAYLIST_BROWSE_COLS} FROM playlists ORDER BY sort_title, "id"`,
+  );
+
+/** Full rows for a set of playlist ids (unordered) — the downloaded set for offline
  *  search. Ids pass as a JSON array via `json_each`; empty id set → no rows. */
 export const listPlaylistsByIds = (db: InternalDb, ids: string[]): Promise<PlaylistListRow[]> =>
   db.getAllAsync<PlaylistListRow>(

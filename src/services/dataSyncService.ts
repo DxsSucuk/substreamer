@@ -13,7 +13,7 @@ import { favoritesStore } from '../store/favoritesStore';
 import { genreStore } from '../store/genreStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { getDb } from '../store/persistence/db';
-import { countAlbums, listAlbumIds, listAlbumsByIds, upsertAlbums } from '../db/repository/albums';
+import { albumIdsPresent, countAlbums, listAlbumIds, upsertAlbums } from '../db/repository/albums';
 import { deleteAlbumSongsNotIn, upsertSongs } from '../db/repository/songs';
 import { countArtists } from '../db/repository/artists';
 import { connectivityStore } from '../store/connectivityStore';
@@ -28,13 +28,8 @@ import { fireAndForget } from '../utils/fireAndForget';
 import { runPool } from '../utils/promisePool';
 import { minDelay } from '../utils/stringHelpers';
 import {
-  countLibraryAlbumsAsync,
-  sumAlbumSongCountsAsync,
 } from '../store/persistence/libraryAlbumsTable';
 import {
-  bulkUpsertSongs,
-  countSongIndexAsync,
-  getDetailedAlbumIdsAsync,
 } from '../store/persistence/detailTables';
 import { registerMusicCacheOnAlbumReferencedHook } from './musicCacheService';
 import {
@@ -50,16 +45,11 @@ import {
   fetchServerInfo,
   getAlbum,
   getRecentlyAddedAlbums,
-  probeEmptySearch3,
-  searchSongsPage,
   type AlbumID3,
-  type Child,
 } from './subsonicService';
 
 /** Bounded concurrency for the album-detail walk. */
 const WALK_CONCURRENCY = 4;
-/** Skip the walk entirely on tiny libraries — not worth the startup cost. */
-const MIN_LIBRARY_FOR_WALK = 1;
 /**
  * Delay after the JS thread reports idle before kicking off deferred
  * startup prefetches (library lists, genres, detail walk). Empirically
@@ -511,7 +501,7 @@ export async function onAlbumReferenced(albumId: string): Promise<void> {
   const db = getDb();
   if (!db) return;
   if ((await countAlbums(db)) === 0) return; // library not synced yet
-  if ((await listAlbumsByIds(db, [albumId])).length > 0) return; // already known
+  if ((await albumIdsPresent(db, [albumId])).size > 0) return; // already known
   try {
     await ensureCoverArtAuth();
     const album = await getAlbum(albumId);
@@ -718,18 +708,6 @@ async function runDetectChanges(): Promise<{
  * Honors `offlineModeStore.offlineMode` (bails early) and the generation
  * counter on `syncStatusStore` (stale workers exit).
  */
-/** Fast-path song page size. Sync time is dominated by per-song work (network
- *  transfer + JSON parse + insert + in-memory rebuild), NOT round-trips — so a
- *  smaller page costs little time while bounding peak memory to one page of
- *  transient parsed objects (helps on huge libraries) and keeping the progress
- *  counter ticking. Right-sized down from 5k; tune via the remote-sync spike (E). */
-const SEARCH3_SONG_PAGE = 1000;
-/** Infinite-loop backstop for the fast song loop. A sane song cap (roughly a 500k-
- *  album library's worth, well beyond any real library) over the page size, so it
- *  stays correct if the page size changes. */
-const MAX_SONGS = 5_000_000;
-const SONG_PAGE_CEILING = Math.ceil(MAX_SONGS / SEARCH3_SONG_PAGE);
-
 export async function recoverStalledSync(): Promise<void> {
   const status = syncStatusStore.getState();
   const phase = status.detailSyncPhase;
@@ -801,7 +779,7 @@ async function referenceFirstNewRecentlyAdded(recentlyAdded: readonly AlbumID3[]
   if (ids.length === 0) return;
   if ((await countAlbums(db)) === 0) return; // library not synced yet
   // Bounded: check only the (few) recently-added ids against the normalized table.
-  const known = new Set((await listAlbumsByIds(db, ids)).map((r) => r.id));
+  const known = await albumIdsPresent(db, ids);
   for (const album of recentlyAdded) {
     if (!known.has(album.id)) {
       await onAlbumReferenced(album.id);

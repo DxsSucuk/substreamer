@@ -56,7 +56,7 @@ interface AlbumInfoState {
 
 /** The legacy KV blob this data used to live in — read once by the data-model
  *  migration, never written again. */
-export const ALBUM_INFO_KV_KEY = 'substreamer-album-info';
+const ALBUM_INFO_KV_KEY = 'substreamer-album-info';
 
 const entryToRow = (e: AlbumInfoEntry): AlbumInfoRow => ({
   notes: e.albumInfo.notes ?? null,

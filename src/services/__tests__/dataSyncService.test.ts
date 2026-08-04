@@ -102,8 +102,14 @@ jest.mock('../../db/repository/albums', () => ({
   upsertAlbums: (_db: unknown, albums: unknown[]) => mockUpsertAlbums(albums),
   countAlbums: () => Promise.resolve(albumLibraryState.albums.length),
   listAlbumIds: () => Promise.resolve(albumLibraryState.albums.map((a: { id: string }) => a.id)),
-  listAlbumsByIds: (_db: unknown, ids: string[]) =>
-    Promise.resolve(albumLibraryState.albums.filter((a: { id: string }) => ids.includes(a.id))),
+  albumIdsPresent: (_db: unknown, ids: string[]) =>
+    Promise.resolve(
+      new Set(
+        albumLibraryState.albums
+          .map((a: { id: string }) => a.id)
+          .filter((id: string) => ids.includes(id)),
+      ),
+    ),
 }));
 jest.mock('../../db/repository/artists', () => ({
   ...jest.requireActual('../../db/repository/artists'),

@@ -1,5 +1,5 @@
-/** Songs repository: bulk upsert (row + children), keyset A–Z list, by-album, count. */
-import type { Child } from 'subsonic-api';
+/** Songs repository: bulk upsert (row + children), keyset A–Z list, count. */
+import type { ArtistID3, Child, Contributor, MediaType, ReplayGain } from 'subsonic-api';
 
 import type { InternalDb } from '../client';
 import {
@@ -10,66 +10,273 @@ import {
   songMoodRows,
   songRow,
 } from './mappers';
-import { bulkUpsert, countRows, keysetPage, keysetPageBefore, type Cursor, type Page } from './core';
+import {
+  bulkUpsert,
+  colsOf,
+  countRows,
+  fetchChildren,
+  keysetPage,
+  keysetPageBefore,
+  type Complete,
+  type Cursor,
+  type Page,
+} from './core';
 
-/** Lean projection for list rendering (the columns a song row needs). */
-export interface SongListRow {
+/** The `songs` columns every list read projects: the full row MINUS the internal
+ *  search derivatives (`norm_*`/`dmeta_*` — accent-folded copies with no API
+ *  counterpart that roughly double the per-row string payload). `sort_title`/
+ *  `sort_artist` stay: the keyset cursor and the A–Z scroller read them. */
+interface SongColumns {
   id: string;
-  title: string | null;
-  artist: string | null;
-  album: string | null;
   album_id: string | null;
   artist_id: string | null;
-  sort_name: string | null;
-  cover_art: string | null;
-  duration: number | null;
+  title: string | null;
+  album: string | null;
+  artist: string | null;
+  display_artist: string | null;
+  display_album_artist: string | null;
+  display_composer: string | null;
   track: number | null;
   disc_number: number | null;
+  year: number | null;
+  genre: string | null;
+  cover_art: string | null;
+  duration: number | null;
+  size: number | null;
+  content_type: string | null;
+  suffix: string | null;
+  transcoded_content_type: string | null;
+  transcoded_suffix: string | null;
+  bit_rate: number | null;
+  bit_depth: number | null;
+  sampling_rate: number | null;
+  channel_count: number | null;
+  path: string | null;
+  user_rating: number | null;
+  average_rating: number | null;
+  play_count: number | null;
+  created: number | null;
+  starred: number | null;
+  played: string | null;
+  type: string | null;
+  bpm: number | null;
+  comment: string | null;
+  sort_name: string | null;
   sort_title: string | null;
   sort_artist: string | null;
-  starred: number | null;
-  user_rating: number | null;
+  music_brainz_id: string | null;
+  explicit_status: string | null;
+  bookmark_position: number | null;
+  is_video: number | null;
+  is_dir: number | null;
+  parent: string | null;
+  original_width: number | null;
+  original_height: number | null;
+  rg_track_gain: number | null;
+  rg_album_gain: number | null;
+  rg_track_peak: number | null;
+  rg_album_peak: number | null;
+  rg_base_gain: number | null;
+  rg_fallback_gain: number | null;
 }
 
-const SONG_LIST_FIELDS = [
-  'id', 'title', 'artist', 'album', 'album_id', 'artist_id', 'cover_art', 'duration',
-  'track', 'disc_number', 'sort_name', 'sort_title', 'sort_artist', 'starred', 'user_rating',
-] as const;
+/** A projected song row: its columns plus the multi-value children, hydrated one
+ *  batched query per child table per page. Absent (not `[]`) when the song has none. */
+export interface SongListRow extends SongColumns {
+  genres?: string[];
+  artists?: ArtistID3[];
+  albumArtists?: ArtistID3[];
+  contributors?: Contributor[];
+  moods?: string[];
+}
 
-export const SONG_LIST_COLS = SONG_LIST_FIELDS.map((f) => `"${f}"`).join(', ');
+/** Typed against the row so a stale or misspelled column is a compile error, and both
+ *  COLS strings derive from it so the SQL cannot drift from the row type (the failure
+ *  mode was a field on the interface that no query selected — `undefined` at runtime). */
+const SONG_LIST_FIELDS: readonly (keyof SongColumns)[] = [
+  'id', 'album_id', 'artist_id', 'title', 'album', 'artist', 'display_artist',
+  'display_album_artist', 'display_composer', 'track', 'disc_number', 'year', 'genre',
+  'cover_art', 'duration', 'size', 'content_type', 'suffix', 'transcoded_content_type',
+  'transcoded_suffix', 'bit_rate', 'bit_depth', 'sampling_rate', 'channel_count', 'path',
+  'user_rating', 'average_rating', 'play_count', 'created', 'starred', 'played', 'type',
+  'bpm', 'comment', 'sort_name', 'sort_title', 'sort_artist', 'music_brainz_id',
+  'explicit_status', 'bookmark_position', 'is_video', 'is_dir', 'parent', 'original_width',
+  'original_height', 'rg_track_gain', 'rg_album_gain', 'rg_track_peak', 'rg_album_peak',
+  'rg_base_gain', 'rg_fallback_gain',
+];
+
+export const SONG_LIST_COLS = colsOf(SONG_LIST_FIELDS);
 
 /** The same projection qualified to `s`, for queries that JOIN a table sharing column
  *  names with `songs` (`artist_top_songs.artist_id`, `playlist_songs.song_id`) — an
- *  unqualified list is ambiguous there. Derived from one field list so the two cannot
- *  drift apart. */
-export const SONG_LIST_COLS_S = SONG_LIST_FIELDS.map((f) => `s."${f}"`).join(', ');
+ *  unqualified list is ambiguous there. */
+export const SONG_LIST_COLS_S = colsOf(SONG_LIST_FIELDS, 's');
 
 export type SongSortOrder = 'title' | 'artist';
 
-/** Adapt a lean list row to the `Child` shape the row/card components + playback
- *  expect. Only the fields those consumers read are populated; the stream URL is
- *  built from `id` alone, so the lean projection is sufficient to play a track. */
-export function songListRowToChild(r: SongListRow): Child {
+/** A `Child` built from a projected row: every field the `songs` table holds is
+ *  present (possibly `undefined` — the server may not have sent it). Nested
+ *  `ArtistID3`s inside `artists`/`albumArtists`/`contributors` are reference stubs
+ *  (id + name), NOT complete artists. */
+export type LibrarySong = Complete<
+  Child,
+  | 'album' | 'albumId' | 'artist' | 'artistId' | 'averageRating' | 'bitRate' | 'bitDepth'
+  | 'samplingRate' | 'channelCount' | 'bookmarkPosition' | 'contentType' | 'coverArt'
+  | 'created' | 'discNumber' | 'duration' | 'genre' | 'isVideo' | 'originalHeight'
+  | 'originalWidth' | 'parent' | 'path' | 'playCount' | 'size' | 'starred' | 'suffix'
+  | 'track' | 'transcodedContentType' | 'transcodedSuffix' | 'type' | 'userRating' | 'year'
+  | 'played' | 'bpm' | 'comment' | 'sortName' | 'musicBrainzId' | 'genres' | 'artists'
+  | 'displayArtist' | 'albumArtists' | 'displayAlbumArtist' | 'contributors'
+  | 'displayComposer' | 'moods' | 'replayGain' | 'explicitStatus'
+>;
+
+/** Rebuild the nested ReplayGain from the flattened `rg_*` columns. A member the
+ *  server never sent stays ABSENT rather than defaulting to 0 — the track details
+ *  sheet prints any member it finds, and 0.0 dB is a legitimate gain — so a fabricated
+ *  0 would read as real data and defeat any "do we have ReplayGain for this track?"
+ *  check. Absent means absent. */
+function replayGainOf(r: SongColumns): ReplayGain | undefined {
+  const rg: ReplayGain = {};
+  let any = false;
+  if (r.rg_track_gain != null) { rg.trackGain = r.rg_track_gain; any = true; }
+  if (r.rg_album_gain != null) { rg.albumGain = r.rg_album_gain; any = true; }
+  if (r.rg_track_peak != null) { rg.trackPeak = r.rg_track_peak; any = true; }
+  if (r.rg_album_peak != null) { rg.albumPeak = r.rg_album_peak; any = true; }
+  if (r.rg_base_gain != null) { rg.baseGain = r.rg_base_gain; any = true; }
+  if (r.rg_fallback_gain != null) { rg.fallbackGain = r.rg_fallback_gain; any = true; }
+  return any ? rg : undefined;
+}
+
+/** Adapt a projected row to the `Child` every consumer downstream of a list read
+ *  expects — playback, scrobbling, downloads, the player Info tab and the options
+ *  sheet all read fields a lean projection used to drop silently. */
+export function songListRowToChild(r: SongListRow): LibrarySong {
   return {
     id: r.id,
     title: r.title ?? '',
-    artist: r.artist ?? undefined,
     album: r.album ?? undefined,
     albumId: r.album_id ?? undefined,
+    artist: r.artist ?? undefined,
     // Drives 'Go to artist' + 'More by this artist' in the options sheet, which gate
     // on `artistId` — omitting it from the projection silently hid both.
     artistId: r.artist_id ?? undefined,
+    displayArtist: r.display_artist ?? undefined,
+    displayAlbumArtist: r.display_album_artist ?? undefined,
+    displayComposer: r.display_composer ?? undefined,
+    track: r.track ?? undefined,
+    discNumber: r.disc_number ?? undefined,
+    year: r.year ?? undefined,
+    genre: r.genre ?? undefined,
+    coverArt: r.cover_art ?? undefined,
+    duration: r.duration ?? 0,
+    size: r.size ?? undefined,
+    contentType: r.content_type ?? undefined,
+    suffix: r.suffix ?? undefined,
+    transcodedContentType: r.transcoded_content_type ?? undefined,
+    transcodedSuffix: r.transcoded_suffix ?? undefined,
+    bitRate: r.bit_rate ?? undefined,
+    bitDepth: r.bit_depth ?? undefined,
+    samplingRate: r.sampling_rate ?? undefined,
+    channelCount: r.channel_count ?? undefined,
+    path: r.path ?? undefined,
+    userRating: r.user_rating ?? undefined,
+    averageRating: r.average_rating ?? undefined,
+    playCount: r.play_count ?? undefined,
+    created: r.created ? new Date(r.created) : undefined,
+    starred: r.starred ? new Date(r.starred) : undefined,
+    played: r.played ?? undefined,
+    type: (r.type as MediaType | null) ?? undefined,
+    bpm: r.bpm ?? undefined,
+    comment: r.comment ?? undefined,
     // The alphabet scroller recomputes the sort key in JS; without `sortName` it
     // disagrees with the `sort_title` the list was actually ordered by.
     sortName: r.sort_name ?? undefined,
-    coverArt: r.cover_art ?? undefined,
-    duration: r.duration ?? 0,
-    track: r.track ?? undefined,
-    discNumber: r.disc_number ?? undefined,
-    userRating: r.user_rating ?? undefined,
-    starred: r.starred ? new Date(r.starred) : undefined,
-    isDir: false,
-  } as Child;
+    musicBrainzId: r.music_brainz_id ?? undefined,
+    explicitStatus: r.explicit_status ?? undefined,
+    bookmarkPosition: r.bookmark_position ?? undefined,
+    isVideo: r.is_video == null ? undefined : Boolean(r.is_video),
+    isDir: Boolean(r.is_dir),
+    parent: r.parent ?? undefined,
+    originalWidth: r.original_width ?? undefined,
+    originalHeight: r.original_height ?? undefined,
+    replayGain: replayGainOf(r),
+    genres: r.genres,
+    artists: r.artists,
+    albumArtists: r.albumArtists,
+    contributors: r.contributors,
+    moods: r.moods,
+  };
+}
+
+/** Reference stub for a nested artist: the child tables hold id + name only, and
+ *  `ArtistID3.albumCount` is required, so it is fabricated (as `getArtistInfoRow`
+ *  already does for similar artists). Never treat one as a complete artist. */
+const artistStub = (id: string | null, name: string | null): ArtistID3 => ({
+  id: id ?? '',
+  name: name ?? '',
+  albumCount: 0,
+});
+
+/**
+ * Attach the multi-value children to a page of song rows — one batched query per
+ * child table, stitched in JS. Rows with no children keep the key absent rather than
+ * holding an empty array (consumers treat the two identically).
+ */
+export async function hydrateSongRows(db: InternalDb, rows: SongListRow[]): Promise<void> {
+  if (rows.length === 0) return;
+  const ids = rows.map((r) => r.id);
+  const [genres, artists, albumArtists, contributors, moods] = await Promise.all([
+    fetchChildren<{ name: string }, string>(
+      db, { table: 'song_genres', parentCol: 'song_id', columns: ['name'] }, ids, (c) => c.name,
+    ),
+    fetchChildren<{ artist_id: string | null; artist_name: string | null }, ArtistID3>(
+      db,
+      { table: 'song_artists', parentCol: 'song_id', columns: ['artist_id', 'artist_name'] },
+      ids,
+      (c) => artistStub(c.artist_id, c.artist_name),
+    ),
+    fetchChildren<{ artist_id: string | null; artist_name: string | null }, ArtistID3>(
+      db,
+      { table: 'song_album_artists', parentCol: 'song_id', columns: ['artist_id', 'artist_name'] },
+      ids,
+      (c) => artistStub(c.artist_id, c.artist_name),
+    ),
+    fetchChildren<
+      { role: string; sub_role: string | null; artist_id: string | null; artist_name: string | null },
+      Contributor
+    >(
+      db,
+      {
+        table: 'song_contributors',
+        parentCol: 'song_id',
+        columns: ['role', 'sub_role', 'artist_id', 'artist_name'],
+      },
+      ids,
+      (c) => ({
+        role: c.role,
+        subRole: c.sub_role ?? undefined,
+        artist:
+          c.artist_id == null && c.artist_name == null
+            ? undefined
+            : artistStub(c.artist_id, c.artist_name),
+      }),
+    ),
+    fetchChildren<{ mood: string }, string>(
+      db, { table: 'song_moods', parentCol: 'song_id', columns: ['mood'] }, ids, (c) => c.mood,
+    ),
+  ]);
+  for (const row of rows) {
+    const g = genres.get(row.id);
+    if (g) row.genres = g;
+    const a = artists.get(row.id);
+    if (a) row.artists = a;
+    const aa = albumArtists.get(row.id);
+    if (aa) row.albumArtists = aa;
+    const c = contributors.get(row.id);
+    if (c) row.contributors = c;
+    const m = moods.get(row.id);
+    if (m) row.moods = m;
+  }
 }
 
 export function upsertSongs(
@@ -119,7 +326,7 @@ export function songCursorOf(r: SongListRow, sortOrder?: SongSortOrder): Cursor 
 }
 
 /** Full A–Z keyset browse of the song library (the big list that used to OOM). */
-export function listSongs(
+export async function listSongs(
   db: InternalDb,
   opts: {
     cursor?: Cursor | null;
@@ -129,7 +336,7 @@ export function listSongs(
     sortOrder?: SongSortOrder;
   },
 ): Promise<Page<SongListRow>> {
-  return keysetPage<SongListRow>(db, {
+  const page = await keysetPage<SongListRow>(db, {
     table: 'songs',
     columns: SONG_LIST_COLS,
     limit: opts.limit,
@@ -138,13 +345,15 @@ export function listSongs(
     where: opts.starredOnly ? 'starred IS NOT NULL' : undefined,
     ...songSortCols(opts.sortOrder),
   });
+  await hydrateSongRows(db, page.rows);
+  return page;
 }
 
-export function listSongsBefore(
+export async function listSongsBefore(
   db: InternalDb,
   opts: { before: Cursor; limit: number; starredOnly?: boolean; sortOrder?: SongSortOrder },
 ): Promise<{ rows: SongListRow[]; prevCursor: Cursor | null }> {
-  return keysetPageBefore<SongListRow>(db, {
+  const page = await keysetPageBefore<SongListRow>(db, {
     table: 'songs',
     columns: SONG_LIST_COLS,
     limit: opts.limit,
@@ -152,14 +361,9 @@ export function listSongsBefore(
     where: opts.starredOnly ? 'starred IS NOT NULL' : undefined,
     ...songSortCols(opts.sortOrder),
   });
+  await hydrateSongRows(db, page.rows);
+  return page;
 }
-
-/** Album-detail songs: ordered by disc then track. */
-export const listSongsByAlbum = (db: InternalDb, albumId: string): Promise<SongListRow[]> =>
-  db.getAllAsync<SongListRow>(
-    `SELECT ${SONG_LIST_COLS} FROM songs WHERE album_id = ? ORDER BY disc_number, track, sort_title`,
-    [albumId],
-  );
 
 export const countSongs = (db: InternalDb, starredOnly = false): Promise<number> =>
   countRows(db, 'songs', starredOnly ? 'starred IS NOT NULL' : undefined);
@@ -197,11 +401,6 @@ export const bumpSongPlayStats = (db: InternalDb, id: string, played: string): P
     [played, id],
   );
 
-/** Distinct albums that have at least one song — the "albums whose songs we have"
- *  numerator for sync progress (over the total album count). Index-backed by
- *  `idx_songs_album`; derived from the persisted table, so it's resume-stable. */
-export const countSongAlbums = async (db: InternalDb): Promise<number> =>
-  (await db.getFirstAsync<{ n: number }>('SELECT COUNT(DISTINCT album_id) AS n FROM songs'))?.n ?? 0;
 
 /** Distinct album ids that already have songs — the "done" set the basic-path song walk
  *  diffs against the album ids to find which albums still need their songs fetched. */

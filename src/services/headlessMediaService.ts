@@ -44,8 +44,8 @@ import { logVoiceSearch } from './voiceSearchLogger';
 import { scoreCandidate, REJECT } from './searchMatch';
 import { composeHomeAlbumSections } from './homeSectionsService';
 import { getDb } from '../store/persistence/db';
-import { listAllAlbums, albumListRowToAlbumID3 } from '../db/repository/albums';
-import { listAllPlaylists, playlistListRowToPlaylist } from '../db/repository/playlists';
+import { listAllAlbums, albumBrowseRowToAlbumID3 } from '../db/repository/albums';
+import { listAllPlaylists, playlistBrowseRowToPlaylist } from '../db/repository/playlists';
 import { favoritesStore } from '../store/favoritesStore';
 import { albumListsStore } from '../store/albumListsStore';
 import { fetchAlbumDetail, fetchPlaylistDetail } from './detailFetchService';
@@ -96,13 +96,13 @@ function isOffline(): boolean {
  *  in-memory-array behaviour; a per-letter browse is a follow-up memory refinement. */
 async function allAlbums(): Promise<AlbumID3[]> {
   const db = getDb();
-  return db ? (await listAllAlbums(db)).map(albumListRowToAlbumID3) : [];
+  return db ? (await listAllAlbums(db)).map(albumBrowseRowToAlbumID3) : [];
 }
 
 /** All playlists from the normalized `playlists` table. Replaces `playlistLibraryStore`. */
 async function allPlaylists(): Promise<Playlist[]> {
   const db = getDb();
-  return db ? (await listAllPlaylists(db)).map(playlistListRowToPlaylist) : [];
+  return db ? (await listAllPlaylists(db)).map(playlistBrowseRowToPlaylist) : [];
 }
 
 /** Library albums, filtered to downloaded when offline. */

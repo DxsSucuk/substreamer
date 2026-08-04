@@ -133,7 +133,7 @@ export async function playSongNextInQueue(song: Child): Promise<void> {
  */
 export async function addAlbumToQueue(album: AlbumID3): Promise<void> {
   const db = getDb();
-  let songs = db ? (await getAlbumDetail(db, album.id))?.songs : undefined;
+  let songs: Child[] | undefined = db ? (await getAlbumDetail(db, album.id))?.songs : undefined;
   if (!songs?.length) {
     const full = await getAlbum(album.id);
     songs = full?.song;
@@ -148,7 +148,9 @@ export async function addAlbumToQueue(album: AlbumID3): Promise<void> {
  */
 export async function addPlaylistToQueue(playlist: Playlist): Promise<void> {
   const db = getDb();
-  let entries = db ? (await getPlaylistDetail(db, playlist.id))?.entry : undefined;
+  let entries: Child[] | undefined = db
+    ? (await getPlaylistDetail(db, playlist.id))?.entry
+    : undefined;
   if (!entries?.length) {
     const full = await getPlaylist(playlist.id);
     entries = full?.entry;

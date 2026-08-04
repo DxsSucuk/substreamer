@@ -38,7 +38,7 @@ import { musicCacheStore } from '../store/musicCacheStore';
 import { fetchPlaylistDetail } from '../services/detailFetchService';
 import { refreshPlaylistLibrary } from '../services/normalizedLibrarySync';
 import { getDb } from '../store/persistence/db';
-import { listAllPlaylists, playlistListRowToPlaylist } from '../db/repository/playlists';
+import { listAllPlaylists, playlistBrowseRowToPlaylist } from '../db/repository/playlists';
 import { processingOverlayStore, runWithOverlay } from '../store/processingOverlayStore';
 
 import type { Playlist } from '../services/subsonicService';
@@ -124,7 +124,7 @@ export function AddToPlaylistSheet() {
       // Seed with the cached playlists first so the reveal animation measures real
       // content, THEN measure, THEN refresh from the server (dual-writes normalized).
       if (db) {
-        const cached = (await listAllPlaylists(db)).map(playlistListRowToPlaylist);
+        const cached = (await listAllPlaylists(db)).map(playlistBrowseRowToPlaylist);
         if (!alive) return;
         if (cached.length) setPlaylists(cached);
       }
@@ -134,7 +134,7 @@ export function AddToPlaylistSheet() {
       try {
         await refreshPlaylistLibrary();
         if (db && alive) {
-          setPlaylists((await listAllPlaylists(db)).map(playlistListRowToPlaylist));
+          setPlaylists((await listAllPlaylists(db)).map(playlistBrowseRowToPlaylist));
         }
       } catch {
         if (alive) setPlaylistsFetchError(true);

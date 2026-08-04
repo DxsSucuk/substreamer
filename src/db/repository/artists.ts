@@ -5,43 +5,88 @@ import type { InternalDb } from '../client';
 import { artistInfoRow, artistRoleRows, artistRow, artistSimilarRows } from './mappers';
 import {
   bulkUpsert,
+  colsOf,
   countRows,
+  fetchChildren,
   keysetPage,
   keysetPageBefore,
   replaceChildrenSync,
   upsertRowSync,
+  type Complete,
   type Cursor,
   type Page,
 } from './core';
 
-/** Lean projection for list rendering. */
-export interface ArtistListRow {
+/** The `artists` columns every list read projects: the full row MINUS the internal
+ *  search derivatives (`norm_*`/`dmeta_*`). `sort_title` stays — the keyset cursor
+ *  and the A–Z scroller read it. */
+interface ArtistColumns {
   id: string;
   name: string | null;
-  cover_art: string | null;
   sort_name: string | null;
-  album_count: number | null;
   sort_title: string | null;
+  cover_art: string | null;
+  artist_image_url: string | null;
+  album_count: number | null;
   starred: number | null;
   user_rating: number | null;
+  music_brainz_id: string | null;
 }
 
-export const ARTIST_LIST_COLS =
-  '"id", "name", "cover_art", "sort_name", "album_count", "sort_title", "starred", "user_rating"';
+/** A projected artist row: its columns plus `artist_roles`, hydrated one batched
+ *  query per page. Absent (not `[]`) when the artist has no roles. */
+export interface ArtistListRow extends ArtistColumns {
+  roles?: string[];
+}
 
-/** Adapt a lean list row to the `ArtistID3` shape the row/card components render
- *  (they read `coverArt`, not `artistImageUrl`, so the lean projection suffices). */
-export function artistListRowToArtistID3(r: ArtistListRow): ArtistID3 {
+/** Typed against the row so a stale or misspelled column is a compile error, and the
+ *  COLS string derives from it so the SQL cannot drift from the row type. */
+const ARTIST_LIST_FIELDS: readonly (keyof ArtistColumns)[] = [
+  'id', 'name', 'sort_name', 'sort_title', 'cover_art', 'artist_image_url', 'album_count',
+  'starred', 'user_rating', 'music_brainz_id',
+];
+
+export const ARTIST_LIST_COLS = colsOf(ARTIST_LIST_FIELDS);
+
+/** An `ArtistID3` built from a projected row: every field the `artists` table holds
+ *  is present (possibly `undefined`). */
+export type LibraryArtist = Complete<
+  ArtistID3,
+  'artistImageUrl' | 'coverArt' | 'starred' | 'userRating' | 'musicBrainzId' | 'sortName' | 'roles'
+>;
+
+/** Adapt a projected row to the `ArtistID3` the row/card components and the artist
+ *  screen read. */
+export function artistListRowToArtistID3(r: ArtistListRow): LibraryArtist {
   return {
     id: r.id,
     name: r.name ?? '',
     // See songListRowToChild — the scroller's letter must match `sort_title`.
     sortName: r.sort_name ?? undefined,
     coverArt: r.cover_art ?? undefined,
+    artistImageUrl: r.artist_image_url ?? undefined,
     albumCount: r.album_count ?? 0,
     userRating: r.user_rating ?? undefined,
     starred: r.starred ? new Date(r.starred) : undefined,
-  } as ArtistID3;
+    musicBrainzId: r.music_brainz_id ?? undefined,
+    roles: r.roles,
+  };
+}
+
+/** Attach `artist_roles` to a page of artist rows — one batched query, stitched in
+ *  JS. Rows with no roles keep the key absent rather than holding an empty array. */
+export async function hydrateArtistRows(db: InternalDb, rows: ArtistListRow[]): Promise<void> {
+  if (rows.length === 0) return;
+  const roles = await fetchChildren<{ role: string }, string>(
+    db,
+    { table: 'artist_roles', parentCol: 'artist_id', columns: ['role'] },
+    rows.map((r) => r.id),
+    (c) => c.role,
+  );
+  for (const row of rows) {
+    const r = roles.get(row.id);
+    if (r) row.roles = r;
+  }
 }
 
 /** Build the keyset cursor for an artist row — used by the screen to seed a
@@ -136,11 +181,11 @@ export const upsertArtistBio = (
     [id, bio.biography, bio.resolvedMbid, bio.checkedAt],
   );
 
-export function listArtists(
+export async function listArtists(
   db: InternalDb,
   opts: { cursor?: Cursor | null; letter?: string | null; limit: number; starredOnly?: boolean },
 ): Promise<Page<ArtistListRow>> {
-  return keysetPage<ArtistListRow>(db, {
+  const page = await keysetPage<ArtistListRow>(db, {
     table: 'artists',
     sortCol: 'sort_title',
     columns: ARTIST_LIST_COLS,
@@ -150,13 +195,15 @@ export function listArtists(
     where: opts.starredOnly ? 'starred IS NOT NULL' : undefined,
     sortKeyOf: (r) => r.sort_title ?? '',
   });
+  await hydrateArtistRows(db, page.rows);
+  return page;
 }
 
-export function listArtistsBefore(
+export async function listArtistsBefore(
   db: InternalDb,
   opts: { before: Cursor; limit: number; starredOnly?: boolean },
 ): Promise<{ rows: ArtistListRow[]; prevCursor: Cursor | null }> {
-  return keysetPageBefore<ArtistListRow>(db, {
+  const page = await keysetPageBefore<ArtistListRow>(db, {
     table: 'artists',
     sortCol: 'sort_title',
     columns: ARTIST_LIST_COLS,
@@ -165,6 +212,8 @@ export function listArtistsBefore(
     where: opts.starredOnly ? 'starred IS NOT NULL' : undefined,
     sortKeyOf: (r) => r.sort_title ?? '',
   });
+  await hydrateArtistRows(db, page.rows);
+  return page;
 }
 
 /**
@@ -185,14 +234,17 @@ export const deleteArtistsNotIn = (db: InternalDb, keepIds: string[]): Promise<u
 export const countArtists = (db: InternalDb, starredOnly = false): Promise<number> =>
   countRows(db, 'artists', starredOnly ? 'starred IS NOT NULL' : undefined);
 
-/** Lean rows for a set of artist ids (unordered) — the downloaded-artist filter hydrates
+/** Full rows for a set of artist ids (unordered) — the downloaded-artist filter hydrates
  *  the artists who own a downloaded album. Ids pass as a JSON array via `json_each` to
  *  dodge the bound-variable limit; an empty id set returns no rows. */
-export const listArtistsByIds = (db: InternalDb, ids: string[]): Promise<ArtistListRow[]> =>
-  db.getAllAsync<ArtistListRow>(
+export const listArtistsByIds = async (db: InternalDb, ids: string[]): Promise<ArtistListRow[]> => {
+  const rows = await db.getAllAsync<ArtistListRow>(
     `SELECT ${ARTIST_LIST_COLS} FROM artists WHERE id IN (SELECT value FROM json_each(?))`,
     [JSON.stringify(ids)],
   );
+  await hydrateArtistRows(db, rows);
+  return rows;
+};
 
 export const getArtist = (db: InternalDb, id: string): Promise<Record<string, unknown> | null> =>
   db.getFirstAsync('SELECT * FROM artists WHERE id = ?', [id]);

@@ -7,77 +7,76 @@
  *                 (`topSongs` has no normalized table — it's re-fetched on screen open.)
  * Playlist detail = playlist row + `playlist_songs JOIN songs` (position order).
  *
+ * Every entity comes back through the SAME projection + adapter the list reads use, so
+ * detail and list can never disagree about which fields a consumer gets.
+ *
  * Pure reads; a `null` entity means the id isn't synced yet (the caller then does an
  * on-demand server fetch that upserts normalized — Phase A5).
  */
-import type { AlbumID3, ArtistID3, Child, ItemDate, Playlist } from 'subsonic-api';
+import type { ArtistID3 } from 'subsonic-api';
 
 import type { InternalDb } from '../client';
-import { ALBUM_LIST_COLS, albumListRowToAlbumID3, type AlbumListRow } from './albums';
-import { SONG_LIST_COLS, SONG_LIST_COLS_S, songListRowToChild, type SongListRow } from './songs';
+import {
+  ALBUM_LIST_COLS,
+  albumListRowToAlbumID3,
+  hydrateAlbumRows,
+  type AlbumListRow,
+  type LibraryAlbum,
+} from './albums';
+import {
+  ARTIST_LIST_COLS,
+  artistListRowToArtistID3,
+  hydrateArtistRows,
+  type ArtistListRow,
+  type LibraryArtist,
+} from './artists';
+import {
+  PLAYLIST_LIST_COLS,
+  playlistListRowToPlaylist,
+  type LibraryPlaylist,
+  type PlaylistListRow,
+} from './playlists';
+import {
+  SONG_LIST_COLS,
+  SONG_LIST_COLS_S,
+  hydrateSongRows,
+  songListRowToChild,
+  type LibrarySong,
+  type SongListRow,
+} from './songs';
 
 type Row = Record<string, unknown>;
 const str = (v: unknown): string | undefined => (v == null ? undefined : String(v));
 const num = (v: unknown): number | undefined => (v == null ? undefined : Number(v));
-const bool = (v: unknown): boolean | undefined => (v == null ? undefined : Boolean(v));
-const date = (v: unknown): Date | undefined => (v == null ? undefined : new Date(Number(v)));
-const itemDate = (y: unknown, m: unknown, d: unknown): ItemDate | undefined =>
-  y == null && m == null && d == null
-    ? undefined
-    : ({ year: num(y), month: num(m), day: num(d) } as ItemDate);
 
 // ── Album ─────────────────────────────────────────────────────────────────────
 
 export interface AlbumDetail {
-  album: AlbumID3;
-  songs: Child[];
-}
-
-/** Map a full `albums` row (SELECT *) to AlbumID3 (+ merged AlbumInfo columns). */
-function albumRowToAlbumID3(r: Row): AlbumID3 {
-  return {
-    id: String(r.id),
-    name: str(r.name) ?? '',
-    artist: str(r.artist),
-    artistId: str(r.artist_id),
-    displayArtist: str(r.display_artist),
-    coverArt: str(r.cover_art),
-    songCount: num(r.song_count) ?? 0,
-    duration: num(r.duration) ?? 0,
-    playCount: num(r.play_count),
-    created: date(r.created) ?? new Date(0),
-    starred: date(r.starred),
-    year: num(r.year),
-    genre: str(r.genre),
-    played: str(r.played),
-    userRating: num(r.user_rating),
-    version: str(r.version),
-    musicBrainzId: str(r.music_brainz_id),
-    sortName: str(r.sort_name),
-    isCompilation: bool(r.is_compilation),
-    explicitStatus: str(r.explicit_status),
-    originalReleaseDate: itemDate(r.original_release_year, r.original_release_month, r.original_release_day),
-    releaseDate: itemDate(r.release_year, r.release_month, r.release_day),
-  } as AlbumID3;
+  album: LibraryAlbum;
+  songs: LibrarySong[];
 }
 
 /** Album detail: the album row + its songs (disc/track order). `null` if not synced. */
 export async function getAlbumDetail(db: InternalDb, id: string): Promise<AlbumDetail | null> {
-  const row = await db.getFirstAsync<Row>('SELECT * FROM albums WHERE id = ?', [id]);
+  const row = await db.getFirstAsync<AlbumListRow>(
+    `SELECT ${ALBUM_LIST_COLS} FROM albums WHERE id = ?`,
+    [id],
+  );
   if (!row) return null;
   const songRows = await db.getAllAsync<SongListRow>(
     `SELECT ${SONG_LIST_COLS} FROM songs WHERE album_id = ? ORDER BY disc_number, track, sort_title`,
     [id],
   );
-  return { album: albumRowToAlbumID3(row), songs: songRows.map(songListRowToChild) };
+  await Promise.all([hydrateAlbumRows(db, [row]), hydrateSongRows(db, songRows)]);
+  return { album: albumListRowToAlbumID3(row), songs: songRows.map(songListRowToChild) };
 }
 
 // ── Artist ────────────────────────────────────────────────────────────────────
 
 export interface ArtistBase {
-  artist: ArtistID3;
+  artist: LibraryArtist;
   /** The artist's albums (by `albums.artist_id`), newest first. */
-  albums: AlbumID3[];
+  albums: LibraryAlbum[];
 }
 
 export interface ArtistInfoRow {
@@ -101,26 +100,12 @@ export interface ArtistBioRow {
 }
 
 export interface ArtistTopSongsRow {
-  songs: Child[];
+  songs: LibrarySong[];
   retrievedAt: number;
   /** The size REQUESTED, so an artist with fewer tracks is not a permanent miss. */
   listLength: number;
   /** Rows written — compare against `songs.length` to catch a reaped junction. */
   songCount: number;
-}
-
-function artistRowToArtistID3(r: Row): ArtistID3 {
-  return {
-    id: String(r.id),
-    name: str(r.name) ?? '',
-    coverArt: str(r.cover_art),
-    artistImageUrl: str(r.artist_image_url),
-    albumCount: num(r.album_count) ?? 0,
-    starred: date(r.starred),
-    userRating: num(r.user_rating),
-    musicBrainzId: str(r.music_brainz_id),
-    sortName: str(r.sort_name),
-  } as ArtistID3;
 }
 
 /** Base artist: the row + its albums. `null` = we do not hold this artist's albums yet.
@@ -131,14 +116,21 @@ function artistRowToArtistID3(r: Row): ArtistID3 {
  *  is checked STRICTLY: a NULL count is unknown, so it must read as a miss rather than as a
  *  known-empty artist that never fetches. */
 export async function getArtistBase(db: InternalDb, id: string): Promise<ArtistBase | null> {
-  const row = await db.getFirstAsync<Row>('SELECT * FROM artists WHERE id = ?', [id]);
+  const row = await db.getFirstAsync<ArtistListRow>(
+    `SELECT ${ARTIST_LIST_COLS} FROM artists WHERE id = ?`,
+    [id],
+  );
   if (!row) return null;
   const albumRows = await db.getAllAsync<AlbumListRow>(
     `SELECT ${ALBUM_LIST_COLS} FROM albums WHERE artist_id = ? ORDER BY year DESC, sort_title`,
     [id],
   );
-  if (albumRows.length === 0 && num(row.album_count) !== 0) return null;
-  return { artist: artistRowToArtistID3(row), albums: albumRows.map(albumListRowToAlbumID3) };
+  if (albumRows.length === 0 && row.album_count !== 0) return null;
+  await Promise.all([hydrateArtistRows(db, [row]), hydrateAlbumRows(db, albumRows)]);
+  return {
+    artist: artistListRowToArtistID3(row),
+    albums: albumRows.map(albumListRowToAlbumID3),
+  };
 }
 
 /** getArtistInfo2 envelope + its similar artists. `null` = never fetched. */
@@ -165,16 +157,14 @@ export async function getArtistInfoRow(db: InternalDb, id: string): Promise<Arti
     largeImageUrl: str(row.image_url_large),
     similarArtist: similarRows
       .filter((sa) => sa.similar_artist_id != null)
-      .map(
-        (sa) =>
-          ({
-            id: String(sa.similar_artist_id),
-            name: sa.name ?? '',
-            coverArt: str(sa.cover_art),
-            albumCount: num(sa.album_count) ?? 0,
-            userRating: num(sa.user_rating),
-          }) as ArtistID3,
-      ),
+      .map((sa) => ({
+        id: String(sa.similar_artist_id),
+        name: sa.name ?? '',
+        coverArt: sa.cover_art ?? undefined,
+        // A reference stub: `artist_similar` holds no album count of its own.
+        albumCount: sa.album_count ?? 0,
+        userRating: sa.user_rating ?? undefined,
+      })),
     retrievedAt: num(row.retrieved_at) ?? 0,
   };
 }
@@ -210,6 +200,7 @@ export async function getArtistTopSongsRow(
       `WHERE ats.artist_id = ? ORDER BY ats.pos`,
     [id],
   );
+  await hydrateSongRows(db, songRows);
   return {
     songs: songRows.map(songListRowToChild),
     retrievedAt: num(row.retrieved_at) ?? 0,
@@ -221,34 +212,23 @@ export async function getArtistTopSongsRow(
 // ── Playlist ────────────────────────────────────────────────────────────────────
 
 export interface PlaylistDetail {
-  playlist: Playlist;
+  playlist: LibraryPlaylist;
   /** Ordered tracks via `playlist_songs` (position order). */
-  entry: Child[];
-}
-
-function playlistRowToPlaylist(r: Row): Playlist {
-  return {
-    id: String(r.id),
-    name: str(r.name) ?? '',
-    comment: str(r.comment),
-    coverArt: str(r.cover_art),
-    songCount: num(r.song_count) ?? 0,
-    duration: num(r.duration) ?? 0,
-    owner: str(r.owner),
-    public: bool(r.public),
-    created: date(r.created) ?? new Date(0),
-    changed: date(r.changed) ?? new Date(0),
-  } as Playlist;
+  entry: LibrarySong[];
 }
 
 /** Playlist detail: playlist row + ordered tracks. `null` if not synced. */
 export async function getPlaylistDetail(db: InternalDb, id: string): Promise<PlaylistDetail | null> {
-  const row = await db.getFirstAsync<Row>('SELECT * FROM playlists WHERE id = ?', [id]);
+  const row = await db.getFirstAsync<PlaylistListRow>(
+    `SELECT ${PLAYLIST_LIST_COLS} FROM playlists WHERE id = ?`,
+    [id],
+  );
   if (!row) return null;
   const songRows = await db.getAllAsync<SongListRow>(
     `SELECT ${SONG_LIST_COLS_S} FROM songs s JOIN playlist_songs ps ON ps.song_id = s.id ` +
       `WHERE ps.playlist_id = ? ORDER BY ps.position`,
     [id],
   );
-  return { playlist: playlistRowToPlaylist(row), entry: songRows.map(songListRowToChild) };
+  await hydrateSongRows(db, songRows);
+  return { playlist: playlistListRowToPlaylist(row), entry: songRows.map(songListRowToChild) };
 }

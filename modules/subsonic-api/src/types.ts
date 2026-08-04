@@ -2,7 +2,9 @@ export interface AlbumID3 {
 	artist?: string;
 	artistId?: string;
 	coverArt?: string;
-	created: Date;
+	/** Optional in this fork: a locally-read album may not carry it, and defaulting to
+	 *  epoch 0 is truthy — the details sheet then renders "Added 1 January 1970". */
+	created?: Date;
 	duration: number;
 	genre?: string;
 	id: string;
@@ -208,12 +210,12 @@ export interface Contributor {
 }
 
 export interface ReplayGain {
-	trackGain: number;
-	albumGain: number;
-	trackPeak: number;
-	albumPeak: number;
-	baseGain: number;
-	fallbackGain: number;
+	trackGain?: number;
+	albumGain?: number;
+	trackPeak?: number;
+	albumPeak?: number;
+	baseGain?: number;
+	fallbackGain?: number;
 }
 
 export interface Directory {
@@ -322,10 +324,12 @@ export interface NowPlayingEntry extends Child {
 }
 
 export interface Playlist {
-	changed: Date;
+	/** Optional in this fork — see AlbumID3.created. */
+	changed?: Date;
 	comment?: string;
 	coverArt?: string;
-	created: Date;
+	/** Optional in this fork — see AlbumID3.created. */
+	created?: Date;
 	duration: number;
 	id: string;
 	name: string;
