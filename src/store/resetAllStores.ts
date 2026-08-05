@@ -111,7 +111,9 @@ const allStores = [
   moreOptionsStore,
   playbackToastStore,
   playerStore,
-  processingOverlayStore,
+  // processingOverlayStore is deliberately NOT reset here: logout itself runs behind
+  // that overlay, so clearing it mid-teardown would blank the only progress the user
+  // can see. The caller owns showing and hiding it.
   searchStore,
   setRatingStore,
 ];

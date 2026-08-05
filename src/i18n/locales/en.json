@@ -129,6 +129,7 @@
   "testPassed": "Server responded successfully.",
   "testFailed": "Server did not respond: {{error}}",
   "logOut": "Log out",
+  "loggingOut": "Logging out and clearing data…",
   "changePassword": "Change Password",
   "currentPassword": "Current password",
   "newPassword": "New password",

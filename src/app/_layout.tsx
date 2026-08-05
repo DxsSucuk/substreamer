@@ -616,6 +616,10 @@ export default function RootLayout() {
     const onLoginScreen = segments[0] === 'login';
 
     if (!isLoggedIn && !onLoginScreen) {
+      // Drop the history first: `replace` only swaps the top route, so a session that
+      // ends while deep in the app would leave those screens reachable by going back
+      // from login. Same reason the logout handler does this.
+      if (router.canDismiss()) router.dismissAll();
       router.replace('/login');
     } else if (isLoggedIn && onLoginScreen) {
       router.replace('/');
@@ -699,7 +703,10 @@ export default function RootLayout() {
                 contentStyle: { backgroundColor: colors.background },
               }}
             >
-        <Stack.Screen name="login" options={{ headerShown: false }} />
+        {/* `gestureEnabled: false` so login can never be swiped away, whichever path
+            landed on it — the logout handler clears the stack, but the auth-redirect
+            in this file uses a bare `replace` and would otherwise leave history behind. */}
+        <Stack.Screen name="login" options={{ headerShown: false, gestureEnabled: false }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen
           name="album-list"

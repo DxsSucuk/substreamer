@@ -54,8 +54,19 @@ jest.mock('../persistence/musicCacheTables', () => ({
   upsertCachedSong: jest.fn(),
 }));
 
+import type { AlbumID3, Child } from 'subsonic-api';
+
 import { kvStorage, clearKvStorage } from '../persistence';
 import { getDb, __setDbForTests } from '../persistence/db';
+import { ensureNormalizedSchema } from '../../db/createNormalizedTables';
+import {
+  markStarredSongs,
+  replaceFavoriteAlbums,
+  replaceFavoriteArtists,
+  replaceFavoriteSongs,
+} from '../../db/repository/favorites';
+import { upsertSongs } from '../../db/repository/songs';
+import { favoritesStore } from '../favoritesStore';
 import { clearPendingScrobbles } from '../persistence/pendingScrobbleTable';
 import { clearScrobbles } from '../persistence/scrobbleTable';
 import { clearAllMusicCacheRows } from '../persistence/musicCacheTables';
@@ -64,6 +75,7 @@ import { completedScrobbleStore } from '../completedScrobbleStore';
 import { mbidOverrideStore } from '../mbidOverrideStore';
 import { scrobbleExclusionStore } from '../scrobbleExclusionStore';
 import { playerStore } from '../playerStore';
+import { processingOverlayStore } from '../processingOverlayStore';
 import { searchStore } from '../searchStore';
 import { resetAllStores } from '../resetAllStores';
 
@@ -155,5 +167,40 @@ describe('resetAllStores', () => {
 
     expect(playerStore.getState().currentTrack).toBeNull();
     expect(searchStore.getState().query).toBe('');
+  });
+
+  it('wipes the favourites — both the marks and the remainder — so server B starts clean', async () => {
+    // Favourites are server-scoped and live in two places: `starred` marks on the
+    // library rows and the `favorite_*` remainder tables. Logging out of server A and
+    // into server B must leave neither behind.
+    const handle = getDb()!;
+    ensureNormalizedSchema(handle);
+    await upsertSongs(handle, [{ id: 's1', title: 'A', isDir: false } as Child]);
+    await markStarredSongs(handle, [{ id: 's1', starredAt: 500 }]);
+    await replaceFavoriteSongs(handle, [{ id: 'rem1', title: 'B', isDir: false } as Child]);
+    await replaceFavoriteAlbums(handle, [{ id: 'ral1', name: 'C' } as AlbumID3]);
+    await replaceFavoriteArtists(handle, [{ id: 'rar1', name: 'D', albumCount: 0 }]);
+    favoritesStore.setState({ songIds: new Set(['s1', 'rem1']), version: 3 });
+
+    await resetAllStores();
+
+    for (const table of ['songs', 'favorite_songs', 'favorite_albums', 'favorite_artists']) {
+      expect(
+        handle.getFirstSync<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table}`)?.n,
+      ).toBe(0);
+    }
+    expect(favoritesStore.getState().songIds.size).toBe(0);
+  });
+
+  it('leaves the processing overlay alone — logout runs behind it', async () => {
+    // Logout shows the overlay, then calls this. Resetting it here would blank the
+    // only progress the user can see, half way through a multi-second teardown.
+    processingOverlayStore.getState().show('Logging out…');
+
+    await resetAllStores();
+
+    expect(processingOverlayStore.getState().status).toBe('processing');
+    expect(processingOverlayStore.getState().label).toBe('Logging out…');
+    processingOverlayStore.getState().hide();
   });
 });
