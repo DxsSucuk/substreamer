@@ -20,7 +20,7 @@
  */
 import type { AlbumID3, Child, Playlist } from 'subsonic-api';
 
-import { getDb, serializeDbWrite, type BatchCommand, type InternalDb } from './db';
+import { getDb, serializeDbWrite, type BatchCommand } from './db';
 
 export interface CachedSongRow {
   id: string;
@@ -963,13 +963,79 @@ export async function countRealSongRefsForSongsAsync(
 }
 
 /**
- * Atomic "orphan this song iff no REAL holder remains". Runs the real-ref
- * COUNT and the conditional orphan (edge deletes → song delete → derived-holder
- * prune) inside ONE transaction, so no concurrent insert can add a holder
- * between the count and the delete — the TOCTOU race a two-call
- * count-then-orphan would introduce now that these paths are async. Returns
- * whether it orphaned plus the touched/pruned holders so the store can mirror
- * the change in memory.
+ * The guard every destructive statement of the orphan batch carries: true only
+ * while NO real (non-derived) holder still has an edge to this song. It is
+ * uncorrelated with the row being written and none of the statements can change
+ * it — they only ever remove derived holders and this song's own edges — so the
+ * batch's outcome does not depend on evaluation order, and a real holder that
+ * appears between the pre-read and the batch turns the WHOLE batch into a no-op
+ * rather than costing the user a downloaded song.
+ */
+const NO_REAL_HOLDER_SQL = `NOT EXISTS (SELECT 1 FROM cached_item_songs e2
+             JOIN cached_items i2 ON i2.item_id = e2.item_id
+            WHERE e2.song_id = ? AND COALESCE(i2.derived, 0) = 0)`;
+
+/**
+ * The orphan itself, as five self-guarded statements. Every decision is in the
+ * SQL: nothing here reads a value and then branches on it in JS, which is what
+ * makes the whole thing safe to ship as one indivisible batch.
+ *
+ * Statement order 2 → 3 → 4 is load-bearing. The two shifts move a survivor's
+ * tail into negative space already decremented and then back, so the delete must
+ * sit BETWEEN them; running them back to back collides on `PRIMARY KEY
+ * (item_id, position)`. A single `position = position - 1` cannot be used at all
+ * — SQLite updates in rowid order, and the descending rowid `reorderCachedItemSongs`
+ * leaves behind makes it fail that same constraint.
+ */
+const orphanSongCommands = (songId: string): BatchCommand[] => [
+  // 1. Prune derived holders whose ONLY song is this one — FK cascade takes
+  //    their edges (and their component rows) with them.
+  [
+    `DELETE FROM cached_items
+       WHERE COALESCE(derived, 0) = 1
+         AND EXISTS (SELECT 1 FROM cached_item_songs e
+                      WHERE e.item_id = cached_items.item_id AND e.song_id = ?)
+         AND NOT EXISTS (SELECT 1 FROM cached_item_songs x
+                          WHERE x.item_id = cached_items.item_id AND x.song_id <> ?)
+         AND ${NO_REAL_HOLDER_SQL};`,
+    [songId, songId, songId],
+  ],
+  // 2. Every edge ABOVE this song's slot, in its owning item, goes negative and
+  //    already decremented — out of the way of both the old and the new value.
+  [
+    `UPDATE cached_item_songs AS c SET position = -(position - 1)
+       WHERE EXISTS (SELECT 1 FROM cached_item_songs d
+                      WHERE d.item_id = c.item_id AND d.song_id = ? AND d.position < c.position)
+         AND ${NO_REAL_HOLDER_SQL};`,
+    [songId, songId],
+  ],
+  // 3. Drop the edges. By song_id, not by (item_id, position) — there is no edge
+  //    list read in JS, so there is nothing that can go stale.
+  [`DELETE FROM cached_item_songs WHERE song_id = ? AND ${NO_REAL_HOLDER_SQL};`, [songId, songId]],
+  // 4. Bring the shifted tails back up. Keys off the negative marker only
+  //    statement 2 could have written, so it needs no guard of its own.
+  ['UPDATE cached_item_songs SET position = -position WHERE position < 0;', []],
+  // 5. The song row, iff no edge anywhere still points at it.
+  [
+    `DELETE FROM cached_songs WHERE song_id = ?
+       AND NOT EXISTS (SELECT 1 FROM cached_item_songs WHERE cached_item_songs.song_id = ?);`,
+    [songId, songId],
+  ],
+];
+
+/**
+ * "Orphan this song iff no REAL holder remains" — one advisory pre-read, ONE
+ * atomic batch that makes no decision in JS, then post-reads for what actually
+ * happened. Ships as `runAtomicBatchAsync` (one indivisible pool task) rather
+ * than a transaction held across a JS yield.
+ *
+ * `orphaned` is derived from a POST-read, so a rolled-back batch reports false
+ * and the store keeps a song the DB still holds, instead of dropping it.
+ *
+ * `affectedItems` comes from the pre-read and is advisory: it can over-include
+ * (the store's filter is then a harmless no-op) or, if `ensurePartialAlbumEdge`
+ * adds a derived edge inside the ~ms window, under-include — one phantom songId
+ * in memory until the next hydrate.
  */
 export async function orphanSongIfUnreferencedAsync(
   songId: string,
@@ -980,70 +1046,36 @@ export async function orphanSongIfUnreferencedAsync(
   if (db === null) return { orphaned: false, affectedItems, prunedItems };
   let orphaned = false;
   try {
-    await serializeDbWrite(() =>
-      db.withTransactionAsync(async () => {
-        // Count REAL holders (derived = 0) inside the txn. Fail SAFE to the raw
-        // all-edges count if the `derived` column is missing (migration 31 not
-        // yet run) so we degrade to the OLD non-destructive behaviour.
-        let realRefs: number;
-        try {
-          const row = await db.getFirstAsync<{ c: number }>(
-            `SELECT COUNT(*) AS c FROM cached_item_songs e
-               JOIN cached_items i ON e.item_id = i.item_id
-              WHERE e.song_id = ? AND COALESCE(i.derived, 0) = 0;`,
-            [songId],
-          );
-          realRefs = row?.c ?? 0;
-        } catch {
-          const row = await db.getFirstAsync<{ c: number }>(
-            'SELECT COUNT(*) AS c FROM cached_item_songs WHERE song_id = ?;',
-            [songId],
-          );
-          realRefs = row?.c ?? 0;
-        }
-        if (realRefs !== 0) return; // still held by a real holder — keep it
-        orphaned = true;
-        const edges = await db.getAllAsync<{ item_id: string; position: number }>(
-          'SELECT item_id, position FROM cached_item_songs WHERE song_id = ?;',
-          [songId],
-        );
-        const holders = [...new Set(edges.map((e) => e.item_id))];
-        for (const e of edges) {
-          // eslint-disable-next-line no-await-in-loop
-          await db.runAsync(
-            'DELETE FROM cached_item_songs WHERE item_id = ? AND position = ?;',
-            [e.item_id, e.position],
-          );
-          // eslint-disable-next-line no-await-in-loop
-          await db.runAsync(
-            'UPDATE cached_item_songs SET position = position - 1 WHERE item_id = ? AND position > ?;',
-            [e.item_id, e.position],
-          );
-        }
-        await db.runAsync('DELETE FROM cached_songs WHERE song_id = ?;', [songId]);
-        for (const itemId of holders) {
-          affectedItems.push(itemId);
-          // eslint-disable-next-line no-await-in-loop
-          const cnt = await db.getFirstAsync<{ c: number }>(
-            'SELECT COUNT(*) AS c FROM cached_item_songs WHERE item_id = ?;',
-            [itemId],
-          );
-          if ((cnt?.c ?? 0) > 0) continue;
-          // eslint-disable-next-line no-await-in-loop
-          const der = await db.getFirstAsync<{ d: number }>(
-            'SELECT COALESCE(derived, 0) AS d FROM cached_items WHERE item_id = ?;',
-            [itemId],
-          );
-          if ((der?.d ?? 0) === 1) {
-            // eslint-disable-next-line no-await-in-loop
-            await db.runAsync('DELETE FROM cached_items WHERE item_id = ?;', [itemId]);
-            prunedItems.push(itemId);
-          }
-        }
-      }),
+    // Advisory pre-read. A real holder here means the batch would no-op anyway,
+    // so skip it; a real holder appearing after this point is caught by the
+    // batch's own guard. Both directions fail safe — the song survives.
+    const holders = await db.getAllAsync<{ item_id: string; derived: number }>(
+      `SELECT e.item_id AS item_id, COALESCE(i.derived, 0) AS derived
+         FROM cached_item_songs e
+         JOIN cached_items i ON i.item_id = e.item_id
+        WHERE e.song_id = ?;`,
+      [songId],
     );
+    if (holders.some((h) => h.derived === 0)) return { orphaned: false, affectedItems, prunedItems };
+    affectedItems.push(...new Set(holders.map((h) => h.item_id)));
+
+    await serializeDbWrite(() => db.runAtomicBatchAsync(orphanSongCommands(songId)));
+
+    const remaining = await db.getFirstAsync<{ c: number }>(
+      'SELECT COUNT(*) AS c FROM cached_songs WHERE song_id = ?;',
+      [songId],
+    );
+    orphaned = (remaining?.c ?? 1) === 0;
+    if (affectedItems.length > 0) {
+      const survivors = await db.getAllAsync<{ item_id: string }>(
+        'SELECT item_id FROM cached_items WHERE item_id IN (SELECT value FROM json_each(?));',
+        [JSON.stringify(affectedItems)],
+      );
+      const alive = new Set(survivors.map((s) => s.item_id));
+      prunedItems.push(...affectedItems.filter((i) => !alive.has(i)));
+    }
   } catch {
-    /* dropped */
+    /* dropped — `orphaned` stays false, so the store keeps the song */
   }
   return { orphaned, affectedItems, prunedItems };
 }
@@ -1052,24 +1084,11 @@ export async function orphanSongIfUnreferencedAsync(
 /*  cached_songs writes                                                */
 /* ------------------------------------------------------------------ */
 
-// Internal helpers take an already-validated non-null `db` — they're only
-// called from public functions that have done the null check, or from
-// inside a transaction callback. `serializeDbWrite` is NOT re-entrant, so
-// nesting a public helper inside a held transaction would deadlock every
-// subsequent write in the process.
-//
-// The write helpers come in pairs: a `*Commands` builder returning batch tuples
-// (for the callers that ship one atomic `runAtomicBatchAsync`) and a thin runner
-// that executes them in order (for the callers still inside a transaction). One
-// source of truth for the SQL either way.
-
-/** Execute pre-built command tuples in order, on the caller's transaction. */
-async function runCommands(db: InternalDb, commands: readonly BatchCommand[]): Promise<void> {
-  for (const [sql, params] of commands) {
-    // eslint-disable-next-line no-await-in-loop
-    await db.runAsync(sql, params);
-  }
-}
+// Every write is expressed as a `*Commands` builder returning batch tuples, so a
+// caller that owns one row and a caller that composes several (`markDownloadComplete`,
+// `bulkReplace`) ship the same SQL through one `runAtomicBatchAsync`. No helper
+// re-enters a public function: `serializeDbWrite` is NOT re-entrant, and nesting
+// one inside a held write would deadlock every subsequent write in the process.
 
 /**
  * Rebuild the five `cached_song_*` mirrors from a real `Child`. Delete-then-
@@ -1186,12 +1205,6 @@ function cachedSongCommands(song: CachedSongRow, child?: Child): BatchCommand[] 
   return commands;
 }
 
-const upsertCachedSongInternal = (
-  db: InternalDb,
-  song: CachedSongRow,
-  child?: Child,
-): Promise<void> => runCommands(db, cachedSongCommands(song, child));
-
 export async function upsertCachedSong(song: CachedSongRow, child?: Child): Promise<void> {
   const db = getDb();
   if (db === null) return;
@@ -1292,11 +1305,6 @@ function cachedItemCommands(item: Omit<CachedItemRow, 'songIds'>): BatchCommand[
   if (item.playlistMeta) commands.push(cachedPlaylistUpsertCommand(item.itemId, item.playlistMeta));
   return commands;
 }
-
-const upsertCachedItemInternal = (
-  db: InternalDb,
-  item: Omit<CachedItemRow, 'songIds'>,
-): Promise<void> => runCommands(db, cachedItemCommands(item));
 
 export async function upsertCachedItem(item: Omit<CachedItemRow, 'songIds'>): Promise<void> {
   const db = getDb();
@@ -1563,9 +1571,22 @@ export async function reorderDownloadQueue(fromPosition: number, toPosition: num
 /* ------------------------------------------------------------------ */
 
 /**
- * Atomically finalise a download: delete the queue row, upsert the item,
- * upsert all songs, and insert every edge — all in a single transaction so
- * consumers never observe a half-committed state.
+ * Append an edge at the end of an item's list, with the position computed by the
+ * statement itself rather than by a JS counter. Sequential statements in one batch
+ * see each other's inserts, so N of these append 1..N; and because an ignored
+ * duplicate (UNIQUE (item_id, song_id)) leaves MAX(position) untouched, the next
+ * one reuses the slot instead of leaving a hole.
+ */
+const APPEND_CACHED_ITEM_SONG_SQL = `INSERT OR IGNORE INTO cached_item_songs (item_id, position, song_id)
+   VALUES (?, (SELECT COALESCE(MAX(position), 0) + 1 FROM cached_item_songs WHERE item_id = ?), ?);`;
+
+/**
+ * Atomically finalise a download: delete the queue row, upsert the item, upsert
+ * all songs, and append every edge — ONE `runAtomicBatchAsync`, so consumers
+ * never observe a half-committed state and nothing can interleave mid-write.
+ *
+ * Statement order is load-bearing: `cached_items` and `cached_songs` are the FK
+ * parents of `cached_item_songs`, so both must land before any edge.
  *
  * `songs` is a MIX of `Child`-derived rows and rows rebuilt from memory, and
  * nothing on the row distinguishes them — so `childBySongId` is the explicit
@@ -1582,36 +1603,24 @@ export async function markDownloadComplete(
   const db = getDb();
   if (db === null) return;
   try {
-    await serializeDbWrite(() =>
-      db.withTransactionAsync(async () => {
-        await db.runAsync('DELETE FROM download_queue WHERE queue_id = ?;', [queueId]);
-        await upsertCachedItemInternal(db, item);
-        for (const song of songs) {
-          if (!song.id || !song.albumId) continue;
-          // eslint-disable-next-line no-await-in-loop
-          await upsertCachedSongInternal(db, song, childBySongId?.get(song.id));
-        }
-        // Reassign edge positions starting from MAX(position)+1 for this item
-        // so a top-up merging into an existing row doesn't collide with the
-        // existing 1..K edges (the caller's positions are 1-based within the
-        // queue item's `songsJson`, not the cached row).
-        const maxRow = await db.getFirstAsync<{ max_pos: number | null }>(
-          'SELECT MAX(position) AS max_pos FROM cached_item_songs WHERE item_id = ?;',
-          [item.itemId],
-        );
-        let nextPosition = (maxRow?.max_pos ?? 0) + 1;
-        const sortedEdges = [...edges].sort((a, b) => a.position - b.position);
-        for (const edge of sortedEdges) {
-          if (!edge.songId) continue;
-          // eslint-disable-next-line no-await-in-loop
-          await db.runAsync(
-            'INSERT OR IGNORE INTO cached_item_songs (item_id, position, song_id) VALUES (?, ?, ?);',
-            [item.itemId, nextPosition, edge.songId],
-          );
-          nextPosition++;
-        }
-      }),
-    );
+    const commands: BatchCommand[] = [
+      ['DELETE FROM download_queue WHERE queue_id = ?;', [queueId]],
+      ...cachedItemCommands(item),
+    ];
+    for (const song of songs) {
+      if (!song.id || !song.albumId) continue;
+      commands.push(...cachedSongCommands(song, childBySongId?.get(song.id)));
+    }
+    // Edges append after whatever the item already holds, so a top-up merging
+    // into an existing row doesn't collide with its 1..K edges (the caller's
+    // positions are 1-based within the queue item's `songsJson`, not the cached
+    // row). Sorting fixes the statement order, which fixes the resulting order.
+    const sortedEdges = [...edges].sort((a, b) => a.position - b.position);
+    for (const edge of sortedEdges) {
+      if (!edge.songId) continue;
+      commands.push([APPEND_CACHED_ITEM_SONG_SQL, [item.itemId, item.itemId, edge.songId]]);
+    }
+    await serializeDbWrite(() => db.runAtomicBatchAsync(commands));
   } catch {
     /* dropped */
   }

@@ -131,6 +131,17 @@ function makeFakeDb() {
 
   const edgeKey = (item_id: string, position: number) => `${item_id}::${position}`;
 
+  /** `INSERT OR IGNORE` on `cached_item_songs`, which carries BOTH the composite
+   *  PK (item_id, position) and `UNIQUE (item_id, song_id)` — a conflict on
+   *  either is a silent skip. */
+  const insertEdgeOrIgnore = (item_id: string, position: number, song_id: string): void => {
+    if (edges.has(edgeKey(item_id, position))) return;
+    for (const edge of edges.values()) {
+      if (edge.item_id === item_id && edge.song_id === song_id) return;
+    }
+    edges.set(edgeKey(item_id, position), { item_id, position, song_id });
+  };
+
   /** Emulate ON DELETE CASCADE for the given tables. */
   const cascadeAux = (tables: readonly string[], parent: string): void => {
     for (const table of tables) {
@@ -384,12 +395,21 @@ function makeFakeDb() {
     }
 
     // ---- cached_item_songs ----
+    // `markDownloadComplete`'s append form computes the position in SQL:
+    // `VALUES (?, (SELECT COALESCE(MAX(position),0)+1 ...), ?)`, binding the
+    // item id twice. Checked first — it shares the plain form's prefix.
+    if (s.startsWith('INSERT OR IGNORE INTO cached_item_songs') && s.includes('MAX(position)')) {
+      const [item_id, , song_id] = params as [string, string, string];
+      let maxPos = 0;
+      for (const edge of edges.values()) {
+        if (edge.item_id === item_id && edge.position > maxPos) maxPos = edge.position;
+      }
+      insertEdgeOrIgnore(item_id, maxPos + 1, song_id);
+      return;
+    }
     if (s.startsWith('INSERT OR IGNORE INTO cached_item_songs')) {
       const [item_id, position, song_id] = params as [string, number, string];
-      const k = edgeKey(item_id, position);
-      if (!edges.has(k)) {
-        edges.set(k, { item_id, position, song_id });
-      }
+      insertEdgeOrIgnore(item_id, position, song_id);
       return;
     }
     if (s.startsWith('DELETE FROM cached_item_songs WHERE item_id = ? AND position = ?')) {
@@ -650,46 +670,10 @@ function makeFakeDb() {
       if (s === 'SELECT COUNT(*) AS c FROM download_queue;') {
         return { c: queue.size } as T;
       }
-      if (s === 'SELECT COUNT(*) AS c FROM cached_item_songs WHERE song_id = ?;') {
-        const songId = params[0] as string;
-        let c = 0;
-        for (const edge of edges.values()) if (edge.song_id === songId) c += 1;
-        return { c } as T;
-      }
-      // orphanSongIfUnreferencedAsync real-ref count — edges whose holder item
-      // is NOT derived. `COALESCE(i.derived, 0) = 0` treats a legacy/NULL row as REAL.
-      if (
-        s ===
-        'SELECT COUNT(*) AS c FROM cached_item_songs e JOIN cached_items i ON e.item_id = i.item_id WHERE e.song_id = ? AND COALESCE(i.derived, 0) = 0;'
-      ) {
-        const songId = params[0] as string;
-        let c = 0;
-        for (const edge of edges.values()) {
-          if (edge.song_id !== songId) continue;
-          const item = items.get(edge.item_id);
-          // Missing item row can't join → not counted (INNER JOIN semantics).
-          if (!item) continue;
-          if ((item.derived ?? 0) === 0) c += 1;
-        }
-        return { c } as T;
-      }
-      // orphanSongIfUnreferencedAsync — per-holder remaining-edge count (prune check).
-      if (s === 'SELECT COUNT(*) AS c FROM cached_item_songs WHERE item_id = ?;') {
-        const itemId = params[0] as string;
-        let c = 0;
-        for (const edge of edges.values()) if (edge.item_id === itemId) c += 1;
-        return { c } as T;
-      }
-      // orphanSongIfUnreferencedAsync — is this holder derived? NULL coalesces to 0.
-      if (s === 'SELECT COALESCE(derived, 0) AS d FROM cached_items WHERE item_id = ?;') {
-        const itemId = params[0] as string;
-        const item = items.get(itemId);
-        return { d: item ? item.derived ?? 0 : 0 } as T;
-      }
       return undefined;
     },
 
-    getAllSync<T>(rawSql: string, params: readonly unknown[] = []): T[] {
+    getAllSync<T>(rawSql: string): T[] {
       const s = normalize(rawSql);
       if (s.startsWith('SELECT song_id, title, artist, album, album_id, cover_art')) {
         return Array.from(songs.values()) as T[];
@@ -710,13 +694,6 @@ function makeFakeDb() {
         return Array.from(queue.values()).sort(
           (a, b) => a.queue_position - b.queue_position,
         ) as T[];
-      }
-      // orphanSongIfUnreferencedAsync — every (item_id, position) edge for a song.
-      if (s === 'SELECT item_id, position FROM cached_item_songs WHERE song_id = ?;') {
-        const songId = params[0] as string;
-        return Array.from(edges.values())
-          .filter((e) => e.song_id === songId)
-          .map((e) => ({ item_id: e.item_id, position: e.position })) as T[];
       }
       return [];
     },

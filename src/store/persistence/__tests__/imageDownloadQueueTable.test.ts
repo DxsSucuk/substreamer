@@ -52,24 +52,25 @@ function makeFakeDb() {
   const runSync = (rawSql: string, params: readonly unknown[] = []): { changes: number } => {
     const s = rawSql.replace(/\s+/g, ' ').trim();
 
+    // Set-based enqueue: `SELECT value, ?, 'queued', NULL, 0, ?, ? FROM json_each(?)`,
+    // so the ids arrive as a JSON array in the LAST bind, not one row per call.
     if (s.startsWith('INSERT OR IGNORE INTO image_download_queue')) {
-      const [coverArtId, scope, addedAt, cycleId] = params as [
-        string,
-        string,
-        number,
-        string,
-      ];
-      if (rows.has(coverArtId)) return { changes: 0 };
-      rows.set(coverArtId, {
-        cover_art_id: coverArtId,
-        scope,
-        status: 'queued',
-        error: null,
-        attempts: 0,
-        added_at: addedAt,
-        cycle_id: cycleId,
-      });
-      return { changes: 1 };
+      const [scope, addedAt, cycleId, idsJson] = params as [string, number, string, string];
+      let changes = 0;
+      for (const coverArtId of JSON.parse(idsJson) as string[]) {
+        if (rows.has(coverArtId)) continue;
+        rows.set(coverArtId, {
+          cover_art_id: coverArtId,
+          scope,
+          status: 'queued',
+          error: null,
+          attempts: 0,
+          added_at: addedAt,
+          cycle_id: cycleId,
+        });
+        changes++;
+      }
+      return { changes };
     }
 
     if (s.startsWith("UPDATE image_download_queue SET status = 'downloading'")) {

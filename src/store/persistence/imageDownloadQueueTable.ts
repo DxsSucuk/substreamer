@@ -121,10 +121,16 @@ export async function countImageQueueRowsByCycle(cycleId: string): Promise<numbe
 /* ------------------------------------------------------------------ */
 
 /**
- * Insert rows for a batch of cover_art_ids in one transaction, deduping via PK
- * (a cover already queued under ANY scope/status is skipped — matches the music
- * queue's idempotent enqueue semantics). Used when a refresh cycle enumerates
- * hundreds of IDs at once. Returns the count of rows actually inserted.
+ * Insert rows for a batch of cover_art_ids, deduping via PK (a cover already
+ * queued under ANY scope/status is skipped — matches the music queue's
+ * idempotent enqueue semantics). Used when a refresh cycle enumerates hundreds
+ * of IDs at once. Returns the count of rows actually inserted, which
+ * `enqueueImageRefreshCycle` stores as the cycle's banner denominator.
+ *
+ * ONE statement, so it is atomic without a transaction — and the ids ride in as
+ * a JSON array via `json_each`, which also dodges the bound-variable ceiling and
+ * the per-id round trip. `changes` on an `INSERT OR IGNORE … SELECT` counts only
+ * the rows that actually landed, so the returned total stays exact.
  */
 export async function enqueueImagesBulk(
   coverArtIds: readonly string[],
@@ -135,26 +141,19 @@ export async function enqueueImagesBulk(
   const db = getDb();
   if (db === null) return 0;
   if (coverArtIds.length === 0) return 0;
-  let inserted = 0;
   try {
-    await serializeDbWrite(() =>
-      db.withTransactionAsync(async () => {
-        for (const id of coverArtIds) {
-          // eslint-disable-next-line no-await-in-loop
-          const result = await db.runAsync(
-            `INSERT OR IGNORE INTO image_download_queue
-               (cover_art_id, scope, status, error, attempts, added_at, cycle_id)
-               VALUES (?, ?, 'queued', NULL, 0, ?, ?);`,
-            [id, scope, now, cycleId],
-          );
-          if (result.changes > 0) inserted++;
-        }
-      }),
+    const result = await serializeDbWrite(() =>
+      db.runAsync(
+        `INSERT OR IGNORE INTO image_download_queue
+           (cover_art_id, scope, status, error, attempts, added_at, cycle_id)
+           SELECT value, ?, 'queued', NULL, 0, ?, ? FROM json_each(?);`,
+        [scope, now, cycleId, JSON.stringify(coverArtIds)],
+      ),
     );
+    return result.changes;
   } catch {
-    /* swallow — partial inserts roll back via the transaction wrapper */
+    return 0;
   }
-  return inserted;
 }
 
 export async function markImageDownloading(coverArtId: string): Promise<void> {
