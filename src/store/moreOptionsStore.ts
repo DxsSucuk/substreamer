@@ -26,6 +26,9 @@ export type MoreOptionsEntity =
 
 export type MoreOptionsSource =
   | 'default'
+  /** Song rows inside a playlist's detail view. The playlist owns its tracks'
+   *  downloads, so per-song "Remove Download" is hidden there. */
+  | 'playlist-detail'
   | 'player-phone-portrait'
   | 'player-tablet-portrait'
   | 'player-tablet-splitview'

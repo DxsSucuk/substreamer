@@ -14,7 +14,7 @@ import { useSongCoverArt } from '../hooks/useSongCoverArt';
 import { addSongToQueue, toggleStar } from '../services/moreOptionsService';
 import { playTrack } from '../services/playerService';
 import { addToPlaylistStore } from '../store/addToPlaylistStore';
-import { moreOptionsStore } from '../store/moreOptionsStore';
+import { type MoreOptionsSource, moreOptionsStore } from '../store/moreOptionsStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { playerStore } from '../store/playerStore';
 import { formatTrackDuration } from '../utils/formatters';
@@ -40,9 +40,11 @@ export interface TrackRowProps {
   showCoverArt?: boolean;
   /** Show the album name with a disc icon below the artist name. */
   showAlbumName?: boolean;
+  /** Context passed to the options sheet, which varies its actions by origin. */
+  optionsSource?: MoreOptionsSource;
 }
 
-export const TrackRow = memo(function TrackRow({ track, trackNumber, colors, onPress, songs, playlistId, showCoverArt, showAlbumName }: TrackRowProps) {
+export const TrackRow = memo(function TrackRow({ track, trackNumber, colors, onPress, songs, playlistId, showCoverArt, showAlbumName, optionsSource }: TrackRowProps) {
   const { t } = useTranslation();
   const duration = track.duration != null ? formatTrackDuration(track.duration) : '—';
   const starred = useIsStarred('song', track.id);
@@ -75,8 +77,8 @@ export const TrackRow = memo(function TrackRow({ track, trackNumber, colors, onP
   }, [track]);
 
   const handleLongPress = useCallback(() => {
-    moreOptionsStore.getState().show({ type: 'song', item: track });
-  }, [track]);
+    moreOptionsStore.getState().show({ type: 'song', item: track }, optionsSource);
+  }, [track, optionsSource]);
 
   // Deriving the tap action from props (rather than an inline closure passed
   // by the parent) keeps this memoized row from re-rendering on every parent

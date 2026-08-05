@@ -496,6 +496,7 @@ export function PlaylistDetailScreen() {
           playlistId={id}
           showCoverArt
           showAlbumName
+          optionsSource="playlist-detail"
         />
       </View>
     ),

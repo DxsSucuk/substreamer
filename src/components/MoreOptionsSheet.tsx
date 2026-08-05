@@ -243,7 +243,9 @@ export function MoreOptionsSheet() {
   const entity = moreOptionsStore((s) => s.entity);
   const source = moreOptionsStore((s) => s.source);
   const hide = moreOptionsStore((s) => s.hide);
-  const isPlayerSource = source !== 'default';
+  // Explicit list, NOT `!== 'default'`: non-player sources exist now, and treating
+  // them as player sources would swap Add to Queue / Play Next for the queue actions.
+  const isPlayerSource = source.startsWith('player-');
 
   const starType: 'song' | 'album' | 'artist' =
     entity?.type === 'album' || entity?.type === 'artist' ? entity.type : 'song';
@@ -663,8 +665,14 @@ export function MoreOptionsSheet() {
   //   (`song:${id}` item) OR pooled via a downloaded album — removing it
   //   reverts that album to a partial download.
   // - Show "Download Song" when song isn't already pooled AND we're online.
+  // Hidden in a playlist's detail view: the playlist owns its tracks' downloads, so
+  // there is no per-song claim to release there — removing one would have to break the
+  // playlist's own download. Offering it produced a dead end (the badge stayed, because
+  // the song really was still downloaded, but the action did nothing visible).
   const showRemoveSongDownload =
-    entity?.type === 'song' && (hasSongItem || albumContainsSong);
+    entity?.type === 'song' &&
+    source !== 'playlist-detail' &&
+    (hasSongItem || albumContainsSong);
   const showDownloadSong =
     entity?.type === 'song' &&
     !offline &&

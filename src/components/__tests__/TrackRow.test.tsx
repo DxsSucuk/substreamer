@@ -119,9 +119,10 @@ jest.mock('../../store/addToPlaylistStore', () => ({
     getState: () => ({ showSong: jest.fn() }),
   },
 }));
+const mockShowMoreOptions = jest.fn();
 jest.mock('../../store/moreOptionsStore', () => ({
   moreOptionsStore: {
-    getState: () => ({ show: jest.fn() }),
+    getState: () => ({ show: mockShowMoreOptions }),
   },
 }));
 
@@ -151,6 +152,7 @@ beforeEach(() => {
   mockOfflineMode = false;
   mockStarred = false;
   mockRating = 0;
+  mockShowMoreOptions.mockClear();
 });
 
 describe('TrackRow — offline-unplayable disabled state', () => {
@@ -288,5 +290,39 @@ describe('TrackRow — offline-unplayable disabled state', () => {
         v.props.accessibilityState?.disabled === true,
     );
     expect(disabledView).toBeUndefined();
+  });
+});
+
+describe('TrackRow — optionsSource passthrough', () => {
+  it('forwards optionsSource to moreOptionsStore.show on long press', () => {
+    const { getByText } = render(
+      <TrackRow
+        track={track}
+        colors={colors}
+        onPress={jest.fn()}
+        optionsSource="playlist-detail"
+      />,
+    );
+
+    fireEvent(getByText('swipe-row-press'), 'longPress');
+    expect(mockShowMoreOptions).toHaveBeenCalledTimes(1);
+    expect(mockShowMoreOptions).toHaveBeenCalledWith(
+      { type: 'song', item: track },
+      'playlist-detail',
+    );
+  });
+
+  it('passes undefined when no optionsSource is given, so the store default applies', () => {
+    const { getByText } = render(
+      <TrackRow track={track} colors={colors} onPress={jest.fn()} />,
+    );
+
+    fireEvent(getByText('swipe-row-press'), 'longPress');
+    expect(mockShowMoreOptions).toHaveBeenCalledTimes(1);
+    // No source at all — the store's own `= 'default'` parameter default applies.
+    // Asserted on the arg rather than the call shape so `show(entity)` and
+    // `show(entity, undefined)` both count; a leaked source does not.
+    expect(mockShowMoreOptions.mock.calls[0][0]).toEqual({ type: 'song', item: track });
+    expect(mockShowMoreOptions.mock.calls[0][1]).toBeUndefined();
   });
 });
