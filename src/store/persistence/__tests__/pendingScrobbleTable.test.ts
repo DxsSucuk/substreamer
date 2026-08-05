@@ -72,6 +72,9 @@ function makeFakeDb() {
     withTransactionAsync: async (fn: () => Promise<void>) => {
       await fn();
     },
+    runAtomicBatchAsync: async (commands: ReadonlyArray<readonly [string, readonly unknown[]]>) => {
+      for (const [sql, params] of commands) runSync(sql, params);
+    },
   };
 }
 
@@ -296,6 +299,9 @@ describe('pendingScrobbleTable — db throws (error swallow path)', () => {
       return Promise.reject(new Error('boom'));
     },
     withTransactionAsync() {
+      return Promise.reject(new Error('boom'));
+    },
+    runAtomicBatchAsync() {
       return Promise.reject(new Error('boom'));
     },
   };

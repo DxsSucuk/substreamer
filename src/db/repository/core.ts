@@ -1,15 +1,16 @@
 /**
  * Generic repository primitives shared by the entity repositories.
  *
- * Writes: id-sorted, transaction-wrapped, chunked upserts (the evidence-based fix
- * for random-key B-tree write fragmentation — see the design doc). Bulk writes
- * are SYNC within a per-chunk transaction (op-SQLite `executeSync` is fast and
- * this mirrors the existing bulk-sync path), with the CALLER yielding a macrotask
- * between chunks so the JS thread stays responsive.
+ * Writes: id-sorted, chunked upserts (the evidence-based fix for random-key B-tree
+ * write fragmentation — see the design doc). Each chunk ships as ONE atomic
+ * `runAtomicBatchAsync` off the JS thread, with a macrotask yield between chunks so
+ * the JS thread stays responsive.
  *
  * Reads: ASYNC keyset pagination (`WHERE (sort_col, id) > (?, ?)`) off the JS
  * thread — O(log n) seeks, never offset scans, never whole-table loads.
  */
+import { serializeDbWrite } from '@/store/persistence/db';
+
 import type { BatchCommand, InternalDb } from '../client';
 
 export type Value = string | number | null;
@@ -138,16 +139,22 @@ export function replaceChildrenSync(
 }
 
 /**
- * Bulk-upsert entities into `table` + their children, id-sorted, one `executeBatch`
- * per chunk (N statements in AUTOCOMMIT — op-SQLite's `executeBatch` does NOT open a
- * transaction; wrap in `withTransactionAsync` if you need one). Writes are PIPELINED:
- * each chunk's write is kicked off
- * without awaiting, so the NEXT chunk's row derivation (mappers, incl. norm/dmeta —
- * JS-thread work) runs concurrently with the previous chunk's write on op-SQLite's
- * native thread. That hides the write under the derive (the dominant cost), and the
- * macrotask yield between chunks lets the UI paint between derive bursts. Chunks
- * still commit in id-sorted order (op-SQLite runs execute FIFO on one thread) and
- * all writes are awaited before returning. `onProgress(done, total)` fires per chunk.
+ * Bulk-upsert entities into `table` + their children, id-sorted, one ATOMIC batch
+ * per chunk: every parent upsert, child DELETE and child INSERT in the chunk either
+ * all commit or none do, so an entity can never end up with its children deleted and
+ * not reinserted. `serializeDbWrite` is held across the batch AND its rollback, so no
+ * other serialized writer can be captured by the savepoint.
+ *
+ * Writes are PIPELINED: each chunk's write is kicked off without awaiting, so the NEXT
+ * chunk's row derivation (mappers, incl. norm/dmeta — JS-thread work) runs concurrently
+ * with the previous chunk's write on op-SQLite's native thread. That hides the write
+ * under the derive (the dominant cost), and the macrotask yield between chunks lets the
+ * UI paint between derive bursts. The pipelining depends on `runAtomicBatchAsync`
+ * reaching `executeBatch` synchronously and on the macrotask yield below draining the
+ * mutex's microtask. Chunks still commit in id-sorted order (op-SQLite runs one pool
+ * thread, FIFO) and all writes are awaited before returning. A failing chunk rejects at
+ * the NEXT chunk's drain, so the loop stops there and the caller's cursor does not
+ * advance. `onProgress(done, total)` fires per chunk.
  */
 export async function bulkUpsert<T>(
   db: InternalDb,
@@ -186,7 +193,7 @@ export async function bulkUpsert<T>(
     const w0 = nowMs();
     await prevWrite;
     const writeMs = nowMs() - w0;
-    prevWrite = db.runBatchAsync(commands);
+    prevWrite = serializeDbWrite(() => db.runAtomicBatchAsync(commands));
     done += chunk.length;
     chunkProfiler?.({ deriveMs, writeMs, rows: chunk.length });
     onProgress?.(done, sorted.length);

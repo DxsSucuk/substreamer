@@ -158,7 +158,19 @@ export async function resetAllStores(): Promise<void> {
   // different account/server can't see the previous account's library after logout
   // (downloads + blobs are cleared here as well, so a full reset is consistent).
   const normDb = getDb();
-  if (normDb) resetNormalizedSchema(normDb);
+  if (normDb) {
+    // `resetNormalizedSchema` is `withTransactionSync` — its `BEGIN` runs on the JS
+    // thread and hard-fails if a batch's savepoint is open on the pool. Drain the
+    // write chain first, and never let a failure here abort the rest of the teardown
+    // (scrobbles, the music cache, the image cache and the store resets all follow).
+    await serializeDbWrite(() => Promise.resolve());
+    try {
+      resetNormalizedSchema(normDb);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('[resetAllStores] normalized schema reset failed:', e);
+    }
+  }
   // completedScrobbleStore also persists to a per-row table (`scrobble_events`)
   // in its own connection; truncate it here so logged-out state is clean.
   await clearScrobbles();

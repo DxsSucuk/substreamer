@@ -6,7 +6,7 @@
  * Writes become silent no-ops when `getDb()` returns null (DB init failed)
  * — callers don't need to handle exceptions.
  */
-import { getDb, serializeDbWrite } from './db';
+import { getDb, serializeDbWrite, type BatchCommand } from './db';
 import { type PendingScrobble } from '../pendingScrobbleStore';
 
 /* ------------------------------------------------------------------ */
@@ -114,22 +114,18 @@ export async function replaceAllPendingScrobbles(
   const db = getDb();
   if (db === null) return;
   try {
-    await serializeDbWrite(() =>
-      db.withTransactionAsync(async () => {
-        await db.runAsync('DELETE FROM pending_scrobble_events;');
-        const seen = new Set<string>();
-        for (const s of scrobbles) {
-          if (!s?.id || !s.song?.id || !s.song.title) continue;
-          if (seen.has(s.id)) continue;
-          seen.add(s.id);
-          // eslint-disable-next-line no-await-in-loop
-          await db.runAsync(
-            'INSERT OR IGNORE INTO pending_scrobble_events (id, song_json, time) VALUES (?, ?, ?);',
-            [s.id, JSON.stringify(s.song), s.time],
-          );
-        }
-      }),
-    );
+    const seen = new Set<string>();
+    const commands: BatchCommand[] = [['DELETE FROM pending_scrobble_events;', []]];
+    for (const s of scrobbles) {
+      if (!s?.id || !s.song?.id || !s.song.title) continue;
+      if (seen.has(s.id)) continue;
+      seen.add(s.id);
+      commands.push([
+        'INSERT OR IGNORE INTO pending_scrobble_events (id, song_json, time) VALUES (?, ?, ?);',
+        [s.id, JSON.stringify(s.song), s.time],
+      ]);
+    }
+    await serializeDbWrite(() => db.runAtomicBatchAsync(commands));
   } catch {
     /* dropped */
   }

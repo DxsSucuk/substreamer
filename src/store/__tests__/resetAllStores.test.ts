@@ -192,6 +192,28 @@ describe('resetAllStores', () => {
     expect(favoritesStore.getState().songIds.size).toBe(0);
   });
 
+  it('carries on when the normalized-schema reset throws', async () => {
+    // `resetNormalizedSchema` is a `withTransactionSync` DROP-TABLE loop; its `BEGIN`
+    // hard-fails if a batch's savepoint is still open on the connection. Unguarded, that
+    // threw straight out of here and everything after it — scrobbles, the music cache,
+    // the image cache, the store resets — silently never ran, so the next login saw the
+    // previous server's data.
+    const handle = getDb()!;
+    const withTransactionSync = jest
+      .spyOn(handle, 'withTransactionSync')
+      .mockImplementation(() => {
+        throw new Error('cannot start a transaction within a transaction');
+      });
+    playerStore.setState({ currentTrack: { id: 'track-1' } as any });
+
+    await expect(resetAllStores()).resolves.toBeUndefined();
+
+    expect(clearScrobbles).toHaveBeenCalledTimes(1);
+    expect(clearAllMusicCacheRows).toHaveBeenCalledTimes(1);
+    expect(playerStore.getState().currentTrack).toBeNull();
+    withTransactionSync.mockRestore();
+  });
+
   it('leaves the processing overlay alone — logout runs behind it', async () => {
     // Logout shows the overlay, then calls this. Resetting it here would blank the
     // only progress the user can see, half way through a multi-second teardown.

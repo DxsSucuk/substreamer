@@ -20,7 +20,7 @@
  */
 import type { AlbumID3, Child, Playlist } from 'subsonic-api';
 
-import { getDb, serializeDbWrite, type InternalDb } from './db';
+import { getDb, serializeDbWrite, type BatchCommand, type InternalDb } from './db';
 
 export interface CachedSongRow {
   id: string;
@@ -1057,18 +1057,27 @@ export async function orphanSongIfUnreferencedAsync(
 // inside a transaction callback. `serializeDbWrite` is NOT re-entrant, so
 // nesting a public helper inside a held transaction would deadlock every
 // subsequent write in the process.
+//
+// The write helpers come in pairs: a `*Commands` builder returning batch tuples
+// (for the callers that ship one atomic `runAtomicBatchAsync`) and a thin runner
+// that executes them in order (for the callers still inside a transaction). One
+// source of truth for the SQL either way.
+
+/** Execute pre-built command tuples in order, on the caller's transaction. */
+async function runCommands(db: InternalDb, commands: readonly BatchCommand[]): Promise<void> {
+  for (const [sql, params] of commands) {
+    // eslint-disable-next-line no-await-in-loop
+    await db.runAsync(sql, params);
+  }
+}
 
 /**
  * Rebuild the five `cached_song_*` mirrors from a real `Child`. Delete-then-
  * insert because the arrays are positional: a shrunk array must not leave stale
  * tail rows behind.
  */
-async function replaceCachedSongChildrenInternal(
-  db: InternalDb,
-  songId: string,
-  child: Child,
-): Promise<void> {
-  const statements: Array<[string, unknown[]]> = CACHED_SONG_CHILD_TABLES.map((table) => [
+function cachedSongChildCommands(songId: string, child: Child): BatchCommand[] {
+  const statements: BatchCommand[] = CACHED_SONG_CHILD_TABLES.map((table) => [
     `DELETE FROM ${table} WHERE song_id = ?;`,
     [songId],
   ]);
@@ -1104,10 +1113,7 @@ async function replaceCachedSongChildrenInternal(
       [songId, pos, mood],
     ]);
   });
-  for (const [sql, params] of statements) {
-    // eslint-disable-next-line no-await-in-loop
-    await db.runAsync(sql, params);
-  }
+  return statements;
 }
 
 const CACHED_SONG_UPSERT_SQL = `INSERT INTO cached_songs
@@ -1140,12 +1146,8 @@ const CACHED_SONG_UPSERT_SQL = `INSERT INTO cached_songs
  *   from memory carries the `genres` projection alone, so discriminating on row
  *   contents would silently empty the other four.
  */
-async function upsertCachedSongInternal(
-  db: InternalDb,
-  song: CachedSongRow,
-  child?: Child,
-): Promise<void> {
-  // UPSERT rather than `INSERT OR REPLACE` — see `upsertCachedItemInternal`
+function cachedSongCommands(song: CachedSongRow, child?: Child): BatchCommand[] {
+  // UPSERT rather than `INSERT OR REPLACE` — see `cachedItemCommands`
   // for the rationale. Applies the same pattern here for consistency so
   // nobody can accidentally reintroduce the cascade-delete footgun.
   //
@@ -1157,38 +1159,46 @@ async function upsertCachedSongInternal(
   // `meta_v` is never set here; it only re-arms to NULL when this write lands a
   // genuinely NEW envelope, so a migration's backfill gets converted while a
   // re-write of the same envelope can't re-promote it over fresher columns.
-  await db.runAsync(CACHED_SONG_UPSERT_SQL, [
-    song.id,
-    song.title,
-    song.artist ?? null,
-    song.album ?? null,
-    song.albumId,
-    song.coverArt ?? null,
-    song.bytes,
-    song.duration,
-    song.suffix,
-    song.bitRate ?? null,
-    song.bitDepth ?? null,
-    song.samplingRate ?? null,
-    song.formatCapturedAt,
-    song.downloadedAt,
-    song.rawJson ?? null,
-    ...columnParams(PROMOTED_SONG_COLUMNS, song),
-  ]);
-  if (child) await replaceCachedSongChildrenInternal(db, song.id, child);
+  const commands: BatchCommand[] = [
+    [
+      CACHED_SONG_UPSERT_SQL,
+      [
+        song.id,
+        song.title,
+        song.artist ?? null,
+        song.album ?? null,
+        song.albumId,
+        song.coverArt ?? null,
+        song.bytes,
+        song.duration,
+        song.suffix,
+        song.bitRate ?? null,
+        song.bitDepth ?? null,
+        song.samplingRate ?? null,
+        song.formatCapturedAt,
+        song.downloadedAt,
+        song.rawJson ?? null,
+        ...columnParams(PROMOTED_SONG_COLUMNS, song),
+      ],
+    ],
+  ];
+  if (child) commands.push(...cachedSongChildCommands(song.id, child));
+  return commands;
 }
+
+const upsertCachedSongInternal = (
+  db: InternalDb,
+  song: CachedSongRow,
+  child?: Child,
+): Promise<void> => runCommands(db, cachedSongCommands(song, child));
 
 export async function upsertCachedSong(song: CachedSongRow, child?: Child): Promise<void> {
   const db = getDb();
   if (db === null) return;
   if (!song.id || !song.albumId) return;
   try {
-    await serializeDbWrite(() =>
-      // Row + child tables are one unit; a bare row write needs no transaction.
-      child
-        ? db.withTransactionAsync(() => upsertCachedSongInternal(db, song, child))
-        : upsertCachedSongInternal(db, song),
-    );
+    // Row + child tables are one unit — one atomic batch.
+    await serializeDbWrite(() => db.runAtomicBatchAsync(cachedSongCommands(song, child)));
   } catch {
     /* dropped */
   }
@@ -1220,22 +1230,18 @@ const CACHED_PLAYLIST_UPSERT_SQL = `INSERT INTO cached_playlists
 
 // Component rows are written unconditionally from `excluded.*`: the caller only
 // reaches here holding a complete server snapshot, and a write without one skips
-// the component row entirely (see `upsertCachedItemInternal`).
-const upsertCachedAlbumInternal = (
-  db: InternalDb,
-  itemId: string,
-  meta: CachedAlbumMeta,
-): Promise<unknown> =>
-  db.runAsync(CACHED_ALBUM_UPSERT_SQL, [itemId, ...columnParams(ALBUM_META_COLUMNS, meta)]);
+// the component row entirely (see `cachedItemCommands`).
+const cachedAlbumUpsertCommand = (itemId: string, meta: CachedAlbumMeta): BatchCommand => [
+  CACHED_ALBUM_UPSERT_SQL,
+  [itemId, ...columnParams(ALBUM_META_COLUMNS, meta)],
+];
 
-const upsertCachedPlaylistInternal = (
-  db: InternalDb,
-  itemId: string,
-  meta: CachedPlaylistMeta,
-): Promise<unknown> =>
-  db.runAsync(CACHED_PLAYLIST_UPSERT_SQL, [itemId, ...columnParams(PLAYLIST_META_COLUMNS, meta)]);
+const cachedPlaylistUpsertCommand = (itemId: string, meta: CachedPlaylistMeta): BatchCommand => [
+  CACHED_PLAYLIST_UPSERT_SQL,
+  [itemId, ...columnParams(PLAYLIST_META_COLUMNS, meta)],
+];
 
-async function upsertCachedItemInternal(db: InternalDb, item: Omit<CachedItemRow, 'songIds'>): Promise<void> {
+function cachedItemCommands(item: Omit<CachedItemRow, 'songIds'>): BatchCommand[] {
   // UPSERT (not `INSERT OR REPLACE`): SQLite implements `OR REPLACE` as
   // DELETE-then-INSERT, which would fire `ON DELETE CASCADE` on the
   // `cached_item_songs` edges table and silently wipe every edge for this
@@ -1245,7 +1251,8 @@ async function upsertCachedItemInternal(db: InternalDb, item: Omit<CachedItemRow
   // downstream write touched the parent item.
   //
   // `raw_json` / `meta_v` use the same shape as cached_songs — see that helper.
-  await db.runAsync(
+  const commands: BatchCommand[] = [];
+  commands.push([
     `INSERT INTO cached_items
        (item_id, type, name, artist, cover_art_id, expected_song_count,
         parent_album_id, last_sync_at, downloaded_at, raw_json, derived)
@@ -1276,24 +1283,30 @@ async function upsertCachedItemInternal(db: InternalDb, item: Omit<CachedItemRow
       item.rawJson ?? null,
       item.derived ? 1 : 0,
     ],
-  );
+  ]);
   // A write with NO metadata must not touch the component row — never blank real
   // metadata with a row full of NULLs. `downloadItem` builds its item literal
   // from `albums`/`playlists`, which a `forceFullResync` empties and repopulates
   // progressively, so a download completing in that window supplies none.
-  if (item.albumMeta) await upsertCachedAlbumInternal(db, item.itemId, item.albumMeta);
-  if (item.playlistMeta) await upsertCachedPlaylistInternal(db, item.itemId, item.playlistMeta);
+  if (item.albumMeta) commands.push(cachedAlbumUpsertCommand(item.itemId, item.albumMeta));
+  if (item.playlistMeta) commands.push(cachedPlaylistUpsertCommand(item.itemId, item.playlistMeta));
+  return commands;
 }
+
+const upsertCachedItemInternal = (
+  db: InternalDb,
+  item: Omit<CachedItemRow, 'songIds'>,
+): Promise<void> => runCommands(db, cachedItemCommands(item));
 
 export async function upsertCachedItem(item: Omit<CachedItemRow, 'songIds'>): Promise<void> {
   const db = getDb();
   if (db === null) return;
   if (!item.itemId) return;
   try {
-    // Parent + component in ONE transaction: this call is fire-and-forget
+    // Parent + component in ONE atomic batch: this call is fire-and-forget
     // optimistic, and a lost second statement leaves a Downloaded album with no
     // metadata.
-    await serializeDbWrite(() => db.withTransactionAsync(() => upsertCachedItemInternal(db, item)));
+    await serializeDbWrite(() => db.runAtomicBatchAsync(cachedItemCommands(item)));
   } catch {
     /* dropped */
   }
@@ -1342,16 +1355,13 @@ export async function removeCachedItemSong(itemId: string, position: number): Pr
   if (db === null) return;
   try {
     await serializeDbWrite(() =>
-      db.withTransactionAsync(async () => {
-        await db.runAsync(
-          'DELETE FROM cached_item_songs WHERE item_id = ? AND position = ?;',
-          [itemId, position],
-        );
-        await db.runAsync(
+      db.runAtomicBatchAsync([
+        ['DELETE FROM cached_item_songs WHERE item_id = ? AND position = ?;', [itemId, position]],
+        [
           'UPDATE cached_item_songs SET position = position - 1 WHERE item_id = ? AND position > ?;',
           [itemId, position],
-        );
-      }),
+        ],
+      ]),
     );
   } catch {
     /* dropped */
@@ -1372,35 +1382,33 @@ export async function reorderCachedItemSongs(
   if (fromPosition === toPosition) return;
   try {
     await serializeDbWrite(() =>
-      db.withTransactionAsync(async () => {
+      db.runAtomicBatchAsync([
         // Stash the moving row at a sentinel position that can't collide.
-        await db.runAsync(
+        [
           'UPDATE cached_item_songs SET position = -1 WHERE item_id = ? AND position = ?;',
           [itemId, fromPosition],
-        );
-        if (fromPosition < toPosition) {
-          // Shift (fromPosition, toPosition] down by 1.
-          await db.runAsync(
-            `UPDATE cached_item_songs
-               SET position = position - 1
-               WHERE item_id = ? AND position > ? AND position <= ?;`,
-            [itemId, fromPosition, toPosition],
-          );
-        } else {
-          // Shift [toPosition, fromPosition) up by 1.
-          await db.runAsync(
-            `UPDATE cached_item_songs
-               SET position = position + 1
-               WHERE item_id = ? AND position >= ? AND position < ?;`,
-            [itemId, toPosition, fromPosition],
-          );
-        }
+        ],
+        fromPosition < toPosition
+          ? // Shift (fromPosition, toPosition] down by 1.
+            [
+              `UPDATE cached_item_songs
+                 SET position = position - 1
+                 WHERE item_id = ? AND position > ? AND position <= ?;`,
+              [itemId, fromPosition, toPosition],
+            ]
+          : // Shift [toPosition, fromPosition) up by 1.
+            [
+              `UPDATE cached_item_songs
+                 SET position = position + 1
+                 WHERE item_id = ? AND position >= ? AND position < ?;`,
+              [itemId, toPosition, fromPosition],
+            ],
         // Drop the moving row into its final slot.
-        await db.runAsync(
+        [
           'UPDATE cached_item_songs SET position = ? WHERE item_id = ? AND position = -1;',
           [toPosition, itemId],
-        );
-      }),
+        ],
+      ]),
     );
   } catch {
     /* dropped */
@@ -1411,12 +1419,12 @@ export async function reorderCachedItemSongs(
 /*  download_queue writes                                              */
 /* ------------------------------------------------------------------ */
 
-async function insertDownloadQueueItemInternal(db: InternalDb, item: DownloadQueueRow): Promise<void> {
+function downloadQueueUpsertCommand(item: DownloadQueueRow): BatchCommand {
   // `download_queue` has no FK children so `INSERT OR REPLACE` is safe here,
   // but we use UPSERT anyway for consistency with the other tables — one
   // pattern everywhere means nobody introduces a regression by copying the
   // wrong line later.
-  await db.runAsync(
+  return [
     `INSERT INTO download_queue
        (queue_id, item_id, type, name, artist, cover_art_id, status,
         total_songs, completed_songs, error, added_at, queue_position,
@@ -1450,7 +1458,7 @@ async function insertDownloadQueueItemInternal(db: InternalDb, item: DownloadQue
       item.queuePosition,
       item.songsJson,
     ],
-  );
+  ];
 }
 
 export async function insertDownloadQueueItem(item: DownloadQueueRow): Promise<void> {
@@ -1458,7 +1466,8 @@ export async function insertDownloadQueueItem(item: DownloadQueueRow): Promise<v
   if (db === null) return;
   if (!item.queueId) return;
   try {
-    await serializeDbWrite(() => insertDownloadQueueItemInternal(db, item));
+    const [sql, params] = downloadQueueUpsertCommand(item);
+    await serializeDbWrite(() => db.runAsync(sql, params));
   } catch {
     /* dropped */
   }
@@ -1514,8 +1523,7 @@ export async function updateDownloadQueueItem(
 
 /**
  * Move a queue row from one position to another. Shifts all affected rows'
- * positions inside a single transaction so the contiguous ordering is
- * preserved.
+ * positions in ONE atomic batch so the contiguous ordering is preserved.
  */
 export async function reorderDownloadQueue(fromPosition: number, toPosition: number): Promise<void> {
   const db = getDb();
@@ -1523,32 +1531,27 @@ export async function reorderDownloadQueue(fromPosition: number, toPosition: num
   if (fromPosition === toPosition) return;
   try {
     await serializeDbWrite(() =>
-      db.withTransactionAsync(async () => {
+      db.runAtomicBatchAsync([
         // Stash the moving row at a sentinel position.
-        await db.runAsync(
-          'UPDATE download_queue SET queue_position = -1 WHERE queue_position = ?;',
-          [fromPosition],
-        );
-        if (fromPosition < toPosition) {
-          await db.runAsync(
-            `UPDATE download_queue
-               SET queue_position = queue_position - 1
-               WHERE queue_position > ? AND queue_position <= ?;`,
-            [fromPosition, toPosition],
-          );
-        } else {
-          await db.runAsync(
-            `UPDATE download_queue
-               SET queue_position = queue_position + 1
-               WHERE queue_position >= ? AND queue_position < ?;`,
-            [toPosition, fromPosition],
-          );
-        }
-        await db.runAsync(
+        ['UPDATE download_queue SET queue_position = -1 WHERE queue_position = ?;', [fromPosition]],
+        fromPosition < toPosition
+          ? [
+              `UPDATE download_queue
+                 SET queue_position = queue_position - 1
+                 WHERE queue_position > ? AND queue_position <= ?;`,
+              [fromPosition, toPosition],
+            ]
+          : [
+              `UPDATE download_queue
+                 SET queue_position = queue_position + 1
+                 WHERE queue_position >= ? AND queue_position < ?;`,
+              [toPosition, fromPosition],
+            ],
+        [
           'UPDATE download_queue SET queue_position = ? WHERE queue_position = -1;',
           [toPosition],
-        );
-      }),
+        ],
+      ]),
     );
   } catch {
     /* dropped */
@@ -1615,7 +1618,7 @@ export async function markDownloadComplete(
 }
 
 /**
- * Wipe the download tables and replace their contents in a single transaction.
+ * Wipe the download tables and replace their contents in ONE atomic batch.
  * Used by migration task #14 after parsing the v1 blob.
  */
 export async function bulkReplace(params: {
@@ -1627,55 +1630,44 @@ export async function bulkReplace(params: {
   const db = getDb();
   if (db === null) return;
   try {
-    await serializeDbWrite(() =>
-      db.withTransactionAsync(async () => {
-        await deleteAllDependentRows(db);
-        await db.runAsync('DELETE FROM cached_item_songs;');
-        await db.runAsync('DELETE FROM download_queue;');
-        await db.runAsync('DELETE FROM cached_items;');
-        await db.runAsync('DELETE FROM cached_songs;');
-
-        for (const song of params.songs) {
-          if (!song.id || !song.albumId) continue;
-          // eslint-disable-next-line no-await-in-loop
-          await upsertCachedSongInternal(db, song);
-        }
-
-        for (const item of params.items) {
-          if (!item.itemId) continue;
-          // eslint-disable-next-line no-await-in-loop
-          await upsertCachedItemInternal(db, item);
-        }
-
-        for (const edge of params.edges) {
-          if (!edge.itemId || !edge.songId) continue;
-          // eslint-disable-next-line no-await-in-loop
-          await db.runAsync(
-            'INSERT OR IGNORE INTO cached_item_songs (item_id, position, song_id) VALUES (?, ?, ?);',
-            [edge.itemId, edge.position, edge.songId],
-          );
-        }
-
-        for (const q of params.queue) {
-          if (!q.queueId) continue;
-          // eslint-disable-next-line no-await-in-loop
-          await insertDownloadQueueItemInternal(db, q);
-        }
-      }),
-    );
+    const commands = truncateMusicCacheCommands();
+    for (const song of params.songs) {
+      if (!song.id || !song.albumId) continue;
+      commands.push(...cachedSongCommands(song));
+    }
+    for (const item of params.items) {
+      if (!item.itemId) continue;
+      commands.push(...cachedItemCommands(item));
+    }
+    for (const edge of params.edges) {
+      if (!edge.itemId || !edge.songId) continue;
+      commands.push([
+        'INSERT OR IGNORE INTO cached_item_songs (item_id, position, song_id) VALUES (?, ?, ?);',
+        [edge.itemId, edge.position, edge.songId],
+      ]);
+    }
+    for (const q of params.queue) {
+      if (!q.queueId) continue;
+      commands.push(downloadQueueUpsertCommand(q));
+    }
+    await serializeDbWrite(() => db.runAtomicBatchAsync(commands));
   } catch {
     /* dropped */
   }
 }
 
-/** The child + component tables, emptied before their parents so the truncation
- *  works regardless of PRAGMA state rather than relying on ON DELETE CASCADE. */
-async function deleteAllDependentRows(db: InternalDb): Promise<void> {
-  for (const table of [...CACHED_SONG_CHILD_TABLES, 'cached_albums', 'cached_playlists']) {
-    // eslint-disable-next-line no-await-in-loop
-    await db.runAsync(`DELETE FROM ${table};`);
-  }
-}
+/** Empty every download table, children + component rows before their parents so the
+ *  truncation works regardless of PRAGMA state rather than relying on ON DELETE CASCADE. */
+const truncateMusicCacheCommands = (): BatchCommand[] =>
+  [
+    ...CACHED_SONG_CHILD_TABLES,
+    'cached_albums',
+    'cached_playlists',
+    'cached_item_songs',
+    'download_queue',
+    'cached_items',
+    'cached_songs',
+  ].map((table): BatchCommand => [`DELETE FROM ${table};`, []]);
 
 /**
  * Truncate the download tables. Used by `resetAllStores` on logout / server
@@ -1686,15 +1678,7 @@ export async function clearAllMusicCacheRows(): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    await serializeDbWrite(() =>
-      db.withTransactionAsync(async () => {
-        await deleteAllDependentRows(db);
-        await db.runAsync('DELETE FROM cached_item_songs;');
-        await db.runAsync('DELETE FROM download_queue;');
-        await db.runAsync('DELETE FROM cached_items;');
-        await db.runAsync('DELETE FROM cached_songs;');
-      }),
-    );
+    await serializeDbWrite(() => db.runAtomicBatchAsync(truncateMusicCacheCommands()));
   } catch {
     /* dropped */
   }
@@ -1726,37 +1710,35 @@ async function runLegacyMetadataConversion(): Promise<void> {
           WHERE meta_v IS NULL AND raw_json IS NOT NULL LIMIT ${CONVERT_CHUNK};`,
       );
       if (rows.length === 0) break;
+      const commands: BatchCommand[] = [];
+      for (const row of rows) {
+        let child: Child | null = null;
+        try {
+          child = JSON.parse(row.raw_json) as Child;
+        } catch {
+          /* corrupt envelope — stamped below and read from columns instead */
+        }
+        // EVERY row in the chunk is stamped, parseable or not: one left in
+        // the work set would spin this LIMIT loop forever on the boot path.
+        if (child) {
+          commands.push([
+            CONVERT_SONG_UPDATE_SQL,
+            [
+              ...columnParams(PROMOTED_SONG_COLUMNS, promotedSongFieldsFromChild(child)),
+              META_V,
+              row.song_id,
+            ],
+          ]);
+          commands.push(...cachedSongChildCommands(row.song_id, child));
+        } else {
+          commands.push([
+            'UPDATE cached_songs SET meta_v = ? WHERE song_id = ?;',
+            [META_V, row.song_id],
+          ]);
+        }
+      }
       // eslint-disable-next-line no-await-in-loop
-      await serializeDbWrite(() =>
-        db.withTransactionAsync(async () => {
-          for (const row of rows) {
-            let child: Child | null = null;
-            try {
-              child = JSON.parse(row.raw_json) as Child;
-            } catch {
-              /* corrupt envelope — stamped below and read from columns instead */
-            }
-            // EVERY row in the chunk is stamped, parseable or not: one left in
-            // the work set would spin this LIMIT loop forever on the boot path.
-            if (child) {
-              // eslint-disable-next-line no-await-in-loop
-              await db.runAsync(CONVERT_SONG_UPDATE_SQL, [
-                ...columnParams(PROMOTED_SONG_COLUMNS, promotedSongFieldsFromChild(child)),
-                META_V,
-                row.song_id,
-              ]);
-              // eslint-disable-next-line no-await-in-loop
-              await replaceCachedSongChildrenInternal(db, row.song_id, child);
-            } else {
-              // eslint-disable-next-line no-await-in-loop
-              await db.runAsync('UPDATE cached_songs SET meta_v = ? WHERE song_id = ?;', [
-                META_V,
-                row.song_id,
-              ]);
-            }
-          }
-        }),
-      );
+      await serializeDbWrite(() => db.runAtomicBatchAsync(commands));
       // eslint-disable-next-line no-await-in-loop
       await yieldMacrotask();
     }
@@ -1768,39 +1750,30 @@ async function runLegacyMetadataConversion(): Promise<void> {
           WHERE meta_v IS NULL AND raw_json IS NOT NULL LIMIT ${CONVERT_CHUNK};`,
       );
       if (rows.length === 0) break;
+      const commands: BatchCommand[] = [];
+      for (const row of rows) {
+        let envelope: unknown = null;
+        try {
+          envelope = JSON.parse(row.raw_json);
+        } catch {
+          /* corrupt envelope — stamped below, leaving no component row */
+        }
+        if (envelope && row.type === 'album') {
+          commands.push(
+            cachedAlbumUpsertCommand(row.item_id, albumMetaFromAlbumID3(envelope as AlbumID3)),
+          );
+        } else if (envelope && row.type === 'playlist') {
+          commands.push(
+            cachedPlaylistUpsertCommand(row.item_id, playlistMetaFromPlaylist(envelope as Playlist)),
+          );
+        }
+        commands.push([
+          'UPDATE cached_items SET meta_v = ? WHERE item_id = ?;',
+          [META_V, row.item_id],
+        ]);
+      }
       // eslint-disable-next-line no-await-in-loop
-      await serializeDbWrite(() =>
-        db.withTransactionAsync(async () => {
-          for (const row of rows) {
-            let envelope: unknown = null;
-            try {
-              envelope = JSON.parse(row.raw_json);
-            } catch {
-              /* corrupt envelope — stamped below, leaving no component row */
-            }
-            if (envelope && row.type === 'album') {
-              // eslint-disable-next-line no-await-in-loop
-              await upsertCachedAlbumInternal(
-                db,
-                row.item_id,
-                albumMetaFromAlbumID3(envelope as AlbumID3),
-              );
-            } else if (envelope && row.type === 'playlist') {
-              // eslint-disable-next-line no-await-in-loop
-              await upsertCachedPlaylistInternal(
-                db,
-                row.item_id,
-                playlistMetaFromPlaylist(envelope as Playlist),
-              );
-            }
-            // eslint-disable-next-line no-await-in-loop
-            await db.runAsync('UPDATE cached_items SET meta_v = ? WHERE item_id = ?;', [
-              META_V,
-              row.item_id,
-            ]);
-          }
-        }),
-      );
+      await serializeDbWrite(() => db.runAtomicBatchAsync(commands));
       // eslint-disable-next-line no-await-in-loop
       await yieldMacrotask();
     }

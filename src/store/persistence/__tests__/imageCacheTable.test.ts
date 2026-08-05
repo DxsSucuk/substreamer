@@ -186,6 +186,9 @@ function makeFakeDb() {
     withTransactionAsync: async (fn: () => Promise<void>) => {
       await fn();
     },
+    runAtomicBatchAsync: async (commands: ReadonlyArray<readonly [string, readonly unknown[]]>) => {
+      for (const [sql, params] of commands) runSync(sql, params);
+    },
   };
 }
 

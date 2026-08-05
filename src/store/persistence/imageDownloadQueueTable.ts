@@ -63,9 +63,11 @@ function mapRow(row: RawImageQueueRow): ImageDownloadQueueRow {
 /* ------------------------------------------------------------------ */
 
 /**
- * Pick the next row to process (oldest queued first). Single-threaded JS
- * makes the read+update sequence in the worker effectively atomic; we
- * don't need SELECT … FOR UPDATE.
+ * Pick the next row to process (oldest queued first). NOT atomic with the
+ * caller's follow-up `markImageDownloading` — they are separate awaits, and
+ * `processImageQueue` runs `maxConcurrentImageDownloads` worker loops, so two
+ * workers can claim the same row. Re-downloading one cover is harmless, which
+ * is why this has never been tightened.
  */
 export async function pickNextQueuedImageRow(): Promise<ImageDownloadQueueRow | null> {
   const db = getDb();

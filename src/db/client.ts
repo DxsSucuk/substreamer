@@ -48,12 +48,20 @@ export interface InternalDb {
   runSync(sql: string, params?: readonly unknown[]): RunResult;
   runAsync(sql: string, params?: readonly unknown[]): Promise<RunResult>;
   /**
-   * Run many statements as ONE atomic batch off the JS thread (op-SQLite
-   * `executeBatch` wraps them in a single transaction on its native thread — the
-   * lowest-overhead bulk-write primitive, and non-blocking for the UI). The
-   * repository builds these tuples for id-sorted bulk upserts.
+   * Run many statements off the JS thread in AUTOCOMMIT — **not** a transaction.
+   * op-SQLite's `opsqlite_execute_batch` loops the statements with its
+   * `BEGIN EXCLUSIVE TRANSACTION` commented out (`cpp/bridge.cpp`), leaving the
+   * transaction to the caller, and it aborts on the first failing statement with
+   * everything before it already committed. Use it only where a half-applied run
+   * is self-repairing; use {@link InternalDb.runAtomicBatchAsync} otherwise.
    */
   runBatchAsync(commands: readonly BatchCommand[]): Promise<void>;
+  /**
+   * Run many statements as ONE all-or-nothing batch off the JS thread: the same
+   * `executeBatch`, bracketed by `SAVEPOINT`/`RELEASE`, with a `ROLLBACK TO` on
+   * failure. Rejects with the ORIGINAL statement error.
+   */
+  runAtomicBatchAsync(commands: readonly BatchCommand[]): Promise<void>;
   execSync(sql: string): void;
   withTransactionSync(fn: () => void): void;
   withTransactionAsync(task: () => Promise<void>): Promise<void>;
@@ -125,6 +133,40 @@ function adapt(op: DB): InternalDb {
     async runBatchAsync(commands: readonly BatchCommand[]): Promise<void> {
       if (commands.length === 0) return;
       await op.executeBatch(commands as unknown as SQLBatchTuple[]);
+    },
+    async runAtomicBatchAsync(commands: readonly BatchCommand[]): Promise<void> {
+      if (commands.length === 0) return;
+      // Issued SYNCHRONOUSLY — nothing may be awaited above this line, or a
+      // pipelining caller (`bulkUpsert`) would derive its next chunk before this
+      // one reaches the pool. op-SQLite's pool has exactly ONE thread
+      // (`node_modules/@op-engineering/op-sqlite/cpp/OPThreadPool.cpp:14`,
+      // `auto numberOfThreads = 1;`) and runs tasks FIFO, so one `executeBatch`
+      // is one indivisible task: no other POOL-queued statement can land between
+      // the SAVEPOINT and the RELEASE. (`executeSync` runs on the JS thread and
+      // bypasses the pool — those callers still need `serializeDbWrite`.)
+      // SAVEPOINT, not BEGIN: it nests, so running inside another writer's open
+      // transaction neither fails nor lets our recovery destroy their work.
+      const batch = op.executeBatch([
+        ['SAVEPOINT op_batch', []],
+        ...commands,
+        ['RELEASE op_batch', []],
+      ] as unknown as SQLBatchTuple[]);
+      try {
+        await batch;
+      } catch (e) {
+        try {
+          await op.executeBatch([
+            ['ROLLBACK TO op_batch', []],
+            ['RELEASE op_batch', []],
+          ] as unknown as SQLBatchTuple[]);
+        } catch {
+          // SQLITE_FULL / IOERR / NOMEM abort the whole transaction themselves,
+          // after which `ROLLBACK TO` fails with "no such savepoint" — the batch
+          // is already undone, so the recovery's own failure is not the error to
+          // report. Always rethrow the statement error that actually failed.
+        }
+        throw e;
+      }
     },
     execSync(sql: string): void {
       op.executeSync(sql);

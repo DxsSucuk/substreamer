@@ -732,6 +732,9 @@ function makeFakeDb() {
   h.getFirstAsync = (...a: unknown[]) => Promise.resolve(h.getFirstSync(...a));
   h.getAllAsync = (...a: unknown[]) => Promise.resolve(h.getAllSync(...a));
   h.withTransactionAsync = async (fn: () => Promise<void>) => { await fn(); };
+  h.runAtomicBatchAsync = async (commands: ReadonlyArray<readonly [string, readonly unknown[]]>) => {
+    for (const [sql, params] of commands) h.runSync(sql, params);
+  };
   return handle;
 }
 
@@ -1466,6 +1469,9 @@ describe('musicCacheTables — db throws (error swallow path)', () => {
       return Promise.reject(new Error('boom'));
     },
     withTransactionAsync() {
+      return Promise.reject(new Error('boom'));
+    },
+    runAtomicBatchAsync() {
       return Promise.reject(new Error('boom'));
     },
   };

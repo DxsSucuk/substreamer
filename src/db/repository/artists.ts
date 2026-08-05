@@ -261,10 +261,10 @@ export const getArtist = (db: InternalDb, id: string): Promise<Record<string, un
 /** Artists that already have persisted top songs — the set whose top-song lists a
  *  list-length change refreshes (replaces the doomed detail store's in-memory map). */
 /** Replace an artist's ordered top-song membership (position = array index). The songs
- *  themselves must already be upserted into `songs` by the caller. The batch runs in
- *  autocommit (not a transaction), and is safe because the `artist_top_songs_state`
- *  freshness stamp is written LAST: a batch killed mid-way leaves no stamp, so the TTL
- *  check re-fetches. */
+ *  themselves must already be upserted into `songs` by the caller. ONE atomic batch: a
+ *  failure part-way through restores the previous list rather than leaving the DELETE
+ *  applied and the INSERTs missing. Takes no mutex of its own — callers hold
+ *  `serializeDbWrite`. */
 export const setArtistTopSongs = (
   db: InternalDb,
   artistId: string,
@@ -273,7 +273,7 @@ export const setArtistTopSongs = (
    *  would mark the artist "fetched, 0 songs" with no TTL to recover from. */
   state?: { listLength: number },
 ): Promise<unknown> =>
-  db.runBatchAsync([
+  db.runAtomicBatchAsync([
     ['DELETE FROM artist_top_songs WHERE artist_id = ?', [artistId]],
     ...songIds.map(
       (songId, pos): [string, (string | number)[]] => [

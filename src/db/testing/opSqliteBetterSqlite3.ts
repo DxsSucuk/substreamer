@@ -107,6 +107,8 @@ function makeDb(bs: Database.Database, dbPath: string): DB {
     // TRANSACTION` commented out (cpp/bridge.cpp) and leaves the transaction to the JS
     // caller. Wrapping a BEGIN here would both hide that (a batch would look atomic when
     // it is not) and make a caller's own `withTransactionAsync` a nested-BEGIN error.
+    // `runAtomicBatchAsync` gets its atomicity by passing SAVEPOINT/RELEASE as ordinary
+    // commands, which `run()` routes through `bs.exec` — so it is modelled faithfully.
     executeBatch: async (commands: SQLBatchTuple[]) => {
       let rowsAffected = 0;
       for (const [query, params] of commands) {

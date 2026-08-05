@@ -495,30 +495,21 @@ export const clearStarredArtistsNotIn = (db: InternalDb, keepIds: readonly strin
  *
  * These rows are the only local copy of items the library does not have, and restoring
  * them needs a network call the user may not be able to make — so unlike the marks
- * they are not derivable offline. `runBatchAsync` is N statements in AUTOCOMMIT, not a
- * transaction, so a delete-then-insert rebuild killed mid-way would leave a fraction of
- * the set: strictly worse than the single atomic `setItem` this replaces.
- *
- * Every chunk is built BEFORE `BEGIN` and nothing but the batches is awaited inside.
- * The connection is shared and `bulkUpsert` does not take `serializeDbWrite`, so any
- * statement another writer issues while this transaction is open executes inside it and
- * would be lost to a rollback — the window must be SQLite write time and nothing else.
+ * they are not derivable offline. A delete-then-insert rebuild killed mid-way would
+ * leave a fraction of the set: strictly worse than the single atomic `setItem` this
+ * replaces. Hence ONE `runAtomicBatchAsync` — the JS thread never yields between the
+ * DELETE and the last INSERT, so no other writer's statements land inside our savepoint.
  */
 async function replaceRemainder(
   db: InternalDb,
   entity: Entity,
   commands: BatchCommand[],
 ): Promise<void> {
-  const chunks: BatchCommand[][] = [];
-  for (let i = 0; i < commands.length; i += CHUNK) chunks.push(commands.slice(i, i + CHUNK));
-  // `serializeDbWrite` is mandatory, not optional: `withTransactionAsync` yields the JS
-  // thread between statements, so a second async transaction can slip its `BEGIN` into
-  // the gap — which Android's SQLite rejects outright.
   await serializeDbWrite(() =>
-    db.withTransactionAsync(async () => {
-      await db.runAsync(`DELETE FROM ${REMAINDER[entity]}`);
-      for (const chunk of chunks) await db.runBatchAsync(chunk);
-    }),
+    db.runAtomicBatchAsync([
+      [`DELETE FROM ${REMAINDER[entity]}`, []] as BatchCommand,
+      ...commands,
+    ]),
   );
 }
 

@@ -161,19 +161,17 @@ describe('the remainder tables', () => {
 
   it('rolls back to the previous contents when a rebuild fails mid-way', async () => {
     await replaceFavoriteSongs(db(), [song('keep1'), song('keep2')]);
-    const real = db().runBatchAsync.bind(db());
-    let calls = 0;
-    (db() as unknown as { runBatchAsync: unknown }).runBatchAsync = async (
+    const real = db().runAtomicBatchAsync.bind(db());
+    // Append a statement that cannot run: the DELETE and the new INSERT have already
+    // executed inside the savepoint by the time it fails, so only a real ROLLBACK TO
+    // can leave the previous contents in place.
+    (db() as unknown as { runAtomicBatchAsync: unknown }).runAtomicBatchAsync = (
       commands: Parameters<typeof real>[0],
-    ) => {
-      calls += 1;
-      if (calls === 1) throw new Error('killed mid-rebuild');
-      return real(commands);
-    };
+    ) => real([...commands, ['INSERT INTO no_such_table (x) VALUES (1)', []]]);
     try {
-      await expect(replaceFavoriteSongs(db(), [song('new1')])).rejects.toThrow('killed mid-rebuild');
+      await expect(replaceFavoriteSongs(db(), [song('new1')])).rejects.toThrow(/no_such_table/);
     } finally {
-      (db() as unknown as { runBatchAsync: unknown }).runBatchAsync = real;
+      (db() as unknown as { runAtomicBatchAsync: unknown }).runAtomicBatchAsync = real;
     }
     const ids = db().getAllSync<{ id: string }>('SELECT id FROM favorite_songs ORDER BY id');
     expect(ids.map((r) => r.id)).toEqual(['keep1', 'keep2']);

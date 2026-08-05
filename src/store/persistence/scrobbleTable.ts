@@ -6,7 +6,7 @@
  * Writes become silent no-ops when `getDb()` returns null (DB init failed)
  * — callers don't need to handle exceptions.
  */
-import { getDb, serializeDbWrite } from './db';
+import { getDb, serializeDbWrite, type BatchCommand } from './db';
 import { type CompletedScrobble } from '../completedScrobbleStore';
 import {
   deriveScrobbleColumns,
@@ -25,6 +25,19 @@ const insertParams = (s: CompletedScrobble): (string | number | null)[] => [
   s.time,
   ...scrobbleColumnValues(deriveScrobbleColumns(s.song, s.time)),
 ];
+
+/** INSERT tuples for a bulk write, skipping invalid records and duplicate ids. */
+function insertCommands(scrobbles: readonly CompletedScrobble[]): BatchCommand[] {
+  const seen = new Set<string>();
+  const commands: BatchCommand[] = [];
+  for (const s of scrobbles) {
+    if (!s?.id || !s.song?.id || !s.song.title) continue;
+    if (seen.has(s.id)) continue;
+    seen.add(s.id);
+    commands.push([INSERT_SQL, insertParams(s)]);
+  }
+  return commands;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Reads                                                              */
@@ -186,18 +199,7 @@ export async function mergeScrobbles(
   if (db === null) return { added: 0, skipped: scrobbles.length };
   try {
     const before = await countScrobbles();
-    await serializeDbWrite(() =>
-      db.withTransactionAsync(async () => {
-        const seen = new Set<string>();
-        for (const s of scrobbles) {
-          if (!s?.id || !s.song?.id || !s.song.title) continue;
-          if (seen.has(s.id)) continue;
-          seen.add(s.id);
-          // eslint-disable-next-line no-await-in-loop
-          await db.runAsync(INSERT_SQL, insertParams(s));
-        }
-      }),
-    );
+    await serializeDbWrite(() => db.runAtomicBatchAsync(insertCommands(scrobbles)));
     const after = await countScrobbles();
     const added = Math.max(0, after - before);
     return { added, skipped: scrobbles.length - added };
@@ -207,7 +209,7 @@ export async function mergeScrobbles(
 }
 
 /**
- * Wipe and bulk-insert the full scrobble set inside a single transaction.
+ * Wipe and bulk-insert the full scrobble set as ONE atomic batch.
  * Used by backup restore and the one-shot blob → per-row migration (task #13).
  * Invalid/duplicate records are filtered before insertion.
  */
@@ -216,17 +218,10 @@ export async function replaceAllScrobbles(scrobbles: readonly CompletedScrobble[
   if (db === null) return;
   try {
     await serializeDbWrite(() =>
-      db.withTransactionAsync(async () => {
-        await db.runAsync('DELETE FROM scrobble_events;');
-        const seen = new Set<string>();
-        for (const s of scrobbles) {
-          if (!s?.id || !s.song?.id || !s.song.title) continue;
-          if (seen.has(s.id)) continue;
-          seen.add(s.id);
-          // eslint-disable-next-line no-await-in-loop
-          await db.runAsync(INSERT_SQL, insertParams(s));
-        }
-      }),
+      db.runAtomicBatchAsync([
+        ['DELETE FROM scrobble_events;', []],
+        ...insertCommands(scrobbles),
+      ]),
     );
   } catch {
     /* dropped */

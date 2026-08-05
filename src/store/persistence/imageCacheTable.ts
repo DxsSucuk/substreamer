@@ -17,7 +17,7 @@
  * the JS thread; writes funnel through `serializeDbWrite` (the connection-wide
  * mutex).
  */
-import { getDb, serializeDbWrite, type InternalDb } from './db';
+import { getDb, serializeDbWrite, type BatchCommand, type InternalDb } from './db';
 
 export interface CachedImageRow {
   coverArtId: string;
@@ -116,16 +116,21 @@ export async function hydrateImageCacheAggregatesAsync(): Promise<ImageCacheAggr
 /*  Single-variant writes                                              */
 /* ------------------------------------------------------------------ */
 
+const CACHED_IMAGE_UPSERT_SQL = `INSERT INTO cached_images (cover_art_id, size, ext, bytes, cached_at)
+   VALUES (?, ?, ?, ?, ?)
+   ON CONFLICT(cover_art_id, size) DO UPDATE SET
+     ext = excluded.ext,
+     bytes = excluded.bytes,
+     cached_at = excluded.cached_at;`;
+
+const cachedImageUpsertCommand = (row: CachedImageRow): BatchCommand => [
+  CACHED_IMAGE_UPSERT_SQL,
+  [row.coverArtId, row.size, row.ext, row.bytes, row.cachedAt],
+];
+
 async function upsertCachedImageInternal(db: InternalDb, row: CachedImageRow): Promise<void> {
-  await db.runAsync(
-    `INSERT INTO cached_images (cover_art_id, size, ext, bytes, cached_at)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(cover_art_id, size) DO UPDATE SET
-         ext = excluded.ext,
-         bytes = excluded.bytes,
-         cached_at = excluded.cached_at;`,
-    [row.coverArtId, row.size, row.ext, row.bytes, row.cachedAt],
-  );
+  const [sql, params] = cachedImageUpsertCommand(row);
+  await db.runAsync(sql, params);
 }
 
 /**
@@ -385,15 +390,10 @@ export async function bulkInsertCachedImages(rows: readonly CachedImageRow[]): P
   if (db === null) return;
   if (rows.length === 0) return;
   try {
-    await serializeDbWrite(() =>
-      db.withTransactionAsync(async () => {
-        for (const row of rows) {
-          if (!row.coverArtId || !row.size) continue;
-          // eslint-disable-next-line no-await-in-loop
-          await upsertCachedImageInternal(db, row);
-        }
-      }),
-    );
+    const commands = rows
+      .filter((row) => row.coverArtId && row.size)
+      .map(cachedImageUpsertCommand);
+    await serializeDbWrite(() => db.runAtomicBatchAsync(commands));
   } catch {
     /* dropped */
   }

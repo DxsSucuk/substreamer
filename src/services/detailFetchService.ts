@@ -125,16 +125,20 @@ export async function fetchAlbumDetail(
       ];
       ratingStore.getState().reconcileRatings(ratingEntries);
       if (db) {
-        await serializeDbWrite(async () => {
-          await upsertAlbums(db, [data], undefined, articles());
-          if (data.song && data.song.length > 0) {
-            await upsertSongs(db, data.song, undefined, articles());
-            // Drop tracks the server no longer lists for this album — servers that
-            // re-key song ids on re-tag would otherwise leave the old and new sets
-            // both showing in the track list. Downloaded tracks are exempt.
-            await deleteAlbumSongsNotIn(db, data.id, data.song.map((s) => s.id));
-          }
-        });
+        // NO outer `serializeDbWrite`: the bulk upserts take the mutex per chunk and
+        // it is not re-entrant, so wrapping them here wedges the write chain for good.
+        // Only the writers with no mutex of their own are wrapped.
+        const songs = data.song ?? [];
+        await upsertAlbums(db, [data], undefined, articles());
+        if (songs.length > 0) {
+          await upsertSongs(db, songs, undefined, articles());
+          // Drop tracks the server no longer lists for this album — servers that
+          // re-key song ids on re-tag would otherwise leave the old and new sets
+          // both showing in the track list. Downloaded tracks are exempt.
+          await serializeDbWrite(() =>
+            deleteAlbumSongsNotIn(db, data.id, songs.map((s) => s.id)),
+          );
+        }
         bumpDetailChanged('album', id);
       }
       if (prefetchCovers) {
@@ -215,10 +219,9 @@ export function fetchArtistBase(id: string, opts?: ArtistFetchOpts): Promise<Art
         ...albums.map((a) => ({ id: a.id, serverRating: a.userRating ?? 0 })),
       ]);
       if (db) {
-        await serializeDbWrite(async () => {
-          await upsertArtists(db, [artist], undefined, articles());
-          if (albums.length > 0) await upsertAlbums(db, albums, undefined, articles());
-        });
+        // Both take the (non-re-entrant) mutex per chunk themselves — see `fetchAlbumDetail`.
+        await upsertArtists(db, [artist], undefined, articles());
+        if (albums.length > 0) await upsertAlbums(db, albums, undefined, articles());
         bumpDetailChanged('artist', id);
       }
       return { artist, albums } as ArtistBase;
@@ -319,10 +322,12 @@ export function fetchArtistTopSongs(
         ratingStore.getState().reconcileRatings(
           top.map((sg) => ({ id: sg.id, serverRating: sg.userRating ?? 0 })),
         );
-        await serializeDbWrite(async () => {
-          if (top.length > 0) await upsertSongs(db, top, undefined, articles());
-          await setArtistTopSongs(db, id, top.map((sg) => sg.id), { listLength: size });
-        });
+        // `upsertSongs` takes the (non-re-entrant) mutex per chunk itself; only
+        // `setArtistTopSongs`, which has none, is wrapped.
+        if (top.length > 0) await upsertSongs(db, top, undefined, articles());
+        await serializeDbWrite(() =>
+          setArtistTopSongs(db, id, top.map((sg) => sg.id), { listLength: size }),
+        );
         bumpDetailChanged('artist', id);
       }
       if ((opts?.prefetchCovers ?? true) && top.length > 0) prefetchCoverArt(top);
@@ -457,11 +462,11 @@ export async function fetchPlaylistDetail(
     ratingStore.getState().reconcileRatings(ratingEntries);
     if (db) {
       const entry = data.entry ?? [];
-      await serializeDbWrite(async () => {
-        await upsertPlaylists(db, [data], undefined, articles());
-        if (entry.length > 0) await upsertSongs(db, entry, undefined, articles());
-        setPlaylistSongs(db, id, entry.map((e) => e.id));
-      });
+      // The bulk upserts take the (non-re-entrant) mutex per chunk themselves; only
+      // `setPlaylistSongs`, which has none, is wrapped.
+      await upsertPlaylists(db, [data], undefined, articles());
+      if (entry.length > 0) await upsertSongs(db, entry, undefined, articles());
+      await serializeDbWrite(async () => setPlaylistSongs(db, id, entry.map((e) => e.id)));
       bumpDetailChanged('playlist', id);
     }
     if (prefetchCovers) {

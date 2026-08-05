@@ -29,7 +29,7 @@ import { ensureNormalizedSchema } from '@/db/createNormalizedTables';
 
 // The DB surface types (`InternalDb`, `RunResult`) live in the op-SQLite client
 // now; re-export so existing consumers importing them from this module keep working.
-export type { InternalDb, RunResult } from '@/db/client';
+export type { BatchCommand, InternalDb, RunResult } from '@/db/client';
 
 let db: InternalDb | null = null;
 let initError: Error | null = null;
