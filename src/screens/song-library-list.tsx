@@ -14,8 +14,11 @@ import {
   type SongListRow,
 } from '../db/repository/songs';
 import { type Cursor } from '../db/repository/core';
+import { listAllStarredSongs } from '../db/repository/favorites';
 import { getDb } from '../store/persistence/db';
+import { favoritesStore } from '../store/favoritesStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
+import { byTitle } from '../utils/librarySort';
 import type { Child } from '../services/subsonicService';
 
 const PAGE = 120;
@@ -158,8 +161,10 @@ function KeysetSongList({
   );
 }
 
-/** Downloaded/favorites filters still read the in-memory array (small sets; keyset
- *  WHERE-filtering is a follow-up). */
+/** Downloaded/favorites filters read BOUNDED sources — favourites straight from SQL
+ *  (marked library rows + the `favorite_*` remainder), downloaded from the never-reaped
+ *  `cached_songs` set. Title-sorted to match the main list's A–Z scroller; the
+ *  Favourites TAB is recency-ordered, this filter is the Songs tab with a predicate. */
 function FilteredSongList({
   layout,
   downloadedOnly,
@@ -172,7 +177,33 @@ function FilteredSongList({
   contentInsetTop: number;
 }) {
   const { t } = useTranslation();
-  const { songs, refresh, loading } = useAllSongsByTitle({ downloadedOnly, favoritesOnly });
+  const { songs: downloaded, refresh, loading } = useAllSongsByTitle({
+    downloadedOnly: downloadedOnly && !favoritesOnly,
+  });
+  const version = favoritesStore((s) => s.version);
+  const [starred, setStarred] = useState<Child[]>([]);
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  const starredKey = `${downloadedOnly}:${version}`;
+  // DERIVED, not seeded — see the note in `album-library-list.tsx`. A mount-time seed
+  // misses the case where Favourites is switched on while Downloaded is already on.
+  const starredLoading = favoritesOnly && loadedKey !== starredKey;
+  useEffect(() => {
+    if (!favoritesOnly) return;
+    let alive = true;
+    void (async () => {
+      const db = getDb();
+      const list = db ? await listAllStarredSongs(db, { downloadedOnly }) : [];
+      if (alive) {
+        setStarred([...list].sort(byTitle));
+        setLoadedKey(starredKey);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [favoritesOnly, downloadedOnly, version, starredKey]);
+
+  const songs = favoritesOnly ? starred : downloaded;
 
   const [refreshing, setRefreshing] = useState(false);
   const handleRefresh = useCallback(async () => {
@@ -184,20 +215,17 @@ function FilteredSongList({
     }
   }, [refresh]);
 
-  const emptyMessage = downloadedOnly ? t('noDownloadedSongs') : t('noFavoriteSongs');
-
   return (
     <SongListView
       songs={songs}
       layout={layout}
-      loading={loading}
+      loading={favoritesOnly ? starredLoading : loading}
       onRefresh={handleRefresh}
       refreshing={refreshing}
       onSongPress={handleSongPress}
       showAlphabetScroller
       scrollToTopTrigger={`${downloadedOnly}:${favoritesOnly}`}
       contentInsetTop={contentInsetTop}
-      emptyMessage={emptyMessage}
       emptySubtitle={t('tryAdjustingFilters')}
     />
   );

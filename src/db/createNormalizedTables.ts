@@ -130,6 +130,11 @@ export const MODEL_TABLES: readonly string[] = [
   'song_contributors',
   'song_genres',
   'song_moods',
+  // Favourites are server-scoped, so logout must drop them: leaving them KEPT would
+  // leak server A's favourites into server B.
+  'favorite_songs',
+  'favorite_albums',
+  'favorite_artists',
 ];
 
 /**

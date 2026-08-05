@@ -27,6 +27,14 @@ import { getDb } from '../../store/persistence/db';
 import { ensureNormalizedSchema } from '../../db/createNormalizedTables';
 import { upsertAlbums } from '../../db/repository/albums';
 import { upsertPlaylists } from '../../db/repository/playlists';
+import { upsertArtists } from '../../db/repository/artists';
+import { upsertSongs } from '../../db/repository/songs';
+import {
+  markStarredArtists,
+  markStarredSongs,
+  replaceFavoriteArtists,
+  replaceFavoriteSongs,
+} from '../../db/repository/favorites';
 
 const album = (id: string, name: string) => ({ id, name, artist: 'Artist' } as any);
 const song = (id: string) => ({ id, title: `Song ${id}`, artist: 'Artist', albumId: 'al-1' } as any);
@@ -50,11 +58,19 @@ beforeEach(async () => {
     frequentlyPlayed: [],
     randomSelection: [album('al-z', 'Zooropa')],
   } as any);
-  favoritesStore.setState({
-    songs: [song('s1'), song('s2'), song('s3')],
-    albums: [],
-    artists: [],
-  } as any);
+  // Favourites read SQL now: `starred` marks on the library rows, newest first — so the
+  // marks descend to keep s1, s2, s3 in that order.
+  db().runSync('DELETE FROM songs');
+  db().runSync('DELETE FROM favorite_songs');
+  db().runSync('DELETE FROM artists');
+  db().runSync('DELETE FROM cached_songs');
+  await upsertSongs(db(), [song('s1'), song('s2'), song('s3')]);
+  await markStarredSongs(db(), [
+    { id: 's1', starredAt: 3000 },
+    { id: 's2', starredAt: 2000 },
+    { id: 's3', starredAt: 1000 },
+  ]);
+  await favoritesStore.getState().refreshFromDb();
 });
 
 describe('buildSnapshot', () => {
@@ -96,6 +112,77 @@ describe('buildSnapshot', () => {
     const pls = snap.sections.find((s) => s.id === sectionId('playlists'))!;
     expect(pls.items.map((i) => i.title)).toEqual(['Roadtrip']);
     expect(pls.items[0].hasChildren).toBe(true);
+  });
+});
+
+/** A downloaded track. `cached_songs` has no FK to `songs`, so this covers a remainder
+ *  favourite being on disk too. */
+const seedCachedSong = (id: string): void => {
+  db().runSync(
+    'INSERT INTO cached_songs (song_id, album_id, suffix, bytes, format_captured_at, ' +
+      'downloaded_at, title, duration) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, 'al-1', 'mp3', 1, 0, 0, 'T', 100],
+  );
+};
+
+describe('the car Favorites node', () => {
+  it('lists newest-starred first and plays row N as queue index N', async () => {
+    // `favTrackId(i)` indexes into the play queue, so the display list and the queue
+    // must be ONE ordering — a mismatch means "tap the 5th row, hear a different song".
+    // Untestable in the car itself; the SQL ordering + the index contract are not.
+    await replaceFavoriteSongs(db(), [song('rem1'), song('rem2')]);
+    db().runSync('UPDATE favorite_songs SET starred = 1500 WHERE id = ?', ['rem1']);
+    db().runSync('UPDATE favorite_songs SET starred = 500 WHERE id = ?', ['rem2']);
+    await favoritesStore.getState().refreshFromDb();
+
+    const snap = await __test.buildSnapshot();
+    const favs = snap.sections.find((s) => s.id === sectionId('favorites'))!;
+    expect(favs.items.map((i) => i.title)).toEqual([
+      'Song s1',
+      'Song s2',
+      'Song rem1',
+      'Song s3',
+      'Song rem2',
+    ]);
+
+    for (let i = 0; i < favs.items.length; i++) {
+      const r = await __test.resolvePlayback(favTrackId(i));
+      expect(r.queue[r.startIndex].title).toBe(favs.items[i].title);
+    }
+  });
+
+  it('OFFLINE lists only downloaded favourites, and plays exactly those', async () => {
+    // The offline guarantee: nothing is listed that cannot play. Applies to the
+    // remainder half too — `cached_songs` has no FK to `songs`.
+    await replaceFavoriteSongs(db(), [song('rem1')]);
+    db().runSync('UPDATE favorite_songs SET starred = 1500 WHERE id = ?', ['rem1']);
+    await favoritesStore.getState().refreshFromDb();
+    seedCachedSong('s2');
+    seedCachedSong('rem1');
+    offlineModeStore.setState({ offlineMode: true } as any);
+
+    const snap = await __test.buildSnapshot();
+    const favs = snap.sections.find((s) => s.id === sectionId('favorites'))!;
+    expect(favs.items.map((i) => i.title)).toEqual(['Song s2', 'Song rem1']);
+
+    const r = await __test.resolvePlayback(favTrackId(1));
+    expect(r.queue.map((c) => c.id)).toEqual(['s2', 'rem1']);
+    expect(r.startIndex).toBe(1);
+  });
+
+  it('donates starred artist names to the voice vocabulary', async () => {
+    // "Play <a starred artist>" only resolves if the name was donated; the donation
+    // reads both halves of the starred set.
+    const tp = require('react-native-queue-player').getTrackPlayer();
+    await upsertArtists(db(), [{ id: 'ar1', name: 'ABBA', albumCount: 1 }]);
+    await markStarredArtists(db(), [{ id: 'ar1', starredAt: 10 }]);
+    await replaceFavoriteArtists(db(), [{ id: 'ar2', name: 'Bowie', albumCount: 1 }]);
+    tp.donateVoiceVocabulary.mockClear();
+
+    await __test.pushSnapshot();
+
+    const { artists } = tp.donateVoiceVocabulary.mock.calls[0][0] as { artists: string[] };
+    expect(artists).toEqual(expect.arrayContaining(['ABBA', 'Bowie']));
   });
 });
 
@@ -275,7 +362,7 @@ describe('scheduleRefresh — library-change gate', () => {
     await jest.advanceTimersByTimeAsync(0);
     tp.setBrowseSnapshot.mockClear();
 
-    favoritesStore.setState({ songs: [song('s1')], albums: [], artists: [] } as any);
+    favoritesStore.setState({ songIds: new Set(['s1']) } as any);
     await jest.advanceTimersByTimeAsync(30_000);
     expect(tp.setBrowseSnapshot).toHaveBeenCalled();
   });
@@ -297,6 +384,9 @@ describe('scheduleRefresh — library-change gate', () => {
     installHeadlessMediaService();
     await jest.advanceTimersByTimeAsync(0);
     expect(tp.setBrowseSnapshot).toHaveBeenCalled();
+    // Drain the debounce window first: the headless boot's `rehydrateAllStores` hydrates
+    // favouritesStore, which legitimately arms one refresh.
+    await jest.advanceTimersByTimeAsync(30_000);
     tp.setBrowseSnapshot.mockClear();
 
     // A sync writes the cursor constantly; only the library stamp means "data changed".
@@ -322,7 +412,7 @@ describe('scheduleRefresh — library-change gate', () => {
     await jest.advanceTimersByTimeAsync(0);
     tp.setBrowseSnapshot.mockClear();
 
-    favoritesStore.setState({ songs: [song('s1')], albums: [], artists: [] } as any);
+    favoritesStore.setState({ songIds: new Set(['s1']) } as any);
     await jest.advanceTimersByTimeAsync(30_000);
     expect(tp.setBrowseSnapshot).not.toHaveBeenCalled();
   });

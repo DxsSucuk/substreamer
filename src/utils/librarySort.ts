@@ -7,8 +7,14 @@
  */
 import type { ArtistID3, Playlist } from 'subsonic-api';
 
-import { baseCollator } from './intl';
+import { baseCollator, defaultCollator } from './intl';
 import { getSortKey } from './sortHelpers';
+
+/** Title-order comparator for the bounded song filter views. `defaultCollator`, not
+ *  `localeCompare` — Hermes on Android ARM64 clones a fresh ICU collator per call
+ *  (#867), which is why the raw method is banned repo-wide. */
+export const byTitle = (a: { title?: string }, b: { title?: string }): number =>
+  defaultCollator.compare(a.title ?? '', b.title ?? '');
 
 export type AlbumSortOrder = 'title' | 'artist';
 

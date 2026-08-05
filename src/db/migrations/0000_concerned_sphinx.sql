@@ -100,7 +100,7 @@ CREATE TABLE `albums` (
 CREATE INDEX `idx_albums_sort` ON `albums` (`sort_title`,`id`);--> statement-breakpoint
 CREATE INDEX `idx_albums_artist_sort` ON `albums` (`sort_artist`,`sort_title`,`id`);--> statement-breakpoint
 CREATE INDEX `idx_albums_artist` ON `albums` (`artist_id`);--> statement-breakpoint
-CREATE INDEX `idx_albums_starred` ON `albums` (`starred`,`sort_title`,`id`) WHERE "albums"."starred" IS NOT NULL;--> statement-breakpoint
+CREATE INDEX `idx_albums_starred_key` ON `albums` (`starred`,`id`) WHERE "albums"."starred" IS NOT NULL;--> statement-breakpoint
 CREATE INDEX `idx_albums_created` ON `albums` (`created`);--> statement-breakpoint
 CREATE INDEX `idx_albums_norm_name` ON `albums` (`norm_name`);--> statement-breakpoint
 CREATE INDEX `idx_albums_dmeta_name` ON `albums` (`dmeta_name`);--> statement-breakpoint
@@ -177,7 +177,7 @@ CREATE TABLE `artists` (
 );
 --> statement-breakpoint
 CREATE INDEX `idx_artists_sort` ON `artists` (`sort_title`,`id`);--> statement-breakpoint
-CREATE INDEX `idx_artists_starred` ON `artists` (`starred`,`sort_title`,`id`) WHERE "artists"."starred" IS NOT NULL;--> statement-breakpoint
+CREATE INDEX `idx_artists_starred_key` ON `artists` (`starred`,`id`) WHERE "artists"."starred" IS NOT NULL;--> statement-breakpoint
 CREATE INDEX `idx_artists_norm_name` ON `artists` (`norm_name`);--> statement-breakpoint
 CREATE INDEX `idx_artists_dmeta_name` ON `artists` (`dmeta_name`);--> statement-breakpoint
 CREATE TABLE `cached_albums` (
@@ -387,6 +387,28 @@ CREATE TABLE `download_queue` (
 --> statement-breakpoint
 CREATE INDEX `idx_download_queue_status` ON `download_queue` (`status`);--> statement-breakpoint
 CREATE INDEX `idx_download_queue_position` ON `download_queue` (`queue_position`);--> statement-breakpoint
+CREATE TABLE `favorite_albums` (
+	`id` text PRIMARY KEY NOT NULL,
+	`starred` integer NOT NULL,
+	`json` text NOT NULL
+);
+--> statement-breakpoint
+CREATE INDEX `idx_favorite_albums_starred_key` ON `favorite_albums` (`starred`,`id`);--> statement-breakpoint
+CREATE TABLE `favorite_artists` (
+	`id` text PRIMARY KEY NOT NULL,
+	`starred` integer NOT NULL,
+	`json` text NOT NULL
+);
+--> statement-breakpoint
+CREATE INDEX `idx_favorite_artists_starred_key` ON `favorite_artists` (`starred`,`id`);--> statement-breakpoint
+CREATE TABLE `favorite_songs` (
+	`id` text PRIMARY KEY NOT NULL,
+	`starred` integer NOT NULL,
+	`duration` integer,
+	`json` text NOT NULL
+);
+--> statement-breakpoint
+CREATE INDEX `idx_favorite_songs_starred_key` ON `favorite_songs` (`starred`,`id`);--> statement-breakpoint
 CREATE TABLE `image_download_queue` (
 	`cover_art_id` text PRIMARY KEY NOT NULL,
 	`scope` text NOT NULL,
@@ -569,7 +591,7 @@ CREATE INDEX `idx_songs_sort` ON `songs` (`sort_title`,`id`);--> statement-break
 CREATE INDEX `idx_songs_artist_sort` ON `songs` (`sort_artist`,`sort_title`,`id`);--> statement-breakpoint
 CREATE INDEX `idx_songs_album` ON `songs` (`album_id`);--> statement-breakpoint
 CREATE INDEX `idx_songs_artist` ON `songs` (`artist_id`);--> statement-breakpoint
-CREATE INDEX `idx_songs_starred` ON `songs` (`starred`,`sort_title`,`id`) WHERE "songs"."starred" IS NOT NULL;--> statement-breakpoint
+CREATE INDEX `idx_songs_starred_key` ON `songs` (`starred`,`id`) WHERE "songs"."starred" IS NOT NULL;--> statement-breakpoint
 CREATE INDEX `idx_songs_norm_title` ON `songs` (`norm_title`);--> statement-breakpoint
 CREATE INDEX `idx_songs_dmeta_title` ON `songs` (`dmeta_title`);--> statement-breakpoint
 CREATE INDEX `idx_songs_dmeta_artist` ON `songs` (`dmeta_artist`);--> statement-breakpoint

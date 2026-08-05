@@ -102,23 +102,21 @@ function makeDb(bs: Database.Database, dbPath: string): DB {
   const db: DB = {
     execute: (query, params) => Promise.resolve(run(query, params)),
     executeSync: (query, params) => run(query, params),
+    // N statements in AUTOCOMMIT, matching the native implementation: op-SQLite's
+    // `opsqlite_execute_batch` loops `opsqlite_execute` with its `BEGIN EXCLUSIVE
+    // TRANSACTION` commented out (cpp/bridge.cpp) and leaves the transaction to the JS
+    // caller. Wrapping a BEGIN here would both hide that (a batch would look atomic when
+    // it is not) and make a caller's own `withTransactionAsync` a nested-BEGIN error.
     executeBatch: async (commands: SQLBatchTuple[]) => {
       let rowsAffected = 0;
-      bs.exec('BEGIN');
-      try {
-        for (const [query, params] of commands) {
-          if (Array.isArray(params) && Array.isArray(params[0])) {
-            for (const p of params as Scalar[][]) rowsAffected += run(query, p).rowsAffected;
-          } else {
-            rowsAffected += run(query, params as Scalar[] | undefined).rowsAffected;
-          }
+      for (const [query, params] of commands) {
+        if (Array.isArray(params) && Array.isArray(params[0])) {
+          for (const p of params as Scalar[][]) rowsAffected += run(query, p).rowsAffected;
+        } else {
+          rowsAffected += run(query, params as Scalar[] | undefined).rowsAffected;
         }
-        bs.exec('COMMIT');
-        fireReactive();
-      } catch (e) {
-        try { bs.exec('ROLLBACK'); } catch { /* ignore */ }
-        throw e;
       }
+      fireReactive();
       return { rowsAffected };
     },
     transaction: async (fn: (tx: Transaction) => Promise<void>) => {

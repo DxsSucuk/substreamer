@@ -21,9 +21,9 @@ const mockFetchStarred = jest.fn();
 jest.mock('../../store/favoritesStore', () => ({
   favoritesStore: {
     getState: jest.fn(() => ({
-      songs: [],
-      albums: [],
-      artists: [],
+      songIds: new Set<string>(),
+      albumIds: new Set<string>(),
+      artistIds: new Set<string>(),
       overrides: {} as Record<string, boolean>,
       setOverride: mockSetOverride,
       fetchStarred: mockFetchStarred,
@@ -172,9 +172,9 @@ const mockPlayTrack = playTrack as jest.Mock;
 beforeEach(() => {
   jest.clearAllMocks();
   (favoritesStore.getState as jest.Mock).mockReturnValue({
-    songs: [],
-    albums: [],
-    artists: [],
+    songIds: new Set<string>(),
+    albumIds: new Set<string>(),
+    artistIds: new Set<string>(),
     overrides: {},
     setOverride: mockSetOverride,
     fetchStarred: mockFetchStarred,
@@ -193,9 +193,9 @@ describe('toggleStar', () => {
 
   it('unstars a starred song', async () => {
     (favoritesStore.getState as jest.Mock).mockReturnValue({
-      songs: [{ id: 'song-1' }],
-      albums: [],
-      artists: [],
+      songIds: new Set(['song-1']),
+      albumIds: new Set<string>(),
+      artistIds: new Set<string>(),
       overrides: {},
       setOverride: mockSetOverride,
       fetchStarred: mockFetchStarred,
@@ -210,9 +210,9 @@ describe('toggleStar', () => {
 
   it('uses override value when present', async () => {
     (favoritesStore.getState as jest.Mock).mockReturnValue({
-      songs: [],
-      albums: [],
-      artists: [],
+      songIds: new Set<string>(),
+      albumIds: new Set<string>(),
+      artistIds: new Set<string>(),
       overrides: { 'song-1': true },
       setOverride: mockSetOverride,
       fetchStarred: mockFetchStarred,
@@ -231,9 +231,9 @@ describe('toggleStar', () => {
 
   it('unstars an album', async () => {
     (favoritesStore.getState as jest.Mock).mockReturnValue({
-      songs: [],
-      albums: [{ id: 'album-1' }],
-      artists: [],
+      songIds: new Set<string>(),
+      albumIds: new Set(['album-1']),
+      artistIds: new Set<string>(),
       overrides: {},
       setOverride: mockSetOverride,
       fetchStarred: mockFetchStarred,
@@ -251,9 +251,9 @@ describe('toggleStar', () => {
 
   it('unstars an artist', async () => {
     (favoritesStore.getState as jest.Mock).mockReturnValue({
-      songs: [],
-      albums: [],
-      artists: [{ id: 'artist-1' }],
+      songIds: new Set<string>(),
+      albumIds: new Set<string>(),
+      artistIds: new Set(['artist-1']),
       overrides: {},
       setOverride: mockSetOverride,
       fetchStarred: mockFetchStarred,

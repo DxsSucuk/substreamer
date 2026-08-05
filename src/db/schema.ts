@@ -104,9 +104,12 @@ export const songs = sqliteTable(
     artistSortIdx: index('idx_songs_artist_sort').on(t.sortArtist, t.sortTitle, t.id),
     albumIdx: index('idx_songs_album').on(t.albumId),
     artistIdx: index('idx_songs_artist').on(t.artistId),
-    // favorites: only starred rows, pre-sorted to the list order
-    starredIdx: index('idx_songs_starred')
-      .on(t.starred, t.sortTitle, t.id)
+    // favorites: only starred rows, keyed exactly to the Favourites tab's
+    // `ORDER BY starred DESC, id DESC` so the keyset page is a backward index scan
+    // with no temp b-tree. (Supersedes idx_songs_starred, which carried sort_title
+    // between the two and so could not serve it; the old index lingers harmlessly.)
+    starredKeyIdx: index('idx_songs_starred_key')
+      .on(t.starred, t.id)
       .where(sql`${t.starred} IS NOT NULL`),
     normTitleIdx: index('idx_songs_norm_title').on(t.normTitle),
     dmetaTitleIdx: index('idx_songs_dmeta_title').on(t.dmetaTitle),
@@ -158,8 +161,8 @@ export const albums = sqliteTable(
     sortIdx: index('idx_albums_sort').on(t.sortTitle, t.id),
     artistSortIdx: index('idx_albums_artist_sort').on(t.sortArtist, t.sortTitle, t.id),
     artistIdx: index('idx_albums_artist').on(t.artistId),
-    starredIdx: index('idx_albums_starred')
-      .on(t.starred, t.sortTitle, t.id)
+    starredKeyIdx: index('idx_albums_starred_key')
+      .on(t.starred, t.id)
       .where(sql`${t.starred} IS NOT NULL`),
     createdIdx: index('idx_albums_created').on(t.created),
     normNameIdx: index('idx_albums_norm_name').on(t.normName),
@@ -187,8 +190,8 @@ export const artists = sqliteTable(
   },
   (t) => ({
     sortIdx: index('idx_artists_sort').on(t.sortTitle, t.id),
-    starredIdx: index('idx_artists_starred')
-      .on(t.starred, t.sortTitle, t.id)
+    starredKeyIdx: index('idx_artists_starred_key')
+      .on(t.starred, t.id)
       .where(sql`${t.starred} IS NOT NULL`),
     normNameIdx: index('idx_artists_norm_name').on(t.normName),
     dmetaNameIdx: index('idx_artists_dmeta_name').on(t.dmetaName),
@@ -229,6 +232,56 @@ export const playlists = sqliteTable(
     sortTitleIdx: index('idx_playlists_sort_title').on(t.sortTitle, t.id),
     normNameIdx: index('idx_playlists_norm_name').on(t.normName),
   }),
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Favourites remainder — the starred items the library does NOT hold
+//
+// Favourites are marked on the library row (`songs`/`albums`/`artists`.`starred`).
+// A row in those tables means "the library sync put it here", so the favourites
+// reconcile never INSERTs one; a starred item with no library row goes here instead,
+// holding the verbatim `getStarred2` envelope so it renders at full fidelity.
+// Normally EMPTY — the library sync enumerates everything the server has.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Starred songs with no `songs` row. PK is `id` (not `song_id`) so the shared
+ *  `keysetPage` primitive — which hardcodes the id column — pages these verbatim. */
+export const favoriteSongs = sqliteTable(
+  'favorite_songs',
+  {
+    id: text('id').primaryKey(),
+    /** Epoch ms the item was starred, or 0 when the server sent no date. NOT NULL —
+     *  it is the sort key; 0 reads back as `undefined`, never a fabricated date. */
+    starred: integer('starred').notNull(),
+    /** Hot column so the Favourites action-bar total is a SQL aggregate rather than a
+     *  JSON parse of every row. Written from the same payload object as `json`. */
+    duration: integer('duration'),
+    /** The verbatim `getStarred2` `Child` envelope. */
+    json: text('json').notNull(),
+  },
+  (t) => ({ starredKeyIdx: index('idx_favorite_songs_starred_key').on(t.starred, t.id) }),
+);
+
+/** Starred albums with no `albums` row — verbatim `AlbumID3` envelope. */
+export const favoriteAlbums = sqliteTable(
+  'favorite_albums',
+  {
+    id: text('id').primaryKey(),
+    starred: integer('starred').notNull(),
+    json: text('json').notNull(),
+  },
+  (t) => ({ starredKeyIdx: index('idx_favorite_albums_starred_key').on(t.starred, t.id) }),
+);
+
+/** Starred artists with no `artists` row — verbatim `ArtistID3` envelope. */
+export const favoriteArtists = sqliteTable(
+  'favorite_artists',
+  {
+    id: text('id').primaryKey(),
+    starred: integer('starred').notNull(),
+    json: text('json').notNull(),
+  },
+  (t) => ({ starredKeyIdx: index('idx_favorite_artists_starred_key').on(t.starred, t.id) }),
 );
 
 /**

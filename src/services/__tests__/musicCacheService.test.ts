@@ -153,8 +153,10 @@ jest.mock('../../db/repository/songs', () => ({
 
 jest.mock('../../store/favoritesStore', () => {
   const { create } = require('zustand');
+  // Membership only — the service reads the starred SET from SQL now; the store just
+  // notifies. The Set is REPLACED on every change, which is what the reactor guards on.
   return {
-    favoritesStore: create(() => ({ songs: [] })),
+    favoritesStore: create(() => ({ songIds: new Set<string>() })),
   };
 });
 
@@ -314,6 +316,9 @@ jest.mock('../../store/persistence/musicCacheTables', () => {
 
 import { musicCacheStore } from '../../store/musicCacheStore';
 import { favoritesStore } from '../../store/favoritesStore';
+import { getDb } from '../../store/persistence/db';
+import { upsertSongs } from '../../db/repository/songs';
+import { markStarredSongs } from '../../db/repository/favorites';
 import { storageLimitStore } from '../../store/storageLimitStore';
 import { offlineModeStore } from '../../store/offlineModeStore';
 import { playbackSettingsStore } from '../../store/playbackSettingsStore';
@@ -363,6 +368,24 @@ import type { Child } from '../subsonicService';
 const mockCheckStorageLimit = checkStorageLimit as jest.Mock;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const persistenceMock = require('../../store/persistence/musicCacheTables');
+
+/** Favourites live in SQL now: upsert the songs, then mark them starred (newest first,
+ *  so the marks descend with the array order the assertions expect). */
+const seedStarred = async (songs: Child[]): Promise<void> => {
+  const db = getDb()!;
+  db.runSync('DELETE FROM songs');
+  db.runSync('DELETE FROM favorite_songs');
+  if (songs.length > 0) {
+    await upsertSongs(db, songs);
+    await markStarredSongs(
+      db,
+      songs.map((c, i) => ({ id: c.id, starredAt: songs.length - i })),
+    );
+  }
+  (favoritesStore as unknown as { setState: (s: unknown) => void }).setState({
+    songIds: new Set(songs.map((c) => c.id)),
+  });
+};
 
 const makeChild = (id: string, overrides?: Partial<Child>): Child => ({
   id,
@@ -1177,14 +1200,14 @@ describe('enqueueStarredSongsDownload', () => {
   });
 
   it('skips when no favorites', async () => {
-    (favoritesStore as any).setState({ songs: [] });
+    await seedStarred([]);
     await enqueueStarredSongsDownload();
     expect(musicCacheStore.getState().downloadQueue).toHaveLength(0);
   });
 
   it('enqueues favorites as virtual playlist', async () => {
     mockCheckStorageLimit.mockReturnValue(true);
-    (favoritesStore as any).setState({ songs: [makeChild('s1'), makeChild('s2')] });
+    await seedStarred([makeChild('s1'), makeChild('s2')]);
     await enqueueStarredSongsDownload();
     const queue = musicCacheStore.getState().downloadQueue;
     expect(queue).toHaveLength(1);
@@ -2655,7 +2678,7 @@ describe('redownloadItem', () => {
     mockCheckStorageLimit.mockReturnValue(true);
     seedSong(makeCachedSong('s1'));
     seedItem(STARRED_SONGS_ITEM_ID, { type: 'favorites', songIds: ['s1'] });
-    (favoritesStore as any).setState({ songs: [makeChild('s1')] });
+    await seedStarred([makeChild('s1')]);
     await redownloadItem(STARRED_SONGS_ITEM_ID);
     // starred gets re-enqueued via the favorites path.
     expect(
@@ -2775,21 +2798,55 @@ describe('syncStarredSongsDownload via subscription', () => {
     seedItem(STARRED_SONGS_ITEM_ID, { type: 'favorites', songIds: ['s1'] });
     await deferredMusicCacheInit();
 
-    (favoritesStore as any).setState({ songs: [makeChild('s1')] });
-    (favoritesStore as any).setState({ songs: [] });
+    await seedStarred([makeChild('s1')]);
+    await seedStarred([]);
+    // The reactor is fire-and-forget and now reads SQL, so let its awaits settle.
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
 
     expect(musicCacheStore.getState().cachedItems[STARRED_SONGS_ITEM_ID]).toBeUndefined();
   });
 
-  it('does not fire when songs reference unchanged', async () => {
+  it('reads nothing at all when the favourites download does not exist', async () => {
+    // "Remove Download, then star something again" — with no `__starred__` aggregate the
+    // reactor must bail on the in-memory membership check, before any starred-set read.
+    // Otherwise every star toggle costs a full favourites projection.
     mockFileExists = true;
-    const songs = [makeChild('s1')];
-    (favoritesStore as any).setState({ songs });
+    await seedStarred([makeChild('s1')]);
+    await deferredMusicCacheInit();
+    expect(musicCacheStore.getState().cachedItems[STARRED_SONGS_ITEM_ID]).toBeUndefined();
+
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const favRepo = require('../../db/repository/favorites');
+    const countSpy = jest.spyOn(favRepo, 'countStarredSongs');
+    const listSpy = jest.spyOn(favRepo, 'listAllStarredSongs');
+    try {
+      await seedStarred([makeChild('s1'), makeChild('s2')]);
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(countSpy).not.toHaveBeenCalled();
+      expect(listSpy).not.toHaveBeenCalled();
+      expect(musicCacheStore.getState().downloadQueue).toHaveLength(0);
+    } finally {
+      countSpy.mockRestore();
+      listSpy.mockRestore();
+    }
+  });
+
+  it('does not fire when the membership set reference is unchanged', async () => {
+    mockFileExists = true;
+    await seedStarred([makeChild('s1')]);
     seedItem(STARRED_SONGS_ITEM_ID, { type: 'favorites', songIds: ['s1'] });
     await deferredMusicCacheInit();
 
-    // Same reference — store's subscribe shouldn't act.
-    (favoritesStore as any).setState({ songs });
+    // Re-reading SQL with the same membership keeps the same Set object, so the
+    // identity guard skips — the aggregate survives.
+    const before = (favoritesStore.getState() as { songIds: ReadonlySet<string> }).songIds;
+    (favoritesStore as unknown as { setState: (s: unknown) => void }).setState({
+      songIds: before,
+    });
+    expect((favoritesStore.getState() as { songIds: ReadonlySet<string> }).songIds).toBe(before);
     expect(musicCacheStore.getState().cachedItems[STARRED_SONGS_ITEM_ID]).toBeDefined();
   });
 });

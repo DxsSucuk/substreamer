@@ -91,9 +91,9 @@ export function SearchScreen() {
   const favoritesOnly = filterBarStore((s) => s.favoritesOnly);
   const cachedItems = musicCacheStore((s) => s.cachedItems);
   const includePartial = layoutPreferencesStore((s) => s.includePartialInDownloadedFilter);
-  const starredSongs = favoritesStore((s) => s.songs);
-  const starredAlbums = favoritesStore((s) => s.albums);
-  const starredArtists = favoritesStore((s) => s.artists);
+  const starredSongIds = favoritesStore((s) => s.songIds);
+  const starredAlbumIds = favoritesStore((s) => s.albumIds);
+  const starredArtistIds = favoritesStore((s) => s.artistIds);
 
   const filtered = useMemo(() => {
     let artists = results.artists;
@@ -111,9 +111,6 @@ export function SearchScreen() {
     }
 
     if (favoritesOnly) {
-      const starredSongIds = new Set(starredSongs.map((s) => s.id));
-      const starredAlbumIds = new Set(starredAlbums.map((a) => a.id));
-      const starredArtistIds = new Set(starredArtists.map((a) => a.id));
       artists = artists.filter((a) => starredArtistIds.has(a.id));
       albums = albums.filter((a) => starredAlbumIds.has(a.id));
       songs = songs.filter((s) => starredSongIds.has(s.id));
@@ -126,9 +123,9 @@ export function SearchScreen() {
     favoritesOnly,
     cachedItems,
     includePartial,
-    starredSongs,
-    starredAlbums,
-    starredArtists,
+    starredSongIds,
+    starredAlbumIds,
+    starredArtistIds,
   ]);
 
   const hasResults =

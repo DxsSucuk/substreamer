@@ -138,8 +138,10 @@ export function replaceChildrenSync(
 }
 
 /**
- * Bulk-upsert entities into `table` + their children, id-sorted, one atomic
- * `executeBatch` per chunk. Writes are PIPELINED: each chunk's write is kicked off
+ * Bulk-upsert entities into `table` + their children, id-sorted, one `executeBatch`
+ * per chunk (N statements in AUTOCOMMIT — op-SQLite's `executeBatch` does NOT open a
+ * transaction; wrap in `withTransactionAsync` if you need one). Writes are PIPELINED:
+ * each chunk's write is kicked off
  * without awaiting, so the NEXT chunk's row derivation (mappers, incl. norm/dmeta —
  * JS-thread work) runs concurrently with the previous chunk's write on op-SQLite's
  * native thread. That hides the write under the derive (the dominant cost), and the
@@ -195,9 +197,10 @@ export async function bulkUpsert<T>(
   return done;
 }
 
-/** Opaque keyset cursor: the last row's (sortKey, [sortKey2], id). */
+/** Opaque keyset cursor: the last row's (sortKey, [sortKey2], id). `sortKey` is a
+ *  number for integer sort columns (the favourites list keys on `starred` epoch-ms). */
 export interface Cursor {
-  sortKey: string;
+  sortKey: string | number;
   id: string;
   /** Secondary sort key for a compound keyset (e.g. albums sorted artist-then-title). */
   sortKey2?: string;
@@ -208,37 +211,53 @@ export interface Page<R> {
   nextCursor: Cursor | null;
 }
 
+interface KeysetPageBase<R> {
+  table: string;
+  sortCol: string;
+  /** Optional secondary sort column for a compound keyset (ordered before id). */
+  sortCol2?: string;
+  columns: string; // pre-joined projection, must include the sort col(s) + id
+  limit: number;
+  cursor?: Cursor | null;
+  where?: string; // extra predicate, ANDed (e.g. "starred IS NOT NULL")
+  sortKeyOf: (row: R) => string | number;
+  sortKey2Of?: (row: R) => string;
+}
+
+/**
+ * `direction: 'desc'` and `letter` are mutually EXCLUSIVE, enforced in the type rather
+ * than a comment: the letter branch seeks `sortCol >= ?`, an ascending-only boundary
+ * that would silently return the wrong page under a descending ORDER BY.
+ */
+type KeysetPageOpts<R> = KeysetPageBase<R> &
+  ({ direction?: 'asc'; letter?: string | null } | { direction: 'desc'; letter?: never });
+
 /**
  * One keyset page ordered by `(sortCol, id)`. Pass `cursor` to continue after a
  * previous page, or `letter` to seek-and-reset to an A–Z section. Selects only
  * the projection columns (lean list rows), never the full entity.
+ *
+ * `direction: 'desc'` flips the whole tuple (`< (?, ?)` + `ORDER BY … DESC`), which
+ * keeps the cursor a single row-value comparison SQLite serves from a backward index
+ * scan with no temp b-tree.
  */
 export async function keysetPage<R extends { id: string }>(
   db: InternalDb,
-  opts: {
-    table: string;
-    sortCol: string;
-    /** Optional secondary sort column for a compound keyset (ordered before id). */
-    sortCol2?: string;
-    columns: string; // pre-joined projection, must include the sort col(s) + id
-    limit: number;
-    cursor?: Cursor | null;
-    letter?: string | null;
-    where?: string; // extra predicate, ANDed (e.g. "starred IS NOT NULL")
-    sortKeyOf: (row: R) => string;
-    sortKey2Of?: (row: R) => string;
-  },
+  opts: KeysetPageOpts<R>,
 ): Promise<Page<R>> {
   const { table, sortCol, sortCol2, columns, limit, cursor, letter, where, sortKeyOf, sortKey2Of } = opts;
+  const desc = opts.direction === 'desc';
+  const cmp = desc ? '<' : '>';
+  const dir = desc ? ' DESC' : '';
   const clauses: string[] = [];
   const params: Value[] = [];
   if (where) clauses.push(`(${where})`);
   if (cursor) {
     if (sortCol2) {
-      clauses.push(`(${ident(sortCol)}, ${ident(sortCol2)}, ${ident('id')}) > (?, ?, ?)`);
+      clauses.push(`(${ident(sortCol)}, ${ident(sortCol2)}, ${ident('id')}) ${cmp} (?, ?, ?)`);
       params.push(cursor.sortKey, cursor.sortKey2 ?? '', cursor.id);
     } else {
-      clauses.push(`(${ident(sortCol)}, ${ident('id')}) > (?, ?)`);
+      clauses.push(`(${ident(sortCol)}, ${ident('id')}) ${cmp} (?, ?)`);
       params.push(cursor.sortKey, cursor.id);
     }
   } else if (letter != null) {
@@ -248,8 +267,8 @@ export async function keysetPage<R extends { id: string }>(
   }
   const whereSql = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   const order = sortCol2
-    ? `${ident(sortCol)}, ${ident(sortCol2)}, ${ident('id')}`
-    : `${ident(sortCol)}, ${ident('id')}`;
+    ? `${ident(sortCol)}${dir}, ${ident(sortCol2)}${dir}, ${ident('id')}${dir}`
+    : `${ident(sortCol)}${dir}, ${ident('id')}${dir}`;
   const sql = `SELECT ${columns} FROM ${ident(table)} ${whereSql} ORDER BY ${order} LIMIT ?`;
   // Fetch one extra row as lookahead so a page that happens to be exactly `limit`
   // rows can be told apart from a page that has more after it.

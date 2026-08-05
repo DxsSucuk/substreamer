@@ -141,16 +141,14 @@ describe('albums repository', () => {
     expect(p2.nextCursor).toBeNull();
   });
 
-  it('seeks to a letter and filters favorites', async () => {
+  it('seeks to a letter', async () => {
     await upsertAlbums(db(), [
       album('a1', 'Apple'),
-      album('a2', 'Mango', { starred: new Date() }),
+      album('a2', 'Mango'),
       album('a3', 'Zebra'),
     ]);
     const fromM = await listAlbums(db(), { letter: 'm', limit: 10 });
     expect(fromM.rows.map((r) => r.name)).toEqual(['Mango', 'Zebra']);
-    const fav = await listAlbums(db(), { limit: 10, starredOnly: true });
-    expect(fav.rows.map((r) => r.name)).toEqual(['Mango']);
   });
 
   it('sorts by artist (compound key) — groups by artist then album title, both directions', async () => {
@@ -507,15 +505,6 @@ describe('artists repository', () => {
       "SELECT name FROM artist_similar WHERE artist_id='ar1'",
     );
     expect(similar.map((s) => s.name)).toEqual(['Beatles']);
-  });
-
-  it('filters favorites', async () => {
-    await upsertArtists(db(), [
-      artist('ar1', 'ABBA', { starred: new Date() }),
-      artist('ar2', 'Beatles'),
-    ]);
-    const fav = await listArtists(db(), { limit: 10, starredOnly: true });
-    expect(fav.rows.map((r) => r.name)).toEqual(['ABBA']);
   });
 
   it('strips articles in the sort key and pages backward', async () => {

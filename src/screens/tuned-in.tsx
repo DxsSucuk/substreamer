@@ -42,6 +42,8 @@ import { albumListsStore } from '../store/albumListsStore';
 import { completedScrobbleStore } from '../store/completedScrobbleStore';
 import { loadScrobblesSince } from '../store/persistence/scrobbleAggregates';
 import { connectivityStore } from '../store/connectivityStore';
+import { randomStarredSong } from '../db/repository/favorites';
+import { getDb } from '../store/persistence/db';
 import { favoritesStore } from '../store/favoritesStore';
 import { genreStore } from '../store/genreStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
@@ -850,7 +852,7 @@ export function TunedInScreen() {
   const bentoHeroW = bentoCellW * 2 + BENTO_GAP;
 
   const aggregates = completedScrobbleStore((s) => s.aggregates);
-  const starredSongs = favoritesStore((s) => s.songs);
+  const favoritesVersion = favoritesStore((s) => s.version);
   const online = !offlineModeStore((s) => s.offlineMode) && connectivityStore((s) => s.isServerReachable);
   const recentlyPlayed = albumListsStore((s) => s.recentlyPlayed);
 
@@ -884,6 +886,9 @@ export function TunedInScreen() {
     const handle = setTimeout(async () => {
       const recent = await loadScrobblesSince(Date.now() - RECENT_WINDOW_MS);
       if (!alive) return;
+      const db = getDb();
+      const favoritesSeed = db ? await randomStarredSong(db) : null;
+      if (!alive) return;
       const scrobbles = recent.map((s) => ({
         time: s.time,
         song: s.song as { genre?: string; genres?: unknown[]; artist?: string; artistId?: string },
@@ -895,7 +900,7 @@ export function TunedInScreen() {
           songCounts: aggregates.songCounts,
           artistCounts: aggregates.artistCounts,
           scrobbles,
-          starredSongs,
+          favoritesSeed,
           isOnline: online,
           listLength: layoutPreferencesStore.getState().listLength,
         }),
@@ -906,7 +911,7 @@ export function TunedInScreen() {
       alive = false;
       clearTimeout(handle);
     };
-  }, [transitionComplete, aggregates, starredSongs, online, refreshKey]);
+  }, [transitionComplete, aggregates, favoritesVersion, online, refreshKey]);
 
   // Available genres for the builder
   const builderGenres = useMemo(() => {

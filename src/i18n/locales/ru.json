@@ -855,8 +855,6 @@
   "waitingToBeSubmitted": "Ожидание отправки на сервер",
   "recentPlays": "Недавно играло",
   "noSongsFound": "Песни не найдены",
-  "noDownloadedSongs": "Нет загруженных песен для офлайн-прослушивания",
-  "noFavoriteSongs": "Нет избранных песен",
   "songLibraryEmptyHint": "Синхронизируйте библиотеку, чтобы отображались все песни.",
   "failedToLoad": "Не удалось загрузить",
   "albumInfoFailedToLoad": "Не удалось загрузить сведения об альбоме.",

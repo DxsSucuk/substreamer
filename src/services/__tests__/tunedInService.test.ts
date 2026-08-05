@@ -259,7 +259,7 @@ describe('generateMixes', () => {
     songCounts: {} as Record<string, { song: Child; count: number }>,
     artistCounts: {} as Record<string, { count: number; artistId?: string }>,
     scrobbles: [] as any[],
-    starredSongs: [] as Child[],
+    favoritesSeed: null as { id: string; title?: string } | null,
     isOnline: true,
   };
 
@@ -341,7 +341,7 @@ describe('generateMixes', () => {
   it('includes Favorites Radio when starred songs exist (online)', () => {
     const input = {
       ...baseInput,
-      starredSongs: [makeSong({ id: 'fav-1', title: 'My Fav Song' })],
+      favoritesSeed: { id: 'fav-1', title: 'My Fav Song' },
     };
     const mixes = generateMixes(input);
     const favRadio = mixes.find((m) => m.id === 'favorites-radio')!;
@@ -398,7 +398,7 @@ describe('generateMixes', () => {
     const input = {
       ...baseInput,
       isOnline: false,
-      starredSongs: [makeSong()],
+      favoritesSeed: { id: 's1' },
     };
     const mixes = generateMixes(input);
     expect(mixes.find((m) => m.id === 'favorites-radio')).toBeUndefined();
@@ -431,7 +431,7 @@ describe('generateMixes', () => {
     const input = {
       ...baseInput,
       genreCounts: { Rock: 10, Jazz: 8 },
-      starredSongs: [makeSong({ id: 'fav-1' })],
+      favoritesSeed: { id: 'fav-1' },
       listLength: 50,
     };
     const mixes = generateMixes(input);

@@ -48,14 +48,15 @@ export interface RehydrationResult {
  * create a cycle. Consumers import directly from
  * `'../store/persistence/rehydrate'`.
  *
- * kvStorage-backed stores (favorites, ratings, theme, etc.) aren't covered
- * by this helper — Zustand's `persist` middleware auto-rehydrates them on
- * store creation.
+ * kvStorage-backed stores (ratings, theme, etc.) aren't covered by this
+ * helper — Zustand's `persist` middleware auto-rehydrates them on store
+ * creation.
  */
 export async function rehydrateAllStores(): Promise<RehydrationResult> {
   const result: RehydrationResult = { succeeded: [], failed: [] };
   const stores: Array<[string, () => Promise<void>]> = [
     ['completedScrobble', () => completedScrobbleStore.getState().hydrateFromDbAsync()],
+    ['favorites', () => favoritesStore.getState().hydrateFromDbAsync()],
     ['pendingScrobble', () => pendingScrobbleStore.getState().hydrateFromDbAsync()],
     ['musicCache', () => musicCacheStore.getState().hydrateFromDbAsync()],
     ['imageCache', () => imageCacheStore.getState().hydrateFromDbAsync()],
@@ -103,7 +104,10 @@ const STARTUP_KV_STORES = [
   // "needs full fetch?" gate reads SQL `COUNT(*)` rather than the in-memory
   // array — so there's no empty-window race to guard here.
   albumListsStore,
-  favoritesStore,
+  // favoritesStore is NO LONGER here: membership lives in SQL (the `starred` marks +
+  // the `favorite_*` remainder), so it has no `persist` API to await. Its
+  // `hydrateFromDbAsync` runs in `rehydrateAllStores` above, awaited before
+  // `onStartup`.
   genreStore,
   serverInfoStore,
   syncStatusStore,

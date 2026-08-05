@@ -14,6 +14,7 @@ import {
   type ArtistListRow,
 } from '../db/repository/artists';
 import { type Cursor } from '../db/repository/core';
+import { listAllStarredArtists } from '../db/repository/favorites';
 import { getDb } from '../store/persistence/db';
 import { refreshArtistLibrary } from '../services/normalizedLibrarySync';
 import { syncStatusStore } from '../store/syncStatusStore';
@@ -189,10 +190,11 @@ function KeysetArtistList({
   );
 }
 
-/** Downloaded/favorites filters read BOUNDED sources — favorites from `favoritesStore`;
- *  downloaded = the artists who own a downloaded album (derived from the never-reaped
- *  `cached_items` envelopes) hydrated from the normalized `artists` table for full art +
- *  album counts (with an album-derived fallback so a downloaded artist never vanishes). */
+/** Downloaded/favorites filters read BOUNDED sources — favourites straight from SQL
+ *  (marked library rows + the `favorite_artists` remainder); downloaded = the artists who
+ *  own a downloaded album (derived from the never-reaped `cached_items` envelopes)
+ *  hydrated from the normalized `artists` table for full art + album counts (with an
+ *  album-derived fallback so a downloaded artist never vanishes). */
 function FilteredArtistList({
   layout,
   downloadedOnly,
@@ -206,7 +208,33 @@ function FilteredArtistList({
 }) {
   const cachedItems = musicCacheStore((s) => s.cachedItems);
   const includePartial = layoutPreferencesStore((s) => s.includePartialInDownloadedFilter);
-  const starredArtists = favoritesStore((s) => s.artists);
+  const version = favoritesStore((s) => s.version);
+
+  // Favourites branch: the whole starred artist set from SQL. `downloadedOnly` is applied
+  // IN SQL, and means "owns any downloaded album" — the same predicate the downloaded
+  // branch below uses, so the two filters can no longer disagree.
+  const [starredArtists, setStarredArtists] = useState<ArtistID3[]>([]);
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  const starredKey = `${downloadedOnly}:${includePartial}:${version}`;
+  // DERIVED, not seeded — see the note in `album-library-list.tsx`. This component
+  // stays mounted when Favourites is switched on while Downloaded is already on, so a
+  // mount-time seed would leave one empty-and-not-loading frame.
+  const starredLoading = favoritesOnly && loadedKey !== starredKey;
+  useEffect(() => {
+    if (!favoritesOnly) return;
+    let alive = true;
+    void (async () => {
+      const db = getDb();
+      const list = db ? await listAllStarredArtists(db, { downloadedOnly, includePartial }) : [];
+      if (alive) {
+        setStarredArtists(list);
+        setLoadedKey(starredKey);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [favoritesOnly, downloadedOnly, includePartial, version, starredKey]);
 
   // Downloaded albums (bounded, self-cached) → the set of artist ids that own one, plus a
   // minimal album-derived artist per id (name from the album) for the offline fallback.
@@ -227,17 +255,26 @@ function FilteredArtistList({
   // Downloaded-only case: hydrate the full artist rows from the normalized table (favorites
   // already carry full objects). Async, with the album-derived fallback for any missing id.
   const [hydrated, setHydrated] = useState<ArtistID3[]>([]);
+  // Same derived-loading treatment as the favourites branch: this hydration is async
+  // too, so without it the first frame is empty-and-not-loading and flashes the
+  // "no artists found" placeholder. Keyed on the memoised id-set identity (O(1)) —
+  // it changes exactly when the downloaded set does.
+  const [hydratedFor, setHydratedFor] = useState<unknown>(null);
+  const downloadedLoading =
+    !favoritesOnly && downloadedOnly && hydratedFor !== downloadedArtistIds;
   useEffect(() => {
     if (favoritesOnly || !downloadedOnly) return;
     const ids = [...(downloadedArtistIds ?? [])];
     if (ids.length === 0) {
       setHydrated([]);
+      setHydratedFor(downloadedArtistIds);
       return;
     }
     const fallback = (): ArtistID3[] => ids.map((id) => fallbackById.get(id)!).filter(Boolean);
     const db = getDb();
     if (!db) {
       setHydrated(fallback());
+      setHydratedFor(downloadedArtistIds);
       return;
     }
     let alive = true;
@@ -246,9 +283,13 @@ function FilteredArtistList({
         if (!alive) return;
         const byId = new Map(rows.map((r) => [r.id, artistListRowToArtistID3(r)]));
         setHydrated(ids.map((id) => byId.get(id) ?? fallbackById.get(id)!).filter(Boolean));
+        setHydratedFor(downloadedArtistIds);
       })
       .catch(() => {
-        if (alive) setHydrated(fallback());
+        if (alive) {
+          setHydrated(fallback());
+          setHydratedFor(downloadedArtistIds);
+        }
       });
     return () => {
       alive = false;
@@ -257,13 +298,8 @@ function FilteredArtistList({
 
   const filteredArtists = useMemo(() => {
     const articles = serverInfoStore.getState().ignoredArticles ?? undefined;
-    const list = favoritesOnly
-      ? downloadedOnly && downloadedArtistIds
-        ? starredArtists.filter((a) => downloadedArtistIds.has(a.id))
-        : starredArtists
-      : hydrated;
-    return sortArtistsByName(list, articles);
-  }, [favoritesOnly, downloadedOnly, downloadedArtistIds, starredArtists, hydrated]);
+    return sortArtistsByName(favoritesOnly ? starredArtists : hydrated, articles);
+  }, [favoritesOnly, starredArtists, hydrated]);
 
   const [refreshing, setRefreshing] = useState(false);
   const handleRefresh = useCallback(async () => {
@@ -279,7 +315,7 @@ function FilteredArtistList({
     <ArtistListView
       artists={filteredArtists}
       layout={layout}
-      loading={false}
+      loading={starredLoading || downloadedLoading}
       onRefresh={handleRefresh}
       refreshing={refreshing}
       showAlphabetScroller

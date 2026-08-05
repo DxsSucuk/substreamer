@@ -332,7 +332,6 @@ export async function listSongs(
     cursor?: Cursor | null;
     letter?: string | null;
     limit: number;
-    starredOnly?: boolean;
     sortOrder?: SongSortOrder;
   },
 ): Promise<Page<SongListRow>> {
@@ -342,7 +341,6 @@ export async function listSongs(
     limit: opts.limit,
     cursor: opts.cursor,
     letter: opts.letter,
-    where: opts.starredOnly ? 'starred IS NOT NULL' : undefined,
     ...songSortCols(opts.sortOrder),
   });
   await hydrateSongRows(db, page.rows);
@@ -351,22 +349,20 @@ export async function listSongs(
 
 export async function listSongsBefore(
   db: InternalDb,
-  opts: { before: Cursor; limit: number; starredOnly?: boolean; sortOrder?: SongSortOrder },
+  opts: { before: Cursor; limit: number; sortOrder?: SongSortOrder },
 ): Promise<{ rows: SongListRow[]; prevCursor: Cursor | null }> {
   const page = await keysetPageBefore<SongListRow>(db, {
     table: 'songs',
     columns: SONG_LIST_COLS,
     limit: opts.limit,
     before: opts.before,
-    where: opts.starredOnly ? 'starred IS NOT NULL' : undefined,
     ...songSortCols(opts.sortOrder),
   });
   await hydrateSongRows(db, page.rows);
   return page;
 }
 
-export const countSongs = (db: InternalDb, starredOnly = false): Promise<number> =>
-  countRows(db, 'songs', starredOnly ? 'starred IS NOT NULL' : undefined);
+export const countSongs = (db: InternalDb): Promise<number> => countRows(db, 'songs');
 
 /**
  * Drop this album's songs that the server no longer lists. Servers that derive song ids
@@ -401,6 +397,20 @@ export const bumpSongPlayStats = (db: InternalDb, id: string, played: string): P
     [played, id],
   );
 
+
+/** Which of the given song ids are in the table — the id-only presence check, mirroring
+ *  `albumIdsPresent`. The favourites reconcile uses it to split the starred payload into
+ *  "mark the library row" and "keep the envelope in `favorite_songs`". Ids pass as a JSON
+ *  array via `json_each` to dodge the bound-variable limit. */
+export const songIdsPresent = (db: InternalDb, ids: string[]): Promise<Set<string>> =>
+  ids.length === 0
+    ? Promise.resolve(new Set<string>())
+    : db
+        .getAllAsync<{ id: string }>(
+          'SELECT id FROM songs WHERE id IN (SELECT value FROM json_each(?))',
+          [JSON.stringify(ids)],
+        )
+        .then((rows) => new Set(rows.map((r) => r.id)));
 
 /** Distinct album ids that already have songs — the "done" set the basic-path song walk
  *  diffs against the album ids to find which albums still need their songs fetched. */

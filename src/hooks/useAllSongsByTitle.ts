@@ -1,14 +1,11 @@
 import { useMemo } from 'react';
 
-import { getLocalTrackUri } from '../services/musicCacheService';
-import { favoritesStore } from '../store/favoritesStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import type { Child } from '../services/subsonicService';
-import { defaultCollator } from '../utils/intl';
+import { byTitle } from '../utils/librarySort';
 
 interface UseAllSongsByTitleOpts {
   downloadedOnly?: boolean;
-  favoritesOnly?: boolean;
 }
 
 interface UseAllSongsByTitleResult {
@@ -19,10 +16,6 @@ interface UseAllSongsByTitleResult {
 }
 
 const EMPTY: Child[] = [];
-// `defaultCollator`, not `localeCompare` — Hermes on Android ARM64 clones a fresh ICU
-// collator per call (#867), which is why the raw method is banned repo-wide.
-const byTitle = (a: Child, b: Child): number =>
-  defaultCollator.compare(a.title ?? '', b.title ?? '');
 
 /** Shape a cached_songs row into the `Child` the song rows render. */
 function childFromCached(s: {
@@ -45,47 +38,30 @@ function childFromCached(s: {
 }
 
 /**
- * Songs for the downloaded/favorites FILTER views, title-sorted. Sourced entirely from
- * the BOUNDED, kept stores — `favoritesStore.songs` (the complete starred set + optimistic
- * overrides) and `musicCacheStore.cachedSongs` (the downloaded set) — so it retires the
- * old whole-library `songLibraryStore.base` / `songIndexStore` read (the OOM risk). This
- * hook is only mounted when a filter is active; the main A–Z browse pages the DB directly.
+ * Songs for the DOWNLOADED filter view, title-sorted. Sourced from
+ * `musicCacheStore.cachedSongs` — the bounded, never-reaped download set — so it
+ * carries no whole-library read. Only mounted when that filter is active; the main
+ * A–Z browse pages the DB directly, and the favourites filter reads SQL
+ * (`listAllStarredSongs`).
  */
 export function useAllSongsByTitle(opts: UseAllSongsByTitleOpts = {}): UseAllSongsByTitleResult {
   const downloadedOnly = opts.downloadedOnly === true;
-  const favoritesOnly = opts.favoritesOnly === true;
 
-  const starredSongs = favoritesStore((s) => s.songs);
-  const starOverrides = favoritesStore((s) => s.overrides);
   const cachedItems = musicCacheStore((s) => s.cachedItems);
   const cachedSongs = musicCacheStore((s) => s.cachedSongs);
 
   const songs = useMemo(() => {
-    if (!downloadedOnly && !favoritesOnly) return EMPTY;
-
-    let result: Child[];
-    if (favoritesOnly) {
-      // Complete starred set, adjusted by optimistic overrides (newly (un)starred rows).
-      const starredIds = new Set(starredSongs.map((s) => s.id));
-      for (const [id, isStarred] of Object.entries(starOverrides)) {
-        if (isStarred) starredIds.add(id);
-        else starredIds.delete(id);
-      }
-      result = starredSongs.filter((s) => starredIds.has(s.id));
-      if (downloadedOnly) result = result.filter((s) => getLocalTrackUri(s.id) !== null);
-    } else {
-      // Downloaded-only: the cached-songs set, deduped by id.
-      const seen = new Set<string>();
-      result = [];
-      for (const cs of Object.values(cachedSongs)) {
-        if (!cs || seen.has(cs.id)) continue;
-        seen.add(cs.id);
-        result.push(childFromCached(cs));
-      }
+    if (!downloadedOnly) return EMPTY;
+    const seen = new Set<string>();
+    const result: Child[] = [];
+    for (const cs of Object.values(cachedSongs)) {
+      if (!cs || seen.has(cs.id)) continue;
+      seen.add(cs.id);
+      result.push(childFromCached(cs));
     }
-    return [...result].sort(byTitle);
+    return result.sort(byTitle);
     // `cachedItems` is a dep so the list refreshes when a download completes/is deleted.
-  }, [downloadedOnly, favoritesOnly, starredSongs, starOverrides, cachedItems, cachedSongs]);
+  }, [downloadedOnly, cachedItems, cachedSongs]);
 
   return { songs, totalCount: songs.length, loading: false, refresh: () => {} };
 }

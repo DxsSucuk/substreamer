@@ -855,8 +855,6 @@
   "waitingToBeSubmitted": "等待提交到服务器",
   "recentPlays": "最近播放",
   "noSongsFound": "未找到歌曲",
-  "noDownloadedSongs": "没有下载歌曲供离线收听",
-  "noFavoriteSongs": "尚无星标歌曲",
   "songLibraryEmptyHint": "同步您的曲库以查看这里的每首歌。",
   "failedToLoad": "加载失败",
   "albumInfoFailedToLoad": "无法加载专辑信息。",

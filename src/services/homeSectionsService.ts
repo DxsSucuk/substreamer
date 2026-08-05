@@ -45,8 +45,9 @@ export interface ComposeHomeInput {
   offlineMode: boolean;
   downloadedOnly: boolean;
   favoritesOnly: boolean;
-  /** Starred albums — used when `favoritesOnly`. */
-  starredAlbums: AlbumID3[];
+  /** Starred album ids — used when `favoritesOnly`. Ids, not entities: the caller
+   *  already holds the membership set and this only ever does `has()`. */
+  starredAlbumIds: ReadonlySet<string>;
   cachedItems: CachedItems;
   includePartial: boolean;
 }
@@ -69,7 +70,7 @@ export function composeHomeAlbumSections(input: ComposeHomeInput): HomeAlbumSect
     offlineMode,
     downloadedOnly,
     favoritesOnly,
-    starredAlbums,
+    starredAlbumIds,
     cachedItems,
     includePartial,
   } = input;
@@ -82,7 +83,7 @@ export function composeHomeAlbumSections(input: ComposeHomeInput): HomeAlbumSect
   };
 
   const hasFilters = downloadedOnly || favoritesOnly;
-  const starredIds = favoritesOnly ? new Set(starredAlbums.map((a) => a.id)) : null;
+  const starredIds = favoritesOnly ? starredAlbumIds : null;
 
   const filterList = (albums: AlbumID3[]): AlbumID3[] => {
     if (!hasFilters) return albums;

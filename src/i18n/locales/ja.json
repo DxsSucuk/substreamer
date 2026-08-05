@@ -855,8 +855,6 @@
   "waitingToBeSubmitted": "サーバーへの送信を待機中",
   "recentPlays": "最近再生した項目",
   "noSongsFound": "曲が見つかりませんでした",
-  "noDownloadedSongs": "オフライン再生用にダウンロードされた曲はありません",
-  "noFavoriteSongs": "お気に入りの曲はありません",
   "songLibraryEmptyHint": "ライブラリを同期するとすべての曲をここで見れます。",
   "failedToLoad": "読み込みに失敗しました",
   "albumInfoFailedToLoad": "アルバム情報を読み込めませんでした",

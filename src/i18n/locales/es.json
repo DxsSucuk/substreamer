@@ -855,8 +855,6 @@
   "waitingToBeSubmitted": "Esperando ser enviados al servidor",
   "recentPlays": "Reproducciones recientes",
   "noSongsFound": "No se encontraron canciones",
-  "noDownloadedSongs": "No songs downloaded for offline listening",
-  "noFavoriteSongs": "No starred songs yet",
   "songLibraryEmptyHint": "Sync your library to see every song here.",
   "failedToLoad": "Error al cargar",
   "albumInfoFailedToLoad": "No se pudo cargar la info del álbum.",

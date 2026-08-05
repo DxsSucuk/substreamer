@@ -183,7 +183,7 @@ export const upsertArtistBio = (
 
 export async function listArtists(
   db: InternalDb,
-  opts: { cursor?: Cursor | null; letter?: string | null; limit: number; starredOnly?: boolean },
+  opts: { cursor?: Cursor | null; letter?: string | null; limit: number },
 ): Promise<Page<ArtistListRow>> {
   const page = await keysetPage<ArtistListRow>(db, {
     table: 'artists',
@@ -192,7 +192,6 @@ export async function listArtists(
     limit: opts.limit,
     cursor: opts.cursor,
     letter: opts.letter,
-    where: opts.starredOnly ? 'starred IS NOT NULL' : undefined,
     sortKeyOf: (r) => r.sort_title ?? '',
   });
   await hydrateArtistRows(db, page.rows);
@@ -201,7 +200,7 @@ export async function listArtists(
 
 export async function listArtistsBefore(
   db: InternalDb,
-  opts: { before: Cursor; limit: number; starredOnly?: boolean },
+  opts: { before: Cursor; limit: number },
 ): Promise<{ rows: ArtistListRow[]; prevCursor: Cursor | null }> {
   const page = await keysetPageBefore<ArtistListRow>(db, {
     table: 'artists',
@@ -209,7 +208,6 @@ export async function listArtistsBefore(
     columns: ARTIST_LIST_COLS,
     limit: opts.limit,
     before: opts.before,
-    where: opts.starredOnly ? 'starred IS NOT NULL' : undefined,
     sortKeyOf: (r) => r.sort_title ?? '',
   });
   await hydrateArtistRows(db, page.rows);
@@ -231,8 +229,7 @@ export const deleteArtistsNotIn = (db: InternalDb, keepIds: string[]): Promise<u
   ]);
 };
 
-export const countArtists = (db: InternalDb, starredOnly = false): Promise<number> =>
-  countRows(db, 'artists', starredOnly ? 'starred IS NOT NULL' : undefined);
+export const countArtists = (db: InternalDb): Promise<number> => countRows(db, 'artists');
 
 /** Full rows for a set of artist ids (unordered) — the downloaded-artist filter hydrates
  *  the artists who own a downloaded album. Ids pass as a JSON array via `json_each` to
@@ -246,14 +243,28 @@ export const listArtistsByIds = async (db: InternalDb, ids: string[]): Promise<A
   return rows;
 };
 
+/** Which of the given artist ids are in the table — the id-only presence check, mirroring
+ *  `albumIdsPresent`. Used by the favourites reconcile to split the starred payload. */
+export const artistIdsPresent = (db: InternalDb, ids: string[]): Promise<Set<string>> =>
+  ids.length === 0
+    ? Promise.resolve(new Set<string>())
+    : db
+        .getAllAsync<{ id: string }>(
+          'SELECT id FROM artists WHERE id IN (SELECT value FROM json_each(?))',
+          [JSON.stringify(ids)],
+        )
+        .then((rows) => new Set(rows.map((r) => r.id)));
+
 export const getArtist = (db: InternalDb, id: string): Promise<Record<string, unknown> | null> =>
   db.getFirstAsync('SELECT * FROM artists WHERE id = ?', [id]);
 
 /** Artists that already have persisted top songs — the set whose top-song lists a
  *  list-length change refreshes (replaces the doomed detail store's in-memory map). */
 /** Replace an artist's ordered top-song membership (position = array index). The songs
- *  themselves must already be upserted into `songs` by the caller. Async batch (no
- *  sync transaction) so it can't collide with a concurrent write. */
+ *  themselves must already be upserted into `songs` by the caller. The batch runs in
+ *  autocommit (not a transaction), and is safe because the `artist_top_songs_state`
+ *  freshness stamp is written LAST: a batch killed mid-way leaves no stamp, so the TTL
+ *  check re-fetches. */
 export const setArtistTopSongs = (
   db: InternalDb,
   artistId: string,

@@ -23,6 +23,16 @@ const toBool = (v: boolean | null | undefined): number | null => (v == null ? nu
 const str = (v: string | null | undefined): string | null => v ?? null;
 const num = (v: number | null | undefined): number | null => (v == null ? null : v);
 
+/**
+ * `starred` is the favourites MEMBERSHIP marker, owned by the favourites reconcile —
+ * so a library write must never CLEAR it. `buildUpsertRow` derives both the INSERT
+ * column list and `DO UPDATE SET` from `Object.keys(row)` (`core.ts:89`), so omitting
+ * the key entirely leaves an existing mark untouched; writing `null` would appear in
+ * `DO UPDATE SET` and wipe it on every out-of-band upsert (e.g. `fetchAlbumDetail`).
+ */
+const starredKey = (starredAt: number | null): Record<string, number> =>
+  starredAt == null ? {} : { starred: starredAt };
+
 /** Subsonic `genres` is declared `string[]` in our types, but real Subsonic/
  *  OpenSubsonic servers return `{name}[]` (ItemGenre). Accept either shape. */
 const genreName = (g: unknown): string =>
@@ -38,6 +48,7 @@ export function songRow(c: Child, articles?: readonly string[]): Row {
   // (skips a redundant re-normalize — the bulk of the per-row search-derive cost).
   const normTitle = normalize(c.title);
   const normArtist = normalizeArtist(c.artist);
+  const starredAt = toEpoch(c.starred);
   return {
     id: c.id,
     album_id: str(c.albumId),
@@ -68,7 +79,6 @@ export function songRow(c: Child, articles?: readonly string[]): Row {
     average_rating: num(c.averageRating),
     play_count: num(c.playCount),
     created: toEpoch(c.created),
-    starred: toEpoch(c.starred),
     played: str(c.played),
     type: str(c.type),
     bpm: num(c.bpm),
@@ -96,6 +106,7 @@ export function songRow(c: Child, articles?: readonly string[]): Row {
     norm_artist: normArtist,
     dmeta_title: metaphoneKeyFromNormalized(normTitle),
     dmeta_artist: metaphoneKeyFromNormalized(normArtist),
+    ...starredKey(starredAt),
   };
 }
 
@@ -129,6 +140,7 @@ export function albumRow(a: AlbumID3, articles?: readonly string[]): Row {
   const displayArtist = a.displayArtist ?? a.artist;
   const normName = normalize(a.name);
   const normArtist = normalizeArtist(displayArtist);
+  const starredAt = toEpoch(a.starred);
   return {
     id: a.id,
     artist_id: str(a.artistId),
@@ -140,7 +152,6 @@ export function albumRow(a: AlbumID3, articles?: readonly string[]): Row {
     duration: num(a.duration),
     play_count: num(a.playCount),
     created: toEpoch(a.created),
-    starred: toEpoch(a.starred),
     year: num(a.year),
     genre: str(a.genre),
     played: str(a.played),
@@ -164,6 +175,7 @@ export function albumRow(a: AlbumID3, articles?: readonly string[]): Row {
     norm_artist: normArtist,
     dmeta_name: metaphoneKeyFromNormalized(normName),
     dmeta_artist: metaphoneKeyFromNormalized(normArtist),
+    ...starredKey(starredAt),
   };
 }
 
@@ -187,6 +199,7 @@ export const albumDiscTitleRows = (a: AlbumID3, id: string): Row[] =>
  *  the stored A–Z key matches the scroller ("The Beatles" → B). */
 export function artistRow(a: ArtistID3, articles?: readonly string[]): Row {
   const normName = normalize(a.name);
+  const starredAt = toEpoch(a.starred);
   return {
     id: a.id,
     name: str(a.name),
@@ -195,11 +208,11 @@ export function artistRow(a: ArtistID3, articles?: readonly string[]): Row {
     cover_art: str(a.coverArt),
     artist_image_url: str(a.artistImageUrl),
     album_count: num(a.albumCount),
-    starred: toEpoch(a.starred),
     user_rating: num(a.userRating),
     music_brainz_id: str(a.musicBrainzId),
     norm_name: normName,
     dmeta_name: metaphoneKeyFromNormalized(normName),
+    ...starredKey(starredAt),
   };
 }
 export const artistRoleRows = (a: ArtistID3, id: string): Row[] =>

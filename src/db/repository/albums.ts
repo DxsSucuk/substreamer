@@ -349,7 +349,6 @@ export async function listAlbums(
     cursor?: Cursor | null;
     letter?: string | null;
     limit: number;
-    starredOnly?: boolean;
     sortOrder?: AlbumSortOrder;
   },
 ): Promise<Page<AlbumListRow>> {
@@ -359,7 +358,6 @@ export async function listAlbums(
     limit: opts.limit,
     cursor: opts.cursor,
     letter: opts.letter,
-    where: opts.starredOnly ? 'starred IS NOT NULL' : undefined,
     ...albumSortCols(opts.sortOrder),
   });
   await hydrateAlbumRows(db, page.rows);
@@ -368,22 +366,20 @@ export async function listAlbums(
 
 export async function listAlbumsBefore(
   db: InternalDb,
-  opts: { before: Cursor; limit: number; starredOnly?: boolean; sortOrder?: AlbumSortOrder },
+  opts: { before: Cursor; limit: number; sortOrder?: AlbumSortOrder },
 ): Promise<{ rows: AlbumListRow[]; prevCursor: Cursor | null }> {
   const page = await keysetPageBefore<AlbumListRow>(db, {
     table: 'albums',
     columns: ALBUM_LIST_COLS,
     limit: opts.limit,
     before: opts.before,
-    where: opts.starredOnly ? 'starred IS NOT NULL' : undefined,
     ...albumSortCols(opts.sortOrder),
   });
   await hydrateAlbumRows(db, page.rows);
   return page;
 }
 
-export const countAlbums = (db: InternalDb, starredOnly = false): Promise<number> =>
-  countRows(db, 'albums', starredOnly ? 'starred IS NOT NULL' : undefined);
+export const countAlbums = (db: InternalDb): Promise<number> => countRows(db, 'albums');
 
 /** Server-reported total track count across the library. Lets the song phase derive
  *  progress from its resume cursor instead of counting rows it may not have written. */

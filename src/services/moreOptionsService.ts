@@ -68,11 +68,11 @@ export async function toggleStar(
     if (id in state.overrides) return state.overrides[id];
     switch (type) {
       case 'song':
-        return state.songs.some((s) => s.id === id);
+        return state.songIds.has(id);
       case 'album':
-        return state.albums.some((a) => a.id === id);
+        return state.albumIds.has(id);
       case 'artist':
-        return state.artists.some((a) => a.id === id);
+        return state.artistIds.has(id);
     }
   })();
 

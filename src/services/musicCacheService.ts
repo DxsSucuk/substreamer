@@ -60,6 +60,7 @@ import { resolveEffectiveFormat } from '../utils/effectiveFormat';
 import { getDb } from '../store/persistence/db';
 import { getAlbumDetail, getPlaylistDetail } from '../db/repository/details';
 import { albumIdsWithSongs } from '../db/repository/songs';
+import { countStarredSongs, listAllStarredSongs } from '../db/repository/favorites';
 import {
   ensureCoverArtAuth,
   getDownloadStreamUrl,
@@ -346,7 +347,7 @@ async function populateTrackMapsAsync(): Promise<void> {
 
   // Run any starred-songs sync that was deferred because the favoritesStore
   // subscription fired before the maps were ready.
-  syncStarredSongsDownload();
+  void syncStarredSongsDownload();
 }
 
 /**
@@ -2219,7 +2220,8 @@ export async function enqueueStarredSongsDownload(): Promise<void> {
   if (STARRED_SONGS_ITEM_ID in state.cachedItems) return;
   if (state.downloadQueue.some((q) => q.itemId === STARRED_SONGS_ITEM_ID)) return;
 
-  const { songs } = favoritesStore.getState();
+  const db = getDb();
+  const songs = db ? await listAllStarredSongs(db) : [];
   if (songs.length === 0) return;
 
   await ensureCoverArtAuth();
@@ -2264,20 +2266,19 @@ export function deleteStarredSongsDownload(): void {
  * Removes tracks that were unstarred and enqueues downloads for newly
  * starred tracks via the generic syncCachedItemTracks.
  */
-function syncStarredSongsDownload(): void {
-  const { songs } = favoritesStore.getState();
-  const state = musicCacheStore.getState();
+async function syncStarredSongsDownload(): Promise<void> {
+  // Membership check FIRST: both branches below are gated on the `__starred__` aggregate
+  // existing, so for a user who never downloaded it the whole function is a no-op — and
+  // reading the starred set first would put a full projection on every star toggle.
+  if (!(STARRED_SONGS_ITEM_ID in musicCacheStore.getState().cachedItems)) return;
 
-  if (songs.length === 0) {
-    if (STARRED_SONGS_ITEM_ID in state.cachedItems) {
-      deleteCachedItem(STARRED_SONGS_ITEM_ID);
-    }
+  const db = getDb();
+  if (!db) return;
+  if ((await countStarredSongs(db)) === 0) {
+    deleteCachedItem(STARRED_SONGS_ITEM_ID);
     return;
   }
-
-  if (STARRED_SONGS_ITEM_ID in state.cachedItems) {
-    syncCachedItemTracks(STARRED_SONGS_ITEM_ID, songs);
-  }
+  syncCachedItemTracks(STARRED_SONGS_ITEM_ID, await listAllStarredSongs(db));
 }
 
 /* ------------------------------------------------------------------ */
@@ -2295,8 +2296,10 @@ function syncStarredSongsDownload(): void {
  * never observes the music-cache. No cycle.
  *
  * Guards:
- *   - Identity compare on `state.songs`: skip if the array reference
- *     didn't change (re-renders, unrelated field changes).
+ *   - Identity compare on `state.songIds`: skip if the membership Set reference
+ *     didn't change (re-renders, unrelated field changes). The store REPLACES that
+ *     Set on every membership change and never mutates it in place — an in-place
+ *     mutation would silently stop this firing.
  *   - `trackMapsReady`: skip during the startup window when
  *     trackUriMap / trackToItems are still being populated from SQL.
  *     Otherwise we'd run syncCachedItemTracks against empty maps and
@@ -2304,9 +2307,9 @@ function syncStarredSongsDownload(): void {
  *     storm of already-cached songs on boot.
  */
 favoritesStore.subscribe((state, prev) => {
-  if (state.songs === prev.songs) return;
+  if (state.songIds === prev.songIds) return;
   if (!trackMapsReady) return;
-  syncStarredSongsDownload();
+  void syncStarredSongsDownload();
 });
 
 storageLimitStore.subscribe((state, prev) => {

@@ -855,8 +855,6 @@
   "waitingToBeSubmitted": "等待提交到伺服器",
   "recentPlays": "最近播放",
   "noSongsFound": "未找到歌曲",
-  "noDownloadedSongs": "沒有任何已下載的曲目",
-  "noFavoriteSongs": "沒有已加入收藏的曲目",
   "songLibraryEmptyHint": "同步資料庫以檢視所有曲目。",
   "failedToLoad": "載入失敗",
   "albumInfoFailedToLoad": "無法載入專輯資訊。",

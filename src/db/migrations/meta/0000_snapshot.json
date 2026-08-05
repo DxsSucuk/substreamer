@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "5a7c00ba-8102-4e4c-8ce1-e455b5500ed8",
+  "id": "6609a482-07ad-40fc-8533-869b1589a08b",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "album_artists": {
@@ -683,11 +683,10 @@
           ],
           "isUnique": false
         },
-        "idx_albums_starred": {
-          "name": "idx_albums_starred",
+        "idx_albums_starred_key": {
+          "name": "idx_albums_starred_key",
           "columns": [
             "starred",
-            "sort_title",
             "id"
           ],
           "isUnique": false,
@@ -1195,11 +1194,10 @@
           ],
           "isUnique": false
         },
-        "idx_artists_starred": {
-          "name": "idx_artists_starred",
+        "idx_artists_starred_key": {
+          "name": "idx_artists_starred_key",
           "columns": [
             "starred",
-            "sort_title",
             "id"
           ],
           "isUnique": false,
@@ -2617,6 +2615,133 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
+    "favorite_albums": {
+      "name": "favorite_albums",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "starred": {
+          "name": "starred",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "json": {
+          "name": "json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "idx_favorite_albums_starred_key": {
+          "name": "idx_favorite_albums_starred_key",
+          "columns": [
+            "starred",
+            "id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "favorite_artists": {
+      "name": "favorite_artists",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "starred": {
+          "name": "starred",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "json": {
+          "name": "json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "idx_favorite_artists_starred_key": {
+          "name": "idx_favorite_artists_starred_key",
+          "columns": [
+            "starred",
+            "id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "favorite_songs": {
+      "name": "favorite_songs",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "starred": {
+          "name": "starred",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "duration": {
+          "name": "duration",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "json": {
+          "name": "json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "idx_favorite_songs_starred_key": {
+          "name": "idx_favorite_songs_starred_key",
+          "columns": [
+            "starred",
+            "id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
     "image_download_queue": {
       "name": "image_download_queue",
       "columns": {
@@ -3821,11 +3946,10 @@
           ],
           "isUnique": false
         },
-        "idx_songs_starred": {
-          "name": "idx_songs_starred",
+        "idx_songs_starred_key": {
+          "name": "idx_songs_starred_key",
           "columns": [
             "starred",
-            "sort_title",
             "id"
           ],
           "isUnique": false,

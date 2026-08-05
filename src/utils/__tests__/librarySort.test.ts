@@ -1,6 +1,6 @@
 import type { AlbumID3, ArtistID3, Playlist } from 'subsonic-api';
 
-import { sortAlbumsByPreference, sortArtistsByName, sortPlaylistsByName } from '../librarySort';
+import { byTitle, sortAlbumsByPreference, sortArtistsByName, sortPlaylistsByName } from '../librarySort';
 
 const album = (id: string, name: string, artist: string, extra: Partial<AlbumID3> = {}): AlbumID3 =>
   ({ id, name, artist, ...extra }) as AlbumID3;
@@ -37,5 +37,19 @@ describe('sortPlaylistsByName', () => {
       { id: '2', name: 'Chill' } as Playlist,
     ];
     expect(sortPlaylistsByName(playlists).map((p) => p.name)).toEqual(['Chill', 'Roadtrip']);
+  });
+});
+
+describe('byTitle', () => {
+  it('orders by title', () => {
+    expect([{ title: 'Zulu' }, { title: 'Alpha' }].sort(byTitle).map((s) => s.title)).toEqual([
+      'Alpha',
+      'Zulu',
+    ]);
+  });
+
+  it('treats a missing title as empty rather than throwing', () => {
+    expect([{ title: 'Alpha' }, {}].sort(byTitle).map((s) => s.title)).toEqual([undefined, 'Alpha']);
+    expect(byTitle({}, {})).toBe(0);
   });
 });

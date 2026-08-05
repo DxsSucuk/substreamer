@@ -19,6 +19,7 @@ import { clearScrobbles } from './persistence/scrobbleTable';
 import { clearMusicCacheTables } from './musicCacheStore';
 import { teardownMusicCache } from '../services/musicCacheService';
 import { clearImageCache, teardownImageCache } from '../services/imageCacheService';
+import { resetFavoritesSyncFlags } from '../services/favoritesSyncService';
 
 // Persisted stores
 import { albumInfoStore } from './albumInfoStore';
@@ -145,6 +146,10 @@ export async function resetAllStores(): Promise<void> {
   // download recovery against a reset store. The next login re-arms them.
   teardownMusicCache();
   teardownImageCache();
+  // Module-scope flags in favoritesSyncService: zustand's `getInitialState()` returns a
+  // memoised object and never re-runs the store initializer, so the reset loop below
+  // cannot clear them.
+  resetFavoritesSyncFlags();
   await clearKvStorage();
   await clearLegacyBlobTables();
   // The normalized model is (becoming) the sole source of truth — wipe it too so a

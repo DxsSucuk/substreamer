@@ -12,7 +12,7 @@ const base: ComposeHomeInput = {
   frequentlyPlayed: [album('a4')],
   randomSelection: [album('a5')],
   downloadedAlbums: [],
-  starredAlbums: [],
+  starredAlbumIds: new Set<string>(),
   cachedItems: {} as any,
   includePartial: true,
   offlineMode: false,
@@ -79,7 +79,7 @@ describe('composeHomeAlbumSections', () => {
     const s = composeHomeAlbumSections({
       ...base,
       favoritesOnly: true,
-      starredAlbums: [album('a1')],
+      starredAlbumIds: new Set(['a1']),
     });
     expect(types(s)).toEqual([
       'recentlyAdded',

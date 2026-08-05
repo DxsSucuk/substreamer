@@ -1,16 +1,15 @@
 import { useIsFocused } from "expo-router/react-navigation";
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Ionicons from "@react-native-vector-icons/ionicons/static";
 import { useTranslation } from 'react-i18next';
 
-import { AlbumListView } from '../components/AlbumListView';
 import { DownloadButton } from '../components/DownloadButton';
 import { EmptyState } from '../components/EmptyState';
-import { ArtistListView } from '../components/ArtistListView';
 import { SegmentControl } from '../components/SegmentControl';
-import { SongListView } from '../components/SongListView';
-import { useFetchOnHydrated } from '../hooks/useFetchOnHydrated';
+import { StarredAlbumList } from '../components/StarredAlbumList';
+import { StarredArtistList } from '../components/StarredArtistList';
+import { StarredSongList } from '../components/StarredSongList';
 import { useTheme } from '../hooks/useTheme';
 import { shuffleArray } from '../utils/arrayHelpers';
 import { formatCompactDuration } from '../utils/formatters';
@@ -20,8 +19,9 @@ import {
   STARRED_SONGS_ITEM_ID,
   enqueueStarredSongsDownload,
   deleteStarredSongsDownload,
-  getLocalTrackUri,
 } from '../services/musicCacheService';
+import { listAllStarredSongs, starredSongTotals } from '../db/repository/favorites';
+import { getDb } from '../store/persistence/db';
 import { filterBarStore } from '../store/filterBarStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import {
@@ -30,7 +30,6 @@ import {
 } from '../store/layoutPreferencesStore';
 import { favoritesStore } from '../store/favoritesStore';
 import { musicCacheStore } from '../store/musicCacheStore';
-import { albumPassesDownloadedFilter } from '../store/persistence/cachedItemHelpers';
 import { searchStore } from '../store/searchStore';
 
 type FavoritesSegment = 'songs' | 'albums' | 'artists';
@@ -57,12 +56,11 @@ export function FavoritesScreen() {
     [t],
   );
 
-  /* ---- Store: favorites data ---- */
-  const songs = favoritesStore((s) => s.songs);
-  const albums = favoritesStore((s) => s.albums);
-  const artists = favoritesStore((s) => s.artists);
+  /* ---- Store: favorites membership (the lists themselves read SQL) ---- */
   const loading = favoritesStore((s) => s.loading);
   const error = favoritesStore((s) => s.error);
+  const version = favoritesStore((s) => s.version);
+  const hydrated = favoritesStore((s) => s.hydrated);
 
   /* ---- Store: layout preferences ---- */
   const favSongLayout = layoutPreferencesStore((s) => s.favSongLayout);
@@ -84,20 +82,18 @@ export function FavoritesScreen() {
     setFavArtistLayout(favArtistLayout === 'list' ? 'grid' : 'list');
   }, [favArtistLayout, setFavArtistLayout]);
 
-  /* ---- Auto-fetch on mount (after hydration) ---- */
-  // favoritesStore persists via the async adapter; gate the empty-check on
-  // hydration so cached favorites aren't re-fetched before the blob loads.
-  useFetchOnHydrated(favoritesStore, () => {
+  /* ---- Auto-fetch on mount (after the SQL read lands) ---- */
+  // Gate the empty-check on `hydrated` so a user with favourites in SQL isn't
+  // re-fetched before the membership sets are read.
+  const fetchedRef = useRef(false);
+  useEffect(() => {
+    if (!hydrated || fetchedRef.current) return;
     const s = favoritesStore.getState();
-    if (
-      s.songs.length === 0 &&
-      s.albums.length === 0 &&
-      s.artists.length === 0 &&
-      !s.loading
-    ) {
-      s.fetchStarred();
+    if (s.songIds.size === 0 && s.albumIds.size === 0 && s.artistIds.size === 0 && !s.loading) {
+      fetchedRef.current = true;
+      void s.fetchStarred();
     }
-  });
+  }, [hydrated]);
 
   /* ---- Filter state ---- */
   const offlineMode = offlineModeStore((s) => s.offlineMode);
@@ -144,27 +140,18 @@ export function FavoritesScreen() {
     toggleArtistLayout,
   ]);
 
-  const filteredSongs = useMemo(() => {
-    if (!downloadedOnly) return songs;
-    if (!starredSongsDownloaded) return [];
-    return songs.filter((s) => getLocalTrackUri(s.id) !== null);
-  }, [songs, downloadedOnly, starredSongsDownloaded, cachedItems]);
-
-  const filteredAlbums = useMemo(() => {
-    if (!downloadedOnly) return albums;
-    return albums.filter((a) => albumPassesDownloadedFilter(a, cachedItems, includePartial));
-  }, [albums, downloadedOnly, cachedItems, includePartial]);
-
-  const filteredArtists = useMemo(() => {
-    if (!downloadedOnly) return artists;
-    const downloadedArtistIds = new Set<string>();
-    for (const album of albums) {
-      if (albumPassesDownloadedFilter(album, cachedItems, includePartial) && album.artistId) {
-        downloadedArtistIds.add(album.artistId);
-      }
-    }
-    return artists.filter((a) => downloadedArtistIds.has(a.id));
-  }, [artists, albums, downloadedOnly, cachedItems, includePartial]);
+  // The songs segment keeps the pre-existing quirk that its downloaded filter also
+  // requires the `__starred__` aggregate to exist; albums/artists never had that gate.
+  const songsDownloadedOnly = downloadedOnly && starredSongsDownloaded;
+  const songsSuppressed = downloadedOnly && !starredSongsDownloaded;
+  // Empty-state copy, unchanged: "download your favourites" when the aggregate is
+  // missing and we're offline, otherwise the plain "star some songs" hint.
+  const songsOfflineEmpty = !starredSongsDownloaded && offlineMode;
+  const songsEmptyMessage = songsOfflineEmpty ? t('notAvailableOffline') : t('noFavoriteSongsYet');
+  const songsEmptySubtitle = songsOfflineEmpty
+    ? t('downloadFavoriteSongsOffline')
+    : t('starSongsHint');
+  const songsEmptyIcon = songsOfflineEmpty ? 'cloud-offline-outline' : 'heart-outline';
 
   /* ---- Pull-to-refresh ---- */
   const [refreshing, setRefreshing] = useState(false);
@@ -181,13 +168,50 @@ export function FavoritesScreen() {
   const segmentHeight = 52;
   const contentInsetTop = headerHeight + segmentHeight;
 
-  const totalDuration = useMemo(
-    () => filteredSongs.reduce((sum, s) => sum + (s.duration ?? 0), 0),
-    [filteredSongs],
+  // Count + duration as two SQL aggregates over the favourites set — never a whole-set
+  // read, and never a JSON parse of the remainder (`favorite_songs.duration` is a
+  // column for exactly this).
+  const [totals, setTotals] = useState({ count: 0, duration: 0 });
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      const db = getDb();
+      if (!db || songsSuppressed) {
+        if (alive) setTotals({ count: 0, duration: 0 });
+        return;
+      }
+      const t = await starredSongTotals(db, {
+        downloadedOnly: songsDownloadedOnly,
+        includePartial,
+      });
+      if (alive) setTotals(t);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [songsDownloadedOnly, songsSuppressed, includePartial, cachedItems, version]);
+
+  // Play All / Shuffle All / tap-to-play all queue the WHOLE favourites list, fetched
+  // at press time — the player queue is `Child[]` by construction.
+  const playAll = useCallback(
+    (shuffle: boolean) => {
+      void (async () => {
+        const db = getDb();
+        if (!db) return;
+        const list = await listAllStarredSongs(db, {
+          downloadedOnly: songsDownloadedOnly,
+          includePartial,
+        });
+        if (list.length === 0) return;
+        const queue = shuffle ? shuffleArray(list) : list;
+        void playTrack(queue[0], queue);
+      })();
+    },
+    [songsDownloadedOnly, includePartial],
   );
 
   const songsActionBar = useMemo(() => {
-    if (filteredSongs.length === 0) return null;
+    if (totals.count === 0) return null;
     return (
       <View style={styles.actionBar}>
         {(!offlineMode || starredSongsDownloaded) && (
@@ -203,23 +227,20 @@ export function FavoritesScreen() {
           <View style={styles.metaLine}>
             <Ionicons name="musical-notes-outline" size={14} color={colors.primary} />
             <Text style={[styles.metaText, { color: colors.textSecondary }]}>
-              {t('songCount', { count: filteredSongs.length })}
+              {t('songCount', { count: totals.count })}
             </Text>
           </View>
           <View style={styles.metaLine}>
             <Ionicons name="time-outline" size={14} color={colors.primary} />
             <Text style={[styles.metaText, { color: colors.textSecondary }]}>
-              {formatCompactDuration(totalDuration)}
+              {formatCompactDuration(totals.duration)}
             </Text>
           </View>
         </View>
         <View style={styles.actionButtons}>
-          {filteredSongs.length > 1 && (
+          {totals.count > 1 && (
             <Pressable
-              onPress={() => {
-                const shuffled = shuffleArray(filteredSongs);
-                playTrack(shuffled[0], shuffled);
-              }}
+              onPress={() => playAll(true)}
               style={({ pressed }) => [
                 styles.shufflePlayButton,
                 pressed && styles.buttonPressed,
@@ -231,7 +252,7 @@ export function FavoritesScreen() {
             </Pressable>
           )}
           <Pressable
-            onPress={() => playTrack(filteredSongs[0], filteredSongs)}
+            onPress={() => playAll(false)}
             style={({ pressed }) => [
               styles.playAllButton,
               { backgroundColor: colors.primary },
@@ -245,37 +266,42 @@ export function FavoritesScreen() {
         </View>
       </View>
     );
-  }, [filteredSongs, totalDuration, colors, offlineMode, starredSongsDownloaded, handleDownloadStarred, handleDeleteStarred]);
+  }, [totals, playAll, colors, t, offlineMode, starredSongsDownloaded, handleDownloadStarred, handleDeleteStarred]);
 
   return (
     <View style={styles.container}>
       <View style={styles.content}>
         {activeSegment === 'songs' && (
-          <SongListView
-            songs={filteredSongs}
-            layout={favSongLayout}
-            loading={loading}
-            error={error}
-            onRefresh={handleRefresh}
-            refreshing={refreshing}
-            emptyMessage={starredSongsDownloaded === false && offlineMode
-              ? t('notAvailableOffline')
-              : t('noFavoriteSongsYet')}
-            emptySubtitle={starredSongsDownloaded === false && offlineMode
-              ? t('downloadFavoriteSongsOffline')
-              : t('starSongsHint')}
-            emptyIcon={starredSongsDownloaded === false && offlineMode
-              ? 'cloud-offline-outline'
-              : 'heart-outline'}
-            scrollToTopTrigger={`${downloadedOnly}`}
-            contentInsetTop={contentInsetTop}
-            listHeaderExtra={songsActionBar}
-          />
+          songsSuppressed ? (
+            <View style={[styles.emptyContainer, { paddingTop: contentInsetTop }]}>
+              <EmptyState
+                icon={songsEmptyIcon}
+                title={songsEmptyMessage}
+                subtitle={songsEmptySubtitle}
+              />
+            </View>
+          ) : (
+            <StarredSongList
+              layout={favSongLayout}
+              downloadedOnly={songsDownloadedOnly}
+              includePartial={includePartial}
+              loading={loading}
+              error={error}
+              onRefresh={handleRefresh}
+              refreshing={refreshing}
+              emptyMessage={songsEmptyMessage}
+              emptySubtitle={songsEmptySubtitle}
+              emptyIcon={songsEmptyIcon}
+              contentInsetTop={contentInsetTop}
+              listHeaderExtra={songsActionBar}
+            />
+          )
         )}
         {activeSegment === 'albums' && (
-          <AlbumListView
-            albums={filteredAlbums}
+          <StarredAlbumList
             layout={favAlbumLayout}
+            downloadedOnly={downloadedOnly}
+            includePartial={includePartial}
             loading={loading}
             error={error}
             onRefresh={handleRefresh}
@@ -283,7 +309,6 @@ export function FavoritesScreen() {
             emptyMessage={t('noFavoriteAlbumsYet')}
             emptySubtitle={t('starAlbumsHint')}
             emptyIcon="heart-outline"
-            scrollToTopTrigger={`${downloadedOnly}`}
             contentInsetTop={contentInsetTop}
           />
         )}
@@ -297,9 +322,10 @@ export function FavoritesScreen() {
               />
             </View>
           ) : (
-            <ArtistListView
-              artists={filteredArtists}
+            <StarredArtistList
               layout={favArtistLayout}
+              downloadedOnly={downloadedOnly}
+              includePartial={includePartial}
               loading={loading}
               error={error}
               onRefresh={handleRefresh}
@@ -307,7 +333,6 @@ export function FavoritesScreen() {
               emptyMessage={t('noFavoriteArtistsYet')}
               emptySubtitle={t('starArtistsHint')}
               emptyIcon="heart-outline"
-              scrollToTopTrigger={`${downloadedOnly}`}
               contentInsetTop={contentInsetTop}
             />
           )

@@ -386,7 +386,7 @@ export function HomeScreen() {
   const downloadedOnly = filterBarStore((s) => s.downloadedOnly);
   const favoritesOnly = filterBarStore((s) => s.favoritesOnly);
   const cachedItems = musicCacheStore((s) => s.cachedItems);
-  const starredAlbums = favoritesStore((s) => s.albums);
+  const starredAlbumIds = favoritesStore((s) => s.albumIds);
   const includePartial = layoutPreferencesStore((s) => s.includePartialInDownloadedFilter);
   const albumSortOrder = layoutPreferencesStore((s) => s.albumSortOrder);
 
@@ -416,7 +416,7 @@ export function HomeScreen() {
         offlineMode,
         downloadedOnly,
         favoritesOnly,
-        starredAlbums,
+        starredAlbumIds,
         cachedItems,
         includePartial,
       }),
@@ -429,7 +429,7 @@ export function HomeScreen() {
       offlineMode,
       downloadedOnly,
       favoritesOnly,
-      starredAlbums,
+      starredAlbumIds,
       cachedItems,
       includePartial,
     ],

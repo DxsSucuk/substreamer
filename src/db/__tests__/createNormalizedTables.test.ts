@@ -32,6 +32,9 @@ const NORMALIZED_TABLES = [
   'artist_top_songs_state',
   'playlist_songs',
   'playlist_allowed_users',
+  'favorite_songs',
+  'favorite_albums',
+  'favorite_artists',
 ];
 
 describe('ensureNormalizedSchema', () => {
@@ -58,8 +61,15 @@ describe('ensureNormalizedSchema', () => {
       )
       .map((r) => r.name);
     expect(indexes).toEqual(
-      expect.arrayContaining(['idx_songs_sort', 'idx_songs_album', 'idx_songs_starred']),
+      expect.arrayContaining(['idx_songs_sort', 'idx_songs_album', 'idx_songs_starred_key']),
     );
+  });
+
+  it('drops the favourites remainder tables on logout (they are server-scoped)', () => {
+    const droppable = new Set(normalizedTableNames());
+    for (const t of ['favorite_songs', 'favorite_albums', 'favorite_artists']) {
+      expect(droppable.has(t)).toBe(true);
+    }
   });
 
   it('round-trips a row through a created table (schema is usable)', () => {

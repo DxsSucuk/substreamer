@@ -39,12 +39,12 @@ import {
   findAlbum,
   findArtistSongs,
 } from './searchService';
-import { getLocalTrackUri } from './musicCacheService';
 import { logVoiceSearch } from './voiceSearchLogger';
 import { scoreCandidate, REJECT } from './searchMatch';
 import { composeHomeAlbumSections } from './homeSectionsService';
 import { getDb } from '../store/persistence/db';
 import { listAllAlbums, albumBrowseRowToAlbumID3 } from '../db/repository/albums';
+import { listAllStarredSongs, listStarredArtistNames } from '../db/repository/favorites';
 import { listAllPlaylists, playlistBrowseRowToPlaylist } from '../db/repository/playlists';
 import { favoritesStore } from '../store/favoritesStore';
 import { albumListsStore } from '../store/albumListsStore';
@@ -114,11 +114,13 @@ async function albumSet(): Promise<AlbumID3[]> {
   return albums.filter((a) => albumPassesDownloadedFilter(a, cachedItems, includePartial));
 }
 
-/** Favorite songs, filtered to downloaded when offline. */
-function favoriteSongs(): Child[] {
-  const songs = favoritesStore.getState().songs;
-  if (!isOffline()) return songs;
-  return songs.filter((s) => getLocalTrackUri(s.id) != null);
+/** Favorite songs, filtered to downloaded when offline. ONE ordering, shared by the
+ *  browse rows (display-capped) and `resolvePlayback` (full list) — `favTrackId(i)`
+ *  indexes across both, so they must agree row for row. */
+async function favoriteSongs(): Promise<Child[]> {
+  const db = getDb();
+  if (!db) return [];
+  return listAllStarredSongs(db, { downloadedOnly: isOffline() });
 }
 
 /** Playlists, filtered to cached when offline (playlists download atomically). */
@@ -159,7 +161,8 @@ function homeInput() {
     offlineMode: offline,
     downloadedOnly: offline,
     favoritesOnly: false,
-    starredAlbums: favoritesStore.getState().albums,
+    // `favoritesOnly` is hard-coded false above, so the composer never reads this.
+    starredAlbumIds: new Set<string>(),
     cachedItems,
     includePartial,
   };
@@ -263,7 +266,7 @@ async function buildSnapshot(): Promise<BrowseSnapshot> {
 
   // Favorites: flat playable songs (display-capped; play uses the same list).
   const favItems = await trackRows(
-    favoriteSongs().slice(0, CAR_MAX_ITEMS_PER_NODE),
+    (await favoriteSongs()).slice(0, CAR_MAX_ITEMS_PER_NODE),
     favTrackId,
   );
 
@@ -401,7 +404,7 @@ async function resolvePlayback(mediaId: string): Promise<ResolvedPlayback> {
       return { queue, startIndex: clampIndex(p.index, queue), sourcePlaylistId: p.ctxId };
     }
     // fav
-    const queue = favoriteSongs();
+    const queue = await favoriteSongs();
     return { queue, startIndex: clampIndex(p.index, queue), sourcePlaylistId: null };
   }
   return { queue: [], startIndex: 0, sourcePlaylistId: null };
@@ -604,9 +607,10 @@ function uniqueSorted(values: string[]): string[] {
 async function donateVocabulary(): Promise<void> {
   try {
     const [albums, playlists] = await Promise.all([allAlbums(), allPlaylists()]);
+    const db = getDb();
     const artists = uniqueSorted([
       ...albums.map((a) => a.artist).filter((a): a is string => !!a),
-      ...favoritesStore.getState().artists.map((a) => a.name),
+      ...(db ? await listStarredArtistNames(db) : []),
     ]);
     getTrackPlayer().donateVoiceVocabulary({ artists, playlists: playlists.map((p) => p.name) });
   } catch (e) {

@@ -183,13 +183,15 @@ interface GenerateMixesInput {
   songCounts: Record<string, { song: Child; count: number }>;
   artistCounts: Record<string, { count: number; artistId?: string }>;
   scrobbles: Array<{ time: number; song: { genre?: string; genres?: unknown[]; artist?: string; artistId?: string } }>;
-  starredSongs: Child[];
+  /** One random starred song to seed "Favorites Radio", or null when there are none.
+   *  A single seed, not the whole set: the mix only ever reads one id + title. */
+  favoritesSeed: { id: string; title?: string } | null;
   isOnline: boolean;
   listLength?: number;
 }
 
 export function generateMixes(input: GenerateMixesInput): MixDefinition[] {
-  const { hourBuckets, genreCounts, songCounts, artistCounts, scrobbles, starredSongs, isOnline, listLength = 20 } = input;
+  const { hourBuckets, genreCounts, songCounts, artistCounts, scrobbles, favoritesSeed, isOnline, listLength = 20 } = input;
   const mixes: MixDefinition[] = [];
 
   // 1. "Right Now" — Time-of-Day Mix (always shown)
@@ -327,15 +329,14 @@ export function generateMixes(input: GenerateMixesInput): MixDefinition[] {
   });
 
   // 4. "Favorites Radio" — Based on Starred Songs (online only, needs starred songs)
-  if (isOnline && starredSongs.length > 0) {
-    const randomStar = starredSongs[Math.floor(Math.random() * starredSongs.length)];
+  if (isOnline && favoritesSeed) {
     mixes.push({
       id: 'favorites-radio',
       name: i18n.t('favoritesRadio'),
-      subtitle: i18n.t('inspiredBy', { title: randomStar.title }),
+      subtitle: i18n.t('inspiredBy', { title: favoritesSeed.title }),
       icon: 'heart',
       gradientColors: ['#E11D48', '#DB2777'],
-      fetchStrategy: { type: 'similarToSong', songId: randomStar.id, count: listLength },
+      fetchStrategy: { type: 'similarToSong', songId: favoritesSeed.id, count: listLength },
     });
   }
 
