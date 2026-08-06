@@ -2602,12 +2602,12 @@
           ],
           "isUnique": false
         },
-        "idx_download_queue_position": {
-          "name": "idx_download_queue_position",
+        "idx_download_queue_position_unique": {
+          "name": "idx_download_queue_position_unique",
           "columns": [
             "queue_position"
           ],
-          "isUnique": false
+          "isUnique": true
         }
       },
       "foreignKeys": {},

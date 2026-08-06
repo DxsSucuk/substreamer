@@ -48,7 +48,7 @@ export const NORMALIZED_DDL: readonly string[] = [
   "CREATE INDEX IF NOT EXISTS `idx_cached_songs_album_id` ON `cached_songs` (`album_id`);",
   "CREATE TABLE IF NOT EXISTS `download_queue` (\n\t`queue_id` text PRIMARY KEY NOT NULL,\n\t`item_id` text NOT NULL,\n\t`type` text NOT NULL,\n\t`name` text NOT NULL,\n\t`artist` text,\n\t`cover_art_id` text,\n\t`status` text NOT NULL,\n\t`total_songs` integer NOT NULL,\n\t`completed_songs` integer NOT NULL,\n\t`error` text,\n\t`added_at` integer NOT NULL,\n\t`queue_position` integer NOT NULL,\n\t`songs_json` text NOT NULL\n);",
   "CREATE INDEX IF NOT EXISTS `idx_download_queue_status` ON `download_queue` (`status`);",
-  "CREATE INDEX IF NOT EXISTS `idx_download_queue_position` ON `download_queue` (`queue_position`);",
+  "CREATE UNIQUE INDEX IF NOT EXISTS `idx_download_queue_position_unique` ON `download_queue` (`queue_position`);",
   "CREATE TABLE IF NOT EXISTS `favorite_albums` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`starred` integer NOT NULL,\n\t`json` text NOT NULL\n);",
   "CREATE INDEX IF NOT EXISTS `idx_favorite_albums_starred_key` ON `favorite_albums` (`starred`,`id`);",
   "CREATE TABLE IF NOT EXISTS `favorite_artists` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`starred` integer NOT NULL,\n\t`json` text NOT NULL\n);",

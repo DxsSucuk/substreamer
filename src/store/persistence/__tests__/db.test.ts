@@ -129,7 +129,7 @@ describe('persistence/db (happy path)', () => {
       'idx_cached_item_songs_song_id',
       'idx_cached_item_songs_item_song',
       'idx_download_queue_status',
-      'idx_download_queue_position',
+      'idx_download_queue_position_unique',
       'idx_cached_images_cached_at',
       'idx_cached_images_cover_art_id',
       'idx_image_download_queue_status',
@@ -160,6 +160,25 @@ describe('persistence/db (happy path)', () => {
     const uniqueIdx = sqls.findIndex((s) => s.includes('idx_cached_item_songs_item_song'));
     expect(dedupIdx).toBeGreaterThanOrEqual(0);
     expect(uniqueIdx).toBeGreaterThan(dedupIdx);
+  });
+
+  it('retires the old non-unique download_queue position index at boot', () => {
+    // A new index NAME plus a DROP of the old one — `CREATE UNIQUE INDEX IF NOT
+    // EXISTS idx_download_queue_position` would be a silent no-op against the
+    // existing non-unique index, so upgrading installs would never get the
+    // constraint.
+    const sqls = mockExecuteSync.mock.calls.map((c) => c[0] as string);
+    expect(sqls).toContain('DROP INDEX IF EXISTS idx_download_queue_position;');
+  });
+
+  it('probes download_queue for duplicate positions before the UNIQUE index is created', () => {
+    // Same ordering requirement as the cached_item_songs dedup: the renumber must
+    // run first or leftover duplicates fail the all-or-nothing CREATE.
+    const sqls = mockExecuteSync.mock.calls.map((c) => c[0] as string);
+    const probeIdx = sqls.findIndex((s) => s.includes('HAVING COUNT(*) > 1'));
+    const uniqueIdx = sqls.findIndex((s) => s.includes('idx_download_queue_position_unique'));
+    expect(probeIdx).toBeGreaterThanOrEqual(0);
+    expect(uniqueIdx).toBeGreaterThan(probeIdx);
   });
 
   describe('__setDbForTests', () => {

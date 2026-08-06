@@ -283,8 +283,9 @@ jest.mock('../../store/persistence/musicCacheTables', () => {
       }
     }),
     reorderCachedItemSongs: jest.fn(),
-    // download_queue writes
-    insertDownloadQueueItem: jest.fn(),
+    // download_queue writes. The append echoes the store's optimistic slot back —
+    // SQL assigns it for real, and here memory and disk agree.
+    insertDownloadQueueItem: jest.fn(async (row: { queuePosition: number }) => row.queuePosition),
     removeDownloadQueueItem: jest.fn(),
     updateDownloadQueueItem: jest.fn(),
     reorderDownloadQueue: jest.fn(),

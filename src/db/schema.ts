@@ -916,7 +916,12 @@ export const downloadQueue = sqliteTable(
   },
   (t) => ({
     statusIdx: index('idx_download_queue_status').on(t.status),
-    positionIdx: index('idx_download_queue_position').on(t.queuePosition),
+    // One item per slot, enforced. A NEW index name, not a redefinition of
+    // `idx_download_queue_position`: `CREATE UNIQUE INDEX IF NOT EXISTS` under the
+    // old name is a no-op against the existing non-unique index, so upgrading
+    // installs would silently never get the constraint. The old one is dropped at
+    // boot (persistence/db.ts).
+    positionIdx: uniqueIndex('idx_download_queue_position_unique').on(t.queuePosition),
   }),
 );
 

@@ -386,7 +386,7 @@ CREATE TABLE `download_queue` (
 );
 --> statement-breakpoint
 CREATE INDEX `idx_download_queue_status` ON `download_queue` (`status`);--> statement-breakpoint
-CREATE INDEX `idx_download_queue_position` ON `download_queue` (`queue_position`);--> statement-breakpoint
+CREATE UNIQUE INDEX `idx_download_queue_position_unique` ON `download_queue` (`queue_position`);--> statement-breakpoint
 CREATE TABLE `favorite_albums` (
 	`id` text PRIMARY KEY NOT NULL,
 	`starred` integer NOT NULL,

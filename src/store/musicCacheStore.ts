@@ -18,7 +18,7 @@
  * `completedScrobbleStore`.
  */
 
-import { create } from 'zustand';
+import { create, type StoreApi } from 'zustand';
 
 import { type Child } from 'subsonic-api';
 
@@ -63,6 +63,13 @@ export type CachedItemMeta = CachedItemRow;
 
 /** Persisted download-queue item. */
 export type DownloadQueueItem = DownloadQueueRow;
+
+/** What a caller supplies to enqueue. The queue owns the rest: `queuePosition` is
+ *  assigned by SQL, the others by the store. */
+export type DownloadQueueDraft = Omit<
+  DownloadQueueItem,
+  'queueId' | 'status' | 'completedSongs' | 'addedAt' | 'queuePosition'
+>;
 
 export type MaxConcurrentDownloads = 1 | 3 | 5;
 
@@ -131,24 +138,14 @@ export interface MusicCacheState {
   hasHydrated: boolean;
 
   /* Queue actions */
-  enqueue: (
-    draft: Omit<
-      DownloadQueueItem,
-      'queueId' | 'status' | 'completedSongs' | 'addedAt' | 'queuePosition'
-    >,
-  ) => void;
+  enqueue: (draft: DownloadQueueDraft) => void;
   /**
    * Variant of `enqueue` that skips the "already in cachedItems" short-circuit.
    * Used by `enqueueAlbumDownload` for top-up flows where the album already
    * has a partial `cached_items` row and we want to download the missing
    * songs. Still dedupes against an existing queue entry for the same itemId.
    */
-  enqueueTopUp: (
-    draft: Omit<
-      DownloadQueueItem,
-      'queueId' | 'status' | 'completedSongs' | 'addedAt' | 'queuePosition'
-    >,
-  ) => void;
+  enqueueTopUp: (draft: DownloadQueueDraft) => void;
   removeFromQueue: (queueId: string) => void;
   reorderQueue: (fromIndex: number, toIndex: number) => void;
   updateQueueItem: (
@@ -222,6 +219,98 @@ function generateQueueId(): string {
 }
 
 /**
+ * Shared body of `enqueue` / `enqueueTopUp`.
+ *
+ * The dedupe read and the append happen inside ONE functional `set`, so the write
+ * is against live state rather than a snapshot captured before it. The row's real
+ * slot is assigned by SQL (`MAX(queue_position) + 1`, under a UNIQUE index), and the
+ * returned value replaces the optimistic one held in memory — they differ only when
+ * memory and disk disagree, e.g. an enqueue that beat `hydrateFromDbAsync`.
+ *
+ * Stays synchronous on purpose: every caller runs `processQueue()` on the next line
+ * and none awaits, and the `itemId` dedupe is only sound because the action cannot
+ * yield between reading the queue and appending to it.
+ */
+function appendToQueue(
+  set: StoreApi<MusicCacheState>['setState'],
+  get: StoreApi<MusicCacheState>['getState'],
+  draft: DownloadQueueDraft,
+  skipWhenCached: boolean,
+): void {
+  const queueId = generateQueueId();
+  set((state) => {
+    if (state.downloadQueue.some((q) => q.itemId === draft.itemId)) return {};
+    if (skipWhenCached && draft.itemId in state.cachedItems) return {};
+    const maxPosition = state.downloadQueue.reduce(
+      (max, q) => (q.queuePosition > max ? q.queuePosition : max),
+      0,
+    );
+    return {
+      downloadQueue: [
+        ...state.downloadQueue,
+        {
+          ...draft,
+          queueId,
+          status: 'queued',
+          completedSongs: 0,
+          addedAt: Date.now(),
+          queuePosition: maxPosition + 1,
+        },
+      ],
+    };
+  });
+  const row = get().downloadQueue.find((q) => q.queueId === queueId);
+  if (row === undefined) return; // deduped
+  void insertDownloadQueueItem(row).then((assigned) => {
+    if (assigned === null || assigned === row.queuePosition) return;
+    set((state) => ({
+      downloadQueue: state.downloadQueue.map((q) =>
+        q.queueId === queueId ? { ...q, queuePosition: assigned } : q,
+      ),
+    }));
+  });
+}
+
+/**
+ * `queuePosition` is UNIQUE and monotonic, NOT dense. Deleting a queue row leaves
+ * its slot vacant on disk (see `removeDownloadQueueItem` for why renumbering is
+ * untenable at library scale), so the mirror drops the row and touches nothing
+ * else — anything that renumbered here would put memory out of step with disk.
+ */
+const dropFromQueueMirror = (
+  queue: DownloadQueueItem[],
+  queueId: string,
+): DownloadQueueItem[] => queue.filter((q) => q.queueId !== queueId);
+
+/**
+ * In-memory twin of `reorderDownloadQueue`'s repack: the mover takes `toPosition`
+ * and everything else in `[from, to]` steps one slot the other way. Copying the SQL
+ * arithmetic rather than renumbering is what keeps memory and disk agreeing on a
+ * holed queue — which is every queue that has ever had an item removed or finish.
+ * The re-sort keeps array order equal to slot order, which every index → slot
+ * translation (including `reorderQueue`'s own) depends on.
+ */
+function repackQueueMirror(
+  queue: DownloadQueueItem[],
+  fromPosition: number,
+  toPosition: number,
+): DownloadQueueItem[] {
+  const step = fromPosition < toPosition ? -1 : 1;
+  const low = Math.min(fromPosition, toPosition);
+  const high = Math.max(fromPosition, toPosition);
+  return queue
+    .map((q) => {
+      if (q.queuePosition < low || q.queuePosition > high) return q;
+      return {
+        ...q,
+        queuePosition:
+          q.queuePosition === fromPosition ? toPosition : q.queuePosition + step,
+      };
+    })
+    .sort((a, b) => a.queuePosition - b.queuePosition);
+}
+
+/**
  * Mirror the disk write's metadata-preservation rules in memory: a write with no
  * metadata must not blank what the row already carries (on disk that's the
  * `raw_json` COALESCE plus "skip the component row"), and `metaV` is owned by
@@ -283,57 +372,16 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
 
   hasHydrated: false,
 
-  enqueue: (draft) => {
-    const state = get();
-    // Dedupe: skip if same itemId is already queued or already cached.
-    if (
-      state.downloadQueue.some((q) => q.itemId === draft.itemId) ||
-      draft.itemId in state.cachedItems
-    ) {
-      return;
-    }
-    const maxPosition = state.downloadQueue.reduce(
-      (max, q) => (q.queuePosition > max ? q.queuePosition : max),
-      0,
-    );
-    const full: DownloadQueueItem = {
-      ...draft,
-      queueId: generateQueueId(),
-      status: 'queued',
-      completedSongs: 0,
-      addedAt: Date.now(),
-      queuePosition: maxPosition + 1,
-    };
-    insertDownloadQueueItem(full);
-    set({ downloadQueue: [...state.downloadQueue, full] });
-  },
+  // Dedupe: skip if the same itemId is already queued or already cached.
+  enqueue: (draft) => appendToQueue(set, get, draft, true),
 
-  enqueueTopUp: (draft) => {
-    const state = get();
-    // Only dedupe against an existing queue entry. Partial `cachedItems` rows
-    // are expected for top-ups and must not block the enqueue.
-    if (state.downloadQueue.some((q) => q.itemId === draft.itemId)) return;
-    const maxPosition = state.downloadQueue.reduce(
-      (max, q) => (q.queuePosition > max ? q.queuePosition : max),
-      0,
-    );
-    const full: DownloadQueueItem = {
-      ...draft,
-      queueId: generateQueueId(),
-      status: 'queued',
-      completedSongs: 0,
-      addedAt: Date.now(),
-      queuePosition: maxPosition + 1,
-    };
-    insertDownloadQueueItem(full);
-    set({ downloadQueue: [...state.downloadQueue, full] });
-  },
+  // Top-ups only dedupe against an existing queue entry — a partial `cachedItems`
+  // row is expected and must not block the enqueue.
+  enqueueTopUp: (draft) => appendToQueue(set, get, draft, false),
 
   removeFromQueue: (queueId) => {
     removeDownloadQueueItem(queueId);
-    set((state) => ({
-      downloadQueue: state.downloadQueue.filter((q) => q.queueId !== queueId),
-    }));
+    set((state) => ({ downloadQueue: dropFromQueueMirror(state.downloadQueue, queueId) }));
   },
 
   reorderQueue: (fromIndex, toIndex) => {
@@ -348,13 +396,15 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
     ) {
       return;
     }
-    // Persistence layer uses 1-indexed positions. The store's array API is
-    // 0-indexed to match RN reorderable-list conventions.
-    reorderDownloadQueue(fromIndex + 1, toIndex + 1);
-    const next = [...queue];
-    const [moved] = next.splice(fromIndex, 1);
-    next.splice(toIndex, 0, moved);
-    set({ downloadQueue: next });
+    // The store's array API is 0-indexed to match RN reorderable-list conventions;
+    // the persistence layer moves rows by `queue_position`. Translate through the
+    // rows' OWN slots, never `index + 1` — slots are unique and monotonic but not
+    // dense, so `index + 1` names the wrong rows on any queue that has had an item
+    // removed or finish. This is the whole correctness story for the drag.
+    const fromPosition = queue[fromIndex].queuePosition;
+    const toPosition = queue[toIndex].queuePosition;
+    reorderDownloadQueue(fromPosition, toPosition);
+    set({ downloadQueue: repackQueueMirror(queue, fromPosition, toPosition) });
   },
 
   updateQueueItem: (queueId, update) => {
@@ -408,7 +458,7 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
         nextSongs[s.id] = mergeCachedSong(state.cachedSongs[s.id], s, childBySongId?.get(s.id));
       }
       return {
-        downloadQueue: state.downloadQueue.filter((q) => q.queueId !== queueId),
+        downloadQueue: dropFromQueueMirror(state.downloadQueue, queueId),
         cachedItems: {
           ...state.cachedItems,
           [item.itemId]: { ...itemToPersist, songIds },

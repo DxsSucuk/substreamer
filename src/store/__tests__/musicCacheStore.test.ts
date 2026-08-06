@@ -8,7 +8,10 @@ jest.mock('../persistence/musicCacheTables', () => ({
   hydrateCachedSongsAsync: jest.fn(async () => ({})),
   hydrateCachedItemsAsync: jest.fn(async () => ({})),
   hydrateDownloadQueueAsync: jest.fn(async () => []),
-  insertDownloadQueueItem: jest.fn(),
+  // Returns the slot SQL assigned. The default echoes the optimistic one back —
+  // memory and disk agreeing, so the store's reconcile is a no-op. Scenarios that
+  // care about the disagreement override it.
+  insertDownloadQueueItem: jest.fn(async (row: { queuePosition: number }) => row.queuePosition),
   removeDownloadQueueItem: jest.fn(),
   updateDownloadQueueItem: jest.fn(),
   reorderDownloadQueue: jest.fn(),
@@ -142,6 +145,30 @@ function makeQueueDraft(itemId: string, totalSongs = 5): Omit<
   };
 }
 
+/** Put the mirror straight into the given slots, `q-<slot>` per row, in slot order.
+ *  Non-contiguous slots are the shape a hydrate off a table holed by an older build
+ *  produces — `enqueue` can only ever build a dense one. */
+function seedMirror(slots: number[]): void {
+  musicCacheStore.setState({
+    downloadQueue: slots.map((slot) => ({
+      queueId: `q-${slot}`,
+      itemId: `item-${slot}`,
+      type: 'album',
+      name: `Item ${slot}`,
+      status: 'queued',
+      totalSongs: 5,
+      completedSongs: 0,
+      addedAt: slot,
+      queuePosition: slot,
+      songsJson: '[]',
+    })),
+  });
+}
+
+/** The mirror as `[queueId, queuePosition]` pairs, in array order. */
+const mirrorOf = (): Array<[string, number]> =>
+  musicCacheStore.getState().downloadQueue.map((q) => [q.queueId, q.queuePosition]);
+
 function resetStore() {
   musicCacheStore.setState({
     cachedSongs: {},
@@ -220,6 +247,26 @@ describe('enqueue', () => {
     expect(musicCacheStore.getState().downloadQueue).toHaveLength(0);
     expect(mockInsertDownloadQueueItem).not.toHaveBeenCalled();
   });
+
+  it('adopts the slot SQL assigned when it differs from the optimistic one', async () => {
+    // What an enqueue that beats `hydrateFromDbAsync` looks like: memory is empty
+    // so it guesses 1, while the DB already holds a persisted queue and hands back
+    // 8. SQL is the authority; memory follows.
+    mockInsertDownloadQueueItem.mockResolvedValueOnce(8);
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'));
+    expect(musicCacheStore.getState().downloadQueue[0].queuePosition).toBe(1);
+
+    await Promise.resolve();
+    expect(musicCacheStore.getState().downloadQueue[0].queuePosition).toBe(8);
+  });
+
+  it('leaves the in-memory row alone when the write was dropped', async () => {
+    mockInsertDownloadQueueItem.mockResolvedValueOnce(null);
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'));
+
+    await Promise.resolve();
+    expect(musicCacheStore.getState().downloadQueue[0].queuePosition).toBe(1);
+  });
 });
 
 /* ------------------------------------------------------------------ */
@@ -244,6 +291,37 @@ describe('removeFromQueue', () => {
     // Persistence is still called -- the store doesn't pre-filter unknown IDs.
     expect(mockRemoveDownloadQueueItem).toHaveBeenCalledWith('does-not-exist');
     expect(musicCacheStore.getState().downloadQueue).toHaveLength(0);
+  });
+
+  it('drops the row and leaves every surviving slot alone', () => {
+    // Disk leaves the vacated slot vacant, so renumbering here would put the mirror
+    // out of step with it — and `reorderQueue` reads the mirror's slots.
+    seedMirror([1, 2, 3, 4]);
+    musicCacheStore.getState().removeFromQueue('q-2');
+    expect(mirrorOf()).toEqual([
+      ['q-1', 1],
+      ['q-3', 3],
+      ['q-4', 4],
+    ]);
+  });
+
+  it('keeps the mirror faithful on a queue whose slots were already holed', () => {
+    seedMirror([1, 3, 7]);
+    musicCacheStore.getState().removeFromQueue('q-3');
+    expect(mirrorOf()).toEqual([
+      ['q-1', 1],
+      ['q-7', 7],
+    ]);
+  });
+
+  it('leaves every slot alone when the queueId is unknown', () => {
+    seedMirror([1, 2, 3]);
+    musicCacheStore.getState().removeFromQueue('q-9');
+    expect(mirrorOf()).toEqual([
+      ['q-1', 1],
+      ['q-2', 2],
+      ['q-3', 3],
+    ]);
   });
 });
 
@@ -307,6 +385,89 @@ describe('reorderQueue', () => {
   it('no-op when queue is empty', () => {
     musicCacheStore.getState().reorderQueue(0, 0);
     expect(mockReorderDownloadQueue).not.toHaveBeenCalled();
+  });
+
+  // `index + 1` is only the row's slot while the table is dense. These cases hand it
+  // a mirror that is not, which is what a table holed by an older build hydrates to.
+  describe('on a queue whose slots are not dense', () => {
+    it('sends the rows real slots, not their array indices', () => {
+      seedMirror([1, 3, 7]);
+      musicCacheStore.getState().reorderQueue(0, 2);
+      expect(mockReorderDownloadQueue).toHaveBeenCalledWith(1, 7);
+    });
+
+    it('sends real slots moving backward too', () => {
+      seedMirror([1, 3, 7]);
+      musicCacheStore.getState().reorderQueue(2, 0);
+      expect(mockReorderDownloadQueue).toHaveBeenCalledWith(7, 1);
+    });
+
+    it('mirrors the repack the SQL performs, so memory keeps matching disk', () => {
+      seedMirror([1, 3, 7]);
+      musicCacheStore.getState().reorderQueue(0, 2);
+      expect(mirrorOf()).toEqual([
+        ['q-3', 2],
+        ['q-7', 6],
+        ['q-1', 7],
+      ]);
+    });
+
+    it('leaves rows outside the moved range on their own slots', () => {
+      seedMirror([1, 3, 7, 9]);
+      musicCacheStore.getState().reorderQueue(1, 2);
+      expect(mirrorOf()).toEqual([
+        ['q-1', 1],
+        ['q-7', 6],
+        ['q-3', 7],
+        ['q-9', 9],
+      ]);
+    });
+  });
+
+  it('permutes the occupied slots rather than minting new ones', () => {
+    seed(4);
+    musicCacheStore.getState().reorderQueue(0, 2);
+    expect(mirrorOf().map(([, position]) => position)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('translates array indices to the slots left after a removal', () => {
+    // The reported bug, at the store boundary: remove from the middle, then drag
+    // the new first row to the back. `index + 1` would have sent slot 3 — q-3's.
+    seedMirror([1, 2, 3, 4]);
+    musicCacheStore.getState().removeFromQueue('q-2');
+    musicCacheStore.getState().reorderQueue(0, 2);
+    expect(mockReorderDownloadQueue).toHaveBeenCalledWith(1, 4);
+    expect(mirrorOf()).toEqual([
+      ['q-3', 2],
+      ['q-4', 3],
+      ['q-1', 4],
+    ]);
+  });
+
+  it('still moves the right row after a long run of completions', () => {
+    // What a full-library download leaves: every completion vacates the front slot,
+    // so the survivors sit at a high, sparse offset and nothing is ever 1..N again.
+    seedMirror([1, 2, 3, 4, 5, 6, 7, 8]);
+    for (const done of ['q-1', 'q-2', 'q-3', 'q-4', 'q-5']) {
+      musicCacheStore.getState().markItemComplete(
+        done,
+        makeItem(`item-${done}`, []) as Omit<CachedItemMeta, 'songIds'>,
+        [],
+        [],
+      );
+    }
+    expect(mirrorOf()).toEqual([
+      ['q-6', 6],
+      ['q-7', 7],
+      ['q-8', 8],
+    ]);
+    musicCacheStore.getState().reorderQueue(2, 0);
+    expect(mockReorderDownloadQueue).toHaveBeenCalledWith(8, 6);
+    expect(mirrorOf()).toEqual([
+      ['q-8', 6],
+      ['q-6', 7],
+      ['q-7', 8],
+    ]);
   });
 });
 
@@ -407,6 +568,35 @@ describe('markItemComplete', () => {
     expect(state.cachedSongs['s1']).toEqual(songs[0]);
     expect(state.cachedSongs['s2']).toEqual(songs[1]);
     expect(state.cachedSongs['s3']).toEqual(songs[2]);
+  });
+
+  it('drops the completed row and leaves every surviving slot alone', () => {
+    seedMirror([1, 2, 3]);
+    musicCacheStore.getState().markItemComplete(
+      'q-2',
+      makeItem('item-2', []) as Omit<CachedItemMeta, 'songIds'>,
+      [makeSong('s1')],
+      [{ songId: 's1', position: 1 }],
+    );
+    expect(mirrorOf()).toEqual([
+      ['q-1', 1],
+      ['q-3', 3],
+    ]);
+  });
+
+  it('leaves every slot alone when the completed item was never queued', () => {
+    seedMirror([1, 2, 3]);
+    musicCacheStore.getState().markItemComplete(
+      'q-9',
+      makeItem('item-9', []) as Omit<CachedItemMeta, 'songIds'>,
+      [makeSong('s1')],
+      [{ songId: 's1', position: 1 }],
+    );
+    expect(mirrorOf()).toEqual([
+      ['q-1', 1],
+      ['q-2', 2],
+      ['q-3', 3],
+    ]);
   });
 
   it('preserves existing cached songs from other items', () => {

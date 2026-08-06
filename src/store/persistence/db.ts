@@ -69,6 +69,52 @@ try {
     );
   }
 
+  // The superseded non-unique position index. `CREATE UNIQUE INDEX IF NOT EXISTS`
+  // under the same name is a no-op, so the constraint below arrives under a new
+  // name and this one is retired here (same pattern as idx_song_index_title).
+  db.execSync('DROP INDEX IF EXISTS idx_download_queue_position;');
+
+  // download_queue position renumber — a one-time heal, NOT schema, so it stays
+  // here for the same reason the dedup above does: it must run BEFORE the UNIQUE
+  // (queue_position) index that `ensureNormalizedSchema` creates inside a single
+  // all-or-nothing transaction, or surviving duplicates fail that CREATE and null
+  // the whole DB handle. Duplicates are possible on every install predating the
+  // constraint — the slot was a JS-computed MAX+1 over an in-memory mirror, which
+  // reads 0 for an enqueue that beats `hydrateFromDbAsync`. Rows are RENUMBERED,
+  // never deleted: each duplicate is a real queued download. Guarded on the table
+  // existing — a fresh install has not created it yet.
+  const queueTable = db.getFirstSync<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='download_queue'",
+  );
+  if ((queueTable?.n ?? 0) > 0) {
+    const duplicates = db.getFirstSync<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM (
+         SELECT queue_position FROM download_queue
+          GROUP BY queue_position HAVING COUNT(*) > 1 LIMIT 1
+       )`,
+    );
+    if ((duplicates?.n ?? 0) > 0) {
+      // `conn.db`, not `db`: the mutable module binding loses its non-null
+      // narrowing inside the callback.
+      conn.db.withTransactionSync(() => {
+        // Dense 1..N in (queue_position, added_at, queue_id) order — deterministic,
+        // so two devices repairing the same queue agree. Written NEGATED first: a
+        // positive target can collide with a row that has not been renumbered yet,
+        // and negative space is disjoint from every untouched row.
+        conn.db.execSync(
+          `UPDATE download_queue SET queue_position = -ranked.rn
+             FROM (SELECT queue_id,
+                          ROW_NUMBER() OVER (ORDER BY queue_position, added_at, queue_id) AS rn
+                     FROM download_queue) AS ranked
+            WHERE ranked.queue_id = download_queue.queue_id;`,
+        );
+        conn.db.execSync(
+          'UPDATE download_queue SET queue_position = -queue_position WHERE queue_position < 0;',
+        );
+      });
+    }
+  }
+
   // Normalized model: create the songs/albums/artists/playlists tables + children at
   // boot so the live sync can dual-write them (not just the one-time migration).
   // Generated DDL, all CREATE ... IF NOT EXISTS — idempotent + FK-safe.
