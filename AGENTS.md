@@ -353,6 +353,14 @@ Prefer Symdex MCP server (when available) over Glob/Grep for symbol lookup, file
 - **Download `queue_position` values are UNIQUE but deliberately NOT dense.** Renumbering to close gaps is O(N²) across a full-library download. See `plans/download-queue-position-density.md` before "fixing" the holes.
 - Boot calls `ensureNormalizedSchema` once, at module scope. Runtime callers were removed; do not add one.
 
+### Working on the data model
+
+- **Two upsert policies, and picking the wrong one loses data.** A writer that enumerates the whole entity (the library sync, a full `getAlbum`) overwrites authoritatively. A **supplementary** writer holding a partial view (a list endpoint, `getArtist`'s album array) must pass `merge: true` — `COALESCE(excluded.col, col)` — or it blanks every column its payload omits. The merge flag also skips the child DELETE/INSERT when the payload carries no child rows, because a COALESCE cannot protect a child table and an absent child set means "no opinion", not "none". This was a live bug: opening an artist wiped album genre/year/MBID until the next full sync.
+- **Regenerating the DDL** after editing `src/db/schema.ts`: `rm -f src/db/migrations/*.sql && rm -rf src/db/migrations/meta` → `npx drizzle-kit generate` → `node scripts/build-normalized-ddl.js`. The build script requires exactly ONE .sql file (a full schema, not a delta) and errors out otherwise. Never hand-edit `normalizedDdl.ts`.
+- **Every new table must be classified** in `MODEL_TABLES` (server-scoped; logout drops it) or `KEPT_TABLES` (permanent user data) in `createNormalizedTables.ts`. A suite guard enforces it, and the allowlist fails CLOSED — an unclassified table is never dropped, so a server-scoped one would leak between accounts.
+- **FK to your own parent, never to `songs`.** Only true song children (`song_artists`, `song_genres`, …) reference `songs`. A table that merely holds a song id (`artist_top_songs` is the model) must not, because the song need not be in the library — and with `PRAGMA foreign_keys = ON` the INSERT fails outright.
+- **Hydrate stores from SQL in `rehydrateAllStores`**, not from a store's persist config. `headlessMediaService` runs the same pair before building the CarPlay browse tree, so doing it there makes headless work for free.
+
 ### Testing reality
 
 - **Jest cannot reproduce the SQLite pool.** The test seam runs `executeBatch` synchronously — no pool, no FIFO, no interleaving window. A green suite proves logic, never concurrency. Concurrency claims need an on-device spike (Settings → DB Spikes; `src/db/testing/dbSpikes.ts`), and Spike K is the worked example.
