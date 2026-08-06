@@ -118,19 +118,18 @@ const buildDeleteChildren = (table: string, parentCol: string, parentId: string)
  * Bulk-upsert entities into `table` + their children, id-sorted, one ATOMIC batch
  * per chunk: every parent upsert, child DELETE and child INSERT in the chunk either
  * all commit or none do, so an entity can never end up with its children deleted and
- * not reinserted. `serializeDbWrite` is held across the batch AND its rollback, so no
- * other serialized writer can be captured by the savepoint.
+ * not reinserted. The batch's rollback is enqueued behind it in the same tick, so no
+ * other writer can be captured by the savepoint.
  *
  * Writes are PIPELINED: each chunk's write is kicked off without awaiting, so the NEXT
  * chunk's row derivation (mappers, incl. norm/dmeta — JS-thread work) runs concurrently
  * with the previous chunk's write on op-SQLite's native thread. That hides the write
  * under the derive (the dominant cost), and the macrotask yield between chunks lets the
  * UI paint between derive bursts. The pipelining depends on `runAtomicBatchAsync`
- * reaching `executeBatch` synchronously and on the macrotask yield below draining the
- * mutex's microtask. Chunks still commit in id-sorted order (op-SQLite runs one pool
- * thread, FIFO) and all writes are awaited before returning. A failing chunk rejects at
- * the NEXT chunk's drain, so the loop stops there and the caller's cursor does not
- * advance. `onProgress(done, total)` fires per chunk.
+ * reaching `executeBatch` synchronously. Chunks still commit in id-sorted order
+ * (op-SQLite runs one pool thread, FIFO) and all writes are awaited before returning.
+ * A failing chunk rejects at the NEXT chunk's drain, so the loop stops there and the
+ * caller's cursor does not advance. `onProgress(done, total)` fires per chunk.
  */
 export async function bulkUpsert<T>(
   db: InternalDb,
@@ -174,8 +173,8 @@ export async function bulkUpsert<T>(
     // drain (or the final await below), and the macrotask yield in between is long
     // enough for a failed chunk to be reported as an unhandled rejection. The drain
     // still sees the rejection — `catch` here returns a new promise and leaves
-    // `prevWrite` rejecting. `serializeDbWrite` used to do this incidentally, by
-    // attaching its own settle handler to the same promise.
+    // `prevWrite` rejecting. The write mutex this replaced did the same thing by
+    // accident, via the settle handler it attached to every write.
     prevWrite.catch(() => undefined);
     done += chunk.length;
     chunkProfiler?.({ deriveMs, writeMs, rows: chunk.length });

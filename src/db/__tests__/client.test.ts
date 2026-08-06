@@ -163,8 +163,8 @@ describe('runAtomicBatchAsync', () => {
 
 /**
  * The quiesce logout waits on before its JS-thread `BEGIN`. It TRACKS writes rather
- * than serializing them, and it replaced a drain of the `serializeDbWrite` chain that
- * could only ever see the writers which had opted into that chain.
+ * than serializing them, and it replaced a drain of a JS-side write mutex that could
+ * only ever see the writers which had opted into that chain.
  */
 describe('awaitDbWritesIdle', () => {
   it('resolves immediately when nothing is in flight', async () => {

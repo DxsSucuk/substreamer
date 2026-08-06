@@ -1135,8 +1135,8 @@ export async function orphanSongIfUnreferencedAsync(
 // Every write is expressed as a `*Commands` builder returning batch tuples, so a
 // caller that owns one row and a caller that composes several (`markDownloadComplete`,
 // `bulkReplace`) ship the same SQL through one `runAtomicBatchAsync`. No helper
-// re-enters a public function: `serializeDbWrite` is NOT re-entrant, and nesting
-// one inside a held write would deadlock every subsequent write in the process.
+// re-enters a public function: composing at the command level keeps each write to
+// ONE batch, which is what makes it atomic.
 
 /**
  * Rebuild the five `cached_song_*` mirrors from a real `Child`. Delete-then-

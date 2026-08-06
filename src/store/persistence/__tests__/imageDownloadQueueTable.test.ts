@@ -207,7 +207,7 @@ function makeFakeDb() {
 
   // Async delegates — the production module now uses the async DB API. Each
   // delegates to the sync in-memory impl so the fake stays a single source of
-  // truth. withTransactionAsync awaits the (async) callback.
+  // truth.
   return {
     runSync,
     getFirstSync,

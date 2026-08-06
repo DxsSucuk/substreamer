@@ -14,8 +14,8 @@ jest.mock('../persistence/kvStorage', () => {
 });
 // Partial: `openDbConnection` must stay real (persistence/db opens the seam with it).
 // Only `awaitDbWritesIdle` is wrapped, so the guard in front of the DROP loop is
-// assertable — it reads like the chain drain it replaced and is easy to delete by
-// accident when the `serializeDbWrite` call sites go.
+// assertable — it is one easily-deleted line standing between logout and a
+// nested-BEGIN failure that skips the rest of the teardown.
 jest.mock('../../db/client', () => {
   const actual = jest.requireActual('../../db/client');
   return { ...actual, awaitDbWritesIdle: jest.fn(() => actual.awaitDbWritesIdle()) };

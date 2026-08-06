@@ -14,8 +14,7 @@
  * next `cacheAllSizes()` / reconciliation pass regenerates what's missing.
  *
  * All DB access is async so the image download/reconcile worker never blocks
- * the JS thread; writes funnel through `serializeDbWrite` (the connection-wide
- * mutex).
+ * the JS thread. Multi-statement writes go out as one atomic batch.
  */
 import { getDb, type BatchCommand, type InternalDb } from './db';
 

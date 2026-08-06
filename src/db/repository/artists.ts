@@ -273,8 +273,7 @@ export const getArtist = (db: InternalDb, id: string): Promise<Record<string, un
 /** Replace an artist's ordered top-song membership (position = array index). The songs
  *  themselves must already be upserted into `songs` by the caller. ONE atomic batch: a
  *  failure part-way through restores the previous list rather than leaving the DELETE
- *  applied and the INSERTs missing. Takes no mutex of its own — callers hold
- *  `serializeDbWrite`. */
+ *  applied and the INSERTs missing. */
 export const setArtistTopSongs = (
   db: InternalDb,
   artistId: string,

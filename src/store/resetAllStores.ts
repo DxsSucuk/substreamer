@@ -164,8 +164,8 @@ export async function resetAllStores(): Promise<void> {
     // thread and hard-fails if a batch's savepoint is open on the pool. Wait for the
     // pool to be write-idle first, and never let a failure here abort the rest of the
     // teardown (scrobbles, the music cache, the image cache and the store resets all
-    // follow). This replaces a drain of the `serializeDbWrite` chain, which proved
-    // nothing: the writers still live at logout are the ones that never joined it.
+    // follow). The predecessor drained a JS-side write mutex, which proved nothing:
+    // the writers still live at logout were the ones that never joined that chain.
     await awaitDbWritesIdle();
     try {
       resetNormalizedSchema(normDb);

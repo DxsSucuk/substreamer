@@ -61,7 +61,6 @@ jest.mock('../../db/repository/details', () => ({
 
 jest.mock('../../store/persistence/db', () => ({
   getDb: () => ({}),
-  serializeDbWrite: (fn: () => Promise<void>) => fn(),
 }));
 
 // The success path upserts into the normalized model; these tests are about which

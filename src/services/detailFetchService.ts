@@ -125,9 +125,6 @@ export async function fetchAlbumDetail(
       ];
       ratingStore.getState().reconcileRatings(ratingEntries);
       if (db) {
-        // NO outer `serializeDbWrite`: the bulk upserts take the mutex per chunk and
-        // it is not re-entrant, so wrapping them here wedges the write chain for good.
-        // Only the writers with no mutex of their own are wrapped.
         const songs = data.song ?? [];
         await upsertAlbums(db, [data], undefined, articles());
         if (songs.length > 0) {

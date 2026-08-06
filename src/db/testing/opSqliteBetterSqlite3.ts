@@ -106,7 +106,7 @@ function makeDb(bs: Database.Database, dbPath: string): DB {
     // `opsqlite_execute_batch` loops `opsqlite_execute` with its `BEGIN EXCLUSIVE
     // TRANSACTION` commented out (cpp/bridge.cpp) and leaves the transaction to the JS
     // caller. Wrapping a BEGIN here would both hide that (a batch would look atomic when
-    // it is not) and make a caller's own `withTransactionAsync` a nested-BEGIN error.
+    // it is not) and make a caller's own outer transaction a nested-BEGIN error.
     // `runAtomicBatchAsync` gets its atomicity by passing SAVEPOINT/RELEASE as ordinary
     // commands, which `run()` routes through `bs.exec` — so it is modelled faithfully.
     executeBatch: async (commands: SQLBatchTuple[]) => {

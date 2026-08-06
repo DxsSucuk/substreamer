@@ -7,9 +7,9 @@
  * `InternalDb` surface every persistence module already consumes — so the engine
  * swap is behavior-identical and no caller changes.
  *
- * op-SQLite mandates ONE connection per DB (all `execute` run on one dedicated
- * thread); write serialization is handled by `serializeDbWrite` in
- * `store/persistence/db.ts`, which also owns schema creation and the exports.
+ * op-SQLite mandates ONE connection per DB: every `execute`/`executeBatch` runs on
+ * one dedicated pool thread, FIFO, so pool work is serialized by the engine itself.
+ * `store/persistence/db.ts` owns schema creation and the exports.
  *
  * Import-safety: op-SQLite is a native module absent under Node/Jest, so a global
  * manual mock (`__mocks__/@op-engineering/op-sqlite.js`) backs it with an
@@ -145,17 +145,18 @@ function trackWrite<T>(work: Promise<T>): Promise<T> {
  *
  * Await this before any JS-thread `executeSync` transaction — logout's
  * `resetNormalizedSchema` DROP loop is the only runtime caller. It covers EVERY
- * writer, which the old `serializeDbWrite` drain could not: writers that never
- * joined that chain were invisible to it.
+ * writer, which the JS-side write mutex it replaced could not: a writer that never
+ * joined that chain was invisible to it.
  */
 export function awaitDbWritesIdle(): Promise<void> {
   if (inFlightWrites === 0) return Promise.resolve();
   return new Promise<void>((resolve) => idleWaiters.push(resolve));
 }
 
-/** Adapt op-SQLite's DB to the `InternalDb` surface. Transactions use manual
- *  BEGIN/COMMIT via `execute` so callers' `run*` calls run inside them on the
- *  single connection thread, matching the previous expo-sqlite behavior. */
+/** Adapt op-SQLite's DB to the `InternalDb` surface. `withTransactionSync` issues
+ *  its BEGIN/COMMIT via `executeSync`, matching the previous expo-sqlite behavior;
+ *  multi-statement ASYNC writes use `runAtomicBatchAsync` rather than a transaction
+ *  spanning JS turns. */
 function adapt(op: DB): InternalDb {
   return {
     getFirstSync<T>(sql: string, params?: readonly unknown[]): T | undefined {

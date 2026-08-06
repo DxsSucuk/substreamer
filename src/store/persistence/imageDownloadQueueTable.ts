@@ -10,9 +10,8 @@
  * INSERT OR IGNORE semantics on the primary key.
  *
  * All DB access is async so the image-refresh worker never blocks the JS
- * thread. Writes funnel through `serializeDbWrite` (the connection-wide mutex)
- * so they never interleave with another module's transaction on the shared
- * connection.
+ * thread. Every write here is a single statement, which the engine runs as one
+ * indivisible task on its single pool thread.
  *
  * Error-swallowing: every read returns a safe default ([], null, 0) and
  * every write is a silent no-op on failure. Consumers never need to

@@ -9,7 +9,7 @@
  *  - Spike A (BLOCKING): can op-SQLite open the EXISTING `substreamer7.db` that
  *    expo-sqlite created, read real data, and does its resolved path stay under
  *    the "SQLite" backup-exclusion? This decides "keep the file" vs "copy/migrate".
- *  - Spike B: does ONE op-SQLite connection + the `serializeDbWrite` mutex + WAL
+ *  - Spike B: does ONE op-SQLite connection + a JS-side write mutex + WAL
  *    keep interactive read latency acceptable while a bulk sync writes? And does
  *    `reactiveExecute` fire on a transactional write + dispose on unsub?
  *
@@ -192,8 +192,9 @@ export async function runSpikeB(log: Log): Promise<void> {
     return;
   }
 
-  // Inline write mutex mirroring serializeDbWrite — every write funnels through
-  // this chain so at most one transaction is in flight on the single connection.
+  // Inline write mutex — every write funnels through this chain so at most one
+  // transaction is in flight on the single connection. Local to the spike: the app
+  // itself has no such mutex, the engine's single pool thread serializes for it.
   let chain: Promise<unknown> = Promise.resolve();
   const serialize = <T,>(task: () => Promise<T>): Promise<T> => {
     const run = chain.then(task, task);
@@ -627,7 +628,7 @@ export async function runSpikeG(log: Log): Promise<void> {
     return;
   }
 
-  // Inline write mutex (mirror serializeDbWrite): one batch in flight at a time.
+  // Inline write mutex, local to the spike: one batch in flight at a time.
   let chain: Promise<unknown> = Promise.resolve();
   const serialize = <T,>(task: () => Promise<T>): Promise<T> => {
     const run = chain.then(task, task);
