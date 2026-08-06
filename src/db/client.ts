@@ -58,8 +58,9 @@ export interface InternalDb {
   runBatchAsync(commands: readonly BatchCommand[]): Promise<void>;
   /**
    * Run many statements as ONE all-or-nothing batch off the JS thread: the same
-   * `executeBatch`, bracketed by `SAVEPOINT`/`RELEASE`, with a `ROLLBACK TO` on
-   * failure. Rejects with the ORIGINAL statement error.
+   * `executeBatch`, bracketed by `SAVEPOINT`/`RELEASE`, with a `ROLLBACK TO`
+   * enqueued behind it in the same tick. Rejects with the ORIGINAL statement error,
+   * after the savepoint has been popped.
    */
   runAtomicBatchAsync(commands: readonly BatchCommand[]): Promise<void>;
   execSync(sql: string): void;
@@ -140,10 +141,11 @@ function adapt(op: DB): InternalDb {
       // pipelining caller (`bulkUpsert`) would derive its next chunk before this
       // one reaches the pool. op-SQLite's pool has exactly ONE thread
       // (`node_modules/@op-engineering/op-sqlite/cpp/OPThreadPool.cpp:14`,
-      // `auto numberOfThreads = 1;`) and runs tasks FIFO, so one `executeBatch`
-      // is one indivisible task: no other POOL-queued statement can land between
-      // the SAVEPOINT and the RELEASE. (`executeSync` runs on the JS thread and
-      // bypasses the pool — those callers still need `serializeDbWrite`.)
+      // `auto numberOfThreads = 1;`; `restartPool()` would rebuild it with
+      // `hardware_concurrency()` threads and break that, but has no callers) and
+      // runs tasks FIFO, so one `executeBatch` is one indivisible task: no other
+      // POOL-queued statement can land between the SAVEPOINT and the RELEASE.
+      // (`executeSync` runs on the JS thread and bypasses the pool entirely.)
       // SAVEPOINT, not BEGIN: it nests, so running inside another writer's open
       // transaction neither fails nor lets our recovery destroy their work.
       const batch = op.executeBatch([
@@ -151,20 +153,34 @@ function adapt(op: DB): InternalDb {
         ...commands,
         ['RELEASE op_batch', []],
       ] as unknown as SQLBatchTuple[]);
+      // The recovery is enqueued in the SAME TICK, unconditionally, and that is
+      // load-bearing rather than tidy: `opsqlite_execute_batch` is a bare loop that
+      // rethrows the first statement failure (`cpp/bridge.cpp`), so an aborted batch
+      // never reaches its RELEASE and leaves the savepoint OPEN. Deciding to recover
+      // from the JS `catch` below would be too late — the rejection has to travel back
+      // to JS, and every task the pool drains in the meantime (including writes queued
+      // while this batch was still running) would commit inside the stranded savepoint
+      // and then be silently discarded by the ROLLBACK. One JS thread means nothing can
+      // be issued between two synchronous calls, and FIFO means nothing can execute
+      // between the two tasks, so there is no window to be captured by.
+      //
+      // On the success path the batch has already RELEASEd the savepoint, so
+      // `ROLLBACK TO` fails with "no such savepoint" and nothing is undone — that
+      // failure is expected and swallowed. Same swallow covers SQLITE_FULL / IOERR /
+      // NOMEM, which abort the whole transaction themselves: the batch is already
+      // undone, so the recovery's own failure is never the error to report.
+      const recovery = op
+        .executeBatch([
+          ['ROLLBACK TO op_batch', []],
+          ['RELEASE op_batch', []],
+        ] as unknown as SQLBatchTuple[])
+        .catch(() => undefined);
       try {
         await batch;
       } catch (e) {
-        try {
-          await op.executeBatch([
-            ['ROLLBACK TO op_batch', []],
-            ['RELEASE op_batch', []],
-          ] as unknown as SQLBatchTuple[]);
-        } catch {
-          // SQLITE_FULL / IOERR / NOMEM abort the whole transaction themselves,
-          // after which `ROLLBACK TO` fails with "no such savepoint" — the batch
-          // is already undone, so the recovery's own failure is not the error to
-          // report. Always rethrow the statement error that actually failed.
-        }
+        // Settle the recovery before reporting, so the caller's error handling can
+        // never observe a half-applied batch. Always rethrow the statement error.
+        await recovery;
         throw e;
       }
     },

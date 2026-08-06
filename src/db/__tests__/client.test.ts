@@ -7,6 +7,14 @@
  * statement error is what callers see — including when the rollback itself fails, which
  * is what `SQLITE_FULL`/`IOERR`/`NOMEM` do (they abort the whole transaction, after
  * which `ROLLBACK TO` reports "no such savepoint").
+ *
+ * They also pin the ORDER the two batches are issued in. An aborted batch never reaches
+ * its RELEASE, so recovering from the JS `catch` would leave the savepoint open across a
+ * round trip to JS and let the pool commit other writers' work inside it, to be discarded
+ * by the ROLLBACK. The recovery is therefore enqueued unconditionally in the same tick —
+ * on the success path it is a no-op that fails with "no such savepoint". The seam runs
+ * `executeBatch` synchronously (no pool, no window), so only that ordering is checkable
+ * here; the hazard itself is device-only.
  */
 import { openDbConnection } from '../client';
 
@@ -36,14 +44,36 @@ describe('runAtomicBatchAsync', () => {
     conn.raw.close();
   });
 
-  it('issues executeBatch SYNCHRONOUSLY so a pipelining caller queues before it derives', () => {
+  it('issues BOTH batches SYNCHRONOUSLY so nothing can be queued between them', () => {
     const conn = freshDb();
     const spy = jest.spyOn(conn.raw, 'executeBatch');
 
     void conn.db.runAtomicBatchAsync([['INSERT INTO t VALUES (?)', ['a']]]);
 
-    // No await above: the batch must already be on the pool.
-    expect(spy).toHaveBeenCalledTimes(1);
+    // No await above: the batch must already be on the pool (the pipelining caller
+    // `bulkUpsert` derives its next chunk before this one would otherwise land), and
+    // the recovery must be on it too — one JS thread means nothing can be issued
+    // between two synchronous calls, so there is no window to be captured by.
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect((spy.mock.calls[1][0] as SQLBatchTuple[]).map((c) => c[0])).toEqual([
+      'ROLLBACK TO op_batch',
+      'RELEASE op_batch',
+    ]);
+    conn.raw.close();
+  });
+
+  it('enqueues the recovery even when the batch SUCCEEDS, and it undoes nothing', async () => {
+    const conn = freshDb();
+    const spy = jest.spyOn(conn.raw, 'executeBatch');
+
+    await conn.db.runAtomicBatchAsync([['INSERT INTO t VALUES (?)', ['a']]]);
+
+    // The successful batch already released the savepoint, so the recovery's
+    // `ROLLBACK TO` fails with "no such savepoint" — expected, swallowed, and the row
+    // stays committed. Moving the recovery back under the `catch` would pass every
+    // other test in this file and silently reopen the window.
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(ids(conn)).toEqual(['a']);
     conn.raw.close();
   });
 
