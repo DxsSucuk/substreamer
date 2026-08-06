@@ -216,7 +216,10 @@ export function fetchArtistBase(id: string, opts?: ArtistFetchOpts): Promise<Art
       if (db) {
         // Both take the (non-re-entrant) mutex per chunk themselves — see `fetchAlbumDetail`.
         await upsertArtists(db, [artist], undefined, articles());
-        if (albums.length > 0) await upsertAlbums(db, albums, undefined, articles());
+        // MERGE: `getArtist` returns a partial album view. Without this, opening an
+        // artist blanked genre/year/MBID and wiped the child rows on every album the
+        // library sync had already populated in full — live before this change.
+        if (albums.length > 0) await upsertAlbums(db, albums, undefined, articles(), { merge: true });
         bumpDetailChanged('artist', id);
       }
       return { artist, albums } as ArtistBase;

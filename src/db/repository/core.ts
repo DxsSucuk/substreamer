@@ -84,13 +84,35 @@ function coerceBind(table: string, col: string, value: unknown): Value {
   return JSON.stringify(value);
 }
 
-/** Build an `INSERT … ON CONFLICT(pk) DO UPDATE` command tuple (all other cols). */
-function buildUpsertRow(table: string, row: Row, pk = 'id'): BatchCommand {
+/**
+ * Build an `INSERT … ON CONFLICT(pk) DO UPDATE` command tuple.
+ *
+ * Two update policies, and picking the wrong one loses data:
+ *
+ * - **Authoritative (default)** — `col = excluded.col`. Every column takes the incoming
+ *   value, NULL included. Correct only for a writer that enumerates the whole entity
+ *   and can therefore speak for every field: the library sync, a full `getAlbum`.
+ * - **Merge** (`merge: true`) — `col = COALESCE(excluded.col, col)`. A column the payload
+ *   does not carry keeps what the row already held. Correct for SUPPLEMENTARY writers
+ *   holding a partial view (a list endpoint, an artist's album array): without it, a
+ *   leaner payload silently blanks genre, MBID, year and the rest until the next full sync.
+ *
+ * The merge policy cannot express "the server cleared this field" — a NULL is
+ * indistinguishable from "absent". That is deliberate: state columns (`starred`,
+ * `user_rating`) are owned by the favourites and rating paths, which write them directly,
+ * and the authoritative sync corrects everything else. A stale value that self-heals beats
+ * a blanked one that does not.
+ */
+function buildUpsertRow(table: string, row: Row, pk = 'id', merge = false): BatchCommand {
   const cols = Object.keys(row);
   const placeholders = cols.map(() => '?').join(', ');
   const updates = cols
     .filter((c) => c !== pk)
-    .map((c) => `${ident(c)} = excluded.${ident(c)}`)
+    .map((c) =>
+      merge
+        ? `${ident(c)} = COALESCE(excluded.${ident(c)}, ${ident(c)})`
+        : `${ident(c)} = excluded.${ident(c)}`,
+    )
     .join(', ');
   const sql =
     `INSERT INTO ${ident(table)} (${cols.map(ident).join(', ')}) VALUES (${placeholders}) ` +
@@ -140,10 +162,13 @@ export async function bulkUpsert<T>(
     children?: ChildSpec<T>[];
     chunkSize?: number;
     onProgress?: (done: number, total: number) => void;
+    /** SUPPLEMENTARY writer: keep columns the payload does not carry (see
+     *  {@link buildUpsertRow}). Default false — authoritative overwrite. */
+    merge?: boolean;
   },
   items: T[],
 ): Promise<number> {
-  const { table, idOf, rowOf, children = [], chunkSize = 500, onProgress } = opts;
+  const { table, idOf, rowOf, children = [], chunkSize = 500, onProgress, merge = false } = opts;
   const sorted = [...items].sort((a, b) => (idOf(a) < idOf(b) ? -1 : idOf(a) > idOf(b) ? 1 : 0));
   let done = 0;
   let prevWrite: Promise<void> = Promise.resolve();
@@ -155,10 +180,16 @@ export async function bulkUpsert<T>(
     const commands: BatchCommand[] = [];
     for (const item of chunk) {
       const id = idOf(item);
-      commands.push(buildUpsertRow(table, rowOf(item)));
+      commands.push(buildUpsertRow(table, rowOf(item), 'id', merge));
       for (const spec of children) {
+        const childRows = spec.rows(item, id);
+        // In MERGE mode an absent child set means "this payload has no opinion", not
+        // "this entity has none" — replacing it would delete the rows a fuller writer
+        // put there and insert nothing, which is exactly the blanking the COALESCE above
+        // prevents on the parent. A payload that DOES carry children still replaces them.
+        if (merge && childRows.length === 0) continue;
         commands.push(buildDeleteChildren(spec.table, spec.parentCol, id));
-        for (const cr of spec.rows(item, id)) commands.push(buildInsertChild(spec.table, cr));
+        for (const cr of childRows) commands.push(buildInsertChild(spec.table, cr));
       }
     }
     const deriveMs = nowMs() - d0;

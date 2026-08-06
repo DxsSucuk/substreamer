@@ -213,11 +213,18 @@ export async function hydrateAlbumRows(db: InternalDb, rows: AlbumListRow[]): Pr
   }
 }
 
+/**
+ * @param opts.merge SUPPLEMENTARY writer — the payload is a partial view of the album
+ * (a list endpoint, an artist's album array), so columns and child sets it does not
+ * carry keep what the row already holds. Omit for the library sync and any other writer
+ * that speaks for the whole entity. See `buildUpsertRow` in `core.ts`.
+ */
 export function upsertAlbums(
   db: InternalDb,
   albums: AlbumID3[],
   onProgress?: (done: number, total: number) => void,
   articles?: readonly string[],
+  opts?: { merge?: boolean },
 ): Promise<number> {
   return bulkUpsert(
     db,
@@ -234,6 +241,7 @@ export function upsertAlbums(
         { table: 'album_disc_titles', parentCol: 'album_id', rows: albumDiscTitleRows },
       ],
       onProgress,
+      merge: opts?.merge,
     },
     albums,
   );

@@ -150,3 +150,65 @@ describe('setArtistTopSongs atomicity', () => {
     expect(state?.list_length).toBe(2);
   });
 });
+
+/**
+ * Supplementary writers must not blank what a fuller writer already stored.
+ *
+ * `getArtist` returns a partial album view, and `detailFetchService` upserts it over rows
+ * the library sync populated in full. With the authoritative policy that wiped genre, year
+ * and MBID — and the child DELETE wiped `album_genres` outright — every time the user
+ * opened an artist, until the next full sync.
+ */
+describe('merge upsert (supplementary writers)', () => {
+  const albumRowOf = (id: string) =>
+    db().getFirstSync<{ year: number | null; genre: string | null; music_brainz_id: string | null }>(
+      'SELECT year, genre, music_brainz_id FROM albums WHERE id = ?',
+      [id],
+    );
+
+  it('keeps columns a partial payload does not carry, and overwrites the ones it does', async () => {
+    await upsertAlbums(db(), [
+      album('m1', 'Full', { year: 1969, genre: 'Rock', musicBrainzId: 'mb-1' }),
+    ]);
+
+    // A lean payload: no year, no genre, no MBID — and a changed name.
+    await upsertAlbums(db(), [album('m1', 'Renamed')], undefined, undefined, { merge: true });
+
+    const row = albumRowOf('m1');
+    expect(row?.year).toBe(1969);
+    expect(row?.genre).toBe('Rock');
+    expect(row?.music_brainz_id).toBe('mb-1');
+    expect(
+      db().getFirstSync<{ name: string }>('SELECT name FROM albums WHERE id = ?', ['m1'])?.name,
+    ).toBe('Renamed');
+  });
+
+  it('leaves child rows alone when the payload carries none', async () => {
+    await upsertAlbums(db(), [album('m2', 'Full', { genres: ['Rock', 'Pop'] })]);
+    expect(genresOf('m2')).toEqual(['Rock', 'Pop']);
+
+    await upsertAlbums(db(), [album('m2', 'Full')], undefined, undefined, { merge: true });
+
+    // The COALESCE cannot protect a child table — only skipping the replace can.
+    expect(genresOf('m2')).toEqual(['Rock', 'Pop']);
+  });
+
+  it('still replaces child rows when the payload DOES carry them', async () => {
+    await upsertAlbums(db(), [album('m3', 'Full', { genres: ['Rock'] })]);
+
+    await upsertAlbums(db(), [album('m3', 'Full', { genres: ['Jazz'] })], undefined, undefined, {
+      merge: true,
+    });
+
+    expect(genresOf('m3')).toEqual(['Jazz']);
+  });
+
+  it('the default policy still overwrites authoritatively', async () => {
+    await upsertAlbums(db(), [album('m4', 'Full', { year: 1969, genres: ['Rock'] })]);
+
+    await upsertAlbums(db(), [album('m4', 'Full')]);
+
+    expect(albumRowOf('m4')?.year).toBeNull();
+    expect(genresOf('m4')).toEqual([]);
+  });
+});
