@@ -784,3 +784,143 @@ export async function runSpikeI(log: Log): Promise<void> {
 export async function runSpikeJ(log: Log): Promise<void> {
   await runFullSyncSpike(log, 'basic');
 }
+
+/* ------------------------------------------------------------------ */
+/*  Spike K — the savepoint window (atomic-writes Phase 3, C1)         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Spike K — prove a failed atomic batch cannot swallow another writer's work.
+ *
+ * The hazard this checks is DEVICE-ONLY: Jest's seam runs `executeBatch`
+ * synchronously, so it has no pool, no FIFO queue and no window to reproduce.
+ *
+ * `opsqlite_execute_batch` is a bare loop that rethrows the first statement
+ * failure, so an aborted batch never reaches its RELEASE and leaves the savepoint
+ * OPEN. Recovering from the JS `catch` is too late: the rejection has to travel
+ * back to JS, and the single-threaded FIFO pool keeps draining meanwhile — anything
+ * it runs in that gap commits inside the stranded savepoint and is then silently
+ * discarded by the ROLLBACK. The fix enqueues the recovery in the same tick as the
+ * batch, so nothing can be queued between them.
+ *
+ * Deterministic, not racy: the independent write is issued synchronously while the
+ * batch is still in flight, so the pool order is fixed. Against the old code the
+ * survivor row is destroyed every time.
+ *
+ * Runs against the REAL app connection (that is the point — it is the shipped
+ * `runAtomicBatchAsync` under test), in two throwaway `spike_k_*` tables which are
+ * dropped again at the end. It does not touch app data.
+ */
+export async function runSpikeK(log: Log): Promise<void> {
+  log('=== Spike K: a failed batch must not swallow a concurrent write ===');
+  /* eslint-disable @typescript-eslint/no-var-requires */
+  const { getDb } = require('../../store/persistence/db') as typeof import('../../store/persistence/db');
+  const { awaitDbWritesIdle } = require('../client') as typeof import('../client');
+  /* eslint-enable @typescript-eslint/no-var-requires */
+  const db = getDb();
+  if (!db) {
+    log('DB unavailable — cannot run.');
+    return;
+  }
+
+  let passed = 0;
+  let failed = 0;
+  const check = (name: string, ok: boolean, detail: string): void => {
+    if (ok) {
+      passed += 1;
+      log(`  PASS  ${name}`);
+    } else {
+      failed += 1;
+      log(`  FAIL  ${name} — ${detail}`);
+    }
+  };
+
+  const cleanup = (): void => {
+    db.execSync('DROP TABLE IF EXISTS spike_k_batch');
+    db.execSync('DROP TABLE IF EXISTS spike_k_victim');
+  };
+
+  try {
+    cleanup();
+    db.execSync('CREATE TABLE spike_k_batch (id TEXT PRIMARY KEY)');
+    db.execSync('CREATE TABLE spike_k_victim (id TEXT PRIMARY KEY)');
+
+    // A batch big enough to still be executing when the independent write is queued
+    // behind it, ending in a PRIMARY KEY violation — the same shape as the duplicate
+    // `discTitles` a real server sends.
+    const commands: Array<readonly [string, readonly (string | number | null)[]]> = [];
+    for (let i = 0; i < 2000; i += 1) {
+      commands.push(['INSERT INTO spike_k_batch (id) VALUES (?)', [`row-${i}`]]);
+    }
+    commands.push(['INSERT INTO spike_k_batch (id) VALUES (?)', ['row-0']]); // boom
+
+    const t0 = now();
+    const batch = db.runAtomicBatchAsync(commands);
+    // SYNCHRONOUSLY, with the batch still on the pool — this is the writer the old
+    // code captured. No await may appear between these two lines.
+    const independent = db.runAsync('INSERT INTO spike_k_victim (id) VALUES (?)', ['survivor']);
+
+    let batchRejected = false;
+    try {
+      await batch;
+    } catch {
+      batchRejected = true;
+    }
+    let independentRejected = false;
+    try {
+      await independent;
+    } catch {
+      independentRejected = true;
+    }
+    log(`batch settled in ${since(t0)} (2001 statements, last one a PK violation)`);
+
+    check('the failing batch rejects', batchRejected, 'it resolved — the batch did not fail');
+    check(
+      'the concurrent write SURVIVES the rollback',
+      (db.getFirstSync<{ n: number }>('SELECT COUNT(*) AS n FROM spike_k_victim')?.n ?? 0) === 1,
+      'the row is gone — it committed inside the stranded savepoint and the ROLLBACK ' +
+        'discarded it. THIS IS THE BUG.',
+    );
+    check(
+      'the concurrent write did not report an error',
+      !independentRejected,
+      'it rejected',
+    );
+    check(
+      "the batch's own partial work is rolled back",
+      (db.getFirstSync<{ n: number }>('SELECT COUNT(*) AS n FROM spike_k_batch')?.n ?? -1) === 0,
+      'rows survived — the batch was not atomic',
+    );
+
+    // A stranded savepoint makes the next JS-thread BEGIN "cannot start a transaction
+    // within a transaction" — the failure that takes logout's schema reset down.
+    let beginOk = true;
+    try {
+      db.withTransactionSync(() => {
+        db.runSync('INSERT INTO spike_k_victim (id) VALUES (?)', ['after-begin']);
+      });
+    } catch (e) {
+      beginOk = false;
+      log(`  (BEGIN threw: ${String(e)})`);
+    }
+    check('a JS-thread BEGIN still works afterwards', beginOk, 'nested-BEGIN error');
+
+    // A failed write must settle the in-flight counter, or logout waits forever.
+    const idle = await Promise.race([
+      awaitDbWritesIdle().then(() => 'idle'),
+      new Promise<string>((resolve) => setTimeout(() => resolve('timeout'), 3000)),
+    ]);
+    check(
+      'awaitDbWritesIdle resolves after a failed write',
+      idle === 'idle',
+      'timed out — logout would hang here',
+    );
+
+    log(failed === 0 ? `ALL ${passed} CHECKS PASSED` : `${failed} FAILED, ${passed} passed`);
+  } catch (e) {
+    log(`spike aborted: ${String(e)}`);
+  } finally {
+    cleanup();
+    log('spike_k_* tables dropped.');
+  }
+}
