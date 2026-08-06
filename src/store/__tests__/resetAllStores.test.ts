@@ -12,6 +12,14 @@ jest.mock('../persistence/kvStorage', () => {
     clearKvStorage: jest.fn(),
   };
 });
+// Partial: `openDbConnection` must stay real (persistence/db opens the seam with it).
+// Only `awaitDbWritesIdle` is wrapped, so the guard in front of the DROP loop is
+// assertable — it reads like the chain drain it replaced and is easy to delete by
+// accident when the `serializeDbWrite` call sites go.
+jest.mock('../../db/client', () => {
+  const actual = jest.requireActual('../../db/client');
+  return { ...actual, awaitDbWritesIdle: jest.fn(() => actual.awaitDbWritesIdle()) };
+});
 jest.mock('../../services/subsonicService');
 jest.mock('../../services/playerService', () => ({}));
 jest.mock('../../services/moreOptionsService', () => ({}));
@@ -58,6 +66,7 @@ import type { AlbumID3, Child } from 'subsonic-api';
 
 import { kvStorage, clearKvStorage } from '../persistence';
 import { getDb, __setDbForTests } from '../persistence/db';
+import { awaitDbWritesIdle } from '../../db/client';
 import { ensureNormalizedSchema } from '../../db/createNormalizedTables';
 import {
   markStarredSongs,
@@ -190,6 +199,22 @@ describe('resetAllStores', () => {
       ).toBe(0);
     }
     expect(favoritesStore.getState().songIds.size).toBe(0);
+  });
+
+  it('waits for the pool to be write-idle BEFORE the DROP loop', async () => {
+    // `resetNormalizedSchema`'s `BEGIN` runs on the JS thread and bypasses the pool, so
+    // it hard-fails on Android if a pool transaction is still open. Ordering is the
+    // whole point of the guard — asserted here because the seam runs everything
+    // synchronously and cannot reproduce the overlap itself.
+    const handle = getDb()!;
+    const withTransactionSync = jest.spyOn(handle, 'withTransactionSync');
+
+    await resetAllStores();
+
+    const idleCall = (awaitDbWritesIdle as jest.Mock).mock.invocationCallOrder[0];
+    expect(idleCall).toBeDefined();
+    expect(idleCall).toBeLessThan(withTransactionSync.mock.invocationCallOrder[0]);
+    withTransactionSync.mockRestore();
   });
 
   it('carries on when the normalized-schema reset throws', async () => {

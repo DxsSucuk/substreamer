@@ -16,7 +16,7 @@
  * `executeBatch` synchronously (no pool, no window), so only that ordering is checkable
  * here; the hazard itself is device-only.
  */
-import { openDbConnection } from '../client';
+import { awaitDbWritesIdle, openDbConnection } from '../client';
 
 import type { SQLBatchTuple } from '@op-engineering/op-sqlite';
 
@@ -125,6 +125,27 @@ describe('runAtomicBatchAsync', () => {
     conn.raw.close();
   });
 
+  it('counts the recovery as in-flight, so idle means the pool really is quiet', async () => {
+    const conn = freshDb();
+    let finishRecovery!: (r: unknown) => void;
+    const pending = new Promise((resolve) => {
+      finishRecovery = resolve;
+    });
+    jest
+      .spyOn(conn.raw, 'executeBatch')
+      .mockReturnValueOnce(Promise.resolve({ rowsAffected: 1 }))
+      .mockReturnValueOnce(pending as never);
+
+    await conn.db.runAtomicBatchAsync([['INSERT INTO t VALUES (?)', ['a']]]);
+    const idle = awaitDbWritesIdle().then(() => 'idle');
+    const waiting = Symbol('waiting');
+    expect(await Promise.race([idle, Promise.resolve(waiting)])).toBe(waiting);
+
+    finishRecovery({ rowsAffected: 0 });
+    expect(await idle).toBe('idle');
+    conn.raw.close();
+  });
+
   it('swallows a failing recovery and still reports the original error', async () => {
     const conn = freshDb();
     const original = new Error('disk is full');
@@ -136,6 +157,53 @@ describe('runAtomicBatchAsync', () => {
     await expect(
       conn.db.runAtomicBatchAsync([['INSERT INTO t VALUES (?)', ['a']]]),
     ).rejects.toBe(original);
+    conn.raw.close();
+  });
+});
+
+/**
+ * The quiesce logout waits on before its JS-thread `BEGIN`. It TRACKS writes rather
+ * than serializing them, and it replaced a drain of the `serializeDbWrite` chain that
+ * could only ever see the writers which had opted into that chain.
+ */
+describe('awaitDbWritesIdle', () => {
+  it('resolves immediately when nothing is in flight', async () => {
+    await expect(awaitDbWritesIdle()).resolves.toBeUndefined();
+  });
+
+  it('does not resolve while a write is outstanding', async () => {
+    const conn = freshDb();
+    let finish!: (r: unknown) => void;
+    const pending = new Promise((resolve) => {
+      finish = resolve;
+    });
+    jest.spyOn(conn.raw, 'execute').mockReturnValueOnce(pending as never);
+
+    const write = conn.db.runAsync('INSERT INTO t VALUES (?)', ['a']);
+    const idle = awaitDbWritesIdle().then(() => 'idle');
+    const waiting = Symbol('waiting');
+    expect(await Promise.race([idle, Promise.resolve(waiting)])).toBe(waiting);
+
+    finish({ rows: [], rowsAffected: 1, insertId: 0 });
+    await write;
+    expect(await idle).toBe('idle');
+    conn.raw.close();
+  });
+
+  it('resolves after an in-flight write REJECTS — a failed write must not hang logout', async () => {
+    const conn = freshDb();
+    let fail!: (e: Error) => void;
+    const pending = new Promise((_resolve, reject) => {
+      fail = reject;
+    });
+    jest.spyOn(conn.raw, 'execute').mockReturnValueOnce(pending as never);
+
+    const write = conn.db.runAsync('INSERT INTO t VALUES (?)', ['a']);
+    const idle = awaitDbWritesIdle();
+    fail(new Error('disk is full'));
+
+    await expect(write).rejects.toThrow('disk is full');
+    await expect(idle).resolves.toBeUndefined();
     conn.raw.close();
   });
 });

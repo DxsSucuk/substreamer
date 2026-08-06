@@ -107,10 +107,50 @@ const toRunResult = (r: QueryResult): RunResult => ({
   lastInsertRowId: r.insertId ?? 0,
 });
 
+/**
+ * Pool writes currently outstanding, and everyone waiting for that to reach zero.
+ *
+ * This TRACKS writes, it does not serialize them: nothing waits on anything else, so
+ * there is no ordering cost and no hot-path cost beyond a counter. It exists for the
+ * one thing a mutex could never give us — knowing when it is safe to run a JS-thread
+ * `BEGIN` (`withTransactionSync`), which bypasses the pool entirely and hard-fails on
+ * Android if a pool transaction is open.
+ */
+let inFlightWrites = 0;
+let idleWaiters: Array<() => void> = [];
+
+function trackWrite<T>(work: Promise<T>): Promise<T> {
+  inFlightWrites += 1;
+  const settle = (): void => {
+    inFlightWrites -= 1;
+    if (inFlightWrites > 0) return;
+    const waiters = idleWaiters;
+    idleWaiters = [];
+    for (const w of waiters) w();
+  };
+  // Both handlers, and the ORIGINAL promise is what we return: the derived promise
+  // always resolves (so a failed write is never an unhandled rejection here), while
+  // the caller still sees the rejection it has to handle.
+  work.then(settle, settle);
+  return work;
+}
+
+/**
+ * Resolve once no pool-queued write is outstanding on the connection.
+ *
+ * Await this before any JS-thread `executeSync` transaction — logout's
+ * `resetNormalizedSchema` DROP loop is the only runtime caller. It covers EVERY
+ * writer, which the old `serializeDbWrite` drain could not: writers that never
+ * joined that chain were invisible to it.
+ */
+export function awaitDbWritesIdle(): Promise<void> {
+  if (inFlightWrites === 0) return Promise.resolve();
+  return new Promise<void>((resolve) => idleWaiters.push(resolve));
+}
+
 /** Adapt op-SQLite's DB to the `InternalDb` surface. Transactions use manual
  *  BEGIN/COMMIT via `execute` so callers' `run*` calls run inside them on the
- *  single connection thread (write serialization is external, via
- *  `serializeDbWrite`), matching the previous expo-sqlite behavior. */
+ *  single connection thread, matching the previous expo-sqlite behavior. */
 function adapt(op: DB): InternalDb {
   return {
     getFirstSync<T>(sql: string, params?: readonly unknown[]): T | undefined {
@@ -129,11 +169,11 @@ function adapt(op: DB): InternalDb {
       return toRunResult(op.executeSync(sql, toParams(params)));
     },
     async runAsync(sql: string, params?: readonly unknown[]): Promise<RunResult> {
-      return toRunResult(await op.execute(sql, toParams(params)));
+      return toRunResult(await trackWrite(op.execute(sql, toParams(params))));
     },
     async runBatchAsync(commands: readonly BatchCommand[]): Promise<void> {
       if (commands.length === 0) return;
-      await op.executeBatch(commands as unknown as SQLBatchTuple[]);
+      await trackWrite(op.executeBatch(commands as unknown as SQLBatchTuple[]));
     },
     async runAtomicBatchAsync(commands: readonly BatchCommand[]): Promise<void> {
       if (commands.length === 0) return;
@@ -148,11 +188,13 @@ function adapt(op: DB): InternalDb {
       // (`executeSync` runs on the JS thread and bypasses the pool entirely.)
       // SAVEPOINT, not BEGIN: it nests, so running inside another writer's open
       // transaction neither fails nor lets our recovery destroy their work.
-      const batch = op.executeBatch([
-        ['SAVEPOINT op_batch', []],
-        ...commands,
-        ['RELEASE op_batch', []],
-      ] as unknown as SQLBatchTuple[]);
+      const batch = trackWrite(
+        op.executeBatch([
+          ['SAVEPOINT op_batch', []],
+          ...commands,
+          ['RELEASE op_batch', []],
+        ] as unknown as SQLBatchTuple[]),
+      );
       // The recovery is enqueued in the SAME TICK, unconditionally, and that is
       // load-bearing rather than tidy: `opsqlite_execute_batch` is a bare loop that
       // rethrows the first statement failure (`cpp/bridge.cpp`), so an aborted batch
@@ -169,12 +211,14 @@ function adapt(op: DB): InternalDb {
       // failure is expected and swallowed. Same swallow covers SQLITE_FULL / IOERR /
       // NOMEM, which abort the whole transaction themselves: the batch is already
       // undone, so the recovery's own failure is never the error to report.
-      const recovery = op
-        .executeBatch([
+      // Tracked like any other write: on the success path it opens nothing, but it is
+      // still a queued pool task, and `awaitDbWritesIdle` promises there are none.
+      const recovery = trackWrite(
+        op.executeBatch([
           ['ROLLBACK TO op_batch', []],
           ['RELEASE op_batch', []],
-        ] as unknown as SQLBatchTuple[])
-        .catch(() => undefined);
+        ] as unknown as SQLBatchTuple[]),
+      ).catch(() => undefined);
       try {
         await batch;
       } catch (e) {

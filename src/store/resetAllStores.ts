@@ -13,6 +13,7 @@ import {
   dropAllPendingPersistWrites,
 } from './persistence';
 import { getDb, serializeDbWrite } from './persistence/db';
+import { awaitDbWritesIdle } from '../db/client';
 import { resetNormalizedSchema } from '../db/createNormalizedTables';
 import { clearPendingScrobbles } from './persistence/pendingScrobbleTable';
 import { clearScrobbles } from './persistence/scrobbleTable';
@@ -160,10 +161,12 @@ export async function resetAllStores(): Promise<void> {
   const normDb = getDb();
   if (normDb) {
     // `resetNormalizedSchema` is `withTransactionSync` — its `BEGIN` runs on the JS
-    // thread and hard-fails if a batch's savepoint is open on the pool. Drain the
-    // write chain first, and never let a failure here abort the rest of the teardown
-    // (scrobbles, the music cache, the image cache and the store resets all follow).
-    await serializeDbWrite(() => Promise.resolve());
+    // thread and hard-fails if a batch's savepoint is open on the pool. Wait for the
+    // pool to be write-idle first, and never let a failure here abort the rest of the
+    // teardown (scrobbles, the music cache, the image cache and the store resets all
+    // follow). This replaces a drain of the `serializeDbWrite` chain, which proved
+    // nothing: the writers still live at logout are the ones that never joined it.
+    await awaitDbWritesIdle();
     try {
       resetNormalizedSchema(normDb);
     } catch (e) {
