@@ -25,7 +25,6 @@ import type {
 } from 'subsonic-api';
 
 import type { InternalDb } from './client';
-import { ensureNormalizedSchema } from './createNormalizedTables';
 import { upsertAlbumInfoRow, upsertAlbums } from './repository/albums';
 import { nonEmptyBio } from '../utils/formatters';
 import { getSortArticles } from './sortArticles';
@@ -456,8 +455,6 @@ export async function migrateBlobsToNormalized(
   onProgress?: (done: number, total: number) => void,
 ): Promise<MigrationResult> {
   const start = Date.now();
-  ensureNormalizedSchema(db);
-  log?.('normalized schema ensured');
   // The legacy blob tables are no longer created at boot (F2d). Which of them exist
   // depends on how old the install is — a pre-2026-07-11 upgrader has album_details +
   // song_index but no library_albums — so probe each one independently. A fresh install

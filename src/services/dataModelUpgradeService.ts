@@ -20,7 +20,6 @@
  * idempotent, so a kill mid-run just re-runs next launch (the flag is only stamped on
  * success). Progress surfaces on the library-sync chrome.
  */
-import { ensureNormalizedSchema } from '@/db/createNormalizedTables';
 import { checkpointWalAsync, migrateBlobsToNormalized } from '@/db/migrateNormalized';
 import { getDb } from '@/store/persistence/db';
 import { kvStorage } from '@/store/persistence';
@@ -90,7 +89,6 @@ export function runDataModelUpgradeIfNeeded(): Promise<void> {
       // half-migrated legacy data — see `migrationChainComplete`.
       if (!(await migrationChainComplete())) return;
 
-      ensureNormalizedSchema(db);
       // ONE-SHOT, not a drift check. The drift form ("blobs hold more than normalized")
       // was only meaningful while both sides were written together. The blob tables are
       // frozen now, so their counts are a permanent high-water mark — any later shrink in

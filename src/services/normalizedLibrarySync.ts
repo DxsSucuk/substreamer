@@ -17,7 +17,7 @@
 import type { AlbumID3, Child, Playlist } from 'subsonic-api';
 
 import type { InternalDb } from '@/db/client';
-import { ensureNormalizedSchema, resetNormalizedSchema } from '@/db/createNormalizedTables';
+import { resetNormalizedSchema } from '@/db/createNormalizedTables';
 import { countAlbums, listAlbumIds, sumAlbumSongCounts, upsertAlbums } from '@/db/repository/albums';
 import { deleteArtistsNotIn, upsertArtists } from '@/db/repository/artists';
 import {
@@ -457,7 +457,6 @@ async function doNormalizedSync(
 
   const tStart = nowMs();
   try {
-    ensureNormalizedSchema(db);
     if (full) {
       // Deliberately NOT `resetNormalizedSchema`. Dropping the tables also destroys the
       // things the sync never rebuilds — playlist membership, artist bio/similar/top
