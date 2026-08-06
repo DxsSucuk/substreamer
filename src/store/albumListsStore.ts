@@ -3,6 +3,15 @@ import { persist } from 'zustand/middleware';
 
 import { createDebouncedPersistStorage } from './persistence';
 
+import {
+  albumListRowToAlbumID3,
+  listAlbumListRows,
+  replaceAlbumList,
+  upsertAlbums,
+  type AlbumListType as RepoAlbumListType,
+} from '../db/repository/albums';
+import { getSortArticles } from '../db/sortArticles';
+import { getDb } from './persistence/db';
 import { prefetchCoverArt } from '../services/imageCacheService';
 import {
   ensureCoverArtAuth,
@@ -58,6 +67,60 @@ export interface AlbumListsState {
   refreshAllIfDue: (minIntervalMs: number) => Promise<boolean>;
 }
 
+
+/**
+ * One list refresh: fetch, reconcile ratings, write to SQL, then mirror into the store.
+ *
+ * Order matters. The albums are upserted FIRST because `album_list_entries.album_id` has
+ * an FK to `albums` — an id with no row fails the insert. The upsert uses the MERGE policy
+ * (`core.ts`): these list endpoints return a partial album view, so an authoritative write
+ * would blank genre/year/MBID on rows the library sync populated in full.
+ *
+ * The store keeps the rendered `AlbumID3[]` so every existing consumer and selector is
+ * unchanged; SQL is now the durable copy rather than a persisted blob, so a star or a
+ * rating applied elsewhere is reflected the next time the list is read.
+ */
+async function persistList(
+  listType: RepoAlbumListType,
+  fetcher: (size: number) => Promise<AlbumID3[]>,
+  set: (partial: Partial<AlbumListsState>) => void,
+): Promise<void> {
+  try {
+    await ensureCoverArtAuth();
+    const albums = await fetcher(layoutPreferencesStore.getState().listLength);
+    reconcileAlbumRatings(albums);
+    const db = getDb();
+    if (db && albums.length > 0) {
+      await upsertAlbums(db, albums, undefined, getSortArticles(), { merge: true });
+      await replaceAlbumList(db, listType, albums.map((a) => a.id));
+    }
+    set({ [listType]: albums } as Partial<AlbumListsState>);
+    prefetchCoverArt(albums);
+  } catch {
+    // Leave existing state — a transient fetch failure shouldn't blank the row.
+  }
+}
+
+/** Seed the in-memory lists from SQL at startup, so the home screen renders the last
+ *  known lists before (or without) a network refresh. Replaces blob rehydration. */
+export async function hydrateAlbumListsFromDb(): Promise<void> {
+  const db = getDb();
+  if (!db) return;
+  const types: RepoAlbumListType[] = [
+    'recentlyAdded',
+    'recentlyPlayed',
+    'frequentlyPlayed',
+    'randomSelection',
+  ];
+  for (const listType of types) {
+    // eslint-disable-next-line no-await-in-loop
+    const rows = await listAlbumListRows(db, listType);
+    if (rows.length > 0) {
+      albumListsStore.setState({ [listType]: rows.map(albumListRowToAlbumID3) } as Partial<AlbumListsState>);
+    }
+  }
+}
+
 const PERSIST_KEY = 'substreamer-album-lists';
 
 export const albumListsStore = create<AlbumListsState>()(
@@ -75,51 +138,19 @@ export const albumListsStore = create<AlbumListsState>()(
       setRandomSelection: (albums) => set({ randomSelection: albums }),
 
       refreshRecentlyAdded: async () => {
-        try {
-          await ensureCoverArtAuth();
-          const albums = await getRecentlyAddedAlbums(layoutPreferencesStore.getState().listLength);
-          reconcileAlbumRatings(albums);
-          set({ recentlyAdded: albums });
-          prefetchCoverArt(albums);
-        } catch {
-          // Leave existing state — a transient fetch failure shouldn't blank the row.
-        }
+        await persistList('recentlyAdded', getRecentlyAddedAlbums, set);
       },
 
       refreshRecentlyPlayed: async () => {
-        try {
-          await ensureCoverArtAuth();
-          const albums = await getRecentlyPlayedAlbums(layoutPreferencesStore.getState().listLength);
-          reconcileAlbumRatings(albums);
-          set({ recentlyPlayed: albums });
-          prefetchCoverArt(albums);
-        } catch {
-          // Leave existing state — a transient fetch failure shouldn't blank the row.
-        }
+        await persistList('recentlyPlayed', getRecentlyPlayedAlbums, set);
       },
 
       refreshFrequentlyPlayed: async () => {
-        try {
-          await ensureCoverArtAuth();
-          const albums = await getFrequentlyPlayedAlbums(layoutPreferencesStore.getState().listLength);
-          reconcileAlbumRatings(albums);
-          set({ frequentlyPlayed: albums });
-          prefetchCoverArt(albums);
-        } catch {
-          // Leave existing state — a transient fetch failure shouldn't blank the row.
-        }
+        await persistList('frequentlyPlayed', getFrequentlyPlayedAlbums, set);
       },
 
       refreshRandomSelection: async () => {
-        try {
-          await ensureCoverArtAuth();
-          const albums = await getRandomAlbums(layoutPreferencesStore.getState().listLength);
-          reconcileAlbumRatings(albums);
-          set({ randomSelection: albums });
-          prefetchCoverArt(albums);
-        } catch {
-          // Leave existing state — a transient fetch failure shouldn't blank the row.
-        }
+        await persistList('randomSelection', getRandomAlbums, set);
       },
 
       refreshAll: async () => {
@@ -133,7 +164,19 @@ export const albumListsStore = create<AlbumListsState>()(
               getFrequentlyPlayedAlbums(size),
               getRandomAlbums(size),
             ]);
-          reconcileAlbumRatings([...recentlyAdded, ...recentlyPlayed, ...frequentlyPlayed, ...randomSelection]);
+          const all = [...recentlyAdded, ...recentlyPlayed, ...frequentlyPlayed, ...randomSelection];
+          reconcileAlbumRatings(all);
+          const db = getDb();
+          if (db && all.length > 0) {
+            // ONE upsert for all four lists — they overlap heavily, and the id-sorted
+            // chunking dedupes the write far better than four separate passes. MERGE:
+            // these are partial album views (see `persistList`).
+            await upsertAlbums(db, all, undefined, getSortArticles(), { merge: true });
+            await replaceAlbumList(db, 'recentlyAdded', recentlyAdded.map((a) => a.id));
+            await replaceAlbumList(db, 'recentlyPlayed', recentlyPlayed.map((a) => a.id));
+            await replaceAlbumList(db, 'frequentlyPlayed', frequentlyPlayed.map((a) => a.id));
+            await replaceAlbumList(db, 'randomSelection', randomSelection.map((a) => a.id));
+          }
           set({
             recentlyAdded,
             recentlyPlayed,
@@ -141,12 +184,7 @@ export const albumListsStore = create<AlbumListsState>()(
             randomSelection,
             lastRefreshedAt: Date.now(),
           });
-          prefetchCoverArt([
-            ...recentlyAdded,
-            ...recentlyPlayed,
-            ...frequentlyPlayed,
-            ...randomSelection,
-          ]);
+          prefetchCoverArt(all);
         } catch {
           // Leave existing state on full refresh failure
         }
@@ -172,13 +210,9 @@ export const albumListsStore = create<AlbumListsState>()(
     {
       name: PERSIST_KEY,
       storage: createDebouncedPersistStorage(),
-      partialize: (state) => ({
-        recentlyAdded: state.recentlyAdded,
-        recentlyPlayed: state.recentlyPlayed,
-        frequentlyPlayed: state.frequentlyPlayed,
-        randomSelection: state.randomSelection,
-        lastRefreshedAt: state.lastRefreshedAt,
-      }),
+      // The four lists live in `album_list_entries` + `albums` now; only the refresh
+      // timestamp is still KV state. `hydrateAlbumListsFromDb()` seeds them at startup.
+      partialize: (state) => ({ lastRefreshedAt: state.lastRefreshedAt }),
     }
   )
 );

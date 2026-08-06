@@ -1,5 +1,5 @@
 import { errMessage } from '../../utils/errorMessage';
-import { albumListsStore } from '../albumListsStore';
+import { albumListsStore, hydrateAlbumListsFromDb } from '../albumListsStore';
 import { autoOfflineStore } from '../autoOfflineStore';
 import { completedScrobbleStore } from '../completedScrobbleStore';
 import { favoritesStore } from '../favoritesStore';
@@ -55,6 +55,10 @@ export interface RehydrationResult {
 export async function rehydrateAllStores(): Promise<RehydrationResult> {
   const result: RehydrationResult = { succeeded: [], failed: [] };
   const stores: Array<[string, () => Promise<void>]> = [
+    // Album lists are ordered ids in `album_list_entries` joined to `albums`, not a KV
+    // blob — the store still persists `lastRefreshedAt`, so it stays in STARTUP_KV_STORES,
+    // but the lists themselves are seeded here.
+    ['albumLists', () => hydrateAlbumListsFromDb()],
     ['completedScrobble', () => completedScrobbleStore.getState().hydrateFromDbAsync()],
     ['favorites', () => favoritesStore.getState().hydrateFromDbAsync()],
     ['pendingScrobble', () => pendingScrobbleStore.getState().hydrateFromDbAsync()],

@@ -38,6 +38,14 @@ CREATE TABLE `album_info` (
 	FOREIGN KEY (`album_id`) REFERENCES `albums`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
+CREATE TABLE `album_list_entries` (
+	`list_type` text NOT NULL,
+	`pos` integer NOT NULL,
+	`album_id` text NOT NULL,
+	PRIMARY KEY(`list_type`, `pos`),
+	FOREIGN KEY (`album_id`) REFERENCES `albums`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
 CREATE TABLE `album_moods` (
 	`album_id` text NOT NULL,
 	`pos` integer NOT NULL,

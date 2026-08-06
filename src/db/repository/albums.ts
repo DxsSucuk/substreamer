@@ -1,7 +1,7 @@
 /** Albums repository: bulk upsert (row + children), keyset list, count, by-id. */
 import type { AlbumID3, ArtistID3, DiscTitle, ItemDate, RecordLabel } from 'subsonic-api';
 
-import type { InternalDb } from '../client';
+import type { BatchCommand, InternalDb } from '../client';
 import {
   albumArtistRows,
   albumDiscTitleRows,
@@ -324,6 +324,58 @@ export const upsertAlbumInfoRow = (
       info.imageUrlMedium, info.imageUrlLarge, info.enrichedNotes, info.enrichedNotesUrl,
       info.overrideMbid, info.retrievedAt,
     ],
+  );
+
+/** The four home-screen album lists. Ordered ids in `album_list_entries`; the albums
+ *  themselves are rows in `albums`, so a list can never disagree with the library. */
+export type AlbumListType =
+  | 'recentlyAdded'
+  | 'recentlyPlayed'
+  | 'frequentlyPlayed'
+  | 'randomSelection';
+
+/**
+ * Replace one list's membership, ordered. ONE atomic batch: a failure part-way leaves
+ * the previous list rather than an empty home row.
+ *
+ * The caller must have upserted the albums FIRST — `album_id` has an FK to `albums` and
+ * `PRAGMA foreign_keys = ON`, so an id with no row fails the insert.
+ */
+export const replaceAlbumList = (
+  db: InternalDb,
+  listType: AlbumListType,
+  albumIds: string[],
+): Promise<void> =>
+  db.runAtomicBatchAsync([
+    ['DELETE FROM album_list_entries WHERE list_type = ?', [listType]],
+    ...albumIds.map(
+      (albumId, pos): BatchCommand => [
+        'INSERT INTO album_list_entries (list_type, pos, album_id) VALUES (?, ?, ?)',
+        [listType, pos, albumId],
+      ],
+    ),
+  ]);
+
+/** One list's albums as projected rows, in list order. */
+export const listAlbumListRows = (
+  db: InternalDb,
+  listType: AlbumListType,
+): Promise<AlbumListRow[]> =>
+  db.getAllAsync<AlbumListRow>(
+    `SELECT ${colsOf(ALBUM_LIST_FIELDS, 'a')} FROM album_list_entries e
+       JOIN albums a ON a.id = e.album_id
+      WHERE e.list_type = ? ORDER BY e.pos`,
+    [listType],
+  );
+
+/** Synchronous counterpart — for the headless/CarPlay read at cold start, which has no
+ *  UI to defer to and must answer before the browse tree is built. */
+export const listAlbumListRowsSync = (db: InternalDb, listType: AlbumListType): AlbumListRow[] =>
+  db.getAllSync<AlbumListRow>(
+    `SELECT ${colsOf(ALBUM_LIST_FIELDS, 'a')} FROM album_list_entries e
+       JOIN albums a ON a.id = e.album_id
+      WHERE e.list_type = ? ORDER BY e.pos`,
+    [listType],
   );
 
 /** Drop every cached album-info row (settings "clear metadata"). */

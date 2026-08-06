@@ -559,6 +559,28 @@ export const artistTopSongs = sqliteTable(
   (t) => ({ pk: primaryKey({ columns: [t.artistId, t.pos] }) }),
 );
 
+/**
+ * The four home-screen album lists, as ordered album ids. The albums themselves live in
+ * `albums` (upserted by the same refresh, with the MERGE policy — the list endpoints
+ * return a partial view), so a list row and the library can never disagree the way the
+ * old `AlbumID3[]` blob did.
+ *
+ * `album_id` cascades: an album deleted from the library should not linger in a home
+ * list. Bounded by `listLength`, so each list is tens of rows.
+ */
+export const albumListEntries = sqliteTable(
+  'album_list_entries',
+  {
+    /** `recentlyAdded` | `recentlyPlayed` | `frequentlyPlayed` | `randomSelection`. */
+    listType: text('list_type').notNull(),
+    pos: integer('pos').notNull(),
+    albumId: text('album_id')
+      .notNull()
+      .references(() => albums.id, { onDelete: 'cascade' }),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.listType, t.pos] }) }),
+);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Playlist children
 // ─────────────────────────────────────────────────────────────────────────────

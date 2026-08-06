@@ -14,7 +14,7 @@ import type { AlbumID3, ArtistID3, Child } from 'subsonic-api';
 
 import { getDb } from '../../../store/persistence/db';
 import { ensureNormalizedSchema } from '../../createNormalizedTables';
-import { upsertAlbums } from '../albums';
+import { listAlbumListRows, replaceAlbumList, upsertAlbums } from '../albums';
 import { setArtistTopSongs, upsertArtists } from '../artists';
 import { bulkUpsert } from '../core';
 import { albumDiscTitleRows, albumRow } from '../mappers';
@@ -210,5 +210,57 @@ describe('merge upsert (supplementary writers)', () => {
 
     expect(albumRowOf('m4')?.year).toBeNull();
     expect(genresOf('m4')).toEqual([]);
+  });
+});
+
+/**
+ * The home-screen album lists as ordered ids over `albums` (A2).
+ *
+ * The blob they replace held whole `AlbumID3` envelopes captured at fetch time, so a
+ * star or a rating applied anywhere else left the home row showing a stale copy.
+ */
+describe('album list entries', () => {
+  it('stores order, reads it back joined to the album rows, and replaces atomically', async () => {
+    await upsertAlbums(db(), [album('L1', 'One'), album('L2', 'Two'), album('L3', 'Three')]);
+
+    await replaceAlbumList(db(), 'recentlyAdded', ['L3', 'L1']);
+    expect((await listAlbumListRows(db(), 'recentlyAdded')).map((r) => r.id)).toEqual(['L3', 'L1']);
+
+    // Replacing is wholesale, and ordered by position rather than id.
+    await replaceAlbumList(db(), 'recentlyAdded', ['L2', 'L3', 'L1']);
+    expect((await listAlbumListRows(db(), 'recentlyAdded')).map((r) => r.id)).toEqual([
+      'L2',
+      'L3',
+      'L1',
+    ]);
+  });
+
+  it('keeps the four lists independent', async () => {
+    await upsertAlbums(db(), [album('L1', 'One'), album('L2', 'Two')]);
+    await replaceAlbumList(db(), 'recentlyAdded', ['L1']);
+    await replaceAlbumList(db(), 'randomSelection', ['L2']);
+
+    expect((await listAlbumListRows(db(), 'recentlyAdded')).map((r) => r.id)).toEqual(['L1']);
+    expect((await listAlbumListRows(db(), 'randomSelection')).map((r) => r.id)).toEqual(['L2']);
+  });
+
+  it('drops a list entry when its album leaves the library', async () => {
+    await upsertAlbums(db(), [album('L1', 'One')]);
+    await replaceAlbumList(db(), 'recentlyAdded', ['L1']);
+
+    // The FK cascade is the point: a reaped album must not linger in a home list.
+    db().runSync('DELETE FROM albums WHERE id = ?', ['L1']);
+
+    expect(await listAlbumListRows(db(), 'recentlyAdded')).toEqual([]);
+  });
+
+  it('reads the live album row, not a snapshot taken at list time', async () => {
+    await upsertAlbums(db(), [album('L1', 'Original')]);
+    await replaceAlbumList(db(), 'recentlyAdded', ['L1']);
+
+    await upsertAlbums(db(), [album('L1', 'Renamed')]);
+
+    // This is the whole point of A2 — the blob would still say "Original".
+    expect((await listAlbumListRows(db(), 'recentlyAdded'))[0].name).toBe('Renamed');
   });
 });
