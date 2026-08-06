@@ -4,12 +4,9 @@ Drop-in operating instructions for coding agents. Read this file before every ta
 
 **Working code only. Finish the job. Plausibility is not correctness.**
 
-This file follows the [AGENTS.md](https://agents.md) open standard (Linux Foundation / Agentic AI Foundation). Claude Code, Codex, Cursor, Windsurf, Copilot, Aider, Devin, Amp read it natively. For tools that look elsewhere, symlink:
+This file follows the [AGENTS.md](https://agents.md) open standard (Linux Foundation / Agentic AI Foundation). Claude Code, Codex, Cursor, Windsurf, Copilot, Aider, Devin and Amp read it natively.
 
-```bash
-ln -s AGENTS.md CLAUDE.md
-ln -s AGENTS.md GEMINI.md
-```
+**This is the only rules file.** `CLAUDE.md`, `.cursor/rules/`, `.github/copilot-instructions.md` and `.github/instructions/*.instructions.md` were all retired on 2026-08-06 — every tool reads AGENTS.md now. Do not reintroduce a per-tool copy: two rules files drift, and the stale one is always the one that gets read. (The retired Copilot files had gone stale exactly that way — none of them knew the data model existed.)
 
 ---
 
@@ -37,6 +34,20 @@ These rules override everything else in this file when in conflict:
 - Surface assumptions out loud: "I'm assuming you want X, Y, Z. If that's wrong, say so." Do not bury assumptions inside the implementation.
 - If two approaches exist, present both with tradeoffs. Do not pick one silently. Exception: trivial tasks (typo, rename, log line) where the diff fits in one sentence.
 
+### The planning cycle
+
+For anything beyond a trivial fix, plan before you touch code, and get the plan approved before you implement:
+
+1. **Write the plan** to `plans/` (see §10 Plans). State the goal, the steps, and how each step is verified.
+2. **Review it adversarially** — a subagent, or a deliberate second pass hunting for what is wrong with it. The reviewer's job is to find defects, not to agree.
+3. **Assess every finding on the evidence.** Read the actual source and confirm or refute it. A finding is not true because a reviewer asserted it, and not false because it is inconvenient. Say which it is.
+4. **Fix the plan** for the findings that hold. If a finding reveals a defect in shipped code, it goes IN SCOPE — never deferred (§12).
+5. **Iterate 2–4** until a review produces no new valid findings. Resolve every open question with evidence; a plan containing "investigate X during implementation" is not finished.
+6. **Submit the clean plan for approval. Never start significant implementation without it.** Sequencing decisions, scope changes and reversals of an earlier decision go back to the user too.
+7. **Keep the plan current** as you implement — deviations, surprises, final state, test results.
+
+The review step is not ceremony. It has repeatedly found live bugs in already-shipped code, and it has caught chosen approaches that would not have worked.
+
 ---
 
 ## 2. Writing code: simplicity first
@@ -49,6 +60,8 @@ These rules override everything else in this file when in conflict:
 - If the solution runs 200 lines and could be 50, rewrite it before showing it.
 - If you find yourself adding "for future extensibility", stop. Future extensibility is a future decision.
 - Bias toward deleting code over adding code. Shipping less is almost always better.
+
+**Weigh cases by whether a real user of THIS app can actually hit them.** This is a music client: someone browses a library, plays tracks, downloads albums, stars things, syncs, logs out. Before hardening a path, say concretely how a user reaches it. Cases that are merely *not forbidden by a hard technical limit* — but that nothing in the app can actually produce — are not worth code, tests, or plan sections; note the assumption and move on. We have burned real time chasing scenarios that turned out to be impossible in practice, and the cost is not just the wasted work: it buries the failures that do happen. Two exceptions, where "unlikely" is not a defence: **data loss** and **anything that fires on every launch**.
 
 The test: would a senior engineer reading the diff call this overcomplicated? If yes, simplify.
 
@@ -140,11 +153,12 @@ For every task:
 After every session where the agent did something wrong:
 
 1. Ask: was the mistake because this file lacks a rule, or because the agent ignored a rule?
-2. If lacking: add the rule under "Project Learnings" below, written as concretely as possible ("Always use X for Y" not "be careful with Y").
+2. If lacking: add the rule — a project fact to §11, a working correction to §12 — as concretely as possible ("Always use X for Y", not "be careful with Y").
 3. If ignored: the rule may be too long, too vague, or buried. Tighten it or move it up.
 4. Every few weeks, prune. For each line, ask: "Would removing this cause the agent to make a mistake?" If no, delete. Bloated AGENTS.md files get ignored wholesale.
+5. **Re-verify §10 against `package.json` and the tree whenever the stack moves.** Every version line in it was wrong by the time it was next read — an agent that trusts a stale fact goes looking for a library that isn't there.
 
-Boris Cherny (creator of Claude Code) keeps his team's file around 100 lines. Under 300 is a good ceiling. Over 500 and you are fighting your own config.
+Aim for ~300 lines of rules; over 500 you are fighting your own config. §11 is exempt from the diet — it is the expensive-to-rediscover material, and it should grow when something bites us and shrink when a subsystem is retired.
 
 ---
 
@@ -154,10 +168,13 @@ Substreamer — React Native music streaming client for Subsonic-compatible serv
 
 ### Stack
 
-- React Native 0.83 + Expo SDK 55 (New Architecture / Fabric enabled, Hermes engine).
-- TypeScript strict, React 19. Path alias: `@/*` → `./src/*`.
-- Routing: Expo Router (file-based). State: Zustand + SQLite (`substreamer7.db`).
-- Audio: `react-native-track-player` (local fork in `modules/`, Media3-based on Android).
+Verified against `package.json` on 2026-08-06 — correct a line here the moment it stops being true.
+
+- React Native 0.86 + Expo SDK 57 (New Architecture + Hermes, both SDK defaults).
+- TypeScript ~6.0 strict, React 19.2. Path alias: `@/*` → `./src/*`.
+- Routing: Expo Router (file-based). State: Zustand v5.
+- Persistence: **op-SQLite** (`@op-engineering/op-sqlite`) — one connection to `substreamer7.db`. `expo-sqlite` is gone; do not reintroduce it.
+- Audio: **`react-native-queue-player`** — our own package (`github.com/ghenry22/react-native-queue-player`), installed from npm, NOT in `modules/`. Media3-based on Android. (It replaced `react-native-track-player`; that name should appear nowhere in new code.)
 - Lists: `@shopify/flash-list` v2. Animations: `react-native-reanimated` v4.
 - i18n: `react-i18next` v17 (English source; community translations via Crowdin).
 - Image cache: custom disk cache via `expo-file-system`.
@@ -171,10 +188,21 @@ Substreamer — React Native music streaming client for Subsonic-compatible serv
 - Typecheck: `npx tsc --noEmit`
 - Validate i18n: `node scripts/validate-translations.js`
 - Validate Intl helpers: `node scripts/validate-intl.js`
-- Native build (Android): `npm run android`
+- Validate native module inventory: `npm run validate:modules`
+- Circular imports: `npx madge --circular --extensions ts,tsx src`
+- Native build (Android): `npm run android` (device: `npm run android:device`)
 - Native build (iOS): `npm run ios`
 - Both concurrent: `npm run concurrent`
-- Native module rebuild only: `scripts/build-modules.sh`
+- Native module rebuild only: `npm run build:modules`
+- Android build with explicit flags (`--gradle-only`, `--release`, `--no-install`): `scripts/build-android.sh`
+
+The full quality gate, run before starting and after finishing any task that touches `src/`:
+
+```bash
+npx tsc --noEmit && npx jest --no-coverage
+node scripts/validate-intl.js && node scripts/validate-translations.js
+npx madge --circular --extensions ts,tsx src
+```
 
 **Native builds are available when needed** — typically to verify a native-side change compiles and links cleanly, not as part of every task. The npm scripts source `scripts/env-android.sh` internally (sets `JAVA_HOME`, `ANDROID_HOME`, `ANDROID_SDK_ROOT`, prepends emulator/platform-tools to `PATH`, and starts an Android emulator if none is running). For ad-hoc `gradle` / `adb` / `emulator` commands outside the npm scripts, prefix with `source scripts/env-android.sh && ` so the env is populated. To target a real device instead of the emulator: `npm run android:device`.
 
@@ -197,10 +225,21 @@ src/
   components/   reusable UI
   hooks/        custom hooks
   services/     API clients + integrations (plain async functions, no classes)
-  store/        Zustand stores (one per domain)
+  db/           persistence — THE data layer (see §11)
+    client.ts     op-SQLite connection + the `InternalDb` surface every module uses
+    schema.ts     normalized schema (source of truth; DDL generated from it)
+    repository/   per-entity SQL: albums, artists, songs, playlists, favorites, search…
+    migrations/   versioned data migrations
+    testing/      dev-only on-device spikes (delete with the rebuild)
+  store/        Zustand stores (one per domain) + store/persistence (KV + row tables)
+  constants/    theme definitions
   i18n/         singleton + locale JSON
+  types/        shared type declarations
   utils/        shared helpers
-modules/        local Expo native modules
+  test-utils/   test helpers
+modules/        local Expo native modules (expo-async-fs, expo-ssl-trust, expo-gzip,
+                expo-image-colors, expo-image-resize, expo-move-to-back,
+                expo-backup-exclusions, subsonic-api)
 plans/          local working docs (gitignored)
 fastlane/       store-listing metadata
 scripts/        build helpers + CI validators
@@ -295,24 +334,45 @@ Prefer Symdex MCP server (when available) over Glob/Grep for symbol lookup, file
 
 ---
 
-## 11. Project Learnings
+## 11. Key decisions and findings
+
+**Hard-won and expensive to rediscover. Read before touching persistence. Do not re-litigate without new evidence.**
+
+### The write path (atomic-writes programme, Phases 1–3, 2026-08)
+
+- **There is NO JS-side write mutex.** `serializeDbWrite` and `withTransactionAsync` were deleted. op-SQLite runs every `execute`/`executeBatch` on ONE pool thread, FIFO (`cpp/OPThreadPool.cpp`), so the engine serializes pool work by itself. Do not add a JS mutex back.
+- **Multi-statement writes MUST use `runAtomicBatchAsync`.** It is the only way to get all-or-nothing. It brackets the statements in `SAVEPOINT`/`RELEASE` inside one `executeBatch` and enqueues the `ROLLBACK TO` in the *same tick* — because an aborted batch never reaches its `RELEASE`, and recovering from the JS `catch` leaves the savepoint open across a round trip while the pool keeps draining, silently swallowing other writers' work. That was a real shipped bug.
+- **`runBatchAsync` is NOT atomic**, whatever any comment says. op-SQLite's `opsqlite_execute_batch` has its `BEGIN` commented out and aborts on the first failure with everything before it committed. Use it only where a half-applied run is self-repairing.
+- **`withTransactionSync` issues its BEGIN on the JS thread**, bypassing the pool, and hard-fails on Android if a pool transaction is open. Use it only where nothing else writes (boot, the migration chain). At runtime, `await awaitDbWritesIdle()` from `db/client.ts` first — logout is the only such caller today.
+- **Never `INSERT OR REPLACE` into a table other rows FK to.** It is DELETE-then-INSERT and fires `ON DELETE CASCADE`, wiping children silently. Always `INSERT … ON CONFLICT DO UPDATE`.
+- **A promise you will await later still needs a handler now.** A write kicked off without `await` (the `bulkUpsert` pipeline) is an unhandled rejection until something observes it.
+
+### Data model
+
+- The **normalized tables are the source of truth** (`src/db/schema.ts`); all reads go through `src/db/repository/*`. The legacy blob/KV caches are frozen and being retired — do not write to them.
+- **Download `queue_position` values are UNIQUE but deliberately NOT dense.** Renumbering to close gaps is O(N²) across a full-library download. See `plans/download-queue-position-density.md` before "fixing" the holes.
+- Boot calls `ensureNormalizedSchema` once, at module scope. Runtime callers were removed; do not add one.
+
+### Testing reality
+
+- **Jest cannot reproduce the SQLite pool.** The test seam runs `executeBatch` synchronously — no pool, no FIFO, no interleaving window. A green suite proves logic, never concurrency. Concurrency claims need an on-device spike (Settings → DB Spikes; `src/db/testing/dbSpikes.ts`), and Spike K is the worked example.
+- Where a hazard is device-only, say so in the plan rather than implying the suite covers it.
+
+---
+
+## 12. Project Learnings
 
 **Accumulated corrections. This section is for the agent to maintain, not just the human.**
 
 When the user corrects your approach, append a one-line rule here before ending the session. Write it concretely ("Always use X for Y"), never abstractly ("be careful with Y"). If an existing line already covers the correction, tighten it instead of adding a new one. Remove lines when the underlying issue goes away (model upgrades, refactors, process changes).
 
-- (empty)
-
----
-
-## 12. How this file was built
-
-This boilerplate synthesizes:
-- Sean Donahoe's IJFW ("It Just F\*cking Works") principles: one install, working code, no ceremony.
-- Andrej Karpathy's observations on LLM coding pitfalls (the four principles: think-first, simplicity, surgical changes, goal-driven execution).
-- Boris Cherny's public Claude Code workflow (reactive pruning, keep it ~100 lines, only rules that fix real mistakes).
-- Anthropic's official Claude Code best practices (explore-plan-code-commit, verification loops, context as the scarce resource).
-- Community anti-sycophancy patterns (explicit banned phrases, direct-not-diplomatic).
-- The AGENTS.md open standard (cross-tool portability via symlinks).
-
-Read once. Edit sections 10 and 11 for your project. Prune the rest over time. This file gets better the more you use it.
+- **Never defer a pre-existing defect you find on the way.** If work uncovers a bug in shipped code, it goes in scope and gets its own commit. Do not relay a subagent's "out of scope" as if it were settled.
+- **Fix native-layer inconsistencies in native code**, not with JS workarounds.
+- **Verify a subagent's findings yourself** before acting on them, and before reporting them as fact. They are frequently right and occasionally confidently wrong.
+- **Run sub-agents one at a time** on multi-phase work — protects context and avoids conflicting edits.
+- **Never invent evidence.** No fabricated user anecdotes or observations to support an argument.
+- **Re-index Symdex after every commit** — its AST snapshot goes stale and post-commit searches silently return old results.
+- **Don't paste plan/tracker contents back into chat.** Summarize the headlines; the file is the artifact.
+- Affirmative action in a confirmation dialog uses a positive label (OK/Delete), never Cancel.
+- Shares exist for albums, playlists and the player queue — not individual songs.
+- Drop a one-line status note when working silently for a long stretch.
