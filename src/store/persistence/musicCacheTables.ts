@@ -963,6 +963,48 @@ export async function countRealSongRefsForSongsAsync(
 }
 
 /**
+ * The ONE way this file moves rows inside a unique position space —
+ * `cached_item_songs.position` and `download_queue.queue_position` both.
+ *
+ * SQLite applies an UPDATE row by row in rowid order and re-checks the unique
+ * index (`PRIMARY KEY (item_id, position)` / `idx_download_queue_position_unique`)
+ * after every row, so a plain `position = position ± 1` over a contiguous run
+ * collides mid-statement as soon as rowid order runs opposite to the direction of
+ * travel — and a completed shift is exactly what leaves rowid order reversed for
+ * the next one. Writing each row's new position NEGATED cannot collide from either
+ * direction: every target is negative while every untouched source is still
+ * positive. `restore` then flips the whole block back.
+ *
+ * `newPosition` is SQL for the row's new position and the builder negates it, so
+ * its binds come first. `restore` keys off `<column> < 0`, which only `shift`
+ * can have written, so it is safe anywhere after it in the batch — callers that
+ * need a statement in between (`orphanSongCommands` deletes there) just place it
+ * later. Narrow it with `restoreWhere` when other rows in the table may hold
+ * negatives (a per-item space); leave it off for a table-wide one.
+ */
+function positionShiftCommands(spec: {
+  table: string;
+  column: string;
+  newPosition: string;
+  where: string;
+  params: ReadonlyArray<string | number | null>;
+  restoreWhere?: string;
+  restoreParams?: ReadonlyArray<string | number | null>;
+}): { shift: BatchCommand; restore: BatchCommand } {
+  const restoreScope = spec.restoreWhere === undefined ? '' : ` AND ${spec.restoreWhere}`;
+  return {
+    shift: [
+      `UPDATE ${spec.table} SET ${spec.column} = -(${spec.newPosition}) WHERE ${spec.where};`,
+      spec.params,
+    ],
+    restore: [
+      `UPDATE ${spec.table} SET ${spec.column} = -${spec.column} WHERE ${spec.column} < 0${restoreScope};`,
+      spec.restoreParams ?? [],
+    ],
+  };
+}
+
+/**
  * The guard every destructive statement of the orphan batch carries: true only
  * while NO real (non-derived) holder still has an edge to this song. It is
  * uncorrelated with the row being written and none of the statements can change
@@ -980,48 +1022,54 @@ const NO_REAL_HOLDER_SQL = `NOT EXISTS (SELECT 1 FROM cached_item_songs e2
  * SQL: nothing here reads a value and then branches on it in JS, which is what
  * makes the whole thing safe to ship as one indivisible batch.
  *
- * Statement order 2 → 3 → 4 is load-bearing. The two shifts move a survivor's
- * tail into negative space already decremented and then back, so the delete must
- * sit BETWEEN them; running them back to back collides on `PRIMARY KEY
- * (item_id, position)`. A single `position = position - 1` cannot be used at all
- * — SQLite updates in rowid order, and the descending rowid `reorderCachedItemSongs`
- * leaves behind makes it fail that same constraint.
+ * Statement order 2 → 3 → 4 is load-bearing. Statements 2 and 4 are the two
+ * halves of one `positionShiftCommands` repack (see its docblock for why the
+ * detour through negative space is mandatory), and the delete must sit BETWEEN
+ * them: running the halves back to back would flip a survivor's tail back onto
+ * the slot the doomed edge still occupies.
  */
-const orphanSongCommands = (songId: string): BatchCommand[] => [
-  // 1. Prune derived holders whose ONLY song is this one — FK cascade takes
-  //    their edges (and their component rows) with them.
-  [
-    `DELETE FROM cached_items
+const orphanSongCommands = (songId: string): BatchCommand[] => {
+  // Every edge ABOVE this song's slot, in its owning item. Unscoped by item —
+  // one call repacks every holder at once — so the restore half stays unscoped
+  // too. `cached_item_songs` unaliased inside the subquery is the UPDATE target.
+  const tailShift = positionShiftCommands({
+    table: 'cached_item_songs',
+    column: 'position',
+    newPosition: 'position - 1',
+    where: `EXISTS (SELECT 1 FROM cached_item_songs d
+                      WHERE d.item_id = cached_item_songs.item_id AND d.song_id = ?
+                        AND d.position < cached_item_songs.position)
+            AND ${NO_REAL_HOLDER_SQL}`,
+    params: [songId, songId],
+  });
+  return [
+    // 1. Prune derived holders whose ONLY song is this one — FK cascade takes
+    //    their edges (and their component rows) with them.
+    [
+      `DELETE FROM cached_items
        WHERE COALESCE(derived, 0) = 1
          AND EXISTS (SELECT 1 FROM cached_item_songs e
                       WHERE e.item_id = cached_items.item_id AND e.song_id = ?)
          AND NOT EXISTS (SELECT 1 FROM cached_item_songs x
                           WHERE x.item_id = cached_items.item_id AND x.song_id <> ?)
          AND ${NO_REAL_HOLDER_SQL};`,
-    [songId, songId, songId],
-  ],
-  // 2. Every edge ABOVE this song's slot, in its owning item, goes negative and
-  //    already decremented — out of the way of both the old and the new value.
-  [
-    `UPDATE cached_item_songs AS c SET position = -(position - 1)
-       WHERE EXISTS (SELECT 1 FROM cached_item_songs d
-                      WHERE d.item_id = c.item_id AND d.song_id = ? AND d.position < c.position)
-         AND ${NO_REAL_HOLDER_SQL};`,
-    [songId, songId],
-  ],
-  // 3. Drop the edges. By song_id, not by (item_id, position) — there is no edge
-  //    list read in JS, so there is nothing that can go stale.
-  [`DELETE FROM cached_item_songs WHERE song_id = ? AND ${NO_REAL_HOLDER_SQL};`, [songId, songId]],
-  // 4. Bring the shifted tails back up. Keys off the negative marker only
-  //    statement 2 could have written, so it needs no guard of its own.
-  ['UPDATE cached_item_songs SET position = -position WHERE position < 0;', []],
-  // 5. The song row, iff no edge anywhere still points at it.
-  [
-    `DELETE FROM cached_songs WHERE song_id = ?
+      [songId, songId, songId],
+    ],
+    // 2. Survivors above the doomed slot go negative, already decremented.
+    tailShift.shift,
+    // 3. Drop the edges. By song_id, not by (item_id, position) — there is no edge
+    //    list read in JS, so there is nothing that can go stale.
+    [`DELETE FROM cached_item_songs WHERE song_id = ? AND ${NO_REAL_HOLDER_SQL};`, [songId, songId]],
+    // 4. Bring the shifted tails back up.
+    tailShift.restore,
+    // 5. The song row, iff no edge anywhere still points at it.
+    [
+      `DELETE FROM cached_songs WHERE song_id = ?
        AND NOT EXISTS (SELECT 1 FROM cached_item_songs WHERE cached_item_songs.song_id = ?);`,
-    [songId, songId],
-  ],
-];
+      [songId, songId],
+    ],
+  ];
+};
 
 /**
  * "Orphan this song iff no REAL holder remains" — one advisory pre-read, ONE
@@ -1361,14 +1409,21 @@ export async function insertCachedItemSong(itemId: string, position: number, son
 export async function removeCachedItemSong(itemId: string, position: number): Promise<void> {
   const db = getDb();
   if (db === null) return;
+  const tailShift = positionShiftCommands({
+    table: 'cached_item_songs',
+    column: 'position',
+    newPosition: 'position - 1',
+    where: 'item_id = ? AND position > ?',
+    params: [itemId, position],
+    restoreWhere: 'item_id = ?',
+    restoreParams: [itemId],
+  });
   try {
     await serializeDbWrite(() =>
       db.runAtomicBatchAsync([
         ['DELETE FROM cached_item_songs WHERE item_id = ? AND position = ?;', [itemId, position]],
-        [
-          'UPDATE cached_item_songs SET position = position - 1 WHERE item_id = ? AND position > ?;',
-          [itemId, position],
-        ],
+        tailShift.shift,
+        tailShift.restore,
       ]),
     );
   } catch {
@@ -1377,8 +1432,13 @@ export async function removeCachedItemSong(itemId: string, position: number): Pr
 }
 
 /**
- * Reorder one edge within an item from `fromPosition` to `toPosition`. Uses a
- * sentinel position (-1) to avoid primary-key collisions during the shift.
+ * Reorder one edge within an item from `fromPosition` to `toPosition`.
+ *
+ * The moving row and the run it displaces are ONE repack: everything in
+ * `[from, to]` gets its final position in the same statement, the mover landing
+ * on `toPosition` and the rest stepping one slot the other way. No sentinel —
+ * the negative space IS the staging area, so there is no second reserved value
+ * to keep out of its way.
  */
 export async function reorderCachedItemSongs(
   itemId: string,
@@ -1388,36 +1448,25 @@ export async function reorderCachedItemSongs(
   const db = getDb();
   if (db === null) return;
   if (fromPosition === toPosition) return;
+  const step = fromPosition < toPosition ? -1 : 1;
+  const move = positionShiftCommands({
+    table: 'cached_item_songs',
+    column: 'position',
+    newPosition: 'CASE WHEN position = ? THEN ? ELSE position + ? END',
+    where: 'item_id = ? AND position >= ? AND position <= ?',
+    params: [
+      fromPosition,
+      toPosition,
+      step,
+      itemId,
+      Math.min(fromPosition, toPosition),
+      Math.max(fromPosition, toPosition),
+    ],
+    restoreWhere: 'item_id = ?',
+    restoreParams: [itemId],
+  });
   try {
-    await serializeDbWrite(() =>
-      db.runAtomicBatchAsync([
-        // Stash the moving row at a sentinel position that can't collide.
-        [
-          'UPDATE cached_item_songs SET position = -1 WHERE item_id = ? AND position = ?;',
-          [itemId, fromPosition],
-        ],
-        fromPosition < toPosition
-          ? // Shift (fromPosition, toPosition] down by 1.
-            [
-              `UPDATE cached_item_songs
-                 SET position = position - 1
-                 WHERE item_id = ? AND position > ? AND position <= ?;`,
-              [itemId, fromPosition, toPosition],
-            ]
-          : // Shift [toPosition, fromPosition) up by 1.
-            [
-              `UPDATE cached_item_songs
-                 SET position = position + 1
-                 WHERE item_id = ? AND position >= ? AND position < ?;`,
-              [itemId, toPosition, fromPosition],
-            ],
-        // Drop the moving row into its final slot.
-        [
-          'UPDATE cached_item_songs SET position = ? WHERE item_id = ? AND position = -1;',
-          [toPosition, itemId],
-        ],
-      ]),
-    );
+    await serializeDbWrite(() => db.runAtomicBatchAsync([move.shift, move.restore]));
   } catch {
     /* dropped */
   }
@@ -1427,19 +1476,10 @@ export async function reorderCachedItemSongs(
 /*  download_queue writes                                              */
 /* ------------------------------------------------------------------ */
 
-function downloadQueueUpsertCommand(item: DownloadQueueRow): BatchCommand {
-  // `download_queue` has no FK children so `INSERT OR REPLACE` is safe here,
-  // but we use UPSERT anyway for consistency with the other tables — one
-  // pattern everywhere means nobody introduces a regression by copying the
-  // wrong line later.
-  return [
-    `INSERT INTO download_queue
-       (queue_id, item_id, type, name, artist, cover_art_id, status,
-        total_songs, completed_songs, error, added_at, queue_position,
-        songs_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(queue_id) DO UPDATE SET
-         item_id = excluded.item_id,
+/** Everything a re-write of an existing `queue_id` may change. `queue_position` is
+ *  deliberately absent: the two writers below disagree about who owns the slot, so
+ *  each appends its own clause. */
+const DOWNLOAD_QUEUE_CONFLICT_SET = `item_id = excluded.item_id,
          type = excluded.type,
          name = excluded.name,
          artist = excluded.artist,
@@ -1449,38 +1489,99 @@ function downloadQueueUpsertCommand(item: DownloadQueueRow): BatchCommand {
          completed_songs = excluded.completed_songs,
          error = excluded.error,
          added_at = excluded.added_at,
-         queue_position = excluded.queue_position,
-         songs_json = excluded.songs_json;`,
-    [
-      item.queueId,
-      item.itemId,
-      item.type,
-      item.name,
-      item.artist ?? null,
-      item.coverArtId ?? null,
-      item.status,
-      item.totalSongs,
-      item.completedSongs,
-      item.error ?? null,
-      item.addedAt,
-      item.queuePosition,
-      item.songsJson,
-    ],
+         songs_json = excluded.songs_json`;
+
+/** Restore form: the caller supplies the slot. Only `bulkReplace` uses it, replaying a
+ *  snapshot whose positions are already fixed. */
+const RESTORE_DOWNLOAD_QUEUE_SQL = `INSERT INTO download_queue
+       (queue_id, item_id, type, name, artist, cover_art_id, status,
+        total_songs, completed_songs, error, added_at, queue_position,
+        songs_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(queue_id) DO UPDATE SET
+         ${DOWNLOAD_QUEUE_CONFLICT_SET},
+         queue_position = excluded.queue_position;`;
+
+/**
+ * Append form: the DATABASE picks the slot, so no JS read of an in-memory mirror can
+ * hand out a position that is already taken. `RETURNING` gives the caller what was
+ * actually assigned. A re-write of an existing `queue_id` keeps its current slot —
+ * refreshing a queued item's payload must not send it to the back of the line.
+ */
+const APPEND_DOWNLOAD_QUEUE_SQL = `INSERT INTO download_queue
+       (queue_id, item_id, type, name, artist, cover_art_id, status,
+        total_songs, completed_songs, error, added_at, queue_position,
+        songs_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+               (SELECT COALESCE(MAX(queue_position), 0) + 1 FROM download_queue), ?)
+       ON CONFLICT(queue_id) DO UPDATE SET
+         ${DOWNLOAD_QUEUE_CONFLICT_SET}
+       RETURNING queue_position;`;
+
+/** The 11 binds shared by both forms, in column order, minus `queue_position`. */
+const downloadQueueParams = (
+  item: Omit<DownloadQueueRow, 'queuePosition'>,
+): Array<string | number | null> => [
+  item.queueId,
+  item.itemId,
+  item.type,
+  item.name,
+  item.artist ?? null,
+  item.coverArtId ?? null,
+  item.status,
+  item.totalSongs,
+  item.completedSongs,
+  item.error ?? null,
+  item.addedAt,
+];
+
+function downloadQueueUpsertCommand(item: DownloadQueueRow): BatchCommand {
+  // `download_queue` has no FK children so `INSERT OR REPLACE` is safe here,
+  // but we use UPSERT anyway for consistency with the other tables — one
+  // pattern everywhere means nobody introduces a regression by copying the
+  // wrong line later.
+  return [
+    RESTORE_DOWNLOAD_QUEUE_SQL,
+    [...downloadQueueParams(item), item.queuePosition, item.songsJson],
   ];
 }
 
-export async function insertDownloadQueueItem(item: DownloadQueueRow): Promise<void> {
+/**
+ * Append a row at the end of the queue. Returns the `queue_position` SQL assigned,
+ * or null when the write was dropped — the caller mirrors it into memory so the two
+ * cannot drift.
+ */
+export async function insertDownloadQueueItem(
+  item: Omit<DownloadQueueRow, 'queuePosition'>,
+): Promise<number | null> {
   const db = getDb();
-  if (db === null) return;
-  if (!item.queueId) return;
+  if (db === null) return null;
+  if (!item.queueId) return null;
   try {
-    const [sql, params] = downloadQueueUpsertCommand(item);
-    await serializeDbWrite(() => db.runAsync(sql, params));
+    const row = await serializeDbWrite(() =>
+      db.getFirstAsync<{ queue_position: number }>(APPEND_DOWNLOAD_QUEUE_SQL, [
+        ...downloadQueueParams(item),
+        item.songsJson,
+      ]),
+    );
+    return row?.queue_position ?? null;
   } catch {
     /* dropped */
+    return null;
   }
 }
 
+/**
+ * Delete the row and leave the hole. `queue_position` is UNIQUE and monotonic, NOT
+ * dense — do not add a "close the gap" shift here.
+ *
+ * Nothing reads a slot as an ordinal: the queue is ordered by `ORDER BY
+ * queue_position`, new rows take `MAX + 1`, and `reorderQueue` moves rows by the
+ * slots they actually hold. Renumbering would cost a rewrite of every row above the
+ * deleted one on a queue that `fullLibraryDownloadService` fills one row per album —
+ * and because the queue drains from the front, that is O(N²) writes across a
+ * full-library download, at a library ceiling of ~200k albums.
+ */
 export async function removeDownloadQueueItem(queueId: string): Promise<void> {
   const db = getDb();
   if (db === null) return;
@@ -1530,37 +1631,36 @@ export async function updateDownloadQueueItem(
 }
 
 /**
- * Move a queue row from one position to another. Shifts all affected rows'
- * positions in ONE atomic batch so the contiguous ordering is preserved.
+ * Move a queue row from one position to another.
+ *
+ * The moving row and the run it displaces are ONE repack: everything in
+ * `[from, to]` gets its final position in the same statement, the mover landing on
+ * `toPosition` and the rest stepping one slot the other way. No sentinel — the
+ * negative space IS the staging area, so there is no reserved value to keep out of
+ * the way, and no `± 1` shift that a unique index can reject mid-statement (see
+ * `positionShiftCommands`). `download_queue` is ONE position space, so the restore
+ * half is unscoped.
  */
 export async function reorderDownloadQueue(fromPosition: number, toPosition: number): Promise<void> {
   const db = getDb();
   if (db === null) return;
   if (fromPosition === toPosition) return;
+  const step = fromPosition < toPosition ? -1 : 1;
+  const move = positionShiftCommands({
+    table: 'download_queue',
+    column: 'queue_position',
+    newPosition: 'CASE WHEN queue_position = ? THEN ? ELSE queue_position + ? END',
+    where: 'queue_position >= ? AND queue_position <= ?',
+    params: [
+      fromPosition,
+      toPosition,
+      step,
+      Math.min(fromPosition, toPosition),
+      Math.max(fromPosition, toPosition),
+    ],
+  });
   try {
-    await serializeDbWrite(() =>
-      db.runAtomicBatchAsync([
-        // Stash the moving row at a sentinel position.
-        ['UPDATE download_queue SET queue_position = -1 WHERE queue_position = ?;', [fromPosition]],
-        fromPosition < toPosition
-          ? [
-              `UPDATE download_queue
-                 SET queue_position = queue_position - 1
-                 WHERE queue_position > ? AND queue_position <= ?;`,
-              [fromPosition, toPosition],
-            ]
-          : [
-              `UPDATE download_queue
-                 SET queue_position = queue_position + 1
-                 WHERE queue_position >= ? AND queue_position < ?;`,
-              [toPosition, fromPosition],
-            ],
-        [
-          'UPDATE download_queue SET queue_position = ? WHERE queue_position = -1;',
-          [toPosition],
-        ],
-      ]),
-    );
+    await serializeDbWrite(() => db.runAtomicBatchAsync([move.shift, move.restore]));
   } catch {
     /* dropped */
   }
@@ -1584,6 +1684,11 @@ const APPEND_CACHED_ITEM_SONG_SQL = `INSERT OR IGNORE INTO cached_item_songs (it
  * Atomically finalise a download: delete the queue row, upsert the item, upsert
  * all songs, and append every edge — ONE `runAtomicBatchAsync`, so consumers
  * never observe a half-committed state and nothing can interleave mid-write.
+ *
+ * The vacated `queue_position` stays vacant, deliberately — see
+ * `removeDownloadQueueItem`. This is the path that makes renumbering untenable:
+ * the queue drains from the front, so a shift here would rewrite every remaining
+ * row once per completed album.
  *
  * Statement order is load-bearing: `cached_items` and `cached_songs` are the FK
  * parents of `cached_item_songs`, so both must land before any edge.

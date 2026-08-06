@@ -1,14 +1,15 @@
 /**
- * `markDownloadComplete` and `orphanSongIfUnreferencedAsync` against REAL SQL.
+ * The `cached_item_songs` write paths against REAL SQL.
  *
- * Both push their decisions into the statements themselves — SQL-computed edge
- * positions on one side, self-guarded destructive statements on the other — so
- * neither can be asserted through `musicCacheTables.test.ts`'s hand-rolled
- * string-matching fake, which models neither the foreign keys nor
- * `UNIQUE (item_id, song_id)` those decisions turn on. This suite runs against
- * the generated schema (`src/db/normalizedDdl.ts`, created at import by
- * `persistence/db.ts`) on the better-sqlite3-backed op-SQLite seam, which
- * enables `PRAGMA foreign_keys`.
+ * They all push their decisions into the statements themselves — SQL-computed
+ * edge positions, self-guarded destructive statements, positional shifts through
+ * negative space — so none of them can be asserted through
+ * `musicCacheTables.test.ts`'s hand-rolled string-matching fake, which models
+ * neither the foreign keys, nor `UNIQUE (item_id, song_id)`, nor the row-at-a-time
+ * `PRIMARY KEY (item_id, position)` enforcement those decisions turn on. This
+ * suite runs against the generated schema (`src/db/normalizedDdl.ts`, created at
+ * import by `persistence/db.ts`) on the better-sqlite3-backed op-SQLite seam,
+ * which enables `PRAGMA foreign_keys`.
  */
 import type { Child } from 'subsonic-api';
 
@@ -18,6 +19,8 @@ import {
   insertDownloadQueueItem,
   markDownloadComplete,
   orphanSongIfUnreferencedAsync,
+  removeCachedItemSong,
+  reorderCachedItemSongs,
   upsertCachedItem,
   upsertCachedSong,
   type CachedItemRow,
@@ -85,6 +88,30 @@ const edgesOf = (itemId: string): Array<{ position: number; song_id: string }> =
 
 const positionsOf = (itemId: string): number[] => edgesOf(itemId).map((e) => e.position);
 const songOrderOf = (itemId: string): string[] => edgesOf(itemId).map((e) => e.song_id);
+
+/** Queue rows in slot order — `markDownloadComplete` deletes one of these, and the
+ *  slots left behind have to stay dense. */
+const queueSlotsOf = (): Array<{ queue_id: string; queue_position: number }> =>
+  realDb.getAllSync('SELECT queue_id, queue_position FROM download_queue ORDER BY queue_position;');
+
+/**
+ * Three queue rows at slots 1..3. Raw, not `insertDownloadQueueItem`, because the
+ * point is to control rowid order independently of slot order: `descending` inserts
+ * back-to-front, the layout a completed reorder leaves behind and the one a naive
+ * `queue_position - 1` shift collides on.
+ */
+function seedQueue(order: 'ascending' | 'descending'): void {
+  const slots = [1, 2, 3];
+  for (const slot of order === 'ascending' ? slots : [...slots].reverse()) {
+    realDb.runSync(
+      `INSERT INTO download_queue
+         (queue_id, item_id, type, name, artist, cover_art_id, status, total_songs,
+          completed_songs, error, added_at, queue_position, songs_json)
+       VALUES (?, ?, 'album', 'Album', NULL, NULL, 'queued', 3, 0, NULL, ?, ?, '[]');`,
+      [`q-${slot}`, `alb-${slot}`, 1_700_000_000_000 + slot, slot],
+    );
+  }
+}
 
 const count = (table: string, where = '', params: readonly unknown[] = []): number =>
   realDb.getFirstSync<{ c: number }>(
@@ -315,6 +342,72 @@ describe('markDownloadComplete (real SQL)', () => {
     __setDbForTests(realDb);
     expect(count('cached_items')).toBe(0);
   });
+
+  // Finishing a download vacates a slot and LEAVES it vacant. This is the path that
+  // rules renumbering out: the queue drains from the front, so closing the gap here
+  // would rewrite every remaining row once per completed album — O(N²) across a
+  // full-library download. The survivors keep the slots they were given.
+  describe.each(['ascending', 'descending'] as const)(
+    'the queue slots it leaves behind (rowid %s)',
+    (order) => {
+      it('leaves a hole when the completed item is mid-queue', async () => {
+        seedQueue(order);
+        await markDownloadComplete(
+          'q-2',
+          makeItem({ itemId: 'alb-2' }),
+          [makeSong({ id: 's1', albumId: 'alb-2' })],
+          [{ songId: 's1', position: 1 }],
+        );
+        expect(queueSlotsOf()).toEqual([
+          { queue_id: 'q-1', queue_position: 1 },
+          { queue_id: 'q-3', queue_position: 3 },
+        ]);
+      });
+
+      it('leaves a hole at the front when the completed item is first', async () => {
+        seedQueue(order);
+        await markDownloadComplete(
+          'q-1',
+          makeItem({ itemId: 'alb-1' }),
+          [makeSong({ id: 's1', albumId: 'alb-1' })],
+          [{ songId: 's1', position: 1 }],
+        );
+        expect(queueSlotsOf()).toEqual([
+          { queue_id: 'q-2', queue_position: 2 },
+          { queue_id: 'q-3', queue_position: 3 },
+        ]);
+      });
+
+      it('leaves the rest alone when the completed item is at the back', async () => {
+        seedQueue(order);
+        await markDownloadComplete(
+          'q-3',
+          makeItem({ itemId: 'alb-3' }),
+          [makeSong({ id: 's1', albumId: 'alb-3' })],
+          [{ songId: 's1', position: 1 }],
+        );
+        expect(queueSlotsOf()).toEqual([
+          { queue_id: 'q-1', queue_position: 1 },
+          { queue_id: 'q-2', queue_position: 2 },
+        ]);
+      });
+
+      it('touches no slot when the item was never queued', async () => {
+        seedQueue(order);
+        await markDownloadComplete(
+          'q-nope',
+          makeItem({ itemId: 'alb-9' }),
+          [makeSong({ id: 's1', albumId: 'alb-9' })],
+          [{ songId: 's1', position: 1 }],
+        );
+        expect(queueSlotsOf()).toEqual([
+          { queue_id: 'q-1', queue_position: 1 },
+          { queue_id: 'q-2', queue_position: 2 },
+          { queue_id: 'q-3', queue_position: 3 },
+        ]);
+      });
+    },
+  );
 });
 
 /* ------------------------------------------------------------------ */
@@ -511,6 +604,175 @@ describe('orphanSongIfUnreferencedAsync (real SQL)', () => {
     expect(edgesOf('album:x')).toEqual([
       { position: 1, song_id: 's1' },
       { position: 2, song_id: 's2' },
+    ]);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  removeCachedItemSong / reorderCachedItemSongs                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Both rowid orders, every time. SQLite enforces `PRIMARY KEY (item_id, position)`
+ * after each row of an UPDATE, so a naive `position ± 1` shift survives one rowid
+ * order and throws on the other — and which one is fatal flips with the direction
+ * of travel. Only the pair proves anything.
+ */
+const ROWID_ORDERS = ['ascending', 'descending'] as const;
+
+describe.each(ROWID_ORDERS)('removeCachedItemSong (real SQL, %s rowids)', (order) => {
+  const seed = () => seedHolder('alb-1', ['s1', 's2', 's3', 's4'], { order });
+
+  it('closes the hole when the first song goes', async () => {
+    await seed();
+    await removeCachedItemSong('alb-1', 1);
+    expect(edgesOf('alb-1')).toEqual([
+      { position: 1, song_id: 's2' },
+      { position: 2, song_id: 's3' },
+      { position: 3, song_id: 's4' },
+    ]);
+  });
+
+  it('closes the hole when a middle song goes', async () => {
+    await seed();
+    await removeCachedItemSong('alb-1', 2);
+    expect(edgesOf('alb-1')).toEqual([
+      { position: 1, song_id: 's1' },
+      { position: 2, song_id: 's3' },
+      { position: 3, song_id: 's4' },
+    ]);
+  });
+
+  it('leaves the rest untouched when the last song goes', async () => {
+    await seed();
+    await removeCachedItemSong('alb-1', 4);
+    expect(edgesOf('alb-1')).toEqual([
+      { position: 1, song_id: 's1' },
+      { position: 2, song_id: 's2' },
+      { position: 3, song_id: 's3' },
+    ]);
+  });
+
+  it('never leaves a negative position behind, and never touches another item', async () => {
+    await seed();
+    await seedHolder('alb-2', ['s5', 's6'], { order });
+    await removeCachedItemSong('alb-1', 2);
+    expect(count('cached_item_songs', 'WHERE position < 0')).toBe(0);
+    expect(edgesOf('alb-2')).toEqual([
+      { position: 1, song_id: 's5' },
+      { position: 2, song_id: 's6' },
+    ]);
+  });
+});
+
+describe.each(ROWID_ORDERS)('reorderCachedItemSongs (real SQL, %s rowids)', (order) => {
+  const seed = () => seedHolder('alb-1', ['s1', 's2', 's3', 's4'], { order });
+
+  it('moves a song DOWN the list, shifting the run it passes up one slot', async () => {
+    await seed();
+    await reorderCachedItemSongs('alb-1', 1, 3);
+    expect(edgesOf('alb-1')).toEqual([
+      { position: 1, song_id: 's2' },
+      { position: 2, song_id: 's3' },
+      { position: 3, song_id: 's1' },
+      { position: 4, song_id: 's4' },
+    ]);
+  });
+
+  it('moves a song UP the list, shifting the run it passes down one slot', async () => {
+    await seed();
+    await reorderCachedItemSongs('alb-1', 4, 2);
+    expect(edgesOf('alb-1')).toEqual([
+      { position: 1, song_id: 's1' },
+      { position: 2, song_id: 's4' },
+      { position: 3, song_id: 's2' },
+      { position: 4, song_id: 's3' },
+    ]);
+  });
+
+  it('moves a song to the FIRST slot', async () => {
+    await seed();
+    await reorderCachedItemSongs('alb-1', 4, 1);
+    expect(songOrderOf('alb-1')).toEqual(['s4', 's1', 's2', 's3']);
+    expect(positionsOf('alb-1')).toEqual([1, 2, 3, 4]);
+  });
+
+  it('moves a song to the LAST slot', async () => {
+    await seed();
+    await reorderCachedItemSongs('alb-1', 1, 4);
+    expect(songOrderOf('alb-1')).toEqual(['s2', 's3', 's4', 's1']);
+    expect(positionsOf('alb-1')).toEqual([1, 2, 3, 4]);
+  });
+
+  it('swaps an adjacent pair in either direction', async () => {
+    await seed();
+    await reorderCachedItemSongs('alb-1', 2, 3);
+    expect(songOrderOf('alb-1')).toEqual(['s1', 's3', 's2', 's4']);
+
+    await reorderCachedItemSongs('alb-1', 2, 3);
+    expect(songOrderOf('alb-1')).toEqual(['s1', 's2', 's3', 's4']);
+    expect(positionsOf('alb-1')).toEqual([1, 2, 3, 4]);
+  });
+
+  it('is a no-op when from == to', async () => {
+    await seed();
+    await reorderCachedItemSongs('alb-1', 2, 2);
+    expect(songOrderOf('alb-1')).toEqual(['s1', 's2', 's3', 's4']);
+  });
+
+  it('never leaves a negative position behind, and never touches another item', async () => {
+    await seed();
+    await seedHolder('alb-2', ['s5', 's6'], { order });
+    await reorderCachedItemSongs('alb-1', 1, 4);
+    expect(count('cached_item_songs', 'WHERE position < 0')).toBe(0);
+    expect(edgesOf('alb-2')).toEqual([
+      { position: 1, song_id: 's5' },
+      { position: 2, song_id: 's6' },
+    ]);
+  });
+});
+
+describe('cached_item_songs position space survives repeated shifts', () => {
+  // Every shift rewrites rows, so it also rewrites the rowid order the NEXT one
+  // sees. These start from ascending rowids and let the operations themselves
+  // produce whatever layout they produce.
+  it('reorders twice in a row', async () => {
+    await seedHolder('alb-1', ['s1', 's2', 's3', 's4']);
+    await reorderCachedItemSongs('alb-1', 1, 4);
+    expect(songOrderOf('alb-1')).toEqual(['s2', 's3', 's4', 's1']);
+
+    await reorderCachedItemSongs('alb-1', 2, 4);
+    expect(songOrderOf('alb-1')).toEqual(['s2', 's4', 's1', 's3']);
+    expect(positionsOf('alb-1')).toEqual([1, 2, 3, 4]);
+  });
+
+  it('reorders back and forth to the same list it started with', async () => {
+    await seedHolder('alb-1', ['s1', 's2', 's3', 's4']);
+    await reorderCachedItemSongs('alb-1', 1, 4);
+    await reorderCachedItemSongs('alb-1', 4, 1);
+    expect(songOrderOf('alb-1')).toEqual(['s1', 's2', 's3', 's4']);
+    expect(positionsOf('alb-1')).toEqual([1, 2, 3, 4]);
+  });
+
+  it('removes a song out of a freshly reordered list', async () => {
+    await seedHolder('alb-1', ['s1', 's2', 's3', 's4']);
+    await reorderCachedItemSongs('alb-1', 1, 4);
+    await removeCachedItemSong('alb-1', 2);
+    expect(edgesOf('alb-1')).toEqual([
+      { position: 1, song_id: 's2' },
+      { position: 2, song_id: 's4' },
+      { position: 3, song_id: 's1' },
+    ]);
+  });
+
+  it('orphans a song out of a freshly reordered derived holder', async () => {
+    await seedHolder('album:x', ['s1', 's2', 's3', 's4'], { derived: true });
+    await reorderCachedItemSongs('album:x', 1, 4);
+    expect(await orphanSongIfUnreferencedAsync('s3')).toMatchObject({ orphaned: true });
+    expect(edgesOf('album:x')).toEqual([
+      { position: 1, song_id: 's2' },
+      { position: 2, song_id: 's4' },
+      { position: 3, song_id: 's1' },
     ]);
   });
 });

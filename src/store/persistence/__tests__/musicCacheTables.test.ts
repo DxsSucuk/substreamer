@@ -142,6 +142,65 @@ function makeFakeDb() {
     edges.set(edgeKey(item_id, position), { item_id, position, song_id });
   };
 
+  /**
+   * One positional UPDATE over `cached_item_songs`, with the composite PK
+   * enforced: the moved rows must not land on each other or on a row that
+   * stayed put. Real SQLite is stricter still — it re-checks after every row,
+   * against the rows that have not moved YET — which no string fake can model,
+   * so the PK-collision cases live in `musicCacheTables.atomic.test.ts`.
+   */
+  const shiftEdges = (
+    matches: (edge: EdgeRec) => boolean,
+    newPosition: (edge: EdgeRec) => number,
+  ): void => {
+    const moving = Array.from(edges.values()).filter(matches);
+    for (const edge of moving) edges.delete(edgeKey(edge.item_id, edge.position));
+    for (const edge of moving) {
+      const position = newPosition(edge);
+      const key = edgeKey(edge.item_id, position);
+      if (edges.has(key)) throw new Error(`PK collision on ${key}`);
+      edges.set(key, { ...edge, position });
+    }
+  };
+
+  /** Write a queue row, keyed on the `queue_id` PK. Both the restore form (13 binds)
+   *  and the append form (12, slot computed) land here; only the slot differs. */
+  const writeQueueRow = (params: readonly unknown[], queue_position: number): void => {
+    const [queue_id, item_id, type, name, artist, cover_art_id, status, total_songs,
+      completed_songs, error, added_at] = params as [string, string, string, string,
+        string | null, string | null, string, number, number, string | null, number];
+    queue.set(queue_id, {
+      queue_id, item_id, type, name, artist, cover_art_id, status, total_songs,
+      completed_songs, error, added_at, queue_position,
+      songs_json: params[params.length - 1] as string,
+    });
+  };
+
+  /** `MAX(queue_position) + 1` — what the append statement's subquery computes. */
+  const nextQueuePosition = (): number => {
+    let max = 0;
+    for (const q of queue.values()) if (q.queue_position > max) max = q.queue_position;
+    return max + 1;
+  };
+
+  /** One positional UPDATE over `download_queue`, with the unique slot enforced.
+   *  Same caveat as `shiftEdges`: real SQLite re-checks per row, which no string
+   *  fake models, so those cases live in `downloadQueue.atomic.test.ts`. */
+  const shiftQueue = (
+    matches: (row: QueueRec) => boolean,
+    newPosition: (row: QueueRec) => number,
+  ): void => {
+    const moving = Array.from(queue.values()).filter(matches);
+    const staying = Array.from(queue.values()).filter((q) => !matches(q));
+    const taken = new Set(staying.map((q) => q.queue_position));
+    for (const row of moving) {
+      const queue_position = newPosition(row);
+      if (taken.has(queue_position)) throw new Error(`UNIQUE collision on ${queue_position}`);
+      taken.add(queue_position);
+      queue.set(row.queue_id, { ...row, queue_position });
+    }
+  };
+
   /** Emulate ON DELETE CASCADE for the given tables. */
   const cascadeAux = (tables: readonly string[], parent: string): void => {
     for (const table of tables) {
@@ -424,101 +483,39 @@ function makeFakeDb() {
       }
       return;
     }
-    // Order of these branches matters — the forward-reorder SQL's prefix
-    // matches the removeCachedItemSong SQL's prefix, so check the more
-    // specific one (with the extra `AND position <= ?` clause) first.
+    // Positional shifts. Every one of them goes through negative space (see
+    // `positionShiftCommands`), so the fake only ever sees "write the negated new
+    // position" followed by "flip the block back", and `shiftEdges` enforces the
+    // composite PK on both.
     if (
       s.startsWith(
-        'UPDATE cached_item_songs SET position = position - 1 WHERE item_id = ? AND position > ? AND position <= ?',
+        'UPDATE cached_item_songs SET position = -(position - 1) WHERE item_id = ? AND position > ?',
       )
     ) {
-      const [item_id, lo, hi] = params as [string, number, number];
-      const toUpdate: EdgeRec[] = [];
-      for (const [k, edge] of edges) {
-        if (edge.item_id === item_id && edge.position > lo && edge.position <= hi) {
-          toUpdate.push(edge);
-          edges.delete(k);
-        }
-      }
-      // Ascending order avoids collisions while shifting down.
-      toUpdate.sort((a, b) => a.position - b.position);
-      for (const edge of toUpdate) {
-        const newPos = edge.position - 1;
-        if (edges.has(edgeKey(item_id, newPos))) {
-          throw new Error('PK collision during forward reorder');
-        }
-        edges.set(edgeKey(item_id, newPos), { ...edge, position: newPos });
-      }
-      return;
-    }
-    if (
-      s.startsWith('UPDATE cached_item_songs SET position = position - 1 WHERE item_id = ? AND position > ?')
-    ) {
       const [item_id, position] = params as [string, number];
-      const toUpdate: EdgeRec[] = [];
-      for (const [k, edge] of edges) {
-        if (edge.item_id === item_id && edge.position > position) {
-          toUpdate.push(edge);
-          edges.delete(k);
-        }
-      }
-      toUpdate.sort((a, b) => a.position - b.position);
-      for (const edge of toUpdate) {
-        edges.set(edgeKey(edge.item_id, edge.position - 1), {
-          ...edge,
-          position: edge.position - 1,
-        });
-      }
-      return;
-    }
-    if (s.startsWith('UPDATE cached_item_songs SET position = -1 WHERE item_id = ? AND position = ?')) {
-      const [item_id, position] = params as [string, number];
-      const k = edgeKey(item_id, position);
-      const edge = edges.get(k);
-      if (edge) {
-        edges.delete(k);
-        const newKey = edgeKey(item_id, -1);
-        if (edges.has(newKey)) {
-          throw new Error('PK collision on sentinel -1');
-        }
-        edges.set(newKey, { ...edge, position: -1 });
-      }
+      shiftEdges(
+        (e) => e.item_id === item_id && e.position > position,
+        (e) => -(e.position - 1),
+      );
       return;
     }
     if (
       s.startsWith(
-        'UPDATE cached_item_songs SET position = position + 1 WHERE item_id = ? AND position >= ? AND position < ?',
+        'UPDATE cached_item_songs SET position = -(CASE WHEN position = ? THEN ? ELSE position + ? END) WHERE item_id = ? AND position >= ? AND position <= ?',
       )
     ) {
-      const [item_id, lo, hi] = params as [string, number, number];
-      const toUpdate: EdgeRec[] = [];
-      for (const [k, edge] of edges) {
-        if (edge.item_id === item_id && edge.position >= lo && edge.position < hi) {
-          toUpdate.push(edge);
-          edges.delete(k);
-        }
-      }
-      // Sort descending to avoid collisions while shifting up.
-      toUpdate.sort((a, b) => b.position - a.position);
-      for (const edge of toUpdate) {
-        const newPos = edge.position + 1;
-        if (edges.has(edgeKey(item_id, newPos))) {
-          throw new Error('PK collision during backward reorder');
-        }
-        edges.set(edgeKey(item_id, newPos), { ...edge, position: newPos });
-      }
+      const [from, to, step, item_id, lo, hi] = params as [number, number, number, string, number, number];
+      shiftEdges(
+        (e) => e.item_id === item_id && e.position >= lo && e.position <= hi,
+        (e) => -(e.position === from ? to : e.position + step),
+      );
       return;
     }
-    if (s.startsWith('UPDATE cached_item_songs SET position = ? WHERE item_id = ? AND position = -1')) {
-      const [newPos, item_id] = params as [number, string];
-      const sentinelKey = edgeKey(item_id, -1);
-      const edge = edges.get(sentinelKey);
-      if (edge) {
-        edges.delete(sentinelKey);
-        const finalKey = edgeKey(item_id, newPos);
-        if (edges.has(finalKey)) throw new Error('PK collision on final placement');
-        edges.set(finalKey, { ...edge, position: newPos });
-      }
+    if (
+      s.startsWith('UPDATE cached_item_songs SET position = -position WHERE position < 0 AND item_id = ?')
+    ) {
+      const [item_id] = params as [string];
+      shiftEdges((e) => e.item_id === item_id && e.position < 0, (e) => -e.position);
       return;
     }
     if (s === 'DELETE FROM cached_item_songs;') {
@@ -527,56 +524,14 @@ function makeFakeDb() {
     }
 
     // ---- download_queue ----
-    // `download_queue` has no FK children so REPLACE and UPSERT behave
-    // identically here, but we accept both forms so either is allowed.
+    // The restore form (`bulkReplace`): the caller supplies `queue_position`, so all
+    // 13 columns are bound. The append form is `writeQueueRow`'s other caller, via
+    // getFirstSync — SQL computes the slot there, so it binds 12.
     if (
       s.startsWith('INSERT OR REPLACE INTO download_queue') ||
       (s.startsWith('INSERT INTO download_queue') && s.includes('ON CONFLICT'))
     ) {
-      const [
-        queue_id,
-        item_id,
-        type,
-        name,
-        artist,
-        cover_art_id,
-        status,
-        total_songs,
-        completed_songs,
-        error,
-        added_at,
-        queue_position,
-        songs_json,
-      ] = params as [
-        string,
-        string,
-        string,
-        string,
-        string | null,
-        string | null,
-        string,
-        number,
-        number,
-        string | null,
-        number,
-        number,
-        string,
-      ];
-      queue.set(queue_id, {
-        queue_id,
-        item_id,
-        type,
-        name,
-        artist,
-        cover_art_id,
-        status,
-        total_songs,
-        completed_songs,
-        error,
-        added_at,
-        queue_position,
-        songs_json,
-      });
+      writeQueueRow(params, params[11] as number);
       return;
     }
     if (s.startsWith('DELETE FROM download_queue WHERE queue_id = ?')) {
@@ -588,49 +543,25 @@ function makeFakeDb() {
       return;
     }
     if (s.startsWith('UPDATE download_queue SET')) {
-      // Partial update path and queue reorder path share this prefix.
-      if (s.startsWith('UPDATE download_queue SET queue_position = -1 WHERE queue_position = ?')) {
-        const pos = params[0] as number;
-        for (const [k, q] of queue) {
-          if (q.queue_position === pos) {
-            queue.set(k, { ...q, queue_position: -1 });
-          }
-        }
+      // Partial update path and queue reorder path share this prefix. The reorder is
+      // one `positionShiftCommands` repack through negative space, same as the edge
+      // table's — "write the negated new slot", then "flip the block back".
+      if (
+        s.startsWith(
+          'UPDATE download_queue SET queue_position = -(CASE WHEN queue_position = ? THEN ? ELSE queue_position + ? END) WHERE queue_position >= ? AND queue_position <= ?',
+        )
+      ) {
+        const [from, to, step, lo, hi] = params as [number, number, number, number, number];
+        shiftQueue(
+          (q) => q.queue_position >= lo && q.queue_position <= hi,
+          (q) => -(q.queue_position === from ? to : q.queue_position + step),
+        );
         return;
       }
       if (
-        s.startsWith(
-          'UPDATE download_queue SET queue_position = queue_position - 1 WHERE queue_position > ? AND queue_position <= ?',
-        )
+        s.startsWith('UPDATE download_queue SET queue_position = -queue_position WHERE queue_position < 0')
       ) {
-        const [lo, hi] = params as [number, number];
-        for (const [k, q] of queue) {
-          if (q.queue_position > lo && q.queue_position <= hi) {
-            queue.set(k, { ...q, queue_position: q.queue_position - 1 });
-          }
-        }
-        return;
-      }
-      if (
-        s.startsWith(
-          'UPDATE download_queue SET queue_position = queue_position + 1 WHERE queue_position >= ? AND queue_position < ?',
-        )
-      ) {
-        const [lo, hi] = params as [number, number];
-        for (const [k, q] of queue) {
-          if (q.queue_position >= lo && q.queue_position < hi) {
-            queue.set(k, { ...q, queue_position: q.queue_position + 1 });
-          }
-        }
-        return;
-      }
-      if (s.startsWith('UPDATE download_queue SET queue_position = ? WHERE queue_position = -1')) {
-        const newPos = params[0] as number;
-        for (const [k, q] of queue) {
-          if (q.queue_position === -1) {
-            queue.set(k, { ...q, queue_position: newPos });
-          }
-        }
+        shiftQueue((q) => q.queue_position < 0, (q) => -q.queue_position);
         return;
       }
       // Partial update: parse SET clauses like 'status = ?, completed_songs = ?' etc.
@@ -661,6 +592,14 @@ function makeFakeDb() {
 
     getFirstSync<T>(rawSql: string, params: readonly unknown[] = []): T | undefined {
       const s = normalize(rawSql);
+      // The append form is a write that RETURNs, so it arrives on the read path.
+      // SQL owns the slot: `MAX + 1` on insert, unchanged on a queue_id conflict.
+      if (s.startsWith('INSERT INTO download_queue') && s.includes('RETURNING queue_position')) {
+        const queueId = params[0] as string;
+        const queue_position = queue.get(queueId)?.queue_position ?? nextQueuePosition();
+        writeQueueRow(params, queue_position);
+        return { queue_position } as T;
+      }
       if (s === 'SELECT COUNT(*) AS c FROM cached_songs;') {
         return { c: songs.size } as T;
       }
@@ -1079,11 +1018,15 @@ describe('musicCacheTables — download_queue', () => {
   });
 
   it('hydrateDownloadQueueAsync returns rows ordered by queue_position ASC', async () => {
-    await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-a', queuePosition: 5 }));
-    await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-b', queuePosition: 1 }));
-    await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-c', queuePosition: 3 }));
+    // Appended a, b, c — so insertion order and slot order agree. The reorder
+    // separates them, which is what makes the ORDER BY observable.
+    await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-a' }));
+    await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-b' }));
+    await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-c' }));
+    await reorderDownloadQueue(3, 1);
     const hydrated = await hydrateDownloadQueueAsync();
-    expect(hydrated.map((q) => q.queueId)).toEqual(['q-b', 'q-c', 'q-a']);
+    expect(hydrated.map((q) => q.queueId)).toEqual(['q-c', 'q-a', 'q-b']);
+    expect(hydrated.map((q) => q.queuePosition)).toEqual([1, 2, 3]);
   });
 
   it('updateDownloadQueueItem updates status only', async () => {
@@ -1401,7 +1344,7 @@ describe('musicCacheTables — disabled db (healthy=false)', () => {
     await expect(insertCachedItemSong('alb-1', 1, 's1')).resolves.toBeUndefined();
     await expect(removeCachedItemSong('alb-1', 1)).resolves.toBeUndefined();
     await expect(reorderCachedItemSongs('alb-1', 1, 2)).resolves.toBeUndefined();
-    await expect(insertDownloadQueueItem(makeQueueRow())).resolves.toBeUndefined();
+    await expect(insertDownloadQueueItem(makeQueueRow())).resolves.toBeNull();
     await expect(removeDownloadQueueItem('q-1')).resolves.toBeUndefined();
     await expect(updateDownloadQueueItem('q-1', { status: 'downloading' })).resolves.toBeUndefined();
     await expect(reorderDownloadQueue(1, 2)).resolves.toBeUndefined();
@@ -1475,7 +1418,7 @@ describe('musicCacheTables — db throws (error swallow path)', () => {
     await expect(insertCachedItemSong('alb-1', 1, 's1')).resolves.toBeUndefined();
     await expect(removeCachedItemSong('alb-1', 1)).resolves.toBeUndefined();
     await expect(reorderCachedItemSongs('alb-1', 1, 2)).resolves.toBeUndefined();
-    await expect(insertDownloadQueueItem(makeQueueRow())).resolves.toBeUndefined();
+    await expect(insertDownloadQueueItem(makeQueueRow())).resolves.toBeNull();
     await expect(removeDownloadQueueItem('q-1')).resolves.toBeUndefined();
     await expect(updateDownloadQueueItem('q-1', { status: 'downloading' })).resolves.toBeUndefined();
     await expect(reorderDownloadQueue(1, 2)).resolves.toBeUndefined();
