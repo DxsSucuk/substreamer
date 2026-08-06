@@ -1,7 +1,7 @@
 /** Artists repository: bulk upsert (row + roles), bio merge, keyset list, count, by-id. */
 import type { ArtistID3, ArtistInfo2 } from 'subsonic-api';
 
-import type { InternalDb } from '../client';
+import type { BatchCommand, InternalDb } from '../client';
 import { artistInfoRow, artistRoleRows, artistRow, artistSimilarRows } from './mappers';
 import {
   bulkUpsert,
@@ -10,8 +10,6 @@ import {
   fetchChildren,
   keysetPage,
   keysetPageBefore,
-  replaceChildrenSync,
-  upsertRowSync,
   type Complete,
   type Cursor,
   type Page,
@@ -134,16 +132,18 @@ export interface ArtistInfoWrite {
   retrievedAt: number;
 }
 
-/** Sole writer of `artist_info` + `artist_similar`, in one transaction. The bio
- *  RESOLUTION is a different concern and lives in `artist_bio`. */
-export function upsertArtistInfo(
+/** Sole writer of `artist_info` + `artist_similar`, in ONE atomic batch: a failure
+ *  part-way leaves the previous similar-artist list in place rather than deleted and
+ *  never reinserted. The bio RESOLUTION is a different concern and lives in
+ *  `artist_bio`. */
+export const upsertArtistInfo = (
   db: InternalDb,
   id: string,
   info: ArtistInfoWrite,
   similar: ArtistInfo2,
-): void {
-  db.withTransactionSync(() => {
-    db.runSync(
+): Promise<void> =>
+  db.runAtomicBatchAsync([
+    [
       `INSERT INTO artist_info
          (artist_id, biography, last_fm_url, music_brainz_id,
           image_url_small, image_url_medium, image_url_large, retrieved_at)
@@ -159,10 +159,20 @@ export function upsertArtistInfo(
         id, info.biography, info.lastFmUrl, info.musicBrainzId,
         info.imageUrlSmall, info.imageUrlMedium, info.imageUrlLarge, info.retrievedAt,
       ],
-    );
-    replaceChildrenSync(db, 'artist_similar', 'artist_id', id, artistSimilarRows(similar, id));
-  });
-}
+    ],
+    ['DELETE FROM artist_similar WHERE artist_id = ?', [id]],
+    ...artistSimilarRows(similar, id).map(
+      (r): BatchCommand => [
+        `INSERT INTO artist_similar
+           (artist_id, pos, similar_artist_id, name, cover_art, album_count, user_rating)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          r.artist_id, r.pos, r.similar_artist_id, r.name, r.cover_art, r.album_count,
+          r.user_rating,
+        ],
+      ],
+    ),
+  ]);
 
 /** The RESOLVED biography (server, else MusicBrainz) + its negative cache. A present row
  *  means "we attempted this artist" — the presence predicate the MBID-override screens use.

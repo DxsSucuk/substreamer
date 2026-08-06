@@ -2,7 +2,7 @@
  *  and the ordered `playlist_songs` membership junction. */
 import type { Playlist } from 'subsonic-api';
 
-import type { InternalDb } from '../client';
+import type { BatchCommand, InternalDb } from '../client';
 import { playlistAllowedUserRows, playlistRow } from './mappers';
 import {
   bulkUpsert,
@@ -242,19 +242,23 @@ export const listPlaylistsByIds = (db: InternalDb, ids: string[]): Promise<Playl
 export const getPlaylist = (db: InternalDb, id: string): Promise<Record<string, unknown> | null> =>
   db.getFirstAsync('SELECT * FROM playlists WHERE id = ?', [id]);
 
-/** Replace a playlist's ordered song membership (position = array index). */
-export function setPlaylistSongs(db: InternalDb, playlistId: string, songIds: string[]): void {
-  db.withTransactionSync(() => {
-    db.runSync('DELETE FROM playlist_songs WHERE playlist_id = ?', [playlistId]);
-    songIds.forEach((songId, position) => {
-      db.runSync('INSERT INTO playlist_songs (playlist_id, position, song_id) VALUES (?, ?, ?)', [
-        playlistId,
-        position,
-        songId,
-      ]);
-    });
-  });
-}
+/** Replace a playlist's ordered song membership (position = array index). ONE atomic
+ *  batch: a failure part-way leaves the previous membership rather than an empty
+ *  playlist, which album/playlist detail would read as "cached, no tracks". */
+export const setPlaylistSongs = (
+  db: InternalDb,
+  playlistId: string,
+  songIds: string[],
+): Promise<void> =>
+  db.runAtomicBatchAsync([
+    ['DELETE FROM playlist_songs WHERE playlist_id = ?', [playlistId]],
+    ...songIds.map(
+      (songId, position): BatchCommand => [
+        'INSERT INTO playlist_songs (playlist_id, position, song_id) VALUES (?, ?, ?)',
+        [playlistId, position, songId],
+      ],
+    ),
+  ]);
 
 /** Ordered song ids for a playlist (junction rows, in position order). */
 export const listPlaylistSongIds = (db: InternalDb, playlistId: string): Promise<string[]> =>

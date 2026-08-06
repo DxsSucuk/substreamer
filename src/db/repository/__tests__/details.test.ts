@@ -118,7 +118,7 @@ describe('artist detail parts', () => {
 
   it('getArtistInfoRow returns the server envelope + similar artists', async () => {
     await upsertArtists(db(), [artist('ar1', 'The Beatles')]);
-    upsertArtistInfo(
+    await upsertArtistInfo(
       db(),
       'ar1',
       {
@@ -192,7 +192,7 @@ describe('getPlaylistDetail', () => {
       song('s1', 'First', { artist: 'A' }),
       song('s2', 'Second', { artist: 'B' }),
     ]);
-    setPlaylistSongs(db(), 'p1', ['s2', 's1']); // deliberate non-id order
+    await setPlaylistSongs(db(), 'p1', ['s2', 's1']); // deliberate non-id order
 
     const detail = await getPlaylistDetail(db(), 'p1');
     expect(detail?.playlist.name).toBe('Roadtrip');
@@ -210,7 +210,7 @@ describe('getPlaylistDetail', () => {
     // must serve both rows rather than only the first occurrence.
     await upsertPlaylists(db(), [playlist('p1', 'Repeat')]);
     await upsertSongs(db(), [song('s1', 'Encore', { genres: ['Live'] })]);
-    setPlaylistSongs(db(), 'p1', ['s1', 's1']);
+    await setPlaylistSongs(db(), 'p1', ['s1', 's1']);
     const detail = await getPlaylistDetail(db(), 'p1');
     expect(detail?.entry.map((e) => e.genres)).toEqual([['Live'], ['Live']]);
   });

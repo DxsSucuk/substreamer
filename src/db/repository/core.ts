@@ -115,29 +115,6 @@ const buildDeleteChildren = (table: string, parentCol: string, parentId: string)
   [parentId],
 ];
 
-/** INSERT one row with ON CONFLICT(pk) DO UPDATE — SYNC, for the small single-row
- *  writes that run inside a caller's `withTransactionSync` (e.g. artist bio merge). */
-export function upsertRowSync(db: InternalDb, table: string, row: Row, pk = 'id'): void {
-  const [sql, params] = buildUpsertRow(table, row, pk);
-  db.runSync(sql, params);
-}
-
-/** Replace all child rows for one parent (delete-then-insert) inside the caller's txn. */
-export function replaceChildrenSync(
-  db: InternalDb,
-  table: string,
-  parentCol: string,
-  parentId: string,
-  rows: Row[],
-): void {
-  const [dsql, dparams] = buildDeleteChildren(table, parentCol, parentId);
-  db.runSync(dsql, dparams);
-  for (const row of rows) {
-    const [sql, params] = buildInsertChild(table, row);
-    db.runSync(sql, params);
-  }
-}
-
 /**
  * Bulk-upsert entities into `table` + their children, id-sorted, one ATOMIC batch
  * per chunk: every parent upsert, child DELETE and child INSERT in the chunk either

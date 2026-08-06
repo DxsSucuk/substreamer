@@ -481,7 +481,7 @@ describe('artists repository', () => {
     expect(page.rows.map((r) => r.name)).toEqual(['ABBA', 'Beatles']);
 
     // Info lives in its own table now, so it cannot clobber the base row at all.
-    upsertArtistInfo(
+    await upsertArtistInfo(
       db(),
       'ar1',
       {
@@ -634,9 +634,9 @@ describe('playlists repository', () => {
 
   it('sets + reads ordered song membership (replace preserves order)', async () => {
     await upsertPlaylists(db(), [playlist('p1', 'Mix')]);
-    setPlaylistSongs(db(), 'p1', ['s3', 's1', 's2']);
+    await setPlaylistSongs(db(), 'p1', ['s3', 's1', 's2']);
     expect(await listPlaylistSongIds(db(), 'p1')).toEqual(['s3', 's1', 's2']);
-    setPlaylistSongs(db(), 'p1', ['s2', 's3']);
+    await setPlaylistSongs(db(), 'p1', ['s2', 's3']);
     expect(await listPlaylistSongIds(db(), 'p1')).toEqual(['s2', 's3']);
   });
 });

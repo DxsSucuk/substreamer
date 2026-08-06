@@ -257,7 +257,7 @@ export function fetchArtistInfo(id: string, opts?: ArtistFetchOpts): Promise<Art
       if (!info) return null;
       if (db && (await ensureArtistRow(id))) {
         await serializeDbWrite(async () => {
-          upsertArtistInfo(
+          await upsertArtistInfo(
             db,
             id,
             {
@@ -466,7 +466,7 @@ export async function fetchPlaylistDetail(
       // `setPlaylistSongs`, which has none, is wrapped.
       await upsertPlaylists(db, [data], undefined, articles());
       if (entry.length > 0) await upsertSongs(db, entry, undefined, articles());
-      await serializeDbWrite(async () => setPlaylistSongs(db, id, entry.map((e) => e.id)));
+      await serializeDbWrite(() => setPlaylistSongs(db, id, entry.map((e) => e.id)));
       bumpDetailChanged('playlist', id);
     }
     if (prefetchCovers) {

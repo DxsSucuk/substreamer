@@ -193,7 +193,8 @@ async function migrateArtists(
     if (!id) continue;
     const info = e.artistInfo;
     if (info) {
-      upsertArtistInfo(
+      // eslint-disable-next-line no-await-in-loop
+      await upsertArtistInfo(
         db,
         id,
         {
@@ -260,7 +261,10 @@ async function migratePlaylists(
     // eslint-disable-next-line no-await-in-loop
     if (entry.length > 0) await upsertSongs(db, entry, undefined, articles);
     const ids = entry.map((s) => s.id).filter(Boolean);
-    if (ids.length) setPlaylistSongs(db, pid, ids);
+    // Awaited: the ETL's caller stamps a one-shot done flag when it returns, so a write
+    // still in flight at that point is lost with nothing left to re-run it.
+    // eslint-disable-next-line no-await-in-loop
+    if (ids.length) await setPlaylistSongs(db, pid, ids);
   }
   log?.(`playlists: ${migrated} rows (${libraryPlaylists.length} library, ${detEntries.length} detail-cached)`);
   return { source: libraryPlaylists.length, migrated, skipped: 0 };
