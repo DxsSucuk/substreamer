@@ -9,7 +9,6 @@
  * Reads: ASYNC keyset pagination (`WHERE (sort_col, id) > (?, ?)`) off the JS
  * thread — O(log n) seeks, never offset scans, never whole-table loads.
  */
-import { serializeDbWrite } from '@/store/persistence/db';
 
 import type { BatchCommand, InternalDb } from '../client';
 
@@ -170,7 +169,14 @@ export async function bulkUpsert<T>(
     const w0 = nowMs();
     await prevWrite;
     const writeMs = nowMs() - w0;
-    prevWrite = serializeDbWrite(() => db.runAtomicBatchAsync(commands));
+    prevWrite = db.runAtomicBatchAsync(commands);
+    // Mark it handled NOW. Nothing observes this promise until the next iteration's
+    // drain (or the final await below), and the macrotask yield in between is long
+    // enough for a failed chunk to be reported as an unhandled rejection. The drain
+    // still sees the rejection — `catch` here returns a new promise and leaves
+    // `prevWrite` rejecting. `serializeDbWrite` used to do this incidentally, by
+    // attaching its own settle handler to the same promise.
+    prevWrite.catch(() => undefined);
     done += chunk.length;
     chunkProfiler?.({ deriveMs, writeMs, rows: chunk.length });
     onProgress?.(done, sorted.length);

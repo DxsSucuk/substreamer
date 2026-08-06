@@ -20,7 +20,6 @@
  */
 import type { AlbumID3, ArtistID3, Child } from 'subsonic-api';
 
-import { serializeDbWrite } from '@/store/persistence/db';
 import { mergeStarredDesc, type StarredEntry } from '@/utils/mergeStarredDesc';
 
 import type { BatchCommand, InternalDb } from '../client';
@@ -505,12 +504,10 @@ async function replaceRemainder(
   entity: Entity,
   commands: BatchCommand[],
 ): Promise<void> {
-  await serializeDbWrite(() =>
-    db.runAtomicBatchAsync([
-      [`DELETE FROM ${REMAINDER[entity]}`, []] as BatchCommand,
-      ...commands,
-    ]),
-  );
+  await db.runAtomicBatchAsync([
+    [`DELETE FROM ${REMAINDER[entity]}`, []] as BatchCommand,
+    ...commands,
+  ]);
 }
 
 /** Replace `favorite_songs` with the starred songs the library does not hold.

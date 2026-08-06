@@ -1,6 +1,6 @@
 import { type StateStorage } from 'zustand/middleware';
 
-import { getDb, kvFallback, serializeDbWrite } from './db';
+import { getDb, kvFallback } from './db';
 
 // Fires once per process the first time any kvStorage operation falls back
 // to the in-memory Map. `db.ts` already logs at init time, but that warn is
@@ -157,7 +157,7 @@ export async function clearKvStorage(): Promise<void> {
     return;
   }
   try {
-    await serializeDbWrite(() => db.runAsync('DELETE FROM storage;'));
+    await db.runAsync('DELETE FROM storage;');
   } catch {
     /* dropped */
   }

@@ -183,9 +183,6 @@ function makeFakeDb() {
       Promise.resolve(getFirstSync<T>(sql, params)),
     getAllAsync: <T,>(sql: string, params?: readonly unknown[]) =>
       Promise.resolve(getAllSync<T>(sql, params)),
-    withTransactionAsync: async (fn: () => Promise<void>) => {
-      await fn();
-    },
     runAtomicBatchAsync: async (commands: ReadonlyArray<readonly [string, readonly unknown[]]>) => {
       for (const [sql, params] of commands) runSync(sql, params);
     },

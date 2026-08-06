@@ -20,7 +20,7 @@
  */
 import type { AlbumID3, Child, Playlist } from 'subsonic-api';
 
-import { getDb, serializeDbWrite, type BatchCommand } from './db';
+import { getDb, type BatchCommand } from './db';
 
 export interface CachedSongRow {
   id: string;
@@ -1107,7 +1107,7 @@ export async function orphanSongIfUnreferencedAsync(
     if (holders.some((h) => h.derived === 0)) return { orphaned: false, affectedItems, prunedItems };
     affectedItems.push(...new Set(holders.map((h) => h.item_id)));
 
-    await serializeDbWrite(() => db.runAtomicBatchAsync(orphanSongCommands(songId)));
+    await db.runAtomicBatchAsync(orphanSongCommands(songId));
 
     const remaining = await db.getFirstAsync<{ c: number }>(
       'SELECT COUNT(*) AS c FROM cached_songs WHERE song_id = ?;',
@@ -1259,7 +1259,7 @@ export async function upsertCachedSong(song: CachedSongRow, child?: Child): Prom
   if (!song.id || !song.albumId) return;
   try {
     // Row + child tables are one unit — one atomic batch.
-    await serializeDbWrite(() => db.runAtomicBatchAsync(cachedSongCommands(song, child)));
+    await db.runAtomicBatchAsync(cachedSongCommands(song, child));
   } catch {
     /* dropped */
   }
@@ -1269,7 +1269,7 @@ export async function deleteCachedSong(songId: string): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    await serializeDbWrite(() => db.runAsync('DELETE FROM cached_songs WHERE song_id = ?;', [songId]));
+    await db.runAsync('DELETE FROM cached_songs WHERE song_id = ?;', [songId]);
   } catch {
     /* dropped */
   }
@@ -1362,7 +1362,7 @@ export async function upsertCachedItem(item: Omit<CachedItemRow, 'songIds'>): Pr
     // Parent + component in ONE atomic batch: this call is fire-and-forget
     // optimistic, and a lost second statement leaves a Downloaded album with no
     // metadata.
-    await serializeDbWrite(() => db.runAtomicBatchAsync(cachedItemCommands(item)));
+    await db.runAtomicBatchAsync(cachedItemCommands(item));
   } catch {
     /* dropped */
   }
@@ -1376,7 +1376,7 @@ export async function deleteCachedItem(itemId: string): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    await serializeDbWrite(() => db.runAsync('DELETE FROM cached_items WHERE item_id = ?;', [itemId]));
+    await db.runAsync('DELETE FROM cached_items WHERE item_id = ?;', [itemId]);
   } catch {
     /* dropped */
   }
@@ -1391,11 +1391,9 @@ export async function insertCachedItemSong(itemId: string, position: number, son
   if (db === null) return;
   if (!itemId || !songId) return;
   try {
-    await serializeDbWrite(() =>
-      db.runAsync(
-        'INSERT OR IGNORE INTO cached_item_songs (item_id, position, song_id) VALUES (?, ?, ?);',
-        [itemId, position, songId],
-      ),
+    await db.runAsync(
+      'INSERT OR IGNORE INTO cached_item_songs (item_id, position, song_id) VALUES (?, ?, ?);',
+      [itemId, position, songId],
     );
   } catch {
     /* dropped */
@@ -1419,13 +1417,11 @@ export async function removeCachedItemSong(itemId: string, position: number): Pr
     restoreParams: [itemId],
   });
   try {
-    await serializeDbWrite(() =>
-      db.runAtomicBatchAsync([
-        ['DELETE FROM cached_item_songs WHERE item_id = ? AND position = ?;', [itemId, position]],
-        tailShift.shift,
-        tailShift.restore,
-      ]),
-    );
+    await db.runAtomicBatchAsync([
+      ['DELETE FROM cached_item_songs WHERE item_id = ? AND position = ?;', [itemId, position]],
+      tailShift.shift,
+      tailShift.restore,
+    ]);
   } catch {
     /* dropped */
   }
@@ -1466,7 +1462,7 @@ export async function reorderCachedItemSongs(
     restoreParams: [itemId],
   });
   try {
-    await serializeDbWrite(() => db.runAtomicBatchAsync([move.shift, move.restore]));
+    await db.runAtomicBatchAsync([move.shift, move.restore]);
   } catch {
     /* dropped */
   }
@@ -1558,12 +1554,10 @@ export async function insertDownloadQueueItem(
   if (db === null) return null;
   if (!item.queueId) return null;
   try {
-    const row = await serializeDbWrite(() =>
-      db.getFirstAsync<{ queue_position: number }>(APPEND_DOWNLOAD_QUEUE_SQL, [
-        ...downloadQueueParams(item),
-        item.songsJson,
-      ]),
-    );
+    const row = await db.getFirstAsync<{ queue_position: number }>(APPEND_DOWNLOAD_QUEUE_SQL, [
+      ...downloadQueueParams(item),
+      item.songsJson,
+    ]);
     return row?.queue_position ?? null;
   } catch {
     /* dropped */
@@ -1586,7 +1580,7 @@ export async function removeDownloadQueueItem(queueId: string): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    await serializeDbWrite(() => db.runAsync('DELETE FROM download_queue WHERE queue_id = ?;', [queueId]));
+    await db.runAsync('DELETE FROM download_queue WHERE queue_id = ?;', [queueId]);
   } catch {
     /* dropped */
   }
@@ -1619,11 +1613,9 @@ export async function updateDownloadQueueItem(
   if (clauses.length === 0) return;
   params.push(queueId);
   try {
-    await serializeDbWrite(() =>
-      db.runAsync(
-        `UPDATE download_queue SET ${clauses.join(', ')} WHERE queue_id = ?;`,
-        params,
-      ),
+    await db.runAsync(
+      `UPDATE download_queue SET ${clauses.join(', ')} WHERE queue_id = ?;`,
+      params,
     );
   } catch {
     /* dropped */
@@ -1660,7 +1652,7 @@ export async function reorderDownloadQueue(fromPosition: number, toPosition: num
     ],
   });
   try {
-    await serializeDbWrite(() => db.runAtomicBatchAsync([move.shift, move.restore]));
+    await db.runAtomicBatchAsync([move.shift, move.restore]);
   } catch {
     /* dropped */
   }
@@ -1725,7 +1717,7 @@ export async function markDownloadComplete(
       if (!edge.songId) continue;
       commands.push([APPEND_CACHED_ITEM_SONG_SQL, [item.itemId, item.itemId, edge.songId]]);
     }
-    await serializeDbWrite(() => db.runAtomicBatchAsync(commands));
+    await db.runAtomicBatchAsync(commands);
   } catch {
     /* dropped */
   }
@@ -1764,7 +1756,7 @@ export async function bulkReplace(params: {
       if (!q.queueId) continue;
       commands.push(downloadQueueUpsertCommand(q));
     }
-    await serializeDbWrite(() => db.runAtomicBatchAsync(commands));
+    await db.runAtomicBatchAsync(commands);
   } catch {
     /* dropped */
   }
@@ -1792,7 +1784,7 @@ export async function clearAllMusicCacheRows(): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    await serializeDbWrite(() => db.runAtomicBatchAsync(truncateMusicCacheCommands()));
+    await db.runAtomicBatchAsync(truncateMusicCacheCommands());
   } catch {
     /* dropped */
   }
@@ -1852,7 +1844,7 @@ async function runLegacyMetadataConversion(): Promise<void> {
         }
       }
       // eslint-disable-next-line no-await-in-loop
-      await serializeDbWrite(() => db.runAtomicBatchAsync(commands));
+      await db.runAtomicBatchAsync(commands);
       // eslint-disable-next-line no-await-in-loop
       await yieldMacrotask();
     }
@@ -1887,7 +1879,7 @@ async function runLegacyMetadataConversion(): Promise<void> {
         ]);
       }
       // eslint-disable-next-line no-await-in-loop
-      await serializeDbWrite(() => db.runAtomicBatchAsync(commands));
+      await db.runAtomicBatchAsync(commands);
       // eslint-disable-next-line no-await-in-loop
       await yieldMacrotask();
     }

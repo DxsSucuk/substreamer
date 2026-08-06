@@ -218,9 +218,6 @@ function makeFakeDb() {
     getFirstAsync: (sql: string, params?: readonly unknown[]) =>
       Promise.resolve(getFirstSync(sql, params)),
     getAllAsync: (sql: string) => Promise.resolve(getAllSync(sql)),
-    withTransactionAsync: async (fn: () => Promise<void>): Promise<void> => {
-      await fn();
-    },
     _rows: rows,
   };
 }

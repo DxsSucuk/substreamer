@@ -50,7 +50,7 @@ import {
   type ArtistInfoRow,
   type ArtistTopSongsRow,
 } from '../db/repository/details';
-import { getDb, serializeDbWrite } from '../store/persistence/db';
+import { getDb } from '../store/persistence/db';
 
 import { getOverride, mbidOverrideStore } from '../store/mbidOverrideStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
@@ -135,9 +135,7 @@ export async function fetchAlbumDetail(
           // Drop tracks the server no longer lists for this album — servers that
           // re-key song ids on re-tag would otherwise leave the old and new sets
           // both showing in the track list. Downloaded tracks are exempt.
-          await serializeDbWrite(() =>
-            deleteAlbumSongsNotIn(db, data.id, songs.map((s) => s.id)),
-          );
+          await deleteAlbumSongsNotIn(db, data.id, songs.map((s) => s.id));
         }
         bumpDetailChanged('album', id);
       }
@@ -256,25 +254,23 @@ export function fetchArtistInfo(id: string, opts?: ArtistFetchOpts): Promise<Art
       const info = await getArtistInfo2(id);
       if (!info) return null;
       if (db && (await ensureArtistRow(id))) {
-        await serializeDbWrite(async () => {
-          await upsertArtistInfo(
-            db,
-            id,
-            {
-              // Empties and markup-only stubs must read as "this server has none", or a
-              // non-null-but-blank bio becomes a permanent local hit that renders nothing
-              // and suppresses the MusicBrainz fallback for good.
-              biography: nonEmptyBio(info.biography),
-              lastFmUrl: info.lastFmUrl ?? null,
-              musicBrainzId: info.musicBrainzId ?? null,
-              imageUrlSmall: info.smallImageUrl ?? null,
-              imageUrlMedium: info.mediumImageUrl ?? null,
-              imageUrlLarge: info.largeImageUrl ?? null,
-              retrievedAt: Date.now(),
-            },
-            info,
-          );
-        });
+        await upsertArtistInfo(
+          db,
+          id,
+          {
+            // Empties and markup-only stubs must read as "this server has none", or a
+            // non-null-but-blank bio becomes a permanent local hit that renders nothing
+            // and suppresses the MusicBrainz fallback for good.
+            biography: nonEmptyBio(info.biography),
+            lastFmUrl: info.lastFmUrl ?? null,
+            musicBrainzId: info.musicBrainzId ?? null,
+            imageUrlSmall: info.smallImageUrl ?? null,
+            imageUrlMedium: info.mediumImageUrl ?? null,
+            imageUrlLarge: info.largeImageUrl ?? null,
+            retrievedAt: Date.now(),
+          },
+          info,
+        );
         bumpDetailChanged('artist', id);
       }
       return local();
@@ -325,9 +321,7 @@ export function fetchArtistTopSongs(
         // `upsertSongs` takes the (non-re-entrant) mutex per chunk itself; only
         // `setArtistTopSongs`, which has none, is wrapped.
         if (top.length > 0) await upsertSongs(db, top, undefined, articles());
-        await serializeDbWrite(() =>
-          setArtistTopSongs(db, id, top.map((sg) => sg.id), { listLength: size }),
-        );
+        await setArtistTopSongs(db, id, top.map((sg) => sg.id), { listLength: size });
         bumpDetailChanged('artist', id);
       }
       if ((opts?.prefetchCovers ?? true) && top.length > 0) prefetchCoverArt(top);
@@ -466,7 +460,7 @@ export async function fetchPlaylistDetail(
       // `setPlaylistSongs`, which has none, is wrapped.
       await upsertPlaylists(db, [data], undefined, articles());
       if (entry.length > 0) await upsertSongs(db, entry, undefined, articles());
-      await serializeDbWrite(() => setPlaylistSongs(db, id, entry.map((e) => e.id)));
+      await setPlaylistSongs(db, id, entry.map((e) => e.id));
       bumpDetailChanged('playlist', id);
     }
     if (prefetchCovers) {

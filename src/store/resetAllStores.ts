@@ -12,7 +12,7 @@ import {
   clearKvStorage,
   dropAllPendingPersistWrites,
 } from './persistence';
-import { getDb, serializeDbWrite } from './persistence/db';
+import { getDb } from './persistence/db';
 import { awaitDbWritesIdle } from '../db/client';
 import { resetNormalizedSchema } from '../db/createNormalizedTables';
 import { clearPendingScrobbles } from './persistence/pendingScrobbleTable';
@@ -133,7 +133,7 @@ async function clearLegacyBlobTables(): Promise<void> {
   for (const table of ['album_details', 'song_index', 'library_albums']) {
     try {
       // eslint-disable-next-line no-await-in-loop
-      await serializeDbWrite(() => db.runAsync(`DELETE FROM ${table};`));
+      await db.runAsync(`DELETE FROM ${table};`);
     } catch {
       /* table absent on this install — nothing to clear */
     }

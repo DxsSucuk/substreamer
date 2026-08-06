@@ -64,8 +64,13 @@ export interface InternalDb {
    */
   runAtomicBatchAsync(commands: readonly BatchCommand[]): Promise<void>;
   execSync(sql: string): void;
+  /**
+   * BEGIN/COMMIT via `executeSync` — on the JS thread, bypassing the pool, so an
+   * open pool transaction makes the BEGIN a hard error on Android. Callers must
+   * either run where nothing else writes (boot, the migration chain) or await
+   * {@link awaitDbWritesIdle} first, as logout does.
+   */
   withTransactionSync(fn: () => void): void;
-  withTransactionAsync(task: () => Promise<void>): Promise<void>;
 }
 
 export const DB_NAME = 'substreamer7.db';
@@ -239,20 +244,6 @@ function adapt(op: DB): InternalDb {
       } catch (e) {
         try {
           op.executeSync('ROLLBACK');
-        } catch {
-          /* ignore */
-        }
-        throw e;
-      }
-    },
-    async withTransactionAsync(task: () => Promise<void>): Promise<void> {
-      await op.execute('BEGIN');
-      try {
-        await task();
-        await op.execute('COMMIT');
-      } catch (e) {
-        try {
-          await op.execute('ROLLBACK');
         } catch {
           /* ignore */
         }

@@ -135,34 +135,6 @@ export function getDb(): InternalDb | null {
 }
 
 /**
- * Global write-serialization mutex for the shared connection.
- *
- * `withTransactionAsync` is NOT exclusive: it issues `BEGIN`, then yields the JS
- * thread while its inner `runAsync` calls queue on the native background thread.
- * A second async transaction can slip its own `BEGIN` into that gap. Android's
- * SQLite rejects the nested `BEGIN` outright ("cannot start a transaction within
- * a transaction" / "cannot rollback - no transaction is active"); iOS happens to
- * tolerate the interleave, which is why this only surfaced on Android.
- *
- * Every row-table module shares ONE connection (`getDb()`), so a per-module
- * mutex only serializes a module against itself and lets cross-module
- * transactions collide (e.g. a `cached_items` download write vs a `scrobble_events`
- * flush at the same moment). ALL async transactions must funnel through this single
- * chain so at most one is ever in flight connection-wide. (`withTransactionSync`
- * is exempt — it runs to completion without yielding, so it can't interleave.)
- * A thrown task can't break the chain (the settle-to-undefined always resolves).
- */
-let dbWriteChain: Promise<unknown> = Promise.resolve();
-export function serializeDbWrite<T>(task: () => Promise<T>): Promise<T> {
-  const run = dbWriteChain.then(task, task);
-  dbWriteChain = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run;
-}
-
-/**
  * True when the SQLite-backing store is currently available.
  *
  * Implemented as a function (not a const captured at module load) so callers

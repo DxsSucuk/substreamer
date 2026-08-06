@@ -6,7 +6,7 @@
  * Writes become silent no-ops when `getDb()` returns null (DB init failed)
  * — callers don't need to handle exceptions.
  */
-import { getDb, serializeDbWrite, type BatchCommand } from './db';
+import { getDb, type BatchCommand } from './db';
 import { type PendingScrobble } from '../pendingScrobbleStore';
 
 /* ------------------------------------------------------------------ */
@@ -75,11 +75,9 @@ export async function insertPendingScrobble(scrobble: PendingScrobble): Promise<
   if (db === null) return;
   if (!scrobble.id || !scrobble.song?.id || !scrobble.song.title) return;
   try {
-    await serializeDbWrite(() =>
-      db.runAsync(
-        'INSERT OR IGNORE INTO pending_scrobble_events (id, song_json, time) VALUES (?, ?, ?);',
-        [scrobble.id, JSON.stringify(scrobble.song), scrobble.time],
-      ),
+    await db.runAsync(
+      'INSERT OR IGNORE INTO pending_scrobble_events (id, song_json, time) VALUES (?, ?, ?);',
+      [scrobble.id, JSON.stringify(scrobble.song), scrobble.time],
     );
   } catch {
     /* dropped */
@@ -95,9 +93,7 @@ export async function deletePendingScrobble(id: string): Promise<void> {
   const db = getDb();
   if (db === null || !id) return;
   try {
-    await serializeDbWrite(() =>
-      db.runAsync('DELETE FROM pending_scrobble_events WHERE id = ?;', [id]),
-    );
+    await db.runAsync('DELETE FROM pending_scrobble_events WHERE id = ?;', [id]);
   } catch {
     /* dropped */
   }
@@ -125,7 +121,7 @@ export async function replaceAllPendingScrobbles(
         [s.id, JSON.stringify(s.song), s.time],
       ]);
     }
-    await serializeDbWrite(() => db.runAtomicBatchAsync(commands));
+    await db.runAtomicBatchAsync(commands);
   } catch {
     /* dropped */
   }
@@ -136,7 +132,7 @@ export async function clearPendingScrobbles(): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    await serializeDbWrite(() => db.runAsync('DELETE FROM pending_scrobble_events;'));
+    await db.runAsync('DELETE FROM pending_scrobble_events;');
   } catch {
     /* dropped */
   }

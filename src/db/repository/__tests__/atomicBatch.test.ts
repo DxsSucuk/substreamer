@@ -12,7 +12,7 @@
  */
 import type { AlbumID3, ArtistID3, Child } from 'subsonic-api';
 
-import { getDb, serializeDbWrite } from '../../../store/persistence/db';
+import { getDb } from '../../../store/persistence/db';
 import { ensureNormalizedSchema } from '../../createNormalizedTables';
 import { upsertAlbums } from '../albums';
 import { setArtistTopSongs, upsertArtists } from '../artists';
@@ -89,11 +89,6 @@ describe('bulkUpsert atomicity', () => {
       db().runSync("UPDATE albums SET name = 'Bravo!' WHERE id = 'a2'");
     });
     expect(albumIds()).toEqual(['a2']);
-  });
-
-  it('holds the write mutex across the batch, so the chain still runs afterwards', async () => {
-    await upsertAlbums(db(), [album('a1', 'Alpha')]);
-    await expect(serializeDbWrite(() => Promise.resolve('chain alive'))).resolves.toBe('chain alive');
   });
 
   it('stops at the failing chunk: earlier chunks are committed, later ones never run', async () => {

@@ -1,16 +1,14 @@
 /**
- * The four detail-fetch write blocks against the REAL write mutex and the REAL
- * repository layer.
+ * The four detail-fetch write blocks against the REAL repository layer and real SQL.
  *
- * `bulkUpsert` now acquires `serializeDbWrite` per chunk and the mutex is NOT
- * re-entrant: a caller that wraps an upsert in its own acquire never releases, and
- * `dbWriteChain` is wedged for the life of the process — every later write in the app
- * hangs. The sibling `detailFetchService.test.ts` cannot catch that: it stubs both
- * `serializeDbWrite` (pass-through) and the whole repository layer, so `bulkUpsert` is
- * never reached. Here only the network and the image cache are stubbed.
+ * The file is named for the write mutex it was written to defend — a caller that
+ * wrapped a `bulkUpsert` in its own (non-re-entrant) acquire wedged the write chain for
+ * the life of the process. The mutex is gone, but this is still the ONLY place these
+ * write paths run against the real repository: the sibling `detailFetchService.test.ts`
+ * stubs the whole repository layer, so `bulkUpsert` is never reached there. Here only
+ * the network and the image cache are stubbed.
  *
- * A regression HANGS rather than failing, so every test carries a short timeout and the
- * suite ends by proving the chain still runs.
+ * A regression can HANG rather than fail, so every test carries a short timeout.
  */
 import type { Child } from 'subsonic-api';
 
@@ -59,7 +57,7 @@ jest.mock('../../store/mbidOverrideStore', () => ({
 }));
 
 // Imported AFTER the mocks so the real modules resolve against them.
-import { getDb, serializeDbWrite } from '../../store/persistence/db';
+import { getDb } from '../../store/persistence/db';
 import { getAlbumDetail, getPlaylistDetail } from '../../db/repository/details';
 
 const db = () => getDb()!;
@@ -67,7 +65,7 @@ const db = () => getDb()!;
 const song = (id: string, albumId?: string): Child =>
   ({ id, title: `Song ${id}`, isDir: false, albumId }) as Child;
 
-/** Every test must finish well inside this; a nested acquire never resolves. */
+/** Every test must finish well inside this; a wedged write never resolves. */
 const DEADLINE_MS = 5000;
 
 const count = (table: string, where: string, param: string): number =>
@@ -81,7 +79,7 @@ beforeEach(() => {
   mockGetTopSongs.mockReset();
 });
 
-describe('detail fetch writes do not re-enter the write mutex', () => {
+describe('detail fetch writes against the real repository', () => {
   it(
     'fetchAlbumDetail writes the album, its songs and the not-in prune',
     async () => {
@@ -162,14 +160,6 @@ describe('detail fetch writes do not re-enter the write mutex', () => {
       expect(result?.id).toBe('pl1');
       const detail = await getPlaylistDetail(db(), 'pl1');
       expect(detail?.entry.map((e) => e.id)).toEqual(['p1', 'p2']);
-    },
-    DEADLINE_MS,
-  );
-
-  it(
-    'leaves the write chain runnable after all four paths',
-    async () => {
-      await expect(serializeDbWrite(() => Promise.resolve('alive'))).resolves.toBe('alive');
     },
     DEADLINE_MS,
   );

@@ -17,7 +17,7 @@
  * the JS thread; writes funnel through `serializeDbWrite` (the connection-wide
  * mutex).
  */
-import { getDb, serializeDbWrite, type BatchCommand, type InternalDb } from './db';
+import { getDb, type BatchCommand, type InternalDb } from './db';
 
 export interface CachedImageRow {
   coverArtId: string;
@@ -142,7 +142,7 @@ export async function upsertCachedImage(row: CachedImageRow): Promise<void> {
   if (db === null) return;
   if (!row.coverArtId || !row.size) return;
   try {
-    await serializeDbWrite(() => upsertCachedImageInternal(db, row));
+    await upsertCachedImageInternal(db, row);
   } catch {
     /* dropped */
   }
@@ -170,9 +170,7 @@ export async function deleteCachedImagesForCoverArt(
          FROM cached_images WHERE cover_art_id = ?;`,
       [coverArtId],
     );
-    await serializeDbWrite(() =>
-      db.runAsync('DELETE FROM cached_images WHERE cover_art_id = ?;', [coverArtId]),
-    );
+    await db.runAsync('DELETE FROM cached_images WHERE cover_art_id = ?;', [coverArtId]);
     return {
       bytes: totals?.total_bytes ?? 0,
       count: totals?.file_count ?? 0,
@@ -193,12 +191,10 @@ export async function deleteCachedImageVariant(
   const db = getDb();
   if (db === null) return;
   try {
-    await serializeDbWrite(() =>
-      db.runAsync('DELETE FROM cached_images WHERE cover_art_id = ? AND size = ?;', [
-        coverArtId,
-        size,
-      ]),
-    );
+    await db.runAsync('DELETE FROM cached_images WHERE cover_art_id = ? AND size = ?;', [
+      coverArtId,
+      size,
+    ]);
   } catch {
     /* dropped */
   }
@@ -209,7 +205,7 @@ export async function clearAllCachedImages(): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    await serializeDbWrite(() => db.runAsync('DELETE FROM cached_images;'));
+    await db.runAsync('DELETE FROM cached_images;');
   } catch {
     /* dropped */
   }
@@ -393,7 +389,7 @@ export async function bulkInsertCachedImages(rows: readonly CachedImageRow[]): P
     const commands = rows
       .filter((row) => row.coverArtId && row.size)
       .map(cachedImageUpsertCommand);
-    await serializeDbWrite(() => db.runAtomicBatchAsync(commands));
+    await db.runAtomicBatchAsync(commands);
   } catch {
     /* dropped */
   }

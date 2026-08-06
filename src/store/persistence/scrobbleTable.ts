@@ -6,7 +6,7 @@
  * Writes become silent no-ops when `getDb()` returns null (DB init failed)
  * — callers don't need to handle exceptions.
  */
-import { getDb, serializeDbWrite, type BatchCommand } from './db';
+import { getDb, type BatchCommand } from './db';
 import { type CompletedScrobble } from '../completedScrobbleStore';
 import {
   deriveScrobbleColumns,
@@ -177,7 +177,7 @@ export async function insertScrobble(scrobble: CompletedScrobble): Promise<void>
   if (db === null) return;
   if (!scrobble.id || !scrobble.song?.id || !scrobble.song.title) return;
   try {
-    await serializeDbWrite(() => db.runAsync(INSERT_SQL, insertParams(scrobble)));
+    await db.runAsync(INSERT_SQL, insertParams(scrobble));
   } catch {
     /* dropped */
   }
@@ -199,7 +199,7 @@ export async function mergeScrobbles(
   if (db === null) return { added: 0, skipped: scrobbles.length };
   try {
     const before = await countScrobbles();
-    await serializeDbWrite(() => db.runAtomicBatchAsync(insertCommands(scrobbles)));
+    await db.runAtomicBatchAsync(insertCommands(scrobbles));
     const after = await countScrobbles();
     const added = Math.max(0, after - before);
     return { added, skipped: scrobbles.length - added };
@@ -217,12 +217,10 @@ export async function replaceAllScrobbles(scrobbles: readonly CompletedScrobble[
   const db = getDb();
   if (db === null) return;
   try {
-    await serializeDbWrite(() =>
-      db.runAtomicBatchAsync([
-        ['DELETE FROM scrobble_events;', []],
-        ...insertCommands(scrobbles),
-      ]),
-    );
+    await db.runAtomicBatchAsync([
+      ['DELETE FROM scrobble_events;', []],
+      ...insertCommands(scrobbles),
+    ]);
   } catch {
     /* dropped */
   }
@@ -280,7 +278,7 @@ export async function backfillScrobbleColumnsAsync(): Promise<void> {
         ]);
       }
       // eslint-disable-next-line no-await-in-loop
-      await serializeDbWrite(() => db.runBatchAsync(updates));
+      await db.runBatchAsync(updates);
       if (rows.length < BACKFILL_CHUNK) break;
       // Yield between chunks so a large history can't freeze the JS thread.
       // eslint-disable-next-line no-await-in-loop
@@ -296,7 +294,7 @@ export async function clearScrobbles(): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    await serializeDbWrite(() => db.runAsync('DELETE FROM scrobble_events;'));
+    await db.runAsync('DELETE FROM scrobble_events;');
   } catch {
     /* dropped */
   }

@@ -29,7 +29,6 @@ describe('kvStorageSync (happy path)', () => {
       runAtomicBatchAsync: jest.fn(),
       execSync: jest.fn(),
       withTransactionSync: jest.fn(),
-      withTransactionAsync: jest.fn(),
     });
   });
 
@@ -125,7 +124,6 @@ describe('kvStorage (async, happy path)', () => {
       runAtomicBatchAsync: jest.fn(),
       execSync: jest.fn(),
       withTransactionSync: jest.fn(),
-      withTransactionAsync: jest.fn(),
     });
   });
 
