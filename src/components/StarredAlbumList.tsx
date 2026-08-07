@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from 'react';
 
 import { getDb } from '../store/persistence/db';
 import { favoritesStore } from '../store/favoritesStore';
+import { musicCacheStore } from '../store/musicCacheStore';
 import { starredAlbumsPage } from '../db/repository/favorites';
 import { useKeysetList } from '../hooks/useKeysetList';
 import type { Cursor } from '../db/repository/core';
@@ -39,6 +40,9 @@ export function StarredAlbumList({
   contentInsetTop = 0,
 }: StarredAlbumListProps) {
   const version = favoritesStore((s) => s.version);
+  // See `StarredSongList` — `downloadedOnly` narrows the SQL, and SQL has no Zustand
+  // subscription, so a completing download must reach this list through `revision`.
+  const revision = musicCacheStore((s) => s.revision);
 
   const loadPage = useCallback(
     async (cursor: Cursor | null) => {
@@ -57,12 +61,13 @@ export function StarredAlbumList({
 
   const { rows, initialLoading, loadMore, reload } = useKeysetList<AlbumID3>(loadPage);
 
-  const seenVersionRef = useRef(version);
+  const seenRef = useRef(`${version}:${revision}`);
+  const changeKey = `${version}:${revision}`;
   useEffect(() => {
-    if (version === seenVersionRef.current) return;
-    seenVersionRef.current = version;
+    if (changeKey === seenRef.current) return;
+    seenRef.current = changeKey;
     reload();
-  }, [version, reload]);
+  }, [changeKey, reload]);
 
   return (
     <AlbumListView

@@ -815,7 +815,12 @@ describe('dataSyncService — forceFullResync', () => {
     await forceFullResync();
 
     expect(syncStatusStore.getState().generation).toBe(beforeGen + 1);
-    expect(mockRunNormalizedLibrarySync).toHaveBeenCalledWith({ full: true });
+    // `reason` is diagnostic — it tags which call site asked, so an unexplained sync
+    // (and the banner it drives) can be traced to its trigger from the log alone.
+    expect(mockRunNormalizedLibrarySync).toHaveBeenCalledWith({
+      full: true,
+      reason: 'forceFullResync',
+    });
     // The legacy blob-writing album fetch must NOT run — normalized is the sole writer.
     expect(mockFetchAllAlbums).not.toHaveBeenCalled();
   });

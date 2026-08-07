@@ -423,7 +423,7 @@ export async function refreshPlaylistLibrary(): Promise<void> {
  * — `forceFullResync` bumps the generation immediately before asking for the full run.
  */
 export function runNormalizedLibrarySync(
-  opts: { full?: boolean; forceStrategy?: 'search3' | 'basic' } = {},
+  opts: { full?: boolean; forceStrategy?: 'search3' | 'basic'; reason?: string } = {},
 ): Promise<void> {
   const gen = syncStatusStore.getState().generation;
   const canJoin = inFlight !== null && gen === inFlightGen && (!opts.full || inFlightFull);
@@ -445,7 +445,13 @@ export function runNormalizedLibrarySync(
 }
 
 async function doNormalizedSync(
-  { full = false, forceStrategy }: { full?: boolean; forceStrategy?: 'search3' | 'basic' },
+  {
+    full = false,
+    forceStrategy,
+    // Diagnostic only: which call site asked for this run. Logged with the stats so an
+    // unexplained sync (and the banner it drives) can be traced to its trigger.
+    reason = 'unknown',
+  }: { full?: boolean; forceStrategy?: 'search3' | 'basic'; reason?: string },
 ): Promise<void> {
   const db = getDb();
   if (!db) return;
@@ -580,6 +586,8 @@ async function doNormalizedSync(
     const nSongs = await countSongs(db);
     // eslint-disable-next-line no-console
     console.log('[normalized-sync] done', {
+      reason,
+      full,
       albums: nAlbums,
       songs: nSongs,
       albumMs: Math.round(albumMs),

@@ -112,7 +112,7 @@ async function performScope(scope: SyncScope): Promise<void> {
       // (Server-side removals / bulk metadata rewrites are handled by the explicit
       // Settings → Sync Library force-resync.)
       if (!syncStatusStore.getState().librarySyncComplete) {
-        await runNormalizedLibrarySync();
+        await runNormalizedLibrarySync({ reason: 'pull-to-refresh' });
       } else {
         await onScanCompleted();
       }
@@ -247,7 +247,9 @@ async function startupOrResumeFlow(): Promise<void> {
         !sync.songSyncComplete ||
         rowCount === 0 ||
         (gateDb ? await hasAlbumWithoutSongs(gateDb) : false);
-      const libPromise = needsLibraryFetch ? runNormalizedLibrarySync() : Promise.resolve();
+      const libPromise = needsLibraryFetch
+        ? runNormalizedLibrarySync({ reason: 'startup:needsLibraryFetch' })
+        : Promise.resolve();
 
       const startupDb = getDb();
       const artistCount = startupDb ? await countArtists(startupDb) : 0;
@@ -346,7 +348,7 @@ async function startupOrResumeFlow(): Promise<void> {
         // banner. `libPromise` above already covers the incomplete-album-list case, and
         // the in-flight guard collapses the two into one run.
         if (!syncStatusStore.getState().songSyncComplete) {
-          fireAndForget(runNormalizedLibrarySync(), 'sync.songSync');
+          fireAndForget(runNormalizedLibrarySync({ reason: 'startup:songSyncIncomplete' }), 'sync.songSync');
         }
       }
     }, STARTUP_PREFETCH_SETTLE_MS);
@@ -553,7 +555,7 @@ export async function forceFullResync(): Promise<void> {
   // intentionally left as-is (the read UI still hydrates from them until Phase 3).
   syncStatusStore.getState().setSyncStrategy(null);
   if (offlineModeStore.getState().offlineMode) return;
-  await runNormalizedLibrarySync({ full: true });
+  await runNormalizedLibrarySync({ full: true, reason: 'forceFullResync' });
 }
 
 /**
@@ -565,7 +567,7 @@ export async function resumeSync(): Promise<void> {
   if (offlineModeStore.getState().offlineMode) return;
   // One call resumes BOTH phases from their persisted cursors — the normalized sync
   // runs the album list then the song phase itself, so there is no separate song step.
-  await runNormalizedLibrarySync();
+  await runNormalizedLibrarySync({ reason: 'resume-button' });
 }
 
 /**
@@ -733,7 +735,7 @@ export async function recoverStalledSync(): Promise<void> {
     return;
   }
   // Resumes both phases from their persisted cursors.
-  await runNormalizedLibrarySync();
+  await runNormalizedLibrarySync({ reason: 'app-foreground-resume' });
 }
 
 /**

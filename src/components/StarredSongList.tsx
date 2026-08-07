@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, type ReactNode } from 'react';
 
 import { getDb } from '../store/persistence/db';
 import { favoritesStore } from '../store/favoritesStore';
+import { musicCacheStore } from '../store/musicCacheStore';
 import { listAllStarredSongs, starredSongsPage } from '../db/repository/favorites';
 import { useKeysetList } from '../hooks/useKeysetList';
 import { playTrack } from '../services/playerService';
@@ -48,6 +49,11 @@ export function StarredSongList({
   listHeaderExtra,
 }: StarredSongListProps) {
   const version = favoritesStore((s) => s.version);
+  // `revision` is the download tables' change signal. This list reads download state
+  // (`downloadedOnly` narrows the SQL), and SQL has no Zustand subscription, so without
+  // it a download completing under the user leaves the list showing the rows it fetched
+  // when nothing was downloaded — until the app restarts.
+  const revision = musicCacheStore((s) => s.revision);
 
   const loadPage = useCallback(
     async (cursor: Cursor | null) => {
@@ -66,14 +72,15 @@ export function StarredSongList({
 
   const { rows, initialLoading, loadMore, reload } = useKeysetList<Child>(loadPage);
 
-  // Repaint when membership changes. Skip the value seen at mount so this never
-  // double-loads the first page.
-  const seenVersionRef = useRef(version);
+  // Repaint when the starred set OR the downloaded set changes. Skip the values seen at
+  // mount so this never double-loads the first page.
+  const seenRef = useRef(`${version}:${revision}`);
+  const changeKey = `${version}:${revision}`;
   useEffect(() => {
-    if (version === seenVersionRef.current) return;
-    seenVersionRef.current = version;
+    if (changeKey === seenRef.current) return;
+    seenRef.current = changeKey;
     reload();
-  }, [version, reload]);
+  }, [changeKey, reload]);
 
   // Tapping a track queues the WHOLE favourites list, as it always has — the loaded
   // keyset window is not the queue. Fetched at press time, O(favourites).
