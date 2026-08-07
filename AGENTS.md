@@ -385,6 +385,8 @@ When the user corrects your approach, append a one-line rule here before ending 
 - **Never defer a pre-existing defect you find on the way.** If work uncovers a bug in shipped code, it goes in scope and gets its own commit. Do not relay a subagent's "out of scope" as if it were settled.
 - **Don't soften a rule to fit what the code does.** A lazy `require()` in a service was described as "adjacent to the rule" because the rule said "store actions"; it was a breach. When shipped code violates the *rationale* of a rule, the finding is a breach and the rule's wording is what needs fixing.
 - **A comment explaining why a smell is necessary is a claim, not evidence.** Three of the four lazy requires cited cycles or test needs; `madge` found no cycle at any of them. Verify the justification before preserving the workaround.
+- **Comments state what a developer needs to know, not how it was discovered.** No narrating the investigation, no recapping the bug report, no arguing the case. If it takes more than ~3 lines, the reasoning belongs in `plans/`, not the file. Match the density of the surrounding code.
+- **Don't describe intended behaviour as a "quirk", "legacy" or a workaround.** Twice in one session that framing sent work down a wrong path — a design decision was filed as a bug, and a lazy `require()` was preserved on a cycle claim that was false. Say it is intended and why, in one line.
 - **Fix native-layer inconsistencies in native code**, not with JS workarounds.
 - **Verify a subagent's findings yourself** before acting on them, and before reporting them as fact. They are frequently right and occasionally confidently wrong.
 - **Run sub-agents one at a time** on multi-phase work — protects context and avoids conflicting edits.

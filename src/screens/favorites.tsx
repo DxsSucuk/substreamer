@@ -163,16 +163,13 @@ export function FavoritesScreen() {
     toggleArtistLayout,
   ]);
 
-  // The songs segment keeps the pre-existing quirk that its downloaded filter also
-  // requires the `__starred__` aggregate to exist; albums/artists never had that gate.
+  // INTENDED: the downloaded filter requires the `__starred__` aggregate to exist. Songs on
+  // disk via an album download don't substitute for marking the collection downloaded; that
+  // view is Library → Songs + Favourites filter.
   //
-  // The unknown state resolves DIFFERENTLY per line, and each direction is the safe one:
-  //  - the FILTER treats unknown as downloaded, so the list stays filtered. Falling through
-  //    unfiltered would flash music that is not on the device — the one failure a Downloaded
-  //    filter must not have.
-  //  - SUPPRESSION and the OFFLINE COPY treat unknown as "not yet"; both replace the whole
-  //    segment with an empty state, and rendering "download your favourites" over a list
-  //    that is about to appear is the opposite mistake.
+  // Unknown resolves per line: the FILTER treats it as downloaded (never show music that may
+  // not be on the device); SUPPRESSION and the OFFLINE COPY treat it as not-yet (never claim
+  // "download your favourites" over a list about to appear).
   const songsDownloadedOnly = downloadedOnly && starredSongsDownloaded !== false;
   const songsSuppressed = downloadedOnly && starredSongsDownloaded === false;
   // Empty-state copy, three states, most specific first:
