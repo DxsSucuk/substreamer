@@ -47,13 +47,13 @@ beforeEach(async () => {
 
 describe('StarredArtistList', () => {
   it('renders the merged first page, newest favourite first', async () => {
-    render(<StarredArtistList downloadedOnly={false} includePartial={false} />);
+    render(<StarredArtistList />);
     await waitFor(() => expect(artistProps.artists).toHaveLength(3));
     expect(artistProps.artists.map((a) => a.id)).toEqual(['lib-a', 'rem-a', 'lib-b']);
   });
 
   it('reloads when the membership version bumps', async () => {
-    render(<StarredArtistList downloadedOnly={false} includePartial={false} />);
+    render(<StarredArtistList />);
     await waitFor(() => expect(artistProps.artists).toHaveLength(3));
 
     db().runSync("DELETE FROM artists WHERE id='lib-b'");
@@ -63,14 +63,18 @@ describe('StarredArtistList', () => {
     await waitFor(() => expect(artistProps.artists).toHaveLength(2));
   });
 
-  it('shows an artist who owns ANY downloaded album under the downloaded filter', async () => {
+  // Artists cannot be downloaded, so this list takes no downloaded filter — owning a
+  // downloaded album must NOT narrow it. The Favourites screen hides the Artists segment
+  // under that filter instead; `favorites.tsx`'s suite owns that gate.
+  it('ignores downloaded albums entirely — the full starred set still renders', async () => {
     db().runSync(
       'INSERT INTO cached_items (item_id, type, name, expected_song_count, last_sync_at, ' +
         'downloaded_at) VALUES (?, ?, ?, ?, ?, ?)',
       ['al1', 'album', 'A', 0, 0, 0],
     );
     db().runSync('INSERT INTO cached_albums (item_id, artist_id) VALUES (?, ?)', ['al1', 'lib-b']);
-    render(<StarredArtistList downloadedOnly includePartial={false} />);
-    await waitFor(() => expect(artistProps.artists.map((a) => a.id)).toEqual(['lib-b']));
+    render(<StarredArtistList />);
+    await waitFor(() => expect(artistProps.artists).toHaveLength(3));
+    expect(artistProps.artists.map((a) => a.id)).toEqual(['lib-a', 'rem-a', 'lib-b']);
   });
 });

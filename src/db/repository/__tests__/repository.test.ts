@@ -26,7 +26,6 @@ import {
   getArtist,
   listArtists,
   listArtistsBefore,
-  listArtistsByIds,
   upsertArtistInfo,
   upsertArtists,
 } from '../artists';
@@ -548,19 +547,6 @@ describe('artists repository', () => {
     });
   });
 
-  it('listArtistsByIds returns full rows for a set of ids (downloaded-artist hydrate)', async () => {
-    await upsertArtists(db(), [
-      artist('ar1', 'ABBA', { albumCount: 3, roles: ['artist'] }),
-      artist('ar2', 'Beatles', { albumCount: 12 }),
-      artist('ar3', 'Cure'),
-    ]);
-    const rows = await listArtistsByIds(db(), ['ar1', 'ar3', 'missing']);
-    expect(rows.map((r) => r.id).sort()).toEqual(['ar1', 'ar3']);
-    // The by-ids read hydrates children too — it feeds offline search, not a lean list.
-    expect(rows.find((r) => r.id === 'ar1')?.roles).toEqual(['artist']);
-    expect(rows.find((r) => r.id === 'ar3')?.roles).toBeUndefined();
-    expect(await listArtistsByIds(db(), [])).toEqual([]);
-  });
 });
 
 describe('playlists repository', () => {

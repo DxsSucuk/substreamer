@@ -575,6 +575,8 @@
   "listenToSeeStats": "Listen to some music to see your stats here",
   "notAvailableOffline": "Not available offline",
   "artistsNotAvailableOffline": "Artists are not available in offline mode",
+  "artistsNotDownloadable": "Artists can't be downloaded",
+  "artistsNotDownloadableHint": "Turn off the Downloaded filter to browse artists",
   "songDownloads": "Song Downloads",
   "songCount_one": "{{count}} song",
   "songCount_few": "{{count}} songs",

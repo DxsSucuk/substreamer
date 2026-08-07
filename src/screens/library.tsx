@@ -132,18 +132,27 @@ export function LibraryScreen() {
               />
             )}
             {activeSegment === 'artists' && (
-              offlineMode ? (
+              // Artists cannot be downloaded, so the Downloaded filter hides them
+              // entirely — offline mode enforces that filter, which is why offline
+              // already behaved this way. The COPY still keys off `offlineMode`:
+              // the implication runs one way (offline ⇒ downloaded-only, never the
+              // reverse), so telling an online user "not available offline" would
+              // be false.
+              downloadedOnly ? (
                 <View style={[styles.emptyContainer, { paddingTop: contentInsetTop }]}>
                   <EmptyState
-                    icon="cloud-offline-outline"
-                    title={t('notAvailableOffline')}
-                    subtitle={t('artistsNotAvailableOffline')}
+                    icon={offlineMode ? 'cloud-offline-outline' : 'cloud-download-outline'}
+                    title={offlineMode ? t('notAvailableOffline') : t('artistsNotDownloadable')}
+                    subtitle={
+                      offlineMode
+                        ? t('artistsNotAvailableOffline')
+                        : t('artistsNotDownloadableHint')
+                    }
                   />
                 </View>
               ) : (
                 <ArtistListScreen
                   layout={artistLayout}
-                  downloadedOnly={downloadedOnly}
                   favoritesOnly={favoritesOnly}
                   contentInsetTop={contentInsetTop}
                 />

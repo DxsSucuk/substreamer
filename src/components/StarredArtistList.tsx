@@ -12,8 +12,6 @@ const PAGE = 120;
 
 export interface StarredArtistListProps {
   layout?: ArtistLayout;
-  downloadedOnly: boolean;
-  includePartial: boolean;
   loading?: boolean;
   error?: string | null;
   onRefresh?: () => void;
@@ -24,11 +22,12 @@ export interface StarredArtistListProps {
   contentInsetTop?: number;
 }
 
-/** The Favourites tab's artist list — see `StarredSongList` for the shape. */
+/** The Favourites tab's artist list — see `StarredSongList` for the shape.
+ *
+ *  Takes no downloaded filter: artists cannot be downloaded, so the Favourites tab
+ *  hides the Artists segment under that filter rather than narrowing this list. */
 export function StarredArtistList({
   layout = 'list',
-  downloadedOnly,
-  includePartial,
   loading = false,
   error = null,
   onRefresh,
@@ -40,20 +39,12 @@ export function StarredArtistList({
 }: StarredArtistListProps) {
   const version = favoritesStore((s) => s.version);
 
-  const loadPage = useCallback(
-    async (cursor: Cursor | null) => {
-      const db = getDb();
-      if (!db) return { rows: [] as ArtistID3[], nextCursor: null };
-      const page = await starredArtistsPage(db, {
-        cursor,
-        limit: PAGE,
-        downloadedOnly,
-        includePartial,
-      });
-      return { rows: page.rows.map((e) => e.item), nextCursor: page.nextCursor };
-    },
-    [downloadedOnly, includePartial],
-  );
+  const loadPage = useCallback(async (cursor: Cursor | null) => {
+    const db = getDb();
+    if (!db) return { rows: [] as ArtistID3[], nextCursor: null };
+    const page = await starredArtistsPage(db, { cursor, limit: PAGE });
+    return { rows: page.rows.map((e) => e.item), nextCursor: page.nextCursor };
+  }, []);
 
   const { rows, initialLoading, loadMore, reload } = useKeysetList<ArtistID3>(loadPage);
 
@@ -76,7 +67,6 @@ export function StarredArtistList({
       emptyMessage={emptyMessage}
       emptySubtitle={emptySubtitle}
       emptyIcon={emptyIcon}
-      scrollToTopTrigger={`${downloadedOnly}`}
       contentInsetTop={contentInsetTop}
     />
   );

@@ -70,6 +70,22 @@ beforeEach(() => {
 const rowIds = (r: ReturnType<typeof render>): string[] =>
   r.queryAllByTestId(/^(artist|album|song):/).map((n) => String(n.props.testID));
 
+describe('SearchScreen — downloaded filter drops artists entirely', () => {
+  // Artists cannot be downloaded. The filter used to keep any artist who owned a matching
+  // downloaded album, which disagreed with the library tab (hides artists) and with offline
+  // search (returns none). All three now agree: no artists under the Downloaded filter.
+  it('renders no artist rows when the Downloaded filter is on', () => {
+    filterBarStore.setState({ downloadedOnly: true });
+    expect(rowIds(render(<SearchScreen />)).filter((id) => id.startsWith('artist:'))).toEqual([]);
+  });
+
+  it('still renders artists when the filter is off', () => {
+    expect(rowIds(render(<SearchScreen />))).toEqual(
+      expect.arrayContaining(['artist:ar1', 'artist:ar2']),
+    );
+  });
+});
+
 describe('SearchScreen — favourites filter', () => {
   it('shows unstarred results too when the filter is off', () => {
     // `arrayContaining`, not an exact list: SectionList only mounts its initial window,

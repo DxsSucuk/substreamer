@@ -26,6 +26,9 @@ import type { BatchCommand, InternalDb } from '../client';
 import { ALBUM_LIST_COLS, albumListRowToAlbumID3, hydrateAlbumRows, type AlbumListRow } from './albums';
 import { ARTIST_LIST_COLS, artistListRowToArtistID3, hydrateArtistRows, type ArtistListRow } from './artists';
 import { countRows, keysetPage, type Cursor } from './core';
+// The download predicates live in `downloads.ts` — ONE definition, so the library tab's
+// filter and the favourites filter cannot drift apart.
+import { downloadedClause, type DownloadableEntity } from './downloads';
 import { SONG_LIST_COLS, hydrateSongRows, songListRowToChild, type SongListRow } from './songs';
 
 export type { StarredEntry } from '@/utils/mergeStarredDesc';
@@ -55,38 +58,13 @@ export interface StarredFilter {
 /*  Predicates — built ONCE per entity, shared verbatim by both halves */
 /* ------------------------------------------------------------------ */
 
-/** SQL form of `albumPassesDownloadedFilter` + `isPartialAlbum`
- *  (`store/persistence/cachedItemHelpers.ts`) — a complete download has at least as
- *  many `cached_item_songs` edges as the item's `expected_song_count`. */
-const partialGate = (includePartial: boolean): string =>
-  includePartial
-    ? ''
-    : ' AND (SELECT COUNT(*) FROM cached_item_songs e WHERE e.item_id = ci.item_id)' +
-      ' >= ci.expected_song_count';
-
 /**
- * "This id is downloaded." Positive `IN` probes over the DOWNLOAD tables, which are
- * bounded by what is on disk — so unlike the disjointness clause below there is no
- * ephemeral-b-tree build to avoid. Both PKs are `id`, so the identical string serves
- * the library row and its remainder counterpart.
+ * `DownloadableEntity` excludes artists by construction — an artist is not a downloadable
+ * object, so the Downloaded filter hides artist lists outright (see `library.tsx` /
+ * `favorites.tsx`) rather than narrowing them to "owns a downloaded album". The type is what
+ * stops that predicate being reintroduced.
  */
-function downloadedClause(entity: Entity, includePartial: boolean): string {
-  switch (entity) {
-    case 'songs':
-      return 'id IN (SELECT song_id FROM cached_songs)';
-    case 'albums':
-      return `id IN (SELECT ci.item_id FROM cached_items ci WHERE ci.type='album'${partialGate(includePartial)})`;
-    case 'artists':
-      // "Downloaded" is a property of the ARTIST, not of the favourites set: an artist
-      // whose albums are on disk is available offline whether or not those albums are
-      // starred. Matches the library tab's predicate (`artist-list.tsx`).
-      return (
-        'id IN (SELECT ca.artist_id FROM cached_albums ca ' +
-        'JOIN cached_items ci ON ci.item_id = ca.item_id ' +
-        `WHERE ci.type='album' AND ca.artist_id IS NOT NULL${partialGate(includePartial)})`
-      );
-  }
-}
+const isDownloadable = (entity: Entity): entity is DownloadableEntity => entity !== 'artists';
 
 /**
  * "No marked library row owns this id." `NOT EXISTS`, not `NOT IN`: SQLite answers an
@@ -101,13 +79,13 @@ const disjointClause = (entity: Entity): string =>
 /** WHERE for the LIBRARY half. `starred IS NOT NULL` is the membership test — `0` is a
  *  member (the server sent no date), and every partial index uses the same predicate. */
 const libraryWhere = (entity: Entity, f: StarredFilter): string =>
-  f.downloadedOnly
+  f.downloadedOnly && isDownloadable(entity)
     ? `starred IS NOT NULL AND ${downloadedClause(entity, f.includePartial === true)}`
     : 'starred IS NOT NULL';
 
 /** WHERE for the REMAINDER half — disjointness first, then the same download filter. */
 const remainderWhere = (entity: Entity, f: StarredFilter): string =>
-  f.downloadedOnly
+  f.downloadedOnly && isDownloadable(entity)
     ? `${disjointClause(entity)} AND ${downloadedClause(entity, f.includePartial === true)}`
     : disjointClause(entity);
 
@@ -243,10 +221,14 @@ export async function starredAlbumsPage(
   return mergePages(lib, await remainderPage<AlbumID3>(db, 'albums', REMAINDER_COLS, opts), opts.limit);
 }
 
+/** Options for the artist reads — deliberately WITHOUT `StarredFilter`. Artists are not
+ *  downloadable, so there is no downloaded variant of this list to ask for. */
+export type StarredArtistPageOpts = Omit<StarredPageOpts, keyof StarredFilter>;
+
 /** One page of starred artists, newest favourite first. */
 export async function starredArtistsPage(
   db: InternalDb,
-  opts: StarredPageOpts,
+  opts: StarredArtistPageOpts,
 ): Promise<StarredPage<ArtistID3>> {
   const page = await keysetPage<ArtistListRow>(db, {
     table: 'artists',
@@ -255,7 +237,7 @@ export async function starredArtistsPage(
     direction: 'desc',
     limit: opts.limit,
     cursor: opts.cursor,
-    where: libraryWhere('artists', opts),
+    where: libraryWhere('artists', {}),
     sortKeyOf: (r) => r.starred ?? 0,
   });
   await hydrateArtistRows(db, page.rows);
@@ -317,13 +299,11 @@ export async function listAllStarredAlbums(
   return mergeStarredDesc(lib, rem).map((e) => e.item);
 }
 
-/** The whole starred artist set, newest favourite first. O(favourites) — see above. */
-export async function listAllStarredArtists(
-  db: InternalDb,
-  f: StarredFilter = {},
-): Promise<ArtistID3[]> {
+/** The whole starred artist set, newest favourite first. O(favourites) — see above.
+ *  Takes no filter: artists are not downloadable (see {@link DownloadableEntity}). */
+export async function listAllStarredArtists(db: InternalDb): Promise<ArtistID3[]> {
   const rows = await db.getAllAsync<ArtistListRow>(
-    `SELECT ${ARTIST_LIST_COLS} FROM artists WHERE ${libraryWhere('artists', f)} ORDER BY "starred" DESC, "id" DESC`,
+    `SELECT ${ARTIST_LIST_COLS} FROM artists WHERE ${libraryWhere('artists', {})} ORDER BY "starred" DESC, "id" DESC`,
   );
   await hydrateArtistRows(db, rows);
   const lib = rows.map((r) => ({
@@ -331,7 +311,7 @@ export async function listAllStarredArtists(
     starred: r.starred ?? 0,
     item: artistListRowToArtistID3(r) as ArtistID3,
   }));
-  const rem = await allRemainder<ArtistID3>(db, 'artists', REMAINDER_COLS, f);
+  const rem = await allRemainder<ArtistID3>(db, 'artists', REMAINDER_COLS, {});
   return mergeStarredDesc(lib, rem).map((e) => e.item);
 }
 

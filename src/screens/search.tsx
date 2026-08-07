@@ -103,11 +103,12 @@ export function SearchScreen() {
     if (downloadedOnly) {
       albums = albums.filter((a) => albumPassesDownloadedFilter(a, cachedItems, includePartial));
       songs = songs.filter((s) => getLocalTrackUri(s.id) !== null);
-      const downloadedArtistIds = new Set<string>();
-      for (const album of albums) {
-        if (album.artistId) downloadedArtistIds.add(album.artistId);
-      }
-      artists = artists.filter((a) => downloadedArtistIds.has(a.id));
+      // Artists cannot be downloaded, so the filter drops them outright — the same
+      // handling the library and favourites tabs give the Artists segment. The
+      // offline search path already returns none (`searchService`), so this only
+      // changes the ONLINE + Downloaded case, which used to show artists derived
+      // from whichever of their albums happened to match the query.
+      artists = [];
     }
 
     if (favoritesOnly) {

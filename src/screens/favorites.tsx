@@ -313,19 +313,21 @@ export function FavoritesScreen() {
           />
         )}
         {activeSegment === 'artists' && (
-          offlineMode ? (
+          // See `library.tsx` — artists aren't downloadable, so the Downloaded
+          // filter hides them; only the copy depends on `offlineMode`.
+          downloadedOnly ? (
             <View style={[styles.emptyContainer, { paddingTop: contentInsetTop }]}>
               <EmptyState
-                icon="cloud-offline-outline"
-                title={t('notAvailableOffline')}
-                subtitle={t('artistsNotAvailableOffline')}
+                icon={offlineMode ? 'cloud-offline-outline' : 'cloud-download-outline'}
+                title={offlineMode ? t('notAvailableOffline') : t('artistsNotDownloadable')}
+                subtitle={
+                  offlineMode ? t('artistsNotAvailableOffline') : t('artistsNotDownloadableHint')
+                }
               />
             </View>
           ) : (
             <StarredArtistList
               layout={favArtistLayout}
-              downloadedOnly={downloadedOnly}
-              includePartial={includePartial}
               loading={loading}
               error={error}
               onRefresh={handleRefresh}

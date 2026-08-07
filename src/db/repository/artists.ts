@@ -241,18 +241,6 @@ export const deleteArtistsNotIn = (db: InternalDb, keepIds: string[]): Promise<u
 
 export const countArtists = (db: InternalDb): Promise<number> => countRows(db, 'artists');
 
-/** Full rows for a set of artist ids (unordered) — the downloaded-artist filter hydrates
- *  the artists who own a downloaded album. Ids pass as a JSON array via `json_each` to
- *  dodge the bound-variable limit; an empty id set returns no rows. */
-export const listArtistsByIds = async (db: InternalDb, ids: string[]): Promise<ArtistListRow[]> => {
-  const rows = await db.getAllAsync<ArtistListRow>(
-    `SELECT ${ARTIST_LIST_COLS} FROM artists WHERE id IN (SELECT value FROM json_each(?))`,
-    [JSON.stringify(ids)],
-  );
-  await hydrateArtistRows(db, rows);
-  return rows;
-};
-
 /** Which of the given artist ids are in the table — the id-only presence check, mirroring
  *  `albumIdsPresent`. Used by the favourites reconcile to split the starred payload. */
 export const artistIdsPresent = (db: InternalDb, ids: string[]): Promise<Set<string>> =>

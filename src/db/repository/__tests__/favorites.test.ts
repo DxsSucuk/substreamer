@@ -358,7 +358,12 @@ describe('the downloaded filter reaches BOTH halves', () => {
     ).toEqual(['full', 'part']);
   });
 
-  it('counts an artist as downloaded when they own ANY downloaded album', async () => {
+  // Artists are NOT downloadable. Owning a downloaded album used to promote an artist into
+  // a "downloaded artists" list; it no longer does anywhere, because the Downloaded filter
+  // hides artist lists outright instead of narrowing them. The reads below therefore take
+  // no filter at all — `StarredArtistPageOpts` omits it so it cannot be passed and silently
+  // ignored — and downloads must not change what they return.
+  it('returns the whole starred artist set regardless of what is downloaded', async () => {
     await upsertArtists(db(), [artist('ar1'), artist('ar2')]);
     await markStarredArtists(db(), [
       { id: 'ar1', starredAt: 200 },
@@ -367,26 +372,18 @@ describe('the downloaded filter reaches BOTH halves', () => {
     seedCachedAlbum('al1', 1, ['x1']);
     db().runSync('INSERT INTO cached_albums (item_id, artist_id) VALUES (?, ?)', ['al1', 'ar1']);
 
-    const page = await starredArtistsPage(db(), { limit: 10, downloadedOnly: true });
-    expect(page.rows.map((r) => r.id)).toEqual(['ar1']);
+    const page = await starredArtistsPage(db(), { limit: 10 });
+    expect(page.rows.map((r) => r.id)).toEqual(['ar1', 'ar2']);
+    expect((await listAllStarredArtists(db())).map((a) => a.id)).toEqual(['ar1', 'ar2']);
   });
 
-  it('hides an artist whose only downloaded album is partial unless includePartial', async () => {
-    // The partial gate has to reach the artist clause too, or "Include partial downloads"
-    // is honoured on the Albums tab and silently ignored on the Artists tab.
+  it('a partial download does not hide a starred artist either', async () => {
     await upsertArtists(db(), [artist('ar1')]);
     await markStarredArtists(db(), [{ id: 'ar1', starredAt: 200 }]);
     seedCachedAlbum('al1', 3, ['p1']); // 1 of 3 tracks on disk
     db().runSync('INSERT INTO cached_albums (item_id, artist_id) VALUES (?, ?)', ['al1', 'ar1']);
 
-    expect((await listAllStarredArtists(db(), { downloadedOnly: true })).map((a) => a.id)).toEqual(
-      [],
-    );
-    expect(
-      (await listAllStarredArtists(db(), { downloadedOnly: true, includePartial: true })).map(
-        (a) => a.id,
-      ),
-    ).toEqual(['ar1']);
+    expect((await listAllStarredArtists(db())).map((a) => a.id)).toEqual(['ar1']);
   });
 
   it('applies the downloaded filter to a REMAINDER album, not just a library one', async () => {
