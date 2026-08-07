@@ -295,6 +295,85 @@ describe('the car tree OFFLINE — downloaded albums from SQL', () => {
   });
 });
 
+/**
+ * The playlist twin of the block above. It matters that both halves of the offline tree
+ * answer from the SAME source: while this filter walked `musicCacheStore.cachedItems` and
+ * the album filter read SQL, one browse tree was reading the download tables two ways.
+ */
+describe('the car Playlists node OFFLINE — downloaded playlists from SQL', () => {
+  const seedDownloadedPlaylist = (id: string): void => {
+    db().runSync(
+      'INSERT INTO cached_items (item_id, type, name, expected_song_count, last_sync_at, ' +
+        'downloaded_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [id, 'playlist', `Playlist ${id}`, 0, 0, 0],
+    );
+  };
+
+  beforeEach(async () => {
+    await upsertPlaylists(db(), [playlist('p2', 'Commute')]);
+    offlineModeStore.setState({ offlineMode: true } as any);
+  });
+
+  it('lists only downloaded playlists', async () => {
+    seedDownloadedPlaylist('p1');
+    const pls = (await __test.buildSnapshot()).sections.find(
+      (s) => s.id === sectionId('playlists'),
+    )!;
+    expect(pls.items.map((i) => i.title)).toEqual(['Roadtrip']);
+  });
+
+  it('lists nothing when nothing is downloaded — never the whole library', async () => {
+    const pls = (await __test.buildSnapshot()).sections.find(
+      (s) => s.id === sectionId('playlists'),
+    )!;
+    expect(pls.items).toEqual([]);
+  });
+
+  it('counts a playlist with no component row — MEMBERSHIP, not visibility', async () => {
+    // No `cached_playlists` row: the rendered metadata comes from the `playlists` table,
+    // so requiring one would hide a playlist the user has on disk.
+    seedDownloadedPlaylist('p1');
+    expect(db().getAllSync('SELECT * FROM cached_playlists')).toEqual([]);
+    const pls = (await __test.buildSnapshot()).sections.find(
+      (s) => s.id === sectionId('playlists'),
+    )!;
+    expect(pls.items.map((i) => i.title)).toEqual(['Roadtrip']);
+  });
+
+  it('applies no partial gate — an album-style under-fill never hides a playlist', async () => {
+    db().runSync(
+      'INSERT INTO cached_items (item_id, type, name, expected_song_count, last_sync_at, ' +
+        'downloaded_at) VALUES (?, ?, ?, ?, ?, ?)',
+      ['p1', 'playlist', 'Playlist p1', 99, 0, 0],
+    );
+    const pls = (await __test.buildSnapshot()).sections.find(
+      (s) => s.id === sectionId('playlists'),
+    )!;
+    expect(pls.items.map((i) => i.title)).toEqual(['Roadtrip']);
+  });
+
+  it('voice "play playlist X" resolves against the same downloaded-only set', async () => {
+    // `findPlaylistByName` reads `playlistSet()`, so an undownloaded playlist must not be
+    // reachable by voice offline either.
+    seedDownloadedPlaylist('p1');
+    (fetchPlaylistDetail as jest.Mock).mockResolvedValue({ entry: [song('s1')] });
+    expect(await __test.resolveVoice({ playlist: 'Commute', query: 'Commute' } as any)).toEqual([]);
+    expect(
+      (await __test.resolveVoice({ playlist: 'Roadtrip', query: 'Roadtrip' } as any)).map(
+        (s: any) => s.id,
+      ),
+    ).toEqual(['s1']);
+  });
+
+  it('ONLINE both playlists are listed — the downloaded set gates nothing', async () => {
+    offlineModeStore.setState({ offlineMode: false } as any);
+    const pls = (await __test.buildSnapshot()).sections.find(
+      (s) => s.id === sectionId('playlists'),
+    )!;
+    expect(pls.items.map((i) => i.title).sort()).toEqual(['Commute', 'Roadtrip']);
+  });
+});
+
 describe('resolveBrowseChildren', () => {
   it('list:* → album drill rows', async () => {
     const rows = await __test.resolveBrowseChildren(listId('recentlyAdded'));

@@ -22,7 +22,7 @@
  * Conflating the two would either hide downloaded albums from search or surface metadata-less
  * rows in the library browser.
  */
-import type { Playlist } from 'subsonic-api';
+import type { Child, Playlist } from 'subsonic-api';
 
 import type { InternalDb } from '../client';
 import { albumListRowToAlbumID3, type AlbumListRow, type LibraryAlbum } from './albums';
@@ -175,6 +175,85 @@ export async function listDownloadedAlbumIds(
       `WHERE ci.type='album'${partialGate(f.includePartial === true)}`,
   );
   return new Set(rows.map((r) => r.item_id));
+}
+
+/**
+ * A downloaded song, at the projection the Songs tab's downloaded filter renders.
+ *
+ * SIX columns of the ~55 `cached_songs` holds, because that is exactly what the JS walk
+ * this replaces produced. Widening it (track, disc, year, genre, bitrate, rating, play
+ * count) is a deliberate FOLLOW-UP, not part of the move: it changes what the rows render
+ * and needs its own verification pass.
+ */
+export interface DownloadedSongRow {
+  id: string;
+  title: string;
+  artist: string | null;
+  /** `cached_songs.album_id` is the file's DIRECTORY, not `Child.albumId` — the server's
+   *  album lives in `src_album_id`. Carried across as-is because the map walk did the
+   *  same; correcting it belongs with the enrichment follow-up. */
+  album_id: string;
+  duration: number;
+  cover_art: string | null;
+}
+
+/**
+ * The DOWNLOADED songs. Bounded by what is on disk, so this is a whole-set read by design;
+ * there is no cursor. `song_id` is the primary key, so the id-dedupe the map walk needed
+ * is structural here. Unsorted — the caller sorts in JS via `byTitle`, which goes through
+ * `defaultCollator` (SQL knows nothing about it).
+ */
+export async function listDownloadedSongs(db: InternalDb): Promise<DownloadedSongRow[]> {
+  return db.getAllAsync<DownloadedSongRow>(
+    'SELECT "song_id" AS "id", "title", "artist", "album_id", "duration", "cover_art" ' +
+      'FROM cached_songs',
+  );
+}
+
+/** Adapt a downloaded song row to the `Child` the song rows render. */
+export function downloadedSongRowToChild(r: DownloadedSongRow): Child {
+  return {
+    id: r.id,
+    title: r.title,
+    artist: r.artist ?? undefined,
+    albumId: r.album_id,
+    duration: r.duration,
+    coverArt: r.cover_art ?? undefined,
+    isDir: false,
+  };
+}
+
+/**
+ * The set of downloaded PLAYLIST ids — the MEMBERSHIP predicate's playlist twin, for
+ * filtering a list that came from elsewhere (the CarPlay playlist node, whose rows come
+ * from the `playlists` table and already carry their metadata). `cached_items` ALONE, with
+ * no join to `cached_playlists`: requiring a component row here would hide a downloaded
+ * playlist whose metadata is not populated, which is the visibility question, not this one.
+ *
+ * No partial gate, for the same reason `listDownloadedPlaylists` has none — playlists
+ * download atomically, so there is no partial state to include or exclude.
+ */
+export async function listDownloadedPlaylistIds(db: InternalDb): Promise<Set<string>> {
+  const rows = await db.getAllAsync<{ item_id: string }>(
+    "SELECT ci.item_id FROM cached_items ci WHERE ci.type='playlist'",
+  );
+  return new Set(rows.map((r) => r.item_id));
+}
+
+/**
+ * "Is this exact item id downloaded" — MEMBERSHIP for a single id, as a one-row probe
+ * rather than a set read.
+ *
+ * Type-agnostic on purpose: its caller asks about the `__starred__` favourites aggregate,
+ * which is neither an album nor a playlist. No partial gate either — the check it replaces
+ * (`STARRED_SONGS_ITEM_ID in cachedItems`) is bare membership.
+ */
+export async function isItemDownloaded(db: InternalDb, itemId: string): Promise<boolean> {
+  const row = await db.getFirstAsync<{ one: number }>(
+    'SELECT 1 AS one FROM cached_items WHERE item_id = ? LIMIT 1',
+    [itemId],
+  );
+  return row !== null;
 }
 
 /** Re-export so consumers can name the produced entity types without reaching into

@@ -4,8 +4,10 @@ import { albumListRowToAlbumID3, upsertAlbums } from '../albums';
 import { listAllStarredAlbums, markStarredAlbums } from '../favorites';
 import {
   downloadedClause,
+  isItemDownloaded,
   listDownloadedAlbumIds,
   listDownloadedAlbums,
+  listDownloadedPlaylistIds,
   listDownloadedPlaylists,
   listDownloadedPlaylistsAsPlaylist,
   partialGate,
@@ -39,7 +41,7 @@ const seedCachedSong = (id: string): void => {
 /** An item row plus its edges. `present.length < expected` is a PARTIAL download. */
 const seedItem = (
   itemId: string,
-  type: 'album' | 'playlist',
+  type: 'album' | 'playlist' | 'favorites',
   expected: number,
   present: string[] = [],
 ): void => {
@@ -210,6 +212,55 @@ describe('listDownloadedPlaylists', () => {
     seedItem('pl1', 'playlist', 99);
     seedPlaylistMeta('pl1');
     expect((await listDownloadedPlaylists(db())).map((r) => r.id)).toEqual(['pl1']);
+  });
+});
+
+describe('listDownloadedPlaylistIds — the MEMBERSHIP predicate', () => {
+  it('includes a playlist with NO component row, unlike the visibility read', async () => {
+    // The same asymmetry `listDownloadedAlbumIds` has, and the reason this module keeps
+    // the two predicates apart: the CarPlay playlist node already holds the metadata from
+    // the `playlists` table, so an item row alone means "downloaded". Requiring a
+    // `cached_playlists` row here would drop a downloaded playlist off the offline tree.
+    seedItem('pl1', 'playlist', 0); // no cached_playlists row
+    expect(await listDownloadedPlaylists(db())).toEqual([]);
+    expect([...(await listDownloadedPlaylistIds(db()))]).toEqual(['pl1']);
+  });
+
+  it('excludes albums', async () => {
+    seedItem('al1', 'album', 1, ['s1']);
+    seedAlbumMeta('al1');
+    expect([...(await listDownloadedPlaylistIds(db()))]).toEqual([]);
+  });
+
+  it('applies NO partial gate — playlists download atomically', async () => {
+    // `expected_song_count` far above the edges on disk. For an album this is a partial and
+    // is hidden; for a playlist there is no partial state, so it must still be a member.
+    seedItem('pl1', 'playlist', 99);
+    expect([...(await listDownloadedPlaylistIds(db()))]).toEqual(['pl1']);
+  });
+
+  it('is empty when nothing is downloaded', async () => {
+    expect(await listDownloadedPlaylistIds(db())).toEqual(new Set());
+  });
+});
+
+describe('isItemDownloaded', () => {
+  it('is true for a `favorites` item row, which has no component table at all', async () => {
+    // MEMBERSHIP again, and the reason this probe is type-agnostic: the `__starred__`
+    // aggregate is a `favorites` intent — neither `cached_albums` nor `cached_playlists`
+    // will ever hold a row for it, so any visibility-style join makes it permanently false.
+    seedItem('__starred__', 'favorites', 0);
+    expect(await isItemDownloaded(db(), '__starred__')).toBe(true);
+  });
+
+  it('is false for an id that was never downloaded', async () => {
+    seedItem('pl1', 'playlist', 0);
+    expect(await isItemDownloaded(db(), '__starred__')).toBe(false);
+  });
+
+  it('ignores the partial gate — an under-filled item is still downloaded', async () => {
+    seedItem('al1', 'album', 3, ['s1']); // 1 of 3 on disk
+    expect(await isItemDownloaded(db(), 'al1')).toBe(true);
   });
 });
 

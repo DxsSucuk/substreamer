@@ -49,6 +49,7 @@ import { listAllPlaylists, playlistBrowseRowToPlaylist } from '../db/repository/
 import {
   listDownloadedAlbumIds,
   listDownloadedAlbumsAsAlbumID3,
+  listDownloadedPlaylistIds,
 } from '../db/repository/downloads';
 import { favoritesStore } from '../store/favoritesStore';
 import { albumListsStore } from '../store/albumListsStore';
@@ -127,12 +128,17 @@ async function favoriteSongs(): Promise<Child[]> {
   return listAllStarredSongs(db, { downloadedOnly: isOffline() });
 }
 
-/** Playlists, filtered to cached when offline (playlists download atomically). */
+/** Playlists, filtered to downloaded when offline. MEMBERSHIP, exactly like `albumSet`:
+ *  these playlists came from the library table and already carry their metadata, so an
+ *  item row in `cached_items` is all "downloaded" means. No partial gate — playlists
+ *  download atomically. */
 async function playlistSet(): Promise<Playlist[]> {
   const pls = await allPlaylists();
   if (!isOffline()) return pls;
-  const cachedItems = musicCacheStore.getState().cachedItems;
-  return pls.filter((p) => p.id in cachedItems);
+  const db = getDb();
+  if (!db) return [];
+  const downloadedIds = await listDownloadedPlaylistIds(db);
+  return pls.filter((p) => downloadedIds.has(p.id));
 }
 
 async function azItems(): Promise<AzItem[]> {

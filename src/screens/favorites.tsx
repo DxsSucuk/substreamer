@@ -21,6 +21,7 @@ import {
   deleteStarredSongsDownload,
 } from '../services/musicCacheService';
 import { listAllStarredSongs, starredSongTotals } from '../db/repository/favorites';
+import { isItemDownloaded } from '../db/repository/downloads';
 import { getDb } from '../store/persistence/db';
 import { filterBarStore } from '../store/filterBarStore';
 import { offlineModeStore } from '../store/offlineModeStore';
@@ -98,9 +99,31 @@ export function FavoritesScreen() {
   /* ---- Filter state ---- */
   const offlineMode = offlineModeStore((s) => s.offlineMode);
   const downloadedOnly = filterBarStore((s) => s.downloadedOnly);
-  const cachedItems = musicCacheStore((s) => s.cachedItems);
   const includePartial = layoutPreferencesStore((s) => s.includePartialInDownloadedFilter);
-  const starredSongsDownloaded = STARRED_SONGS_ITEM_ID in cachedItems;
+  // `revision` is the download tables' change signal: the probe below is SQL, and SQL has
+  // no Zustand subscription, so without it downloading (or deleting) the starred aggregate
+  // never reaches this screen.
+  const revision = musicCacheStore((s) => s.revision);
+
+  // Is the `__starred__` aggregate itself downloaded? `null` means NOT YET KNOWN — a third
+  // state, distinct from "known absent", because the answer decides whether the songs
+  // segment renders at all, whether its list is filtered, and which empty-state copy it
+  // shows, and each of those is wrong for a frame if unknown is collapsed into `false`.
+  // A re-read deliberately keeps the previous answer rather than reverting to `null` —
+  // the same trade `search.tsx` makes.
+  const [starredSongsDownloaded, setStarredSongsDownloaded] = useState<boolean | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      const db = getDb();
+      const downloaded = db ? await isItemDownloaded(db, STARRED_SONGS_ITEM_ID) : false;
+      if (alive) setStarredSongsDownloaded(downloaded);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [revision]);
+  const starredDownloadedUnknown = starredSongsDownloaded === null;
 
   /* ---- Configure filter bar ---- */
   const handleDownloadStarred = useCallback(() => {
@@ -142,11 +165,19 @@ export function FavoritesScreen() {
 
   // The songs segment keeps the pre-existing quirk that its downloaded filter also
   // requires the `__starred__` aggregate to exist; albums/artists never had that gate.
-  const songsDownloadedOnly = downloadedOnly && starredSongsDownloaded;
-  const songsSuppressed = downloadedOnly && !starredSongsDownloaded;
+  //
+  // The unknown state resolves DIFFERENTLY per line, and each direction is the safe one:
+  //  - the FILTER treats unknown as downloaded, so the list stays filtered. Falling through
+  //    unfiltered would flash music that is not on the device — the one failure a Downloaded
+  //    filter must not have.
+  //  - SUPPRESSION and the OFFLINE COPY treat unknown as "not yet"; both replace the whole
+  //    segment with an empty state, and rendering "download your favourites" over a list
+  //    that is about to appear is the opposite mistake.
+  const songsDownloadedOnly = downloadedOnly && starredSongsDownloaded !== false;
+  const songsSuppressed = downloadedOnly && starredSongsDownloaded === false;
   // Empty-state copy, unchanged: "download your favourites" when the aggregate is
   // missing and we're offline, otherwise the plain "star some songs" hint.
-  const songsOfflineEmpty = !starredSongsDownloaded && offlineMode;
+  const songsOfflineEmpty = starredSongsDownloaded === false && offlineMode;
   const songsEmptyMessage = songsOfflineEmpty ? t('notAvailableOffline') : t('noFavoriteSongsYet');
   const songsEmptySubtitle = songsOfflineEmpty
     ? t('downloadFavoriteSongsOffline')
@@ -189,7 +220,7 @@ export function FavoritesScreen() {
     return () => {
       alive = false;
     };
-  }, [songsDownloadedOnly, songsSuppressed, includePartial, cachedItems, version]);
+  }, [songsDownloadedOnly, songsSuppressed, includePartial, revision, version]);
 
   // Play All / Shuffle All / tap-to-play all queue the WHOLE favourites list, fetched
   // at press time — the player queue is `Child[]` by construction.
@@ -214,7 +245,7 @@ export function FavoritesScreen() {
     if (totals.count === 0) return null;
     return (
       <View style={styles.actionBar}>
-        {(!offlineMode || starredSongsDownloaded) && (
+        {(!offlineMode || starredSongsDownloaded === true) && (
           <DownloadButton
             itemId={STARRED_SONGS_ITEM_ID}
             type="playlist"
@@ -285,7 +316,11 @@ export function FavoritesScreen() {
               layout={favSongLayout}
               downloadedOnly={songsDownloadedOnly}
               includePartial={includePartial}
-              loading={loading}
+              // Hold the list on `loading` until the probe answers, so an empty result can
+              // never render its empty state with copy chosen from the unknown state.
+              // `SongListView` only draws a spinner when the list is EMPTY, so a populated
+              // list is untouched.
+              loading={loading || starredDownloadedUnknown}
               error={error}
               onRefresh={handleRefresh}
               refreshing={refreshing}
