@@ -608,7 +608,11 @@ describe('dataSyncService — deferred startup prefetches', () => {
       "INSERT OR REPLACE INTO albums (id, name, sort_title) VALUES ('gap1', 'Gap', 'gap')",
     );
     albumLibraryState.albums = [{ id: 'gap1' }];
-    syncStatusStore.setState({ librarySyncComplete: true, songSyncComplete: true });
+    syncStatusStore.setState({
+      librarySyncComplete: true,
+      songSyncComplete: true,
+      songGapRepairAttempted: false,
+    });
     artistLibraryState.artists = [{ id: 'ar1' }];
     playlistLibraryState.playlists = [{ id: 'p1' }];
     try {
@@ -616,6 +620,32 @@ describe('dataSyncService — deferred startup prefetches', () => {
       await jest.advanceTimersByTimeAsync(2000);
       expect(mockFetchAllAlbums).toHaveBeenCalled();
     } finally {
+      db.runSync("DELETE FROM albums WHERE id = 'gap1'");
+    }
+  });
+
+  it('does NOT sync for an empty album the repair has already asked the server about', async () => {
+    // Some albums are simply track-less on the server. The sync's per-album repair asks
+    // and records the answer; without honouring that, this probe fires a full sync on
+    // every launch and every online-resume, forever — for data that will never arrive.
+    const db = getDb()!;
+    db.runSync(
+      "INSERT OR REPLACE INTO albums (id, name, sort_title) VALUES ('gap1', 'Gap', 'gap')",
+    );
+    albumLibraryState.albums = [{ id: 'gap1' }];
+    syncStatusStore.setState({
+      librarySyncComplete: true,
+      songSyncComplete: true,
+      songGapRepairAttempted: true,
+    });
+    artistLibraryState.artists = [{ id: 'ar1' }];
+    playlistLibraryState.playlists = [{ id: 'p1' }];
+    try {
+      await onStartup();
+      await jest.advanceTimersByTimeAsync(2000);
+      expect(mockFetchAllAlbums).not.toHaveBeenCalled();
+    } finally {
+      syncStatusStore.setState({ songGapRepairAttempted: false });
       db.runSync("DELETE FROM albums WHERE id = 'gap1'");
     }
   });

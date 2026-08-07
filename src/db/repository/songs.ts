@@ -374,18 +374,27 @@ export const countSongs = (db: InternalDb): Promise<number> => countRows(db, 'so
  * assumption about what a whole sync run saw. Downloaded tracks are exempt — their row
  * backs the offline track list even when the server has moved on. Run it AFTER the
  * upsert: deleting first would leave the album empty if the process died in between.
+ *
+ * `serverSongCount` is the album's own `songCount` from the SAME response. A track list
+ * shorter than the album says it is means the response was truncated, not that the album
+ * shrank — deleting the remainder off a truncated answer destroys real tracks, while
+ * skipping it only postpones an update to the next fetch. Only a self-consistent response
+ * is allowed to prune. Omit it when the caller has no count to check against.
  */
 export const deleteAlbumSongsNotIn = (
   db: InternalDb,
   albumId: string,
   keepIds: string[],
+  serverSongCount?: number,
 ): Promise<unknown> =>
-  db.runAsync(
-    'DELETE FROM songs WHERE album_id = ? ' +
-      'AND id NOT IN (SELECT value FROM json_each(?)) ' +
-      'AND id NOT IN (SELECT song_id FROM cached_songs)',
-    [albumId, JSON.stringify(keepIds)],
-  );
+  typeof serverSongCount === 'number' && keepIds.length < serverSongCount
+    ? Promise.resolve()
+    : db.runAsync(
+        'DELETE FROM songs WHERE album_id = ? ' +
+          'AND id NOT IN (SELECT value FROM json_each(?)) ' +
+          'AND id NOT IN (SELECT song_id FROM cached_songs)',
+        [albumId, JSON.stringify(keepIds)],
+      );
 
 /** Eager +1 play-count + last-played for a just-scrobbled song — a TARGETED scalar
  *  UPDATE (no child-table churn) so normalized play stats stay current for the detail

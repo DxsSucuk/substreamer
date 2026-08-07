@@ -66,9 +66,10 @@ jest.mock('../../store/persistence/db', () => ({
 // The success path upserts into the normalized model; these tests are about which
 // SOURCE wins, so stub the writes rather than standing up a real DB.
 jest.mock('../../db/repository/albums', () => ({ upsertAlbums: () => Promise.resolve(0) }));
+const mockDeleteAlbumSongsNotIn = jest.fn(() => Promise.resolve());
 jest.mock('../../db/repository/songs', () => ({
   upsertSongs: () => Promise.resolve(0),
-  deleteAlbumSongsNotIn: () => Promise.resolve(),
+  deleteAlbumSongsNotIn: (...a: unknown[]) => mockDeleteAlbumSongsNotIn(...(a as [])),
 }));
 jest.mock('../../db/repository/playlists', () => ({
   upsertPlaylists: () => Promise.resolve(0),
@@ -96,6 +97,7 @@ beforeEach(() => {
   mockUpsertBio.mockReset();
   mockLocalBio.mockReset().mockResolvedValue(null);
   mockLocalTop.mockReset().mockResolvedValue(null);
+  mockDeleteAlbumSongsNotIn.mockClear();
   mockIsVA = false;
 });
 
@@ -132,6 +134,18 @@ describe('fetchAlbumDetail — local first', () => {
     mockGetAlbum.mockResolvedValue({ id: 'al1', name: 'Fetched', song: [{ id: 's9' }] });
 
     expect((await fetchAlbumDetail('al1', { prefetchCovers: false }))?.name).toBe('Fetched');
+  });
+
+  it('hands the prune the response\'s own songCount so a truncated list cannot delete', async () => {
+    // The prune is only safe against a self-consistent response — a `getAlbum` that
+    // lists 1 of 12 tracks must not take the other 11 with it. This fires on ordinary
+    // browsing, so the count has to reach the repository, not just exist there.
+    mockLocalAlbum.mockResolvedValue(null);
+    mockGetAlbum.mockResolvedValue({ id: 'al1', name: 'Short', songCount: 12, song: [{ id: 's9' }] });
+
+    await fetchAlbumDetail('al1', { prefetchCovers: false });
+
+    expect(mockDeleteAlbumSongsNotIn).toHaveBeenCalledWith({}, 'al1', ['s9'], 12);
   });
 
   it('force bypasses the cache, but still falls back to it when the server cannot answer', async () => {

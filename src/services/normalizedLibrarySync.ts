@@ -32,6 +32,7 @@ import { getProtectedIds } from '@/db/protectedIds';
 import {
   countSongs,
   deleteAlbumSongsNotIn,
+  hasAlbumWithoutSongs,
   listSongAlbumIds,
   upsertSongs,
 } from '@/db/repository/songs';
@@ -62,25 +63,20 @@ import {
 
 const ALBUM_PAGE = 1000; // search3 albumCount per page (uncapped); basic path caps at 500
 const SONG_PAGE = 1000;
-
-/**
- * TEMPORARY DIAGNOSTIC SWITCH (2026-08-07) — REMOVE with the `[sync-diag]` logging.
- *
- * Forces the song-sync transport so the two strategies can be A/B'd over the same
- * library, through the same code path, from the same starting state. `null` = normal
- * detection. Overrides BOTH the detected strategy and any `forceStrategy` opt.
- *
- *   null      → whatever the server supports (search3 on this server)
- *   'basic'   → the per-album `getAlbum` walk
- *
- * Flip, save (Fast Refresh picks it up), then Settings → Sync.
- */
-const DIAG_FORCE_STRATEGY: 'search3' | 'basic' | null = null;
 const BASIC_PAGE = 500; // getAlbumList2 spec cap
 /** Update the progress bar every N song pages — the bar doesn't need per-page precision. */
 const PROGRESS_EVERY = 5;
 /** Concurrent per-album `getAlbum` fetches during the basic-server song walk. */
 const WALK_CONCURRENCY = 4;
+/** How many times an empty song page must REPEAT before it counts as the end of the
+ *  library. A 200 with no `searchResult3` (mid-rescan, proxied, rate limited) is
+ *  indistinguishable from exhaustion, and believing one ends the walk over a partial
+ *  library. Real transport/Subsonic failures throw instead, and never get here. */
+const EMPTY_PAGE_RETRIES = 3;
+/** Backoff base between corroboration attempts (200ms, 400ms, 800ms). Short on purpose:
+ *  each attempt also costs a round trip, and an exhausted library pays the whole ladder
+ *  once per walk. */
+const EMPTY_PAGE_RETRY_MS = 200;
 
 const nowMs = (): number => {
   const p = (globalThis as { performance?: { now?: () => number } }).performance;
@@ -103,6 +99,10 @@ async function doBasicSongWalk(
   db: InternalDb,
   articles: readonly string[] | undefined,
   capturedGen: number,
+  /** Repair pass: fetch ONLY the albums that have no songs, whatever `fullWalkPending`
+   *  says. The gap repair runs before `markSongSyncComplete` clears that flag, and it
+   *  must never turn a handful of holes into a whole-library re-fetch. */
+  onlyMissing = false,
 ): Promise<'done' | 'bailed'> {
   const genChanged = (): boolean => syncStatusStore.getState().generation !== capturedGen;
   const isOffline = (): boolean => offlineModeStore.getState().offlineMode;
@@ -111,7 +111,7 @@ async function doBasicSongWalk(
   // A full resync must re-fetch EVERY album's songs. The incremental walk skips albums
   // that already have songs, which — now that a full resync no longer drops the tables —
   // would make it an instant no-op and silently mark the sync complete.
-  const fullWalk = syncStatusStore.getState().fullWalkPending;
+  const fullWalk = !onlyMissing && syncStatusStore.getState().fullWalkPending;
   const have = fullWalk ? new Set<string>() : new Set(await listSongAlbumIds(db));
   const missing = allIds.filter((id) => !have.has(id));
   syncStatusStore.getState().setDetailSyncTotal(allIds.length);
@@ -127,14 +127,6 @@ async function doBasicSongWalk(
   const unsubOffline = offlineModeStore.subscribe((s) => {
     if (s.offlineMode) ctrl.abort();
   });
-  // TEMPORARY DIAGNOSTIC (2026-08-07) — the A/B twin of the one in `runSearch3SongPhase`.
-  // This walk asks the server per album, so it answers the question search3 cannot: do the
-  // 547 album-shaped holes have tracks AT ALL? An album that `getAlbum` returns empty is
-  // genuinely track-less on the server; one that comes back full proves search3 skipped it.
-  const walkSongIds = new Set<string>();
-  let walkRows = 0;
-  const emptyAlbums: string[] = [];
-
   let result;
   try {
     result = await runPool(
@@ -146,17 +138,12 @@ async function doBasicSongWalk(
         // flaky connection silently leaves albums track-less and still reports success.
         const album = await getAlbum(id);
         if (album === null) throw new Error('walk-fetch-failed');
-        if (album.song && album.song.length > 0) {
-          // TEMPORARY DIAGNOSTIC
-          for (const s of album.song) {
-            walkRows += 1;
-            walkSongIds.add(s.id);
-          }
-          await upsertSongs(db, album.song, undefined, articles);
-          await deleteAlbumSongsNotIn(db, id, album.song.map((s) => s.id));
-        } else {
-          emptyAlbums.push(id); // TEMPORARY DIAGNOSTIC
-        }
+        // An album the server returned no songs for is NOT walked: counting it would
+        // drive the progress bar to 100% and read as a completed walk over a library
+        // that still has album-shaped holes in it.
+        if (!album.song || album.song.length === 0) return;
+        await upsertSongs(db, album.song, undefined, articles);
+        await deleteAlbumSongsNotIn(db, id, album.song.map((s) => s.id), album.songCount);
         done += 1;
         if (done % PROGRESS_EVERY === 0) syncStatusStore.getState().setDetailSyncCompleted(done);
       },
@@ -166,19 +153,6 @@ async function doBasicSongWalk(
     unsubGen();
     unsubOffline();
   }
-
-  // TEMPORARY DIAGNOSTIC — see above.
-  // eslint-disable-next-line no-console
-  console.log('[sync-diag] BASIC WALK ENDED', {
-    albumsAsked: missing.length,
-    albumsWithSongs: missing.length - emptyAlbums.length,
-    albumsServerReturnedEMPTY: emptyAlbums.length,
-    rowsReceived: walkRows,
-    distinctIds: walkSongIds.size,
-    firstEmptyAlbumIds: emptyAlbums.slice(0, 10),
-    aborted: result.aborted,
-    failed: result.rejected.length,
-  });
 
   syncStatusStore.getState().setDetailSyncCompleted(done);
   // A partial walk must NOT read as success: it would clear `fullWalkPending` and mark
@@ -215,18 +189,14 @@ async function runSearch3SongPhase(
       : 0;
   let songOffset = syncStatusStore.getState().songSyncCursor;
   syncStatusStore.getState().setDetailSyncCompleted(albumsUpTo(songOffset));
-  let firstPage = songOffset === 0;
+  // The first page THIS RUN fetches, not offset 0: a resumed walk gets its `albumId`
+  // sanity check too. A server that stops populating `albumId` part-way writes rows with
+  // `album_id` NULL — the album reads empty while `countSongs` stays right, so nothing
+  // downstream can see the damage.
+  let firstPage = true;
   let songPage = 0;
-
-  // TEMPORARY DIAGNOSTIC (2026-08-07). The walk pages to the server's true song total and
-  // declares itself complete, yet 22% of songs are absent and 547 albums end up with none.
-  // The arithmetic only works if search3 is re-serving rows it already returned — which
-  // would also mean it never returned the ones that are missing. Counting DISTINCT ids
-  // against ROWS received proves or refutes that in one run. Remove once answered.
-  const seenSongIds = new Set<string>();
-  let rowsReceived = 0;
-  let duplicateRows = 0;
-  const dupePages: string[] = [];
+  /** Consecutive empty answers at the current offset — see EMPTY_PAGE_RETRIES. */
+  let emptyPages = 0;
   for (;;) {
     if (genChanged()) return 'bailed';
     if (isOffline()) {
@@ -236,48 +206,21 @@ async function runSearch3SongPhase(
     // eslint-disable-next-line no-await-in-loop
     const page: Child[] = await searchSongsPage(SONG_PAGE, songOffset);
 
-    // TEMPORARY DIAGNOSTIC — see `seenSongIds` above.
-    {
-      let dupesThisPage = 0;
-      for (const s of page) {
-        rowsReceived += 1;
-        if (seenSongIds.has(s.id)) {
-          duplicateRows += 1;
-          dupesThisPage += 1;
-        } else {
-          seenSongIds.add(s.id);
-        }
-      }
-      // A SHORT page mid-walk is its own signal: the loop only stops on an empty page, so
-      // a server that caps or thins deep results keeps it going while silently starving it.
-      const shortPage = page.length > 0 && page.length < SONG_PAGE;
-      if (dupesThisPage > 0 || shortPage) {
-        dupePages.push(`off=${songOffset} rows=${page.length} dupes=${dupesThisPage}`);
-        // eslint-disable-next-line no-console
-        console.log(
-          `[sync-diag] page offset=${songOffset} rows=${page.length}` +
-            `${shortPage ? ' SHORT' : ''} dupes=${dupesThisPage} ` +
-            `distinctSoFar=${seenSongIds.size} rowsSoFar=${rowsReceived}`,
-        );
-      }
-    }
-
     // An empty page means "end of library" ONLY if we actually had an API to ask. With
     // no usable API (mid-logout, pre-auth-restore) the page fns resolve [] without
     // throwing, and treating that as the end marks a truncated library complete.
     if (page.length === 0) {
-      // eslint-disable-next-line no-console
-      console.log('[sync-diag] SONG WALK ENDED', {
-        rowsReceived,
-        distinctIds: seenSongIds.size,
-        duplicateRows,
-        finalOffset: songOffset,
-        pagesWithDupes: dupePages.length,
-        firstDupePages: dupePages.slice(0, 5),
-        pageSize: SONG_PAGE,
-      });
-      return getApi() === null ? 'bailed' : 'done';
+      if (getApi() === null) return 'bailed';
+      emptyPages += 1;
+      // One empty page is not proof. Ask again, with backoff, and only believe the end
+      // of the library when the answer repeats — a single hiccup here used to cost the
+      // user every song after this offset, permanently, under a `complete` flag.
+      if (emptyPages > EMPTY_PAGE_RETRIES) return 'done';
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise<void>((r) => setTimeout(r, EMPTY_PAGE_RETRY_MS * 2 ** (emptyPages - 1)));
+      continue;
     }
+    emptyPages = 0;
     if (firstPage) {
       firstPage = false;
       const missing = page.filter((s) => !s.albumId).length;
@@ -307,7 +250,6 @@ async function runSearch3SongPhase(
     // eslint-disable-next-line no-await-in-loop
     await new Promise<void>((r) => setTimeout(r, 0));
   }
-  return 'done';
 }
 
 /** Initial sync of the (lightweight) artists list into the normalized `artists` table —
@@ -571,13 +513,7 @@ async function doNormalizedSync(
 
     // Transport: forced (dev fast/slow timing spikes) → use as-is; else the persisted
     // resume strategy; else probe once and persist.
-    // DIAG_FORCE_STRATEGY wins over everything, including the persisted strategy, so the
-    // A/B run needs one constant flipped and nothing else. TEMPORARY — see its docblock.
-    let strat = DIAG_FORCE_STRATEGY ?? forceStrategy ?? syncStatusStore.getState().syncStrategy;
-    if (DIAG_FORCE_STRATEGY != null) {
-      // eslint-disable-next-line no-console
-      console.log(`[sync-diag] FORCED transport=${DIAG_FORCE_STRATEGY}`);
-    }
+    let strat = forceStrategy ?? syncStatusStore.getState().syncStrategy;
     if (strat == null) {
       strat = (await probeEmptySearch3()) ? 'search3' : 'basic';
       if (genChanged()) return;
@@ -656,14 +592,41 @@ async function doNormalizedSync(
     // Each song phase seeds its own progress from its resume cursor (search3) or its
     // walk position (basic) — both immune to rows a full resync hasn't rewritten yet.
     syncStatusStore.getState().setSongSyncStrategy(strat);
+    // Did the song phase itself ask the server about every album that has no songs? The
+    // basic walk does exactly that, so a repair pass after it would only re-ask albums
+    // the server has already said it has nothing for.
+    let walkedGaps = false;
     if (strat === 'basic') {
       // Basic (non-search3) server, or a forced slow-path run: songs don't carry albumId,
       // so walk each album's getAlbum song list instead of paging search3.
       if ((await doBasicSongWalk(db, articles, capturedGen)) === 'bailed') return;
       if (genChanged() || isOffline()) return;
+      walkedGaps = true;
     } else if ((await runSearch3SongPhase(db, articles, capturedGen)) === 'bailed') {
       return;
     }
+    if (genChanged()) return;
+
+    // ── Gap repair ─────────────────────────────────────────────────────────────
+    // Reaching the last page is necessary, not sufficient: a page the server thinned, or
+    // an id it re-keyed, leaves whole albums with no tracks while the cursor sails past.
+    // Repair it here rather than re-detecting it on every launch forever. A healthy
+    // library costs ONE indexed `LIMIT 1` probe and no network at all.
+    let gapped =
+      !syncStatusStore.getState().songGapRepairAttempted && (await hasAlbumWithoutSongs(db));
+    if (gapped && !walkedGaps) {
+      // `onlyMissing` — `listAlbumIds − listSongAlbumIds`, never the whole library, and
+      // never `fullWalkPending` (that would force all of it).
+      if ((await doBasicSongWalk(db, articles, capturedGen, true)) === 'bailed') return;
+      if (genChanged() || isOffline()) return;
+      gapped = await hasAlbumWithoutSongs(db);
+    }
+    if (gapped) {
+      // Asked per album and the server still has no tracks for them. Record it, or the
+      // gates below and in `startupOrResumeFlow` re-trigger this run forever.
+      syncStatusStore.getState().markSongGapRepairAttempted();
+    }
+
     if (genChanged()) return;
     syncStatusStore.getState().setDetailSyncCompleted(totalAlbums);
     syncStatusStore.getState().markSongSyncComplete();
@@ -697,5 +660,9 @@ async function doNormalizedSync(
     // eslint-disable-next-line no-console
     console.warn('[normalized-sync] failed', e);
     syncStatusStore.getState().setDetailSyncPhase('error');
+    // A throw in the ALBUM phase never reaches `markLibrarySyncComplete`, so without this
+    // `librarySyncPhase` stays 'fetching' — and it is persisted, so the "Fetching
+    // library…" banner survives the relaunch with nothing fetching.
+    syncStatusStore.getState().setLibrarySyncPhase('idle');
   }
 }

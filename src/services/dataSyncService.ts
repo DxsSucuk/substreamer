@@ -242,11 +242,14 @@ async function startupOrResumeFlow(): Promise<void> {
       // AND every album has its songs. Anything else means gaps, so back it with an online
       // sync — async, never blocking the splash, filling in behind the user as they browse.
       // Ordered cheapest-first: the `NOT EXISTS` probe only runs once the flags and count pass.
+      // `songGapRepairAttempted` short-circuits it once the sync's per-album repair has
+      // asked the server about those albums and been told there is nothing — otherwise the
+      // empty albums fire a sync on every launch and every online-resume, forever.
       const needsLibraryFetch =
         !sync.librarySyncComplete ||
         !sync.songSyncComplete ||
         rowCount === 0 ||
-        (gateDb ? await hasAlbumWithoutSongs(gateDb) : false);
+        (!sync.songGapRepairAttempted && gateDb ? await hasAlbumWithoutSongs(gateDb) : false);
       const libPromise = needsLibraryFetch
         ? runNormalizedLibrarySync({ reason: 'startup:needsLibraryFetch' })
         : Promise.resolve();
@@ -471,7 +474,8 @@ async function fetchSongsForAlbums(ids: readonly string[]): Promise<void> {
       if (album?.song && album.song.length > 0) {
         await upsertSongs(db, album.song, undefined, articles);
         // Drop tracks the server no longer lists for this album (re-tag re-keys ids).
-        await deleteAlbumSongsNotIn(db, id, album.song.map((sg) => sg.id));
+        // A response short of its own `songCount` is truncated, not shrunk — skip.
+        await deleteAlbumSongsNotIn(db, id, album.song.map((sg) => sg.id), album.songCount);
       }
     },
     { concurrency: WALK_CONCURRENCY },
@@ -520,7 +524,7 @@ export async function onAlbumReferenced(albumId: string): Promise<void> {
       // recentlyAdded surface never lands in the flat Songs list.
       if (song && song.length > 0) {
         await upsertSongs(db, song, undefined, articles);
-        await deleteAlbumSongsNotIn(db, albumId, song.map((sg) => sg.id));
+        await deleteAlbumSongsNotIn(db, albumId, song.map((sg) => sg.id), album.songCount);
       }
       // A new album was ingested into the library → mark the data as updated.
       syncStatusStore.getState().bumpLibraryUpdated();

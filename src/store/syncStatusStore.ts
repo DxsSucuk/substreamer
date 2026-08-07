@@ -108,6 +108,13 @@ export interface SyncStatusState extends LastKnownMarkers {
   fullWalkPending: boolean;
   /** True once every song has been fetched into the `songs` table. Startup gate. */
   songSyncComplete: boolean;
+  /** The per-album repair asked the server about every album still holding no tracks and
+   *  got nothing back: they are track-less on the server, not victims of a lost page.
+   *  Both the completion gate and the startup gate key off "is any album empty?", so
+   *  without this verdict they re-trigger a sync on every launch and online-resume
+   *  forever. Cleared by `resetSongSync` — the full-resync hatch is when it is worth
+   *  asking again. */
+  songGapRepairAttempted: boolean;
   /** EPHEMERAL — the fetch loop finished and the in-memory index is rebuilding
    *  (`rebuildFromDb`), which can take seconds. Drives a "Finalizing…" label so the
    *  100%-then-spinner window doesn't read as stuck. Not persisted. */
@@ -163,6 +170,9 @@ export interface SyncStatusState extends LastKnownMarkers {
   /** Mark an artist/playlist list refresh as started, or finished (stamps lastFetchedAt). */
   setListRefresh: (kind: 'artists' | 'playlists', loading: boolean) => void;
   markSongSyncComplete: () => void;
+  /** Record that the per-album gap repair ran and the remaining albums came back
+   *  track-less — see {@link SyncStatusState.songGapRepairAttempted}. */
+  markSongGapRepairAttempted: () => void;
   resetSongSync: () => void;
   /** Update the ephemeral blob→normalized migration progress (banner/card). */
   setNormalizedMigration: (phase: 'idle' | 'migrating', done: number, total: number) => void;
@@ -203,6 +213,7 @@ export const syncStatusStore = create<SyncStatusState>()(
       songSyncCursor: 0,
       fullWalkPending: false,
       songSyncComplete: false,
+      songGapRepairAttempted: false,
       songSyncFinalizing: false,
 
       normalizedMigrationPhase: 'idle',
@@ -292,10 +303,14 @@ export const syncStatusStore = create<SyncStatusState>()(
           detailSyncCompleted: 0,
           fullSyncCompletedAt: s.librarySyncComplete ? Date.now() : s.fullSyncCompletedAt,
         })),
+      markSongGapRepairAttempted: () => set({ songGapRepairAttempted: true }),
       resetSongSync: () =>
         set({
           songSyncStrategy: null,
           songSyncCursor: 0,
+          // The full resync is the "start over" hatch — ask the server about the empty
+          // albums again rather than carrying a stale verdict across it.
+          songGapRepairAttempted: false,
           // The full resync wants every album's songs
           // re-fetched, not just the ones missing them. Persisted with the cursor
           // in this same write so an interrupted run resumes as a full walk.
@@ -354,6 +369,7 @@ export const syncStatusStore = create<SyncStatusState>()(
         artistLibraryLastFetchedAt: state.artistLibraryLastFetchedAt,
         playlistLibraryLastFetchedAt: state.playlistLibraryLastFetchedAt,
         songSyncComplete: state.songSyncComplete,
+        songGapRepairAttempted: state.songGapRepairAttempted,
         fullSyncCompletedAt: state.fullSyncCompletedAt,
         lastChangeDetectionAt: state.lastChangeDetectionAt,
         lastKnownServerSongCount: state.lastKnownServerSongCount,

@@ -131,8 +131,10 @@ export async function fetchAlbumDetail(
           await upsertSongs(db, songs, undefined, articles());
           // Drop tracks the server no longer lists for this album — servers that
           // re-key song ids on re-tag would otherwise leave the old and new sets
-          // both showing in the track list. Downloaded tracks are exempt.
-          await deleteAlbumSongsNotIn(db, data.id, songs.map((s) => s.id));
+          // both showing in the track list. Downloaded tracks are exempt, and a
+          // response shorter than its own `songCount` prunes nothing (truncated,
+          // not shrunk).
+          await deleteAlbumSongsNotIn(db, data.id, songs.map((s) => s.id), data.songCount);
         }
         bumpDetailChanged('album', id);
       }

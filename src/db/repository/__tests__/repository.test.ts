@@ -849,6 +849,28 @@ describe('deleteAlbumSongsNotIn', () => {
     await deleteAlbumSongsNotIn(db(), 'alA', []);
     expect(await countSongs(db())).toBe(1);
   });
+
+  it('deletes nothing when the response is shorter than its own songCount', async () => {
+    await upsertSongs(db(), [song('s1', 'alA'), song('s2', 'alA'), song('s3', 'alA')]);
+    // The server said the album has 3 tracks but only listed 1 — truncated, not shrunk.
+    // Deleting the remainder off that destroys real tracks nothing else can rebuild.
+    await deleteAlbumSongsNotIn(db(), 'alA', ['s1'], 3);
+    expect((await songsOfAlbum('alA')).map((s) => s.id).sort()).toEqual(['s1', 's2', 's3']);
+  });
+
+  it('still prunes when the response agrees with its own songCount', async () => {
+    await upsertSongs(db(), [song('s1', 'alA'), song('s2', 'alA'), song('s3', 'alA')]);
+    // A genuine shrink: the server says 2 tracks and lists exactly those 2.
+    await deleteAlbumSongsNotIn(db(), 'alA', ['s1', 's2'], 2);
+    expect((await songsOfAlbum('alA')).map((s) => s.id).sort()).toEqual(['s1', 's2']);
+  });
+
+  it('prunes when the response carries MORE tracks than songCount claims', async () => {
+    await upsertSongs(db(), [song('s1', 'alA'), song('s2', 'alA'), song('s3', 'alA')]);
+    // Nothing is missing from an over-full response, so the prune is safe.
+    await deleteAlbumSongsNotIn(db(), 'alA', ['s1', 's2'], 1);
+    expect((await songsOfAlbum('alA')).map((s) => s.id).sort()).toEqual(['s1', 's2']);
+  });
 });
 
 describe('deleteArtistsNotIn', () => {
