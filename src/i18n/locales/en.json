@@ -987,6 +987,7 @@
   "less": "Less",
   "more": "More",
   "noPlaylists": "No playlists",
+  "noMatchesForFilters": "Nothing matches your filters",
   "tryAdjustingFilters": "Try adjusting your filters, or pull to refresh",
   "playlistsEmptySubtitle": "Playlists from your server will appear here. Pull to refresh to check for updates.",
   "repeatOffLabel": "Repeat off. Tap to repeat queue.",

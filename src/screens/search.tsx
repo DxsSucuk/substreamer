@@ -167,6 +167,13 @@ export function SearchScreen() {
     filtered.albums.length > 0 ||
     filtered.songs.length > 0;
 
+  // "The query matched nothing" and "a chip removed every match" are different statements
+  // and get different copy. Search is the one surface that can tell them apart for free —
+  // it already holds the UNFILTERED result set, so no extra query is needed (plan §2).
+  const filteredAway =
+    (downloadedOnly || favoritesOnly) &&
+    (results.artists.length > 0 || results.albums.length > 0 || results.songs.length > 0);
+
   // "Nothing to show" is only meaningful once the downloaded set has answered — otherwise
   // entering the filter renders "No results found" over results that are about to appear.
   const busy = loading || downloadedUnknown;
@@ -301,8 +308,8 @@ export function SearchScreen() {
       <View style={[styles.container, { paddingTop: headerHeight }]}>
         <EmptyState
           icon="search-outline"
-          title={t('noResultsFound')}
-          subtitle={t('noResultsFor', { query })}
+          title={filteredAway ? t('noMatchesForFilters') : t('noResultsFound')}
+          subtitle={filteredAway ? t('tryAdjustingFilters') : t('noResultsFor', { query })}
         />
       </View>
     );

@@ -31,9 +31,13 @@ jest.mock('expo-router/react-navigation', () => ({ useIsFocused: () => true }));
 const emptyStateRenders: unknown[] = [];
 const placeholderRenders: unknown[] = [];
 jest.mock('../../components/EmptyState', () => ({
-  EmptyState: () => {
+  EmptyState: ({ title }: { title: string }) => {
     emptyStateRenders.push(1);
-    return null;
+    // The real component has its own suite; the title is enough to tell the whole-screen
+    // states apart (`noDownloadedMusic` vs. the generic filter message).
+    const { Text } = require('react-native');
+    const React = require('react');
+    return React.createElement(Text, null, title);
   },
 }));
 jest.mock('../../components/WaveformLogo', () => ({
@@ -109,6 +113,7 @@ import { act, render, waitFor } from '@testing-library/react-native';
 import { ensureNormalizedSchema } from '../../db/createNormalizedTables';
 import { getDb } from '../../store/persistence/db';
 import { albumListsStore } from '../../store/albumListsStore';
+import { favoritesStore } from '../../store/favoritesStore';
 import { filterBarStore } from '../../store/filterBarStore';
 import { musicCacheStore } from '../../store/musicCacheStore';
 import { offlineModeStore } from '../../store/offlineModeStore';
@@ -171,6 +176,7 @@ beforeEach(() => {
   musicCacheStore.setState({ cachedItems: {}, revision: 0 });
   filterBarStore.setState({ downloadedOnly: true, favoritesOnly: false });
   offlineModeStore.setState({ offlineMode: false });
+  favoritesStore.setState({ albumIds: new Set() });
   albumListsStore.setState({
     recentlyAdded: [],
     recentlyPlayed: [],
@@ -283,6 +289,51 @@ describe('HomeScreen — curated lists filter on the downloaded id set', () => {
     const r = render(<HomeScreen />);
     await waitFor(() => expect(r.queryByTestId('album:ra1')).not.toBeNull());
     expect(r.queryByTestId('album:ra2')).not.toBeNull();
+  });
+});
+
+/**
+ * Whole-screen empty state. The per-section placeholders needed nothing — a curated
+ * section emptied by a filter is HIDDEN, never placeheld with "albums you listen to will
+ * appear here" — but the whole-screen state only ever fired for the Downloaded filter, so
+ * the Favourites filter emptying everything left a screen with no album sections and no
+ * explanation.
+ */
+describe('HomeScreen — whole-screen empty state under a filter', () => {
+  beforeEach(() => {
+    albumListsStore.setState({ recentlyAdded: [curated('ra1')] as never });
+  });
+
+  it('keeps the "no downloaded music" copy under the Downloaded filter', async () => {
+    const r = render(<HomeScreen />); // downloadedOnly, nothing seeded
+    await waitFor(() => expect(r.queryByText('No downloaded music')).not.toBeNull());
+    expect(r.queryByText('Nothing matches your filters')).toBeNull();
+  });
+
+  it('says the FILTER emptied it under Favourites, where nothing was said before', async () => {
+    filterBarStore.setState({ downloadedOnly: false, favoritesOnly: true });
+    const r = render(<HomeScreen />); // no starred album ids → every section empties
+    await waitFor(() => expect(r.queryByText('Nothing matches your filters')).not.toBeNull());
+    expect(r.queryByText('No downloaded music')).toBeNull();
+  });
+
+  it('shows no whole-screen empty state when a filtered section still has albums', async () => {
+    filterBarStore.setState({ downloadedOnly: false, favoritesOnly: true });
+    favoritesStore.setState({ albumIds: new Set(['ra1']) });
+    const r = render(<HomeScreen />);
+    await waitFor(() => expect(r.queryByTestId('album:ra1')).not.toBeNull());
+    expect(emptyStateRenders).toEqual([]);
+  });
+
+  it('shows no whole-screen empty state with NO filter on, however empty the lists', async () => {
+    // The regression guard. Unfiltered, empty curated lists get their own placeholders
+    // ("New albums added to your server will appear here") — not a filter message.
+    filterBarStore.setState({ downloadedOnly: false, favoritesOnly: false });
+    albumListsStore.setState({ recentlyAdded: [] });
+    const r = render(<HomeScreen />);
+    await waitFor(() => expect(placeholderRenders.length).toBeGreaterThan(0));
+    expect(emptyStateRenders).toEqual([]);
+    expect(r.queryByText('Nothing matches your filters')).toBeNull();
   });
 });
 

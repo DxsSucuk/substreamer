@@ -8,6 +8,8 @@ jest.mock('../../store/persistence/kvStorage', () =>
 interface PlaylistRender {
   playlists: { id: string }[];
   loading?: boolean;
+  emptyMessage?: string;
+  emptySubtitle?: string;
 }
 const mockRenders: PlaylistRender[] = [];
 jest.mock('../../components/PlaylistListView', () => ({
@@ -17,12 +19,18 @@ jest.mock('../../components/PlaylistListView', () => ({
   },
 }));
 
+// The unfiltered branch fetches on browse when the table is empty; that path has its own
+// suite and would put a network call in the middle of a copy assertion.
+jest.mock('../../services/normalizedLibrarySync', () => ({ refreshPlaylistLibrary: jest.fn() }));
+
 import React from 'react';
 import { act, render, waitFor } from '@testing-library/react-native';
 
 import { ensureNormalizedSchema } from '../../db/createNormalizedTables';
 import { getDb } from '../../store/persistence/db';
 import { musicCacheStore } from '../../store/musicCacheStore';
+import { offlineModeStore } from '../../store/offlineModeStore';
+import { syncStatusStore } from '../../store/syncStatusStore';
 import { PlaylistListScreen } from '../playlist-list';
 
 const db = () => getDb()!;
@@ -60,6 +68,7 @@ beforeEach(() => {
   mockRenders.length = 0;
   for (const t of ['cached_playlists', 'cached_items']) db().runSync(`DELETE FROM ${t}`);
   musicCacheStore.setState({ cachedItems: {}, revision: 0 });
+  offlineModeStore.setState({ offlineMode: false });
 });
 
 describe('PlaylistListScreen — downloaded filter never flashes the empty state', () => {
@@ -102,6 +111,45 @@ describe('PlaylistListScreen — downloaded filter never flashes the empty state
     );
     render(<PlaylistListScreen downloadedOnly />);
     await waitFor(() => expect(latest().playlists.map((p) => p.id)).toEqual(['pl1']));
+  });
+});
+
+/**
+ * Three empty states, most specific first. The regression this guards is the middle one:
+ * an ONLINE user with the Downloaded chip on used to get `playlistsEmptySubtitle`
+ * ("Playlists from your server will appear here"), which claims they own nothing.
+ */
+describe('PlaylistListScreen — empty-state copy', () => {
+  it('says the FILTER emptied it, with the Downloaded chip on while ONLINE', async () => {
+    render(<PlaylistListScreen downloadedOnly />);
+    await waitFor(() => expect(latest().loading).toBe(false));
+    expect(latest()).toMatchObject({
+      playlists: [],
+      emptyMessage: 'Nothing matches your filters',
+      emptySubtitle: 'Try adjusting your filters, or pull to refresh',
+    });
+  });
+
+  it('keeps the OFFLINE copy when actually offline — unchanged behaviour', async () => {
+    offlineModeStore.setState({ offlineMode: true });
+    render(<PlaylistListScreen downloadedOnly />); // offline enforces this filter
+    await waitFor(() => expect(latest().loading).toBe(false));
+    expect(latest().emptyMessage).toBe('No downloaded playlists');
+    expect(latest().emptySubtitle).toBe(
+      'Download playlists from your library to listen offline. They will appear here ' +
+        'when you are in offline mode.',
+    );
+  });
+
+  it('leaves the empty message to the list view when NO filter is on', async () => {
+    // The regression guard: unfiltered, `PlaylistListView`'s own "No playlists" copy
+    // stands. A past fetch is what lets the keyset list call an empty table definitive.
+    syncStatusStore.setState({ playlistLibraryLastFetchedAt: 1, playlistLibraryLoading: false });
+    render(<PlaylistListScreen />);
+    await waitFor(() => expect(latest().loading).toBe(false));
+    expect(latest().playlists).toEqual([]);
+    expect(mockRenders.every((r) => r.emptyMessage === undefined)).toBe(true);
+    expect(mockRenders.every((r) => r.emptySubtitle === undefined)).toBe(true);
   });
 });
 

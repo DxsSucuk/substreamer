@@ -496,8 +496,12 @@ export function HomeScreen() {
     return sortPlaylistsByName(downloadedPlaylistRows, articles);
   }, [downloadedOnly, downloadedPlaylistRows]);
 
-  const offlineEmpty = useMemo(() => {
-    if (!downloadedOnly) return false;
+  // Every album section emptied by the active filter(s). Individual sections emptied by a
+  // filter are hidden rather than placeheld (see the render below), so without this the
+  // Favourites filter with nothing starred left the screen with no album sections and no
+  // explanation for their absence.
+  const filteredEmpty = useMemo(() => {
+    if (!hasAnyFilters) return false;
     // "Nothing downloaded" is only true once the reads have answered — otherwise entering
     // the filter replaces the whole screen with the empty state for a frame.
     if (downloadedLoading) return false;
@@ -508,21 +512,32 @@ export function HomeScreen() {
     return albumSections
       .filter((s) => s.type !== 'downloadedAlbums')
       .every((s) => s.albums.length === 0);
-  }, [downloadedOnly, downloadedLoading, albumSections, downloadedPlaylists]);
+  }, [hasAnyFilters, downloadedLoading, albumSections, downloadedPlaylists]);
 
   return (
     <View style={styles.container}>
-      {offlineEmpty ? (
-        <EmptyState
-          icon="cloud-offline-outline"
-          title={t('noDownloadedMusic')}
-        >
-          <Text style={[styles.emptySubtitle, { color: colors.textSecondary }]}>
-            {t('noDownloadedMusicHintBefore')}{' '}
-            <DownloadedIcon size={15} circleColor={colors.primary} arrowColor="#fff" />
-            {' '}{t('noDownloadedMusicHintAfter')}
-          </Text>
-        </EmptyState>
+      {filteredEmpty ? (
+        // The Downloaded filter keeps its own copy — "download something" is more
+        // actionable than "adjust your filters", and the chip is locked offline anyway.
+        // Reaching the other branch means Favourites is the only filter on.
+        downloadedOnly ? (
+          <EmptyState
+            icon="cloud-offline-outline"
+            title={t('noDownloadedMusic')}
+          >
+            <Text style={[styles.emptySubtitle, { color: colors.textSecondary }]}>
+              {t('noDownloadedMusicHintBefore')}{' '}
+              <DownloadedIcon size={15} circleColor={colors.primary} arrowColor="#fff" />
+              {' '}{t('noDownloadedMusicHintAfter')}
+            </Text>
+          </EmptyState>
+        ) : (
+          <EmptyState
+            icon="heart-outline"
+            title={t('noMatchesForFilters')}
+            subtitle={t('tryAdjustingFilters')}
+          />
+        )
       ) : (
         <ScrollView
           style={styles.scroll}

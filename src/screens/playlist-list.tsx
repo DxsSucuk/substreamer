@@ -274,13 +274,21 @@ export function PlaylistListScreen({
   const { t } = useTranslation();
   const offlineMode = offlineModeStore((s) => s.offlineMode);
 
+  // Three states, most specific first. Offline keeps its own copy (it explains the mode,
+  // not the chip); the Downloaded chip on its own says the filter emptied the list; with
+  // no filter the list view's "No playlists / from your server" copy is correct.
   const emptyProps: EmptyProps = offlineMode
     ? {
         emptyIcon: 'cloud-offline-outline',
         emptyMessage: t('noDownloadedPlaylists'),
         emptySubtitle: t('noDownloadedPlaylistsSubtitle'),
       }
-    : {};
+    : downloadedOnly
+      ? {
+          emptyMessage: t('noMatchesForFilters'),
+          emptySubtitle: t('tryAdjustingFilters'),
+        }
+      : {};
 
   return (
     <View style={styles.container}>

@@ -8,6 +8,8 @@ jest.mock('../../store/persistence/kvStorage', () =>
 interface ArtistRender {
   artists: { id: string }[];
   loading?: boolean;
+  emptyMessage?: string;
+  emptySubtitle?: string;
 }
 const mockRenders: ArtistRender[] = [];
 jest.mock('../../components/ArtistListView', () => ({
@@ -16,6 +18,10 @@ jest.mock('../../components/ArtistListView', () => ({
     return null;
   },
 }));
+
+// The unfiltered branch fetches on browse when the table is empty; that path has its own
+// suite and would put a network call in the middle of a copy assertion.
+jest.mock('../../services/normalizedLibrarySync', () => ({ refreshArtistLibrary: jest.fn() }));
 
 import React from 'react';
 import { render, waitFor } from '@testing-library/react-native';
@@ -27,6 +33,7 @@ import { upsertArtists } from '../../db/repository/artists';
 import { markStarredArtists } from '../../db/repository/favorites';
 import { getDb } from '../../store/persistence/db';
 import { favoritesStore } from '../../store/favoritesStore';
+import { syncStatusStore } from '../../store/syncStatusStore';
 import { ArtistListScreen } from '../artist-list';
 
 const db = () => getDb()!;
@@ -96,6 +103,34 @@ describe('ArtistListScreen — favourites filter never flashes the empty state',
     // The placeholder is correct here — it just must not appear before the answer is known.
     await waitFor(() => expect(latest().loading).toBe(false));
     expect(latest().artists).toEqual([]);
+  });
+});
+
+/**
+ * A list emptied BY A FILTER is a different statement from a library with no artists in
+ * it. Favourites is the only filter that reaches this screen — Downloaded replaces the
+ * whole segment (`library-artists-gate.test.tsx`).
+ */
+describe('ArtistListScreen — empty-state copy', () => {
+  it('says the FILTER emptied it, under Favourites', async () => {
+    render(<ArtistListScreen favoritesOnly />);
+    await waitFor(() => expect(latest().loading).toBe(false));
+    expect(latest()).toMatchObject({
+      artists: [],
+      emptyMessage: 'Nothing matches your filters',
+      emptySubtitle: 'Try adjusting your filters, or pull to refresh',
+    });
+  });
+
+  it('leaves the empty message to the list view when NO filter is on', async () => {
+    // The regression guard: unfiltered, `ArtistListView`'s own `noArtistsFound` stands.
+    // A past fetch is needed for the keyset list to call an empty table definitive.
+    syncStatusStore.setState({ artistLibraryLastFetchedAt: 1, artistLibraryLoading: false });
+    render(<ArtistListScreen />);
+    await waitFor(() => expect(latest().loading).toBe(false));
+    expect(latest().artists).toEqual([]);
+    expect(mockRenders.every((r) => r.emptyMessage === undefined)).toBe(true);
+    expect(mockRenders.every((r) => r.emptySubtitle === undefined)).toBe(true);
   });
 });
 

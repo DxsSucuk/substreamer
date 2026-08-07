@@ -115,7 +115,9 @@ describe('FavoritesScreen — the songs segment reads the aggregate from SQL', (
     filterBarStore.setState({ downloadedOnly: true });
     const r = render(<FavoritesScreen />);
     await waitFor(() => expect(suppressed(r)).toBe(true));
-    expect(r.getByText('No favorite songs yet')).toBeTruthy();
+    // The Downloaded chip is what emptied this, not an absence of favourites — the copy
+    // says so (see `favorites-filter-empty-copy.test.tsx` for the full matrix).
+    expect(r.getByText('Nothing matches your filters')).toBeTruthy();
   });
 
   it('leaves the segment alone when the Downloaded filter is off', async () => {

@@ -226,6 +226,10 @@ function FilteredSongList({
       showAlphabetScroller
       scrollToTopTrigger={`${downloadedOnly}:${favoritesOnly}`}
       contentInsetTop={contentInsetTop}
+      // This component only exists under a filter, so an empty result here always means
+      // "the filter removed everything" — never "your library is empty". The unfiltered
+      // list (`KeysetSongList`) keeps the "No songs found" copy.
+      emptyMessage={t('noMatchesForFilters')}
       emptySubtitle={t('tryAdjustingFilters')}
     />
   );

@@ -8,6 +8,8 @@ jest.mock('../../store/persistence/kvStorage', () =>
 interface AlbumRender {
   albums: { id: string }[];
   loading?: boolean;
+  emptyMessage?: string;
+  emptySubtitle?: string;
 }
 const mockRenders: AlbumRender[] = [];
 jest.mock('../../components/AlbumListView', () => ({
@@ -183,6 +185,42 @@ describe('AlbumLibraryListScreen — downloaded filter tracks musicCacheStore.re
     bumpRevision();
     await waitFor(() => expect(latest().albums).toEqual([]));
     expect(latest().loading).toBe(false);
+  });
+});
+
+/**
+ * A list emptied BY A FILTER is a different statement from a library with nothing in it,
+ * and the two get different copy. Both branches are asserted: it is easy to make every
+ * empty state say "check your filters", which would be the worse bug.
+ */
+describe('AlbumLibraryListScreen — empty-state copy', () => {
+  it('says the FILTER emptied it, under Favourites', async () => {
+    render(<AlbumLibraryListScreen favoritesOnly />);
+    await waitFor(() => expect(latest().loading).toBe(false));
+    expect(latest()).toMatchObject({
+      albums: [],
+      emptyMessage: 'Nothing matches your filters',
+      emptySubtitle: 'Try adjusting your filters, or pull to refresh',
+    });
+  });
+
+  it('says the FILTER emptied it, under Downloaded', async () => {
+    render(<AlbumLibraryListScreen downloadedOnly />);
+    await waitFor(() => expect(latest().loading).toBe(false));
+    expect(latest()).toMatchObject({
+      albums: [],
+      emptyMessage: 'Nothing matches your filters',
+      emptySubtitle: 'Try adjusting your filters, or pull to refresh',
+    });
+  });
+
+  it('leaves the empty message to the list view when NO filter is on', async () => {
+    // The regression guard: with no filter the library really is empty, so
+    // `AlbumListView`'s own `noAlbumsFound` copy stands.
+    render(<AlbumLibraryListScreen />);
+    await waitFor(() => expect(latest().loading).toBe(false));
+    expect(mockRenders.every((r) => r.emptyMessage === undefined)).toBe(true);
+    expect(mockRenders.every((r) => r.emptySubtitle === undefined)).toBe(true);
   });
 });
 

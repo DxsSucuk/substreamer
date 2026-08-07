@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 
 import { ArtistListView, type ArtistLayout } from '../components/ArtistListView';
 import { useFetchOnHydrated } from '../hooks/useFetchOnHydrated';
@@ -201,6 +202,7 @@ function FilteredArtistList({
   favoritesOnly: boolean;
   contentInsetTop: number;
 }) {
+  const { t } = useTranslation();
   const version = favoritesStore((s) => s.version);
 
   const [starredArtists, setStarredArtists] = useState<ArtistID3[]>([]);
@@ -250,6 +252,10 @@ function FilteredArtistList({
       showAlphabetScroller
       scrollToTopTrigger={`${favoritesOnly}`}
       contentInsetTop={contentInsetTop}
+      // Only mounted under the Favourites filter (Downloaded hides the segment entirely,
+      // see `library.tsx`), so an empty result here is always the filter's doing.
+      emptyMessage={t('noMatchesForFilters')}
+      emptySubtitle={t('tryAdjustingFilters')}
     />
   );
 }

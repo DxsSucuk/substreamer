@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 
 import { AlbumListView, type AlbumLayout } from '../components/AlbumListView';
 import { onPullToRefresh } from '../services/dataSyncService';
@@ -167,6 +168,7 @@ function FilteredAlbumList({
   favoritesOnly: boolean;
   contentInsetTop: number;
 }) {
+  const { t } = useTranslation();
   // `revision` is the download tables' change signal: SQL has no Zustand subscription, so
   // without it a download completing under the user leaves this list silently stale.
   const revision = musicCacheStore((s) => s.revision);
@@ -248,6 +250,11 @@ function FilteredAlbumList({
       showAlphabetScroller
       scrollToTopTrigger={`${downloadedOnly}:${favoritesOnly}`}
       contentInsetTop={contentInsetTop}
+      // This component only exists under a filter, so an empty result here always means
+      // "the filter removed everything" — never "your library is empty". The unfiltered
+      // list (`KeysetAlbumList`) keeps the "No albums found" copy.
+      emptyMessage={t('noMatchesForFilters')}
+      emptySubtitle={t('tryAdjustingFilters')}
     />
   );
 }

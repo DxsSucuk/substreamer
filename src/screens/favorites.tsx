@@ -175,13 +175,25 @@ export function FavoritesScreen() {
   //    that is about to appear is the opposite mistake.
   const songsDownloadedOnly = downloadedOnly && starredSongsDownloaded !== false;
   const songsSuppressed = downloadedOnly && starredSongsDownloaded === false;
-  // Empty-state copy, unchanged: "download your favourites" when the aggregate is
-  // missing and we're offline, otherwise the plain "star some songs" hint.
+  // Empty-state copy, three states, most specific first:
+  //  1. offline with the aggregate missing → "download your favourites" (explains the
+  //     mode, not the chip, so it outranks the generic filter message);
+  //  2. the Downloaded chip on → the list was emptied BY THE FILTER, not because the
+  //     user has starred nothing. `downloadedOnly` is the only filter consulted: the
+  //     Favourites chip is hidden on this route (`FilterBar`) and the starred lists
+  //     never apply it, so a value left over from the Library tab must not count;
+  //  3. otherwise → the plain "star some songs" hint.
   const songsOfflineEmpty = starredSongsDownloaded === false && offlineMode;
-  const songsEmptyMessage = songsOfflineEmpty ? t('notAvailableOffline') : t('noFavoriteSongsYet');
+  const songsEmptyMessage = songsOfflineEmpty
+    ? t('notAvailableOffline')
+    : downloadedOnly
+      ? t('noMatchesForFilters')
+      : t('noFavoriteSongsYet');
   const songsEmptySubtitle = songsOfflineEmpty
     ? t('downloadFavoriteSongsOffline')
-    : t('starSongsHint');
+    : downloadedOnly
+      ? t('tryAdjustingFilters')
+      : t('starSongsHint');
   const songsEmptyIcon = songsOfflineEmpty ? 'cloud-offline-outline' : 'heart-outline';
 
   /* ---- Pull-to-refresh ---- */
@@ -341,8 +353,11 @@ export function FavoritesScreen() {
             error={error}
             onRefresh={handleRefresh}
             refreshing={refreshing}
-            emptyMessage={t('noFavoriteAlbumsYet')}
-            emptySubtitle={t('starAlbumsHint')}
+            // Same rule as the songs segment: with the Downloaded chip on, an empty list
+            // means the filter emptied it, not that nothing is starred. (Artists take no
+            // filter copy — Downloaded replaces that segment outright, below.)
+            emptyMessage={downloadedOnly ? t('noMatchesForFilters') : t('noFavoriteAlbumsYet')}
+            emptySubtitle={downloadedOnly ? t('tryAdjustingFilters') : t('starAlbumsHint')}
             emptyIcon="heart-outline"
             contentInsetTop={contentInsetTop}
           />
