@@ -134,6 +134,20 @@ export interface MusicCacheState {
   totalBytes: number;
   totalFiles: number;
 
+  /**
+   * Bumped on EVERY mutation of `cachedSongs` / `cachedItems`.
+   *
+   * Screens used to derive their downloaded lists by walking these maps inside a
+   * `useMemo`, so a completing download re-rendered them for free — the map identity
+   * changed and the memo re-ran. Reads that move to SQL lose that trigger completely
+   * and would sit stale until the screen remounted, so they key an effect on this
+   * counter instead. Same role as `favoritesStore.version`.
+   *
+   * In-memory only (this store has no persist middleware) and monotonic. No-op paths
+   * must NOT bump it — see `bumped`.
+   */
+  revision: number;
+
   // Lifecycle
   hasHydrated: boolean;
 
@@ -360,6 +374,20 @@ function mergeCachedSong(
  */
 let hydrateInFlight: Promise<void> | null = null;
 
+/**
+ * Wrap a state patch that CHANGES `cachedSongs` or `cachedItems`, stamping the next
+ * `revision`. Every such patch must go through this — a mutation that forgets to is a
+ * silently stale downloaded list, which is exactly the failure this counter exists to
+ * prevent, and it cannot be caught by reading the diff.
+ *
+ * Deliberately NOT applied to no-op paths (a delete of an absent song, an edge index
+ * out of range): those return an unchanged state and must not wake readers.
+ */
+const bumped = <T extends Partial<MusicCacheState>>(
+  prev: MusicCacheState,
+  patch: T,
+): T & { revision: number } => ({ ...patch, revision: prev.revision + 1 });
+
 export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
   cachedSongs: {},
   cachedItems: {},
@@ -369,6 +397,7 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
 
   totalBytes: 0,
   totalFiles: 0,
+  revision: 0,
 
   hasHydrated: false,
 
@@ -457,14 +486,14 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
       for (const s of songs) {
         nextSongs[s.id] = mergeCachedSong(state.cachedSongs[s.id], s, childBySongId?.get(s.id));
       }
-      return {
+      return bumped(state, {
         downloadQueue: dropFromQueueMirror(state.downloadQueue, queueId),
         cachedItems: {
           ...state.cachedItems,
           [item.itemId]: { ...itemToPersist, songIds },
         },
         cachedSongs: nextSongs,
-      };
+      });
     });
   },
 
@@ -476,12 +505,12 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
       const existing = state.cachedItems[item.itemId];
       const nextSongIds =
         songIds !== undefined ? songIds : existing?.songIds ?? [];
-      return {
+      return bumped(state, {
         cachedItems: {
           ...state.cachedItems,
           [item.itemId]: { ...preserveItemMetadata(item, existing), songIds: nextSongIds },
         },
-      };
+      });
     });
   },
 
@@ -494,7 +523,7 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
     set((prev) => {
       const nextItems = { ...prev.cachedItems };
       delete nextItems[itemId];
-      return { cachedItems: nextItems };
+      return bumped(prev, { cachedItems: nextItems });
     });
     // Persist: delete the item row (cascades its own edges), then — atomically
     // per song — orphan any song that lost its last REAL holder. The count +
@@ -535,12 +564,12 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
         freedBytes += prev.cachedSongs[songId]?.bytes ?? 0;
         delete nextSongs[songId];
       }
-      return {
+      return bumped(prev, {
         cachedItems: nextItems,
         cachedSongs: nextSongs,
         totalBytes: Math.max(0, prev.totalBytes - freedBytes),
         totalFiles: Math.max(0, prev.totalFiles - orphaned.length),
-      };
+      });
     });
     return orphaned;
   },
@@ -558,13 +587,13 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
     // Optimistic: drop the edge from the item's in-memory songIds immediately.
     set((prev) => {
       const prevItem = prev.cachedItems[itemId];
-      if (!prevItem) return {};
+      if (!prevItem) return {}; // no-op — must not bump
       const nextItems = { ...prev.cachedItems };
       nextItems[itemId] = {
         ...prevItem,
         songIds: prevItem.songIds.filter((_, i) => i !== index),
       };
-      return { cachedItems: nextItems };
+      return bumped(prev, { cachedItems: nextItems });
     });
     // Persist: remove the edge row (so a real-ref count of 0 means no OTHER real
     // holder remains), then atomically orphan the song iff unreferenced.
@@ -587,12 +616,12 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
       // removeCachedItem).
       const freedBytes = prev.cachedSongs[orphanedSongId]?.bytes ?? 0;
       const { [orphanedSongId]: _gone, ...restSongs } = prev.cachedSongs;
-      return {
+      return bumped(prev, {
         cachedItems: nextItems,
         cachedSongs: restSongs,
         totalBytes: Math.max(0, prev.totalBytes - freedBytes),
         totalFiles: Math.max(0, prev.totalFiles - 1),
-      };
+      });
     });
     return { orphanedSongId };
   },
@@ -616,30 +645,34 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
     const nextSongIds = [...item.songIds];
     const [moved] = nextSongIds.splice(fromIdx, 1);
     nextSongIds.splice(toIdx, 0, moved);
-    set((prev) => ({
-      cachedItems: {
-        ...prev.cachedItems,
-        [itemId]: { ...prev.cachedItems[itemId], songIds: nextSongIds },
-      },
-    }));
+    set((prev) =>
+      bumped(prev, {
+        cachedItems: {
+          ...prev.cachedItems,
+          [itemId]: { ...prev.cachedItems[itemId], songIds: nextSongIds },
+        },
+      }),
+    );
   },
 
   upsertCachedSong: (song, child) => {
     void upsertCachedSongRow(song, child);
-    set((state) => ({
-      cachedSongs: {
-        ...state.cachedSongs,
-        [song.id]: mergeCachedSong(state.cachedSongs[song.id], song, child),
-      },
-    }));
+    set((state) =>
+      bumped(state, {
+        cachedSongs: {
+          ...state.cachedSongs,
+          [song.id]: mergeCachedSong(state.cachedSongs[song.id], song, child),
+        },
+      }),
+    );
   },
 
   deleteCachedSong: (songId) => {
     void deleteCachedSongRow(songId);
     set((state) => {
-      if (!(songId in state.cachedSongs)) return state;
+      if (!(songId in state.cachedSongs)) return state; // no-op — must not bump
       const { [songId]: _removed, ...rest } = state.cachedSongs;
-      return { cachedSongs: rest };
+      return bumped(state, { cachedSongs: rest });
     });
   },
 
@@ -664,15 +697,17 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
     } catch {
       /* dropped */
     }
-    set({
-      cachedSongs: {},
-      cachedItems: {},
-      downloadQueue: [],
-      totalBytes: 0,
-      totalFiles: 0,
-      maxConcurrentDownloads: DEFAULT_MAX_CONCURRENT,
-      hasHydrated: false,
-    });
+    set((prev) =>
+      bumped(prev, {
+        cachedSongs: {},
+        cachedItems: {},
+        downloadQueue: [],
+        totalBytes: 0,
+        totalFiles: 0,
+        maxConcurrentDownloads: DEFAULT_MAX_CONCURRENT,
+        hasHydrated: false,
+      }),
+    );
   },
 
   hydrateFromDbAsync: () => {
@@ -692,15 +727,20 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
       }
       const totalFiles = Object.keys(cachedSongs).length;
 
-      set({
-        cachedSongs,
-        cachedItems,
-        downloadQueue,
-        maxConcurrentDownloads: settings.maxConcurrentDownloads,
-        totalBytes,
-        totalFiles,
-        hasHydrated: true,
-      });
+      // Bumps too: the legacy-metadata conversion below rewrites rows on disk, and
+      // the NEXT hydrate is what publishes them. SQL-backed readers have to re-read
+      // when that lands or they hold the pre-conversion answer.
+      set((prev) =>
+        bumped(prev, {
+          cachedSongs,
+          cachedItems,
+          downloadQueue,
+          maxConcurrentDownloads: settings.maxConcurrentDownloads,
+          totalBytes,
+          totalFiles,
+          hasHydrated: true,
+        }),
+      );
 
       // Detached ON PURPOSE: this function is the gate CarPlay browse, playback
       // and voice all await, and the conversion is a chunked pass over the whole

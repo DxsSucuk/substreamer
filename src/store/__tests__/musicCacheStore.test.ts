@@ -178,8 +178,12 @@ function resetStore() {
     totalBytes: 0,
     totalFiles: 0,
     hasHydrated: false,
+    revision: 0,
   });
 }
+
+/** `revision` before/after an action — the downloaded lists key their SQL re-reads on it. */
+const revision = (): number => musicCacheStore.getState().revision;
 
 /* ------------------------------------------------------------------ */
 /*  Setup                                                              */
@@ -1424,5 +1428,112 @@ describe('getSongEnvelope', () => {
       } as any,
     });
     expect(getSongEnvelope('s1')?.title).toBe('New');
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  revision                                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The downloaded lists used to be `useMemo`s over `cachedItems`/`cachedSongs`, so a
+ * completing download re-rendered them for free. Reads that move to SQL lose that and
+ * key an effect on `revision` instead — which means a mutation that forgets to bump it
+ * is a silently stale list, invisible in a diff.
+ *
+ * So this suite is completeness-driven: every action that can change either map is
+ * listed. Adding a mutation without a case here is the bug it exists to catch.
+ */
+describe('revision', () => {
+  it('starts at 0 and is monotonic across a sequence of mutations', () => {
+    expect(revision()).toBe(0);
+    musicCacheStore.getState().upsertCachedItem(makeItem('a', []), []);
+    musicCacheStore.getState().upsertCachedSong(makeSong('s1'));
+    expect(revision()).toBe(2);
+  });
+
+  it('bumps on markItemComplete — the download-finished path the lists must react to', () => {
+    const before = revision();
+    musicCacheStore
+      .getState()
+      .markItemComplete('q1', makeItem('a', ['s1']), [makeSong('s1')], [
+        { songId: 's1', position: 1 },
+      ]);
+    expect(revision()).toBeGreaterThan(before);
+  });
+
+  it('bumps on upsertCachedItem', () => {
+    const before = revision();
+    musicCacheStore.getState().upsertCachedItem(makeItem('a', ['s1']), ['s1']);
+    expect(revision()).toBeGreaterThan(before);
+  });
+
+  it('bumps on removeCachedItem — the delete path', async () => {
+    musicCacheStore.getState().upsertCachedItem(makeItem('a', ['s1']), ['s1']);
+    const before = revision();
+    await musicCacheStore.getState().removeCachedItem('a');
+    expect(revision()).toBeGreaterThan(before);
+  });
+
+  it('bumps on removeCachedItemSong', async () => {
+    musicCacheStore.getState().upsertCachedItem(makeItem('a', ['s1', 's2']), ['s1', 's2']);
+    musicCacheStore.getState().upsertCachedSong(makeSong('s1'));
+    const before = revision();
+    await musicCacheStore.getState().removeCachedItemSong('a', 1);
+    expect(revision()).toBeGreaterThan(before);
+  });
+
+  it('bumps on reorderCachedItemSongs', () => {
+    musicCacheStore.getState().upsertCachedItem(makeItem('a', ['s1', 's2']), ['s1', 's2']);
+    const before = revision();
+    musicCacheStore.getState().reorderCachedItemSongs('a', 1, 2);
+    expect(revision()).toBeGreaterThan(before);
+  });
+
+  it('bumps on upsertCachedSong and deleteCachedSong', () => {
+    const beforeUpsert = revision();
+    musicCacheStore.getState().upsertCachedSong(makeSong('s1'));
+    expect(revision()).toBeGreaterThan(beforeUpsert);
+
+    const beforeDelete = revision();
+    musicCacheStore.getState().deleteCachedSong('s1');
+    expect(revision()).toBeGreaterThan(beforeDelete);
+  });
+
+  it('bumps on reset — logout must not leave a stale downloaded list on screen', () => {
+    musicCacheStore.getState().upsertCachedItem(makeItem('a', []), []);
+    const before = revision();
+    musicCacheStore.getState().reset();
+    expect(revision()).toBeGreaterThan(before);
+  });
+
+  it('bumps on hydrateFromDbAsync — the legacy conversion publishes through it', async () => {
+    const before = revision();
+    await musicCacheStore.getState().hydrateFromDbAsync();
+    expect(revision()).toBeGreaterThan(before);
+  });
+
+  // The other half of the contract: a no-op must NOT wake every SQL reader.
+  it('does NOT bump when deleteCachedSong is given an absent song', () => {
+    const before = revision();
+    musicCacheStore.getState().deleteCachedSong('never-existed');
+    expect(revision()).toBe(before);
+  });
+
+  it('does NOT bump when removeCachedItemSong is given an out-of-range position', async () => {
+    musicCacheStore.getState().upsertCachedItem(makeItem('a', ['s1']), ['s1']);
+    const before = revision();
+    await musicCacheStore.getState().removeCachedItemSong('a', 99);
+    expect(revision()).toBe(before);
+  });
+
+  it('does NOT bump on a queue-only mutation — no downloaded list depends on it', () => {
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'));
+    const before = revision();
+    musicCacheStore.getState().updateQueueItem(
+      musicCacheStore.getState().downloadQueue[0].queueId,
+      { completedSongs: 1 },
+    );
+    expect(revision()).toBe(before);
   });
 });
