@@ -2,8 +2,7 @@
  * Pure, store-independent list sorts for the bounded filtered library views
  * (favorites / downloaded). Article- + accent-folded keys via a Schwartzian
  * transform (keys computed once per item). Callers pass the live articles/sort
- * preference so this stays free of store imports (and survives the removal of
- * the legacy library stores).
+ * preference, which keeps this module free of store imports.
  */
 import type { ArtistID3, Playlist } from 'subsonic-api';
 

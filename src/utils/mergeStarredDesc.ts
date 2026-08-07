@@ -15,16 +15,13 @@ export interface StarredEntry<T> {
 /**
  * Merge two arrays already sorted `starred DESC, id DESC` into one.
  *
- * Deliberately has NO dedup: disjointness between the library and remainder halves is
- * enforced by the remainder query's `NOT EXISTS` clause, at read time, so it holds
- * however long ago the last reconcile ran. A dedup here would hide a broken clause —
- * and could not catch the case where the two copies carry different `starred` values
- * and therefore sit at opposite ends of the sequence.
+ * No dedup, by design: the remainder query's `NOT EXISTS` clause enforces disjointness
+ * at read time. A dedup here would mask a broken clause, and could not catch two copies
+ * carrying different `starred` values — those sit at opposite ends of the sequence.
  *
- * The id tiebreak compares with JS `<`/`>` (UTF-16 code units) to match SQLite's
- * default BINARY collation on TEXT. The two agree for every BMP code point and diverge
- * only for supplementary-plane characters, which server ids (hashes, integers, paths)
- * do not contain in practice.
+ * The id tiebreak uses JS `<`/`>` (UTF-16 code units) to match SQLite's default BINARY
+ * collation on TEXT. They agree on every BMP code point and diverge only on
+ * supplementary-plane characters, which server ids do not contain in practice.
  */
 export function mergeStarredDesc<T>(
   a: readonly StarredEntry<T>[],

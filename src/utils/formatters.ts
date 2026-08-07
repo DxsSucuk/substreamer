@@ -48,11 +48,6 @@ const HTML_ENTITIES: Record<string, string> = {
   '&nbsp;': ' ',
 };
 
-/**
- * Sanitize biography text from HTML sources (Subsonic, MusicBrainz, etc.).
- * Decodes HTML entities (e.g. &amp; → &), preserves paragraph boundaries as
- * blank lines, strips tags, and normalizes whitespace.
- */
 /** A biography that is worth storing, else null. Empty strings and markup-only stubs
  *  sanitise down to nothing; persisting those as non-null would read as "we have a bio",
  *  render blank, and permanently suppress the MusicBrainz fallback. */
@@ -62,6 +57,11 @@ export function nonEmptyBio(raw: string | null | undefined): string | null {
   return clean.length > 0 ? clean : null;
 }
 
+/**
+ * Sanitize biography text from HTML sources (Subsonic, MusicBrainz, etc.). Decodes
+ * HTML entities (e.g. &amp; → &), preserves paragraph boundaries as blank lines,
+ * strips tags, and normalizes whitespace.
+ */
 export function sanitizeBiographyText(html: string): string {
   // 1. Replace block boundaries with paragraph breaks before stripping tags
   let text = html

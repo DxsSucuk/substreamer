@@ -5,8 +5,7 @@ import { type AnalyticsAggregates } from '../store/completedScrobbleStore';
 import { computeScrobbleAnalytics } from '../store/persistence/scrobbleAggregates';
 import { dateKey, offsetDateKey } from '../utils/dateKey';
 
-// Re-export so consumers that imported from this file historically keep
-// working without touching every call site.
+// Re-exported for the consumers that import `dateKey` from this module.
 export { dateKey } from '../utils/dateKey';
 
 export type TimePeriod = '7d' | '30d' | '90d' | 'all';

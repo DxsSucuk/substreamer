@@ -12,22 +12,16 @@ import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { I18nextProvider } from 'react-i18next';
 import { Easing, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
 
-// Both expo-router (RouterFontUtils.swift) and react-native-screens
-// (RNSBarButtonItem.mm, RNSScreenStackHeaderConfig.mm) call
-// setTitleTextAttributes(_:for:) with UIControlStateSelected on
-// UIBarButtonItem, which UIKit does not support — it only accepts
-// .normal, .highlighted, .disabled, and .focused. The warning is
-// harmless (UIKit silently maps .selected → .highlighted) but floods
-// the console on every toolbar update.
+// expo-router (RouterFontUtils.swift) and react-native-screens (RNSBarButtonItem.mm,
+// RNSScreenStackHeaderConfig.mm) both call setTitleTextAttributes(_:for:) with
+// UIControlStateSelected, which UIBarButtonItem does not accept. Harmless — UIKit maps
+// it to .highlighted — but logged on every toolbar update.
 LogBox.ignoreLogs([
   'button text attributes only respected for',
-  // React Native's Fabric ScrollView (RCTScrollViewComponentView.mm)
-  // implements focusItemsInRect: to support tvOS/keyboard focus
-  // navigation. UIKit logs a warning for every scroll view on screen
-  // because the override disables its internal linear-focus-movement
-  // cache optimisation. This affects all ScrollView-based components
-  // (FlashList, FlatList, ReorderableList, etc.) and is a known
-  // React Native issue with no user-side fix.
+  // RN's Fabric ScrollView (RCTScrollViewComponentView.mm) overrides focusItemsInRect:
+  // for tvOS/keyboard focus, which disables UIKit's linear-focus-movement cache, and
+  // UIKit warns once per on-screen scroll view. Affects every ScrollView-based
+  // component (FlashList, FlatList, ReorderableList); no user-side fix.
   'RCTScrollViewComponentView implements focusItemsInRect:',
 ]);
 
@@ -103,22 +97,18 @@ import { kvStorageSync as kvStorage } from '../store/persistence';
 import { tabletLayoutStore } from '../store/tabletLayoutStore';
 import i18n from '../i18n/i18n';
 
-// react-native-bootsplash keeps the native splash visible by default
-// until BootSplash.hide() is called. AnimatedSplashScreen handles the
-// hide via useHideAnimation for a seamless native → JS transition.
+// react-native-bootsplash holds the native splash until BootSplash.hide(); that call
+// lives in AnimatedSplashScreen's useHideAnimation, for a seamless native → JS handoff.
 
-// All four module-scope initialisers below are wrapped in try/catch because
-// they run before any React error boundary mounts. On stripped OEM ROMs
-// (MIUI/HyperOS, FunTouch) or restricted permission states, the underlying
-// native calls (NetInfo bridge, fs mkdir, JSSE TrustManager install) can
-// throw — and any throw at this point would crash the JS bundle before the
-// app can render its login screen, leaving the user with a black screen.
-// Better to log the failure and let the affected feature degrade gracefully.
+// The module-scope initialisers below run before any React error boundary mounts, and
+// their native calls (NetInfo bridge, fs mkdir, JSSE TrustManager install) can throw on
+// stripped OEM ROMs (MIUI/HyperOS, FunTouch) or restricted permission states. A throw
+// here kills the JS bundle before the login screen can render, so each is wrapped and
+// its feature degrades instead.
 
-// Configure NetInfo once, before any listener registers. SSID fetching is
-// enabled only while home-WiFi auto-offline needs it (see netInfoConfig);
-// keeping it always-on calls iOS's location-gated SSID API on every WiFi
-// state update — a needless battery/CPU drain (#200).
+// Configure NetInfo once, before any listener registers. SSID fetching is enabled only
+// while home-WiFi auto-offline needs it (see netInfoConfig); always-on calls iOS's
+// location-gated SSID API on every WiFi state update, a needless battery/CPU drain (#200).
 try {
   initNetInfoConfig();
 } catch (e) {
@@ -171,10 +161,9 @@ try {
   } catch { /* non-critical: falls back to system default */ }
 })();
 
-// Detect phone vs tablet at module scope using Android 16's large-screen
-// threshold (smallest screen dimension >= 600dp). Falls back to "phone" if
-// the Dimensions bridge is unavailable for any reason — this is the safer
-// default since the phone-only orientation lock below is opt-out.
+// Phone vs tablet, at module scope, on Android 16's large-screen threshold (smallest
+// screen dimension >= 600dp). Falls back to "phone" if the Dimensions bridge is
+// unavailable — the safer default, since the phone-only orientation lock below is opt-out.
 let IS_TABLET = false;
 try {
   const screenDims = Dimensions.get('screen');
@@ -184,11 +173,10 @@ try {
   console.warn('[layout] Dimensions.get failed; assuming phone:', errMessage(e));
 }
 
-// Lock orientation to portrait on phones. Tablets are left free to rotate
-// (controlled at runtime by the orientation lock setting in layoutPreferencesStore).
-// The synchronous property access on ScreenOrientation.OrientationLock can
-// throw if the native module is missing (the .catch() only handles promise
-// rejection), so wrap the whole thing.
+// Lock orientation to portrait on phones; tablets rotate freely, governed at runtime by
+// the orientation lock setting in layoutPreferencesStore. The whole call is wrapped
+// because the synchronous property access on ScreenOrientation.OrientationLock throws
+// when the native module is missing — the `.catch()` only covers promise rejection.
 if (!IS_TABLET) {
   try {
     ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP)
@@ -207,11 +195,10 @@ const originalHandler = (globalThis as any).ErrorUtils?.getGlobalHandler?.();
   originalHandler?.(error, isFatal);
 });
 
-// Runs the post-login deferred startup chain. Each stage executes in its own
-// try/catch so one non-critical failure (image cache disk error, backup
-// permission denied, etc.) no longer suppresses unrelated stages like storage
-// checks, backup, or sync recovery. Cancellation is checked between stages so
-// logout-during-startup still bails cleanly.
+// Runs the post-login deferred startup chain. Each stage gets its own try/catch, so one
+// non-critical failure (image cache disk error, backup permission denied) cannot suppress
+// unrelated stages like storage checks, backup or sync recovery. Cancellation is checked
+// between stages so a logout during startup bails cleanly.
 async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
   const stage = async (name: string, fn: () => Promise<void> | void) => {
     try {
@@ -232,8 +219,8 @@ async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
     runWhenIdle(() => { if (!getCancelled()) void stage(name, fn); });
   };
 
-  // Explicit boot-owned subscription setup (moved here from module scope
-  // in Phase 5 so test imports don't trigger the cross-store side effect).
+  // Boot owns this subscription setup: at module scope, merely importing the module in a
+  // test would trigger the cross-store side effect.
   await stage('initializeOfflineFilterBarSync', () => { initializeOfflineFilterBarSync(); });
   if (getCancelled()) return;
 
@@ -248,11 +235,8 @@ async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
   idleStage('hydrateDownloadedAlbumCoverArt', () => hydrateDownloadedAlbumCoverArt());
   if (getCancelled()) return;
 
-  // imageCacheStore aggregates come from SQL now (via `rehydrateAllStores`
-  // at splash and `reconcileImageCache` inside `deferredImageCacheInit`),
-  // so the one-time recalculate-from-stats call is gone.
-  // Settings-only "used space" total from a full recursive cache-dir walk —
-  // defer to idle; the store already shows the SQL-derived aggregate.
+  // Settings-only "used space" total from a full recursive cache-dir walk — defer to
+  // idle; the store already shows the SQL-derived aggregate.
   idleStage('musicCacheStats', async () => {
     musicCacheStore.getState().recalculate(await getMusicCacheStats());
   });
@@ -267,23 +251,18 @@ async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
   if (getCancelled()) return;
 
   // Resume any stalled album-detail walk from a previous session — background
-  // reconciliation, not first-render. Deferred to idle (scheduled here, after
-  // the awaited image/music cache init, so it still won't race their SQLite
-  // setup).
+  // reconciliation, not first-render, so it goes to idle. Scheduled here, after the
+  // awaited image/music cache init, so it still cannot race their SQLite setup.
   idleStage('deferredDataSyncInit', () => deferredDataSyncInit());
   if (getCancelled()) return;
 
-  // One-time blob/KV→normalized migration — populates the normalized model from the
-  // user's EXISTING local caches on the first boot after the update, so an offline user
-  // (or one before a server sync finishes) still has their full library / artists /
-  // playlists / detail. Idle-scheduled (never blocks first paint), drift/version-gated,
-  // idempotent, and it waits for an active library/song sync to settle first — so it
-  // safely co-exists with the live normalized sync (both are idempotent upserts).
+  // One-time blob/KV→normalized migration, populating the normalized model from the
+  // user's EXISTING local caches, so an offline user (or one whose server sync hasn't
+  // finished) still has their full library / artists / playlists / detail. Idle-scheduled
+  // so it never blocks first paint; drift/version-gated and idempotent, and it waits for
+  // an active library/song sync to settle, so it co-exists with the live normalized sync.
   idleStage('dataModelUpgrade', () => runDataModelUpgradeIfNeeded());
   if (getCancelled()) return;
-
-  // (The old `initSongLibrary` whole-library build is retired — the song FILTER views
-  // now source from the bounded favorites/cached stores, and the A–Z browse pages the DB.)
 
   // Re-push the CarPlay / Android Auto browse snapshot now the library stores
   // are hydrated — a cold car wake that rendered an empty skeleton self-corrects.
@@ -295,26 +274,22 @@ async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
   // session (in 'downloading' or 'error'), then drain whatever's queued.
   // Both stages are no-ops when there's nothing to do.
   await stage('recoverStalledImageDownloads', () => recoverStalledImageDownloads());
-  // The image-queue drain is the lowest-priority cache rebuild — push it to an
-  // idle window so it never competes with the user settling into the app. It's
-  // fully resumable (recoverStalledImageDownloads + the connectivity-restored
-  // re-kick), so deferring it is free; worst case it finishes on a later idle.
+  // The image-queue drain is the lowest-priority cache rebuild, so it goes to an idle
+  // window rather than compete with the user settling into the app. Fully resumable
+  // (recoverStalledImageDownloads + the connectivity-restored re-kick), so at worst it
+  // finishes on a later idle.
   runWhenIdle(() => { if (!getCancelled()) void processImageQueue(); });
 
-  // NB: the cold-start home-list refresh is NOT done here — onStartup's
-  // immediate chain already fires it (gated) right after rehydrate, so
-  // running it again here would just double the network fan-out (#148).
+  // Don't add a cold-start home-list refresh here: onStartup's immediate chain already
+  // fires it (gated) right after rehydrate, and a second call doubles the fan-out (#148).
 }
 
 /**
- * Minimum gap between auto-refreshes triggered by AppState 'active'
- * transitions. Ten minutes covers the common "background music for
- * a while" and "flick out to read a message" patterns without
- * refreshing on every short context-switch. Track-complete and
- * cold-start refreshes both bypass this threshold (see
- * `albumListsStore.refreshRecentlyPlayed` invocation in
- * `dataSyncService.onScrobbleCompleted`, and `refreshAllIfDue(0)`
- * at boot above).
+ * Minimum gap between auto-refreshes triggered by AppState 'active' transitions. Ten
+ * minutes covers "background music for a while" and "flick out to read a message"
+ * without refreshing on every short context-switch. Track-complete
+ * (`dataSyncService.onScrobbleCompleted`) and cold-start (`refreshAllIfDue(0)`)
+ * refreshes both bypass it.
  */
 const FOREGROUND_REFRESH_THRESHOLD_MS = 10 * 60_000;
 
@@ -406,16 +381,13 @@ export default function RootLayout() {
   }, []);
 
   // --- Deferred startup: expensive filesystem scanning ---
-  // Depends on isLoggedIn so it re-runs after a logout/login cycle.
-  // The root layout stays mounted across auth transitions, so a static
-  // [] dep array would only fire once at cold start — leaving cache
-  // byte totals stale after login (the cause of inflated "used space"
-  // numbers when the user logs out and back in).
+  // Depends on isLoggedIn so it re-runs after a logout/login cycle: the root layout stays
+  // mounted across auth transitions, so a static [] dep array fires once at cold start
+  // and leaves cache byte totals stale, inflating the "used space" numbers.
   useEffect(() => {
-    // Hold the expensive deferred startup (image/music cache scans, backup,
-    // data-sync, image-queue drain) until the animated splash has finished —
-    // its synchronous SQLite/FS work otherwise blocks the JS thread and
-    // contributes to the splash freeze.
+    // Hold the expensive deferred startup (image/music cache scans, backup, data-sync,
+    // image-queue drain) until the animated splash has finished — its synchronous
+    // SQLite/FS work blocks the JS thread and freezes the splash animation.
     if (!isLoggedIn || splashVisible) return;
     let cancelled = false;
     void runDeferredStartup(() => cancelled);
@@ -423,10 +395,9 @@ export default function RootLayout() {
   }, [isLoggedIn, splashVisible]);
 
   // --- Cover-art recache resumption on connectivity restoration ---
-  // The image-cache refresh-queue worker picks up cover art for
-  // downloaded items under the entity-ID model. If the user was offline
-  // at first launch, kick the worker as soon as the server becomes
-  // reachable. Also covers mid-pass connectivity drops.
+  // The image-cache refresh-queue worker picks up cover art for downloaded items. Kick it
+  // as soon as the server becomes reachable, covering both a first launch made offline
+  // and a connectivity drop mid-pass.
   useEffect(() => {
     if (!isLoggedIn) return;
     let prevReachable =
@@ -513,27 +484,24 @@ export default function RootLayout() {
       }
     });
 
-    // Hydrate per-row SQLite-backed stores BEFORE any data-sync flow reads
-    // them, THEN run the startup chain. `rehydrateAllStores` is async now
-    // (SQLite IO on a background thread + chunked JSON.parse), so we AWAIT it
-    // to preserve the ordering invariant: hydration must complete before
-    // `onStartup()` fires its deferred full album-detail walk, which checks
-    // `albumDetailStore.albums` 1500 ms later. Symptom of getting this order
-    // wrong: a "full library resync" banner showing `missing = library.length`
-    // on every launch.
+    // Hydrate per-row SQLite-backed stores BEFORE any data-sync flow reads them, THEN run
+    // the startup chain. `rehydrateAllStores` is async (background-thread SQLite IO +
+    // chunked JSON.parse) and is AWAITED to hold that ordering invariant: hydration must
+    // complete before `onStartup()` fires its deferred full album-detail walk, which
+    // checks `albumDetailStore.albums` 1500 ms later. Get the order wrong and every
+    // launch shows a "full library resync" banner with `missing = library.length`.
     void (async () => {
       await rehydrateAllStores();
-      // Also wait for the startup-critical async-persisted kvStorage stores
-      // (offlineMode, the library lists, etc.). They hydrate a microtask after
-      // store creation; reading them before that resolves would make the
-      // resync comparison and offline/auto-offline branch decisions below act
-      // on empty defaults.
+      // Also wait for the startup-critical async-persisted kvStorage stores (offlineMode,
+      // the library lists). They hydrate a microtask after store creation; reading them
+      // any earlier makes the resync comparison and the offline/auto-offline branches
+      // below act on empty defaults.
       await awaitKvHydration();
       if (cancelled) return;
-      // Set up the native player eagerly so playback is available immediately.
-      // The persisted-queue RESTORE is deferred to after the splash (see the
-      // queueRestoreStartedRef effect below) — its heavy RNTP hydration was
-      // freezing the splash animation mid-sweep.
+      // Set up the native player eagerly so playback is available immediately. The
+      // persisted-queue RESTORE is deferred to after the splash (see the
+      // queueRestoreStartedRef effect below); its heavy RNTP hydration freezes the
+      // splash animation mid-sweep.
       initPlayer();
       initScrobbleService();
       initFailover();
@@ -567,11 +535,10 @@ export default function RootLayout() {
   }, [rehydrated, isLoggedIn]);
 
   // --- Deferred persisted-queue restore (after the animated splash) ---
-  // The native player is set up eagerly above; only the heavy queue RESTORE +
-  // RNTP hydration is deferred here — it froze the splash mid-sweep when it ran
-  // during boot. Running it once the splash has hidden keeps the animation
-  // smooth, and means the restore happens AFTER migrations so the one-time
-  // queue-clear migration actually takes effect instead of being restored over.
+  // The native player is set up eagerly above; only the heavy queue RESTORE + RNTP
+  // hydration waits here, because during boot it freezes the splash mid-sweep. Running it
+  // after the splash also puts the restore AFTER migrations, so the one-time queue-clear
+  // migration takes effect instead of being restored over.
   const queueRestoreStartedRef = useRef(false);
   useEffect(() => {
     if (!rehydrated || !isLoggedIn || splashVisible || queueRestoreStartedRef.current) {
@@ -703,9 +670,8 @@ export default function RootLayout() {
                 contentStyle: { backgroundColor: colors.background },
               }}
             >
-        {/* `gestureEnabled: false` so login can never be swiped away, whichever path
-            landed on it — the logout handler clears the stack, but the auth-redirect
-            in this file uses a bare `replace` and would otherwise leave history behind. */}
+        {/* `gestureEnabled: false` so login can never be swiped away back into a */}
+        {/* signed-out app, whichever path landed on it. */}
         <Stack.Screen name="login" options={{ headerShown: false, gestureEnabled: false }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen

@@ -7,9 +7,9 @@ import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import { type AlbumID3, type ArtistID3, type Child, type Playlist } from '../services/subsonicService';
 
 /**
- * Bounded `albumId -> coverArt` cache over the normalized `albums` table (replaces the
- * old whole-`albumLibraryStore.albums` Map). Album-mode song cover-art resolves the
- * parent album's `coverArt` without holding the library in memory:
+ * Bounded `albumId -> coverArt` cache over the normalized `albums` table. Album-mode
+ * song cover-art resolves the parent album's `coverArt` without holding the library in
+ * memory:
  *   - `albumCoverArtById` is SYNCHRONOUS — a hit returns instantly; a MISS returns
  *     `undefined` (so the caller's `?? song.coverArt` fallback fires) and kicks a
  *     fire-and-forget DB fill for the next lookup.
@@ -50,8 +50,8 @@ async function fetchAlbumCoverArt(albumId: string): Promise<string | undefined> 
   }
 }
 
-/** Parent album's `coverArt` for an album id — SYNC. Hit → value; miss → undefined
- *  (+ a background fill for next time). Never blocks; never returns a stale full scan. */
+/** Parent album's `coverArt` for an album id — SYNC, never blocks. Hit → value;
+ *  miss → undefined, plus a background fill for next time. */
 export function albumCoverArtById(albumId: string | null | undefined): string | undefined {
   if (!albumId) return undefined;
   const hit = _cache.get(albumId);

@@ -10,7 +10,8 @@ interface DetailFetchOptions {
   /**
    * True once the (async) local-DB cache lookup has RESOLVED. The mount fetch is held
    * until this flips true, so a local-DB cache hit renders instantly instead of firing a
-   * blocking server fetch on every open. Defaults to `true` (legacy synchronous-cache path).
+   * blocking server fetch on every open. Defaults to `true` for callers whose cache
+   * lookup is synchronous.
    */
   cacheChecked?: boolean;
   /** Error shown when `id` is missing. */
@@ -26,12 +27,10 @@ interface DetailFetchOptions {
 }
 
 /**
- * Shared data-loading shell for the album / artist / playlist detail screens.
- * Owns the `loading` / `refreshing` / `error` lifecycle and the mount + pull
- * triggers; the screen supplies `load`, which fetches and applies its own
- * (single- or multi-) state. Mirrors the previously-inlined `fetchData`
- * skeleton 1:1 — a plain open fetches only when uncached, a pull always
- * refetches with a minimum spinner delay.
+ * Shared data-loading shell for the album / artist / playlist detail screens. Owns the
+ * `loading` / `refreshing` / `error` lifecycle and the mount + pull triggers; the screen
+ * supplies `load`, which fetches and applies its own (single- or multi-) state. A plain
+ * open fetches only when uncached; a pull always refetches, with a minimum spinner delay.
  */
 export function useDetailFetch({
   id,
@@ -71,8 +70,7 @@ export function useDetailFetch({
   );
 
   // Hold the mount fetch until the async local-DB cache lookup resolves: a cache HIT
-  // renders instantly (no server round-trip); only a genuine MISS fetches from the
-  // server. (Legacy synchronous-cache callers pass `cacheChecked` default true.)
+  // renders instantly (no server round-trip); only a genuine MISS fetches.
   useEffect(() => {
     if (!cacheChecked) return;
     if (!hasCache) fetchData();

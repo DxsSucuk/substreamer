@@ -20,17 +20,16 @@ interface UseAllSongsByTitleResult {
 const EMPTY: Child[] = [];
 
 /**
- * Songs for the DOWNLOADED filter view, title-sorted. Reads the never-reaped
- * `cached_songs` table straight from SQL, so it carries no whole-library read and no
- * walk over `musicCacheStore.cachedSongs`. Only mounted when that filter is active; the
- * main A–Z browse pages the DB directly, and the favourites filter reads SQL
+ * Songs for the DOWNLOADED filter view, title-sorted, read straight from the
+ * never-reaped `cached_songs` table — no whole-library read. Only that filter uses this
+ * hook: the main A–Z browse pages the DB directly, and the favourites filter reads SQL
  * (`listAllStarredSongs`).
  */
 export function useAllSongsByTitle(opts: UseAllSongsByTitleOpts = {}): UseAllSongsByTitleResult {
   const downloadedOnly = opts.downloadedOnly === true;
-  // `revision` is the download tables' change signal. It reaches the read below as a dep,
-  // and it is what a completing download (or a deletion) has instead of the Zustand
-  // subscription the JS walk used to get for free.
+  // `revision` is the download tables' change signal, and a dep of the read below. A SQL
+  // read has no Zustand subscription, so without it a completing download (or a
+  // deletion) leaves the list stale.
   const revision = musicCacheStore((s) => s.revision);
 
   const [songs, setSongs] = useState<Child[]>(EMPTY);
