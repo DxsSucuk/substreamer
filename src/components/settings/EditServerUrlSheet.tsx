@@ -42,9 +42,8 @@ function extractHostname(url: string): string {
 }
 
 /**
- * Server-URL editor. One component covers both primary and secondary
- * targets — the three divergences (auth-store field, save-time side
- * effects, remove button) are clean conditionals on `target`.
+ * Server-URL editor for both the primary and secondary targets; they diverge on
+ * the auth-store field, the save-time side effects and the remove button.
  *
  * Primary save:
  *   - Confirms with the user (queue will clear)

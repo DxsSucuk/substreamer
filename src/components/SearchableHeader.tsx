@@ -97,7 +97,6 @@ export function SearchableHeader({ route }: BottomTabHeaderProps) {
     Keyboard.dismiss();
   }, [clear]);
 
-  // Clean up debounce timer on unmount
   useEffect(() => {
     return () => {
       if (debounceTimer.current) clearTimeout(debounceTimer.current);

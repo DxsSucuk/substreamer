@@ -134,12 +134,11 @@ const EditTrackRow = memo(function EditTrackRow({
 
 /**
  * Editable playlist properties shown in the edit-mode list header: name +
- * description + a public/private toggle. Name and description are UNCONTROLLED
- * (defaultValue + ref) so typing never triggers a screen re-render — the parent
- * `listHeader` useMemo would otherwise recompute on every keystroke and yank
- * input focus in the reorderable list. Memoized on stable props so a track
- * reorder doesn't re-render the form. Only the Switch is controlled (a single
- * tap, and the uncontrolled inputs keep their content across its re-render).
+ * description + a public/private toggle. Name and description MUST stay UNCONTROLLED
+ * (defaultValue + ref): a keystroke that re-renders the screen recomputes the parent's
+ * `listHeader` useMemo and yanks input focus in the reorderable list. Memoized on
+ * stable props so a track reorder doesn't re-render the form. Only the Switch is
+ * controlled — one tap, and the uncontrolled inputs survive its re-render.
  */
 const PlaylistEditHeader = memo(function PlaylistEditHeader({
   colors,
@@ -485,10 +484,9 @@ export function PlaylistDetailScreen() {
   const renderItem = useCallback(
     ({ item }: { item: Child; index: number }) => (
       <View style={styles.trackItemWrap}>
-        {/* Playlist tracks omit the position number — the cover thumbnail
-            already anchors the row and the number was eating ~28px of the
-            title column. Album-detail still shows numbers because all of
-            its tracks share the same cover (no thumbnail per row). */}
+        {/* Playlist tracks omit the position number: the cover thumbnail anchors the */}
+        {/* row, and the number costs ~28px of the title column. Album-detail keeps */}
+        {/* numbers because its tracks share one cover and carry no per-row thumbnail. */}
         <TrackRow
           track={item}
           colors={colors}
@@ -665,13 +663,10 @@ export function PlaylistDetailScreen() {
     );
   }
 
-  // Unified paddingTop for iOS + Android. iOS previously used
-  // contentInset+contentOffset to position content under the floating
-  // Stack.Toolbar, but RN 0.85 Fabric recycles RCTScrollViewComponentView
-  // across screen pushes and ignores contentOffset on a recycled
-  // instance — leaving the hero partly scrolled off the top on
-  // subsequent detail pushes. See album-detail.tsx for the full
-  // explanation.
+  // paddingTop on both platforms, never contentInset+contentOffset: Fabric recycles
+  // RCTScrollViewComponentView across screen pushes and ignores contentOffset on a
+  // recycled instance, leaving the hero partly scrolled off the top.
+  // See album-detail.tsx.
   const listContentStyle = {
     paddingTop: insets.top + HEADER_BAR_HEIGHT,
     paddingBottom: 32,

@@ -862,14 +862,11 @@ export function TunedInScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
-  // Smart mixes are computed off the render path. `generateMixes` is an O(n)
-  // pass over the full scrobble history (can be 10k+), so running it inside a
-  // synchronous `useMemo` blocked the navigation transition on mount — the
-  // memo runs before the `!transitionComplete` early return below, so the
-  // heavy work landed on the very frame the transition needed. Instead we
-  // gate on `transitionComplete`, then defer the compute one tick with
-  // `setTimeout(0)` (not rAF — rAF can stall on RN 0.85/Fabric) so the
-  // transition's final frame paints first. `refreshKey` re-rolls the picks.
+  // Smart mixes MUST be computed off the render path: `generateMixes` is an O(n) pass
+  // over the whole scrobble history (10k+), and a synchronous `useMemo` runs before the
+  // `!transitionComplete` early return below, landing the work on the exact frame the
+  // navigation transition needs. Gate on `transitionComplete`, then defer one tick with
+  // `setTimeout(0)` — not rAF, which can stall on Fabric. `refreshKey` re-rolls the picks.
   const [mixes, setMixes] = useState<ReturnType<typeof generateMixes>>([]);
   // True once the deferred mix compute has run at least once. Gating the screen
   // on this (not just `transitionComplete`) prevents a flash where "Jump back in"
@@ -1026,7 +1023,7 @@ export function TunedInScreen() {
                 ))}
               </View>
             ) : (
-              /* Phone: unchanged hero / medium-row / compact-list stack. */
+              /* Phone: hero / medium-row / compact-list stack. */
               <View style={styles.mixList}>
                 {heroMix && <HeroMixCard mix={heroMix} index={0} />}
 

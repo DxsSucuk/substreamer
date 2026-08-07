@@ -149,10 +149,9 @@ export function AlbumDetailScreen() {
 
   /* ---- Data fetching ---- */
   const load = useCallback(async (albumId: string, isRefresh: boolean) => {
-    // The fetch always upserts the album row, so the viewed album is reflected in the
-    // library list (#202) without a separate sync step.
-    // `force` only on an explicit pull-to-refresh; a normal open answers from the
-    // local database when we already hold the tracks.
+    // The fetch always upserts the album row, so the viewed album reaches the library
+    // list without a separate sync step. `force` only on an explicit pull-to-refresh;
+    // a normal open answers from the local database when we already hold the tracks.
     const data = await fetchAlbumDetail(albumId, { force: isRefresh });
     setAlbum(data);
     if (isRefresh && data?.id) {
@@ -188,17 +187,12 @@ export function AlbumDetailScreen() {
     return items;
   }, [allSongs]);
 
-  // Use paddingTop on contentContainerStyle for BOTH platforms. iOS used
-  // to combine contentInset.top + contentOffset.y = -inset to position
-  // content visually below the floating Stack.Toolbar, but RN 0.85's
-  // Fabric scroll-view recycles RCTScrollViewComponentView instances
-  // across screen pushes — and `contentOffset` (an initial-only prop)
-  // is not re-applied to a recycled instance. Result: the second push
-  // of any detail screen reused a recycled scroll view that ignored
-  // our initial offset, leaving the hero scrolled partly off the top.
-  // paddingTop is a content-side property that the layout engine
-  // applies regardless of recycle state, so behaviour is consistent
-  // on fresh AND recycled instances.
+  // paddingTop on contentContainerStyle for BOTH platforms — never iOS's
+  // contentInset.top + contentOffset.y = -inset to clear the floating Stack.Toolbar.
+  // Fabric recycles RCTScrollViewComponentView instances across screen pushes and
+  // `contentOffset` is initial-only, so it is not re-applied to a recycled instance:
+  // the second push of any detail screen leaves the hero scrolled partly off the top.
+  // paddingTop is content-side, so the layout engine applies it either way.
   const headerInset = insets.top + HEADER_BAR_HEIGHT;
   const listContentContainerStyle = useMemo(
     () => ({
@@ -473,10 +467,9 @@ const styles = StyleSheet.create({
     opacity: 0.6,
   },
   trackItemWrap: {
-    // No padding here — TrackRow now provides 16px internal horizontal
-    // padding (matches the `info` block padding) so the row's content
-    // edge aligns with the title / by-owner / song-count text block
-    // above, and the swipe-gesture area extends to the screen edge.
+    // Deliberately empty: TrackRow carries the 16px horizontal padding (matching the
+    // `info` block) so its content edge aligns with the title text above while the
+    // swipe-gesture area still reaches the screen edge.
   },
   discHeaderWrap: {
     flexDirection: 'row',

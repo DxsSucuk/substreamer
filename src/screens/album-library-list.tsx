@@ -179,11 +179,10 @@ function FilteredAlbumList({
   const [starredAlbums, setStarredAlbums] = useState<AlbumID3[]>([]);
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
   const starredKey = `${downloadedOnly}:${includePartial}:${version}`;
-  // DERIVED, not seeded: "the rows we hold aren't the rows this filter asks for".
+  // DERIVED, never seeded: "the rows we hold aren't the rows this filter asks for".
   // A `useState(favoritesOnly)` seed only runs on mount, and this component stays
-  // mounted when Favourites is switched on while Downloaded is already on — so that
-  // frame would render empty-and-not-loading and flash the "no albums found"
-  // placeholder. Deriving is correct on the first frame however we got there.
+  // mounted when Favourites is switched on over an already-on Downloaded — that frame
+  // renders empty-and-not-loading and flashes the "no albums found" placeholder.
   const starredLoading = favoritesOnly && loadedKey !== starredKey;
   useEffect(() => {
     if (!favoritesOnly) return;
@@ -204,9 +203,9 @@ function FilteredAlbumList({
   const [downloadedAlbums, setDownloadedAlbums] = useState<AlbumID3[]>([]);
   const [downloadedLoadedKey, setDownloadedLoadedKey] = useState<string | null>(null);
   const downloadedKey = `${includePartial}:${revision}`;
-  // DERIVED for the same reason as `starredLoading` above — this read is asynchronous now,
-  // so a mount-time seed would leave one empty-and-not-loading frame on the way in AND on
-  // every Favourites toggle-off, both of which flash "No albums found".
+  // DERIVED for the same reason as `starredLoading` above: the read is asynchronous, so a
+  // mount-time seed leaves one empty-and-not-loading frame on the way in AND on every
+  // Favourites toggle-off, both of which flash "No albums found".
   const downloadedLoading = !favoritesOnly && downloadedLoadedKey !== downloadedKey;
   useEffect(() => {
     if (favoritesOnly) return;

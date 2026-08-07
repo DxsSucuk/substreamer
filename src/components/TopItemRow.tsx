@@ -56,8 +56,8 @@ export const TopItemRow = memo(function TopItemRow({
       ) : (
         // Always hand the image to CachedImage, even with no id yet: it owns the cache
         // check, the download, the branded placeholder and the re-render when art
-        // lands. Gating on `coverArtId` rendered nothing at all for a row whose art
-        // resolves late, so covers only appeared on an unrelated re-render.
+        // lands. Gate on `coverArtId` and a row whose art resolves late renders
+        // nothing until some unrelated re-render.
         <CachedImage
           coverArtId={coverArtId}
           size={150}

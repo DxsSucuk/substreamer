@@ -61,8 +61,8 @@ export interface SongListViewProps {
   showAlphabetScroller?: boolean;
   /** Tap handler override. Defaults to `playTrack(song, songs)`. */
   onSongPress?: (song: Child) => void;
-  // ── Keyset paging (bounded window from the normalized DB) — optional; array-based
-  //    consumers omit these and behave exactly as before. ──
+  // ── Keyset paging (bounded window from the normalized DB). Optional: array-based
+  //    consumers omit these. ──
   /** Near the end → load + append the next keyset page. */
   onEndReached?: () => void;
   /** Near the top → load + prepend the previous keyset page (after an A-Z jump). */

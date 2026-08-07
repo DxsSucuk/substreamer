@@ -56,10 +56,9 @@ export function DownloadedMusicCard() {
   const metaRefreshTotal = downloadedMetadataRefreshStore((s) => s.total);
 
   const handleRefreshMetadata = useCallback(() => {
-    // Button stays enabled unless offline mode, but a refresh needs a reachable
-    // server — otherwise every fetch just stalls on a timeout. Give feedback for
-    // both offline mode and a currently-unreachable server rather than firing a
-    // doomed pass. (Same message: "connect to your server…".)
+    // The button stays enabled unless offline mode, but a refresh needs a reachable
+    // server or every fetch stalls on a timeout. Both cases get the same message
+    // rather than a doomed pass.
     if (offlineMode || !connectivityStore.getState().isServerReachable) {
       alert(t('refreshDownloadedMetadata'), t('refreshMetadataOffline'));
       return;

@@ -88,7 +88,7 @@ export function LibrarySyncCard() {
 
   // No confirm: the resync overwrites rows in place rather than dropping them, so
   // nothing is destroyed, the library stays browsable throughout, and Pause is right
-  // there. The card hint below carries what the dialog used to say.
+  // there. The card hint carries the warning instead.
   const handleForceResync = useCallback(() => {
     if (offlineMode) return;
     void forceFullResync();

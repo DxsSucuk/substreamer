@@ -224,11 +224,10 @@ export function RestoreBackupSheet({
   }
 
   return (
-    // The shared sheet, not a raw Modal: with more than a few backups the old
-    // unbounded View grew past the screen, pushing the title under the status bar and
-    // the Restore button off the bottom where it could not be tapped. `scrollable={false}`
-    // because the list below supplies its own scroll container — the header and the
-    // action stay pinned so Restore is always reachable.
+    // The shared sheet, not a raw Modal: an unbounded View grows past the screen once
+    // there are more than a few backups, pushing the title under the status bar and the
+    // Restore button out of reach. `scrollable={false}` because the list supplies its
+    // own scroll container — the header and the action stay pinned.
     <BottomSheet visible={visible} onClose={handleClose} maxHeight="80%" scrollable={false}>
       <Text style={[styles.title, { color: colors.textPrimary }]}>{t('restoreBackup')}</Text>
       <Text style={[styles.subtitle, { color: colors.textSecondary }]}>

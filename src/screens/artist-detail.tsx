@@ -534,13 +534,10 @@ export function ArtistDetailScreen() {
           showsVerticalScrollIndicator={false}
           contentContainerStyle={[
             styles.content,
-            // Unified paddingTop for iOS + Android. iOS previously used
-            // contentInset+contentOffset to position content under the
-            // floating Stack.Toolbar, but RN 0.85 Fabric recycles
-            // RCTScrollViewComponentView across screen pushes and ignores
-            // contentOffset on a recycled instance — leaving the hero
-            // partly scrolled off the top on subsequent detail pushes.
-            // See album-detail.tsx for the full explanation.
+            // paddingTop on both platforms, never contentInset+contentOffset:
+            // Fabric recycles RCTScrollViewComponentView across screen pushes and
+            // ignores contentOffset on a recycled instance, leaving the hero partly
+            // scrolled off the top. See album-detail.tsx.
             { paddingTop: insets.top + HEADER_BAR_HEIGHT },
           ]}
           refreshControl={

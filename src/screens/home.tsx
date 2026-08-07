@@ -59,12 +59,10 @@ const CARD_GAP = 12;
 // Stable module-level separator so FlashList isn't handed a fresh component
 // identity on every render of each horizontal section.
 const CardSeparator = () => <View style={{ width: CARD_GAP }} />;
-// Render off-screen items eagerly so horizontal FlashLists nested below the
-// vertical home-screen ScrollView paint before the user scrolls them into
-// view. Without this, FlashList v2's lazy viewport measurement under the
-// New Architecture leaves the cards blank until a scroll event triggers a
-// re-measure (kill + restart was the only way to recover). Matches the
-// 300px used by AlbumListView / PlaylistListView / ArtistListView.
+// Render off-screen items eagerly so the horizontal FlashLists nested inside the
+// vertical home ScrollView paint before the user scrolls them into view. Without it,
+// FlashList v2's lazy viewport measurement leaves the cards blank until some scroll
+// event forces a re-measure. Matches AlbumListView / PlaylistListView / ArtistListView.
 const HORIZONTAL_DRAW_DISTANCE = 300;
 
 const SECTION_CONFIG: Record<
@@ -217,10 +215,9 @@ function AlbumSection({
         <SectionPlaceholder message={t(config.emptyMessageKey)} colors={colors} />
       ) : (
         <FlashList
-          // Guard against entries with a falsy id: keyExtractor returns
-          // `item.id`, so an id-less item yields an `undefined` key that
-          // corrupts FlashList recycling (a stuck-placeholder vector). Such a
-          // card can't render art, cache, or navigate anyway — drop it.
+          // `listData` drops entries with a falsy id: keyExtractor returns `item.id`,
+          // and an undefined key corrupts FlashList recycling into stuck placeholders.
+          // Such a card can't render art, cache, or navigate anyway.
           data={listData}
           renderItem={renderItem}
           keyExtractor={keyExtractor}
@@ -398,8 +395,8 @@ export function HomeScreen() {
   const offlineMode = offlineModeStore((s) => s.offlineMode);
   const downloadedOnly = filterBarStore((s) => s.downloadedOnly);
   const favoritesOnly = filterBarStore((s) => s.favoritesOnly);
-  // `revision` is the download tables' change signal. The three reads below are SQL now, and
-  // SQL has no Zustand subscription — without this a completing download would leave both
+  // `revision` is the download tables' change signal. The three reads below are SQL, and
+  // SQL has no Zustand subscription — without this a completing download leaves both
   // Downloaded sections AND the curated-list filter silently stale.
   const revision = musicCacheStore((s) => s.revision);
   const starredAlbumIds = favoritesStore((s) => s.albumIds);
@@ -407,9 +404,9 @@ export function HomeScreen() {
   const albumSortOrder = layoutPreferencesStore((s) => s.albumSortOrder);
 
   // The Downloaded sections come from the never-reaped download tables (bounded,
-  // offline-safe), not the paged library. One effect for all three: they share a trigger,
-  // and a single loading flag keeps the two sections, the curated-list filter and the
-  // whole-screen empty state from disagreeing about whether the answer is known yet.
+  // offline-safe), not the paged library. One effect covers all three: they share a
+  // trigger, and one loading flag keeps the two sections, the curated-list filter and
+  // the whole-screen empty state from disagreeing about whether the answer is known.
   //
   // The id set is the MEMBERSHIP predicate (`cached_items` alone) that filters the curated
   // lists, whose albums arrive from the album-lists store already carrying their metadata;
@@ -497,8 +494,8 @@ export function HomeScreen() {
   }, [downloadedOnly, downloadedPlaylistRows]);
 
   // Every album section emptied by the active filter(s). Individual sections emptied by a
-  // filter are hidden rather than placeheld (see the render below), so without this the
-  // Favourites filter with nothing starred left the screen with no album sections and no
+  // filter are hidden rather than placeheld (see the render below), so without this a
+  // Favourites filter with nothing starred leaves a screen of missing sections and no
   // explanation for their absence.
   const filteredEmpty = useMemo(() => {
     if (!hasAnyFilters) return false;

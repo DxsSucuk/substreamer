@@ -98,15 +98,10 @@ export function AddToPlaylistSheet() {
   const { colors } = useTheme();
   const { t } = useTranslation();
 
-  // Animate content reveal in two phases:
-  // Phase 1 (entry animation): show spinner at a compact height.
-  // Phase 2 (after delay): mount the real content off-screen to measure it,
-  //   then animate the container height from SPINNER_HEIGHT → measured height
-  //   and fade the content in simultaneously.
-  // Phase: 'loading' → 'measuring' → 'ready'
-  // 'loading': spinner shown, compact height
-  // 'measuring': content mounted off-screen to capture its height
-  // 'ready': height + opacity animating in
+  // Reveal runs 'loading' → 'measuring' → 'ready':
+  //   'loading'   — spinner at SPINNER_HEIGHT while the sheet animates in
+  //   'measuring' — content mounted off-screen to capture its natural height
+  //   'ready'     — height animates SPINNER_HEIGHT → measured, content fades in
   const [phase, setPhase] = useState<'loading' | 'measuring' | 'ready'>('loading');
   const hasMeasured = useRef(false);
   const animatedHeight = useSharedValue(SPINNER_HEIGHT);
@@ -300,12 +295,11 @@ export function AddToPlaylistSheet() {
       </View>
 
       {mode === 'create' ? (
-        // Create form lives OUTSIDE the fixed-height measuring container: that
-        // container is overflow:'hidden' and sized to the pick-list's measured
-        // height, which clipped the create button. Here it renders at natural
-        // height in its own scroll view so the button reflows above the keyboard
-        // (#224). This is not the node measured by handleContentLayout, so the
-        // pick-list reveal animation is untouched.
+        // The create form must stay OUTSIDE the measuring container: that container is
+        // overflow:'hidden' at the pick-list's measured height, which clips the create
+        // button. Its own scroll view renders at natural height so the button reflows
+        // above the keyboard, and it isn't the node handleContentLayout measures, so
+        // the pick-list reveal animation is unaffected.
         <ScrollView
           style={styles.flexContainer}
           contentContainerStyle={styles.formSection}

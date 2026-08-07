@@ -31,8 +31,7 @@ export interface StarredSongListProps {
  * The Favourites tab's song list — bounded keyset pages over the marked `songs` rows
  * merged with the `favorite_songs` remainder, newest favourite first.
  *
- * No alphabet scroller: the order is "when you starred it", so an A–Z scroller over it
- * would be meaningless (and the tab never had one).
+ * No alphabet scroller: the order is "when you starred it", so A–Z means nothing here.
  */
 export function StarredSongList({
   layout = 'list',
@@ -82,8 +81,8 @@ export function StarredSongList({
     reload();
   }, [changeKey, reload]);
 
-  // Tapping a track queues the WHOLE favourites list, as it always has — the loaded
-  // keyset window is not the queue. Fetched at press time, O(favourites).
+  // Tapping a track queues the WHOLE favourites list — the loaded keyset window is not
+  // the queue. Fetched at press time, O(favourites).
   const handleSongPress = useCallback(
     (song: Child) => {
       void (async () => {

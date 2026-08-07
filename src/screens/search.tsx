@@ -138,10 +138,8 @@ export function SearchScreen() {
         downloadedAlbumIds === null ? [] : albums.filter((a) => downloadedAlbumIds.has(a.id));
       songs = songs.filter((s) => getLocalTrackUri(s.id) !== null);
       // Artists cannot be downloaded, so the filter drops them outright — the same
-      // handling the library and favourites tabs give the Artists segment. The
-      // offline search path already returns none (`searchService`), so this only
-      // changes the ONLINE + Downloaded case, which used to show artists derived
-      // from whichever of their albums happened to match the query.
+      // handling the library and favourites tabs give the Artists segment. Only the
+      // ONLINE path reaches this; offline search already returns no artists.
       artists = [];
     }
 
@@ -167,9 +165,9 @@ export function SearchScreen() {
     filtered.albums.length > 0 ||
     filtered.songs.length > 0;
 
-  // "The query matched nothing" and "a chip removed every match" are different statements
-  // and get different copy. Search is the one surface that can tell them apart for free —
-  // it already holds the UNFILTERED result set, so no extra query is needed (plan §2).
+  // "The query matched nothing" and "a chip removed every match" get different copy.
+  // Search can tell them apart without an extra query because it holds the UNFILTERED
+  // result set alongside the filtered one.
   const filteredAway =
     (downloadedOnly || favoritesOnly) &&
     (results.artists.length > 0 || results.albums.length > 0 || results.songs.length > 0);
@@ -287,8 +285,8 @@ export function SearchScreen() {
   }
 
   // Query present, a search/refresh (or the downloaded-set read) in flight with nothing to
-  // show yet — a spinner instead of a blank screen (covers the first search AND an
-  // offline↔online switch that has no prior results). Was: blank until results popped in.
+  // show yet — a spinner, not a blank screen. Covers the first search and an offline↔online
+  // switch with no prior results.
   if (busy && !hasResults) {
     return (
       <View style={[styles.container, { paddingTop: headerHeight }]}>

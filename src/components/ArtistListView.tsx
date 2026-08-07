@@ -56,8 +56,8 @@ export interface ArtistListViewProps {
   scrollToTopTrigger?: string;
   /** Extra top padding so content starts below a floating header but scrolls behind it */
   contentInsetTop?: number;
-  // ── Keyset paging (bounded window from the normalized DB) — optional; array-based
-  //    consumers omit these and behave exactly as before. ──
+  // ── Keyset paging (bounded window from the normalized DB). Optional: array-based
+  //    consumers omit these. ──
   /** Near the end → load + append the next keyset page. */
   onEndReached?: () => void;
   /** Near the top → load + prepend the previous keyset page (after an A-Z jump). */

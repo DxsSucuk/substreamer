@@ -112,10 +112,9 @@ const TrackFileRow = memo(function TrackFileRow({
 });
 
 /**
- * Placeholder row rendered for tracks in a partial album that are NOT on
- * disk. Visually distinct from TrackFileRow (dimmed text, download-arrow
- * icon instead of a checkmark) so the user sees the full album track list
- * and knows exactly which songs are missing.
+ * Placeholder row for tracks in a partial album that are NOT on disk. Deliberately
+ * distinct from TrackFileRow (dimmed text, download arrow instead of a checkmark) so
+ * the full album track list still renders and the missing songs are identifiable.
  */
 const MissingTrackRow = memo(function MissingTrackRow({
   track,
@@ -229,19 +228,18 @@ const CacheRow = memo(function CacheRow({
     };
   }, [expanded, item.type, item.itemId, isPartial]);
 
-  // Defer track list rendering a tick so the chevron flip and row expansion
-  // feel instant before mounting potentially many TrackFileRows. setTimeout,
-  // not requestAnimationFrame — rAF can stall indefinitely on RN 0.85/Fabric
-  // when no render is in flight, which would leave the expanded album empty.
+  // Defer the track list a tick so the chevron flip and row expansion feel instant
+  // before mounting potentially many TrackFileRows. setTimeout, not rAF — rAF can
+  // stall indefinitely on Fabric when no render is in flight, which would leave the
+  // expanded album empty.
   const [tracksReady, setTracksReady] = useState(false);
   const deferRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (expanded) {
       deferRef.current = setTimeout(() => setTracksReady(true), 0);
-      // Lazy-fetch the full album detail when expanding a partial album
-      // that isn't yet cached. The fetch is best-effort — offline or
-      // server-unreachable falls back to the "downloaded tracks only"
+      // Lazy-fetch the full album detail when expanding an uncached partial album.
+      // Best-effort: offline or unreachable falls back to the downloaded-tracks-only
       // rendering below.
       if (
         cacheChecked &&

@@ -1,26 +1,20 @@
 /**
  * Priority-aware container for the top-of-screen pill banners. At most ONE
- * banner is shown at a time; the highest-priority banner with an active state
- * wins and suppresses the others.
+ * banner shows at a time; the highest-priority active state wins and
+ * suppresses the others.
  *
- * Ladder (highest priority first — matches the plan document):
- *   1. Persistence degraded (PersistenceDegradedBanner) — sticky session-long
- *      signal that writes won't survive relaunch; user MUST know about it
- *      even if connectivity is also broken
- *   2. SSL-error / network-unreachable / reconnected (ConnectivityBanner)
- *   3. Storage full (StorageFullBanner)
- *   4. Library-sync error variants: paused-auth-error, paused-metered, error
- *      (LibrarySyncBanner — actionable failures rank above a plain offline
- *      state so users see "reauthenticate" before "offline")
- *   5. (reserved — no connectivity "offline" variant exists today;
- *      ConnectivityBanner hides itself when the user enables offline mode)
- *   6. Library-sync progress / paused-offline variants (LibrarySyncBanner)
- *   7. Image-cache refresh progress (ImageCacheBanner) — transient
- *      user-initiated cover-art refresh cycle; ranks below library-sync
- *      progress because metadata catch-up is the higher-priority signal
- *   8. Downloaded-metadata refresh progress (DownloadedMetadataBanner) —
- *      transient re-cache of downloaded items' detail + covers (startup
- *      backfill or manual button); lowest priority, purely informational
+ * Ladder, highest first:
+ *   1. Persistence degraded — writes won't survive relaunch, so it outranks
+ *      even a broken connection
+ *   2. SSL error / network unreachable / reconnected (ConnectivityBanner)
+ *   3. Storage full
+ *   4. Library-sync failures (paused-auth-error, paused-metered, error) —
+ *      actionable, so they rank above a plain offline state
+ *   5. (reserved for a connectivity "offline" variant)
+ *   6. Library-sync progress / paused-offline
+ *   7. Image-cache refresh progress — user-initiated and transient, so it
+ *      yields to metadata catch-up
+ *   8. Downloaded-metadata refresh progress — purely informational
  */
 
 import { memo } from 'react';
@@ -57,28 +51,24 @@ export const BannerStack = memo(function BannerStack() {
   // settings/login won't persist.
   if (!isDbHealthy()) return <PersistenceDegradedBanner />;
 
-  // ConnectivityBanner internally hides itself when offlineMode is true (see
-  // ConnectivityBanner.tsx:62). Mirror that logic here so the priority
-  // ladder doesn't needlessly block lower-priority banners.
+  // ConnectivityBanner hides itself when offlineMode is true. Mirror that here or
+  // the ladder blocks lower-priority banners on behalf of a banner that won't render.
   const connectivityShowing = bannerState !== 'hidden' && !offlineMode;
 
   if (connectivityShowing) return <ConnectivityBanner />;
   if (isStorageFull) return <StorageFullBanner />;
 
-  // Library-sync: error/paused-auth/paused-metered rank above plain offline.
-  // Currently functionally equivalent to the progress variant (they all
-  // render <LibrarySyncBanner />) but structured explicitly so that a
-  // future connectivity "offline" variant can be inserted between them.
+  // Library-sync failures rank above plain offline. Split from the progress branch
+  // below (both render <LibrarySyncBanner />) to leave room for rung 5.
   const isSyncError =
     syncPhase === 'error'
     || syncPhase === 'paused-auth-error'
     || syncPhase === 'paused-metered';
   if (isSyncError) return <LibrarySyncBanner />;
 
-  // Album-LIST fetch progress (paginated `library_albums` sync) shares this
-  // slot — it runs before the detail walk, so surface it here too. The one-time
-  // blob→normalized migration ("Upgrading library…") also lives here; LibrarySyncBanner
-  // internally prioritizes its variant over the sync variants.
+  // Album-LIST fetch progress (paginated `library_albums` sync) shares this slot — it
+  // runs before the detail walk. The one-time blob→normalized migration ("Upgrading
+  // library…") does too; LibrarySyncBanner prioritizes it over the sync variants.
   if (
     migrationPhase === 'migrating'
     || syncPhase === 'syncing'
@@ -96,7 +86,7 @@ export const BannerStack = memo(function BannerStack() {
   }
 
   // Lowest priority: the downloaded-metadata re-cache pass (startup backfill or
-  // manual button). Purely informational, so it yields to every banner above.
+  // manual button).
   if (metaRefreshActive && metaRefreshTotal > 0) {
     return <DownloadedMetadataBanner />;
   }
