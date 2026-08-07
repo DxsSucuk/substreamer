@@ -41,11 +41,15 @@ import {
 } from './searchService';
 import { logVoiceSearch } from './voiceSearchLogger';
 import { scoreCandidate, REJECT } from './searchMatch';
-import { composeHomeAlbumSections } from './homeSectionsService';
+import { composeHomeAlbumSections, type ComposeHomeInput } from './homeSectionsService';
 import { getDb } from '../store/persistence/db';
 import { listAllAlbums, albumBrowseRowToAlbumID3 } from '../db/repository/albums';
 import { listAllStarredSongs, listStarredArtistNames } from '../db/repository/favorites';
 import { listAllPlaylists, playlistBrowseRowToPlaylist } from '../db/repository/playlists';
+import {
+  listDownloadedAlbumIds,
+  listDownloadedAlbumsAsAlbumID3,
+} from '../db/repository/downloads';
 import { favoritesStore } from '../store/favoritesStore';
 import { albumListsStore } from '../store/albumListsStore';
 import { fetchAlbumDetail, fetchPlaylistDetail } from './detailFetchService';
@@ -54,10 +58,6 @@ import { syncStatusStore } from '../store/syncStatusStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import { serverInfoStore } from '../store/serverInfoStore';
-import {
-  albumPassesDownloadedFilter,
-  downloadedAlbumsFromCache,
-} from '../store/persistence/cachedItemHelpers';
 import { sortAlbumsByPreference } from '../utils/librarySort';
 import { awaitKvHydration, rehydrateAllStores } from '../store/persistence/rehydrate';
 import i18n from '../i18n/i18n';
@@ -105,13 +105,17 @@ async function allPlaylists(): Promise<Playlist[]> {
   return db ? (await listAllPlaylists(db)).map(playlistBrowseRowToPlaylist) : [];
 }
 
-/** Library albums, filtered to downloaded when offline. */
+/** Library albums, filtered to downloaded when offline. MEMBERSHIP, not visibility: these
+ *  albums came from the library table and already carry their metadata, so an item row in
+ *  `cached_items` is all "downloaded" means (see `downloads.ts`). */
 async function albumSet(): Promise<AlbumID3[]> {
   const albums = await allAlbums();
   if (!isOffline()) return albums;
-  const cachedItems = musicCacheStore.getState().cachedItems;
+  const db = getDb();
+  if (!db) return [];
   const includePartial = layoutPreferencesStore.getState().includePartialInDownloadedFilter;
-  return albums.filter((a) => albumPassesDownloadedFilter(a, cachedItems, includePartial));
+  const downloadedIds = await listDownloadedAlbumIds(db, { includePartial });
+  return albums.filter((a) => downloadedIds.has(a.id));
 }
 
 /** Favorite songs, filtered to downloaded when offline. ONE ordering, shared by the
@@ -140,15 +144,28 @@ async function azItems(): Promise<AzItem[]> {
   }));
 }
 
-function homeInput() {
+/**
+ * Async because both downloaded reads are SQL now. Free here, unlike the phone screens:
+ * there is no UI to flash an empty state at, and both call sites (`buildSnapshot`,
+ * `resolveBrowseChildren`) already awaited this when it was synchronous.
+ */
+async function homeInput(): Promise<ComposeHomeInput> {
   const offline = isOffline();
   const lists = albumListsStore.getState();
-  const cachedItems = musicCacheStore.getState().cachedItems;
   const includePartial = layoutPreferencesStore.getState().includePartialInDownloadedFilter;
-  // Downloaded Albums come from the never-reaped `cached_items` envelopes (offline-safe),
-  // sorted like the phone so the browse tree matches.
+  const db = getDb();
+  // Two different predicates, both from the never-reaped download tables (offline-safe):
+  // the Downloaded Albums body needs renderable metadata (VISIBILITY), the curated-list
+  // filter only needs ids because those albums carry their own (MEMBERSHIP).
+  const [downloadedRows, downloadedAlbumIds]: [AlbumID3[], ReadonlySet<string>] = db
+    ? await Promise.all([
+        listDownloadedAlbumsAsAlbumID3(db, { includePartial }),
+        listDownloadedAlbumIds(db, { includePartial }),
+      ])
+    : [[], new Set<string>()];
+  // Sorted like the phone so the browse tree matches.
   const downloadedAlbums = sortAlbumsByPreference(
-    downloadedAlbumsFromCache(cachedItems, includePartial),
+    downloadedRows,
     layoutPreferencesStore.getState().albumSortOrder,
     serverInfoStore.getState().ignoredArticles ?? undefined,
   );
@@ -163,8 +180,7 @@ function homeInput() {
     favoritesOnly: false,
     // `favoritesOnly` is hard-coded false above, so the composer never reads this.
     starredAlbumIds: new Set<string>(),
-    cachedItems,
-    includePartial,
+    downloadedAlbumIds,
   };
 }
 

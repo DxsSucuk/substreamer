@@ -140,6 +140,19 @@ const seedDownloadedPlaylist = (id: string): void => {
   ]);
 };
 
+/** MEMBERSHIP only: a `cached_items` row with NO `cached_albums` component row. The curated
+ *  lists carry their own metadata, so this is all "downloaded" means for them — the
+ *  asymmetry that keeps downloaded albums visible in lists sourced from elsewhere. */
+const seedDownloadedItemOnly = (id: string): void => {
+  db().runSync(
+    'INSERT INTO cached_items (item_id, type, name, expected_song_count, last_sync_at, ' +
+      'downloaded_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [id, 'album', `Album ${id}`, 0, 0, 0],
+  );
+};
+
+const curated = (id: string) => ({ id, name: `Album ${id}`, songCount: 1, duration: 1 });
+
 /** What a completing download does to the store: bump the counter the SQL readers key on. */
 const bumpRevision = (): void => {
   act(() => {
@@ -220,6 +233,56 @@ describe('HomeScreen — Downloaded sections read SQL without flashing an empty 
     await waitFor(() => expect(placeholderRenders.length).toBeGreaterThan(0)); // curated lists
     expect(r.queryByTestId('album:dl1')).toBeNull();
     expect(emptyStateRenders).toEqual([]);
+  });
+});
+
+/**
+ * The curated lists (Recently Added etc.) come from `albumListsStore` and are filtered to
+ * downloaded by `composeHomeAlbumSections`, which now takes an id SET read from SQL rather
+ * than walking `cachedItems`. Same async hazards as the section reads above.
+ */
+describe('HomeScreen — curated lists filter on the downloaded id set', () => {
+  beforeEach(() => {
+    albumListsStore.setState({ recentlyAdded: [curated('ra1'), curated('ra2')] as never });
+  });
+
+  it('keeps only downloaded albums — membership needs no cached_albums row', async () => {
+    seedDownloadedItemOnly('ra1');
+    const r = render(<HomeScreen />);
+    await waitFor(() => expect(r.queryByTestId('album:ra1')).not.toBeNull());
+    expect(r.queryByTestId('album:ra2')).toBeNull();
+    // …and it is NOT in the Downloaded Albums body, which needs renderable metadata.
+    expect(r.queryAllByTestId('album:ra1')).toHaveLength(1);
+  });
+
+  it('shows no curated albums on the first frame, before the id set is known', async () => {
+    // Falling through to "show everything" while the read is in flight would flash
+    // undownloaded albums under the Downloaded filter.
+    seedDownloadedItemOnly('ra1');
+    seedDownloadedItemOnly('ra2');
+    const r = render(<HomeScreen />);
+    expect(r.queryByTestId('album:ra1')).toBeNull();
+    expect(r.queryByTestId('album:ra2')).toBeNull();
+    await waitFor(() => expect(r.queryByTestId('album:ra1')).not.toBeNull());
+    expect(r.queryByTestId('album:ra2')).not.toBeNull();
+  });
+
+  it('re-filters when a download completes on screen', async () => {
+    seedDownloadedItemOnly('ra1');
+    const r = render(<HomeScreen />);
+    await waitFor(() => expect(r.queryByTestId('album:ra1')).not.toBeNull());
+
+    seedDownloadedItemOnly('ra2');
+    expect(r.queryByTestId('album:ra2')).toBeNull();
+    bumpRevision();
+    await waitFor(() => expect(r.queryByTestId('album:ra2')).not.toBeNull());
+  });
+
+  it('shows every curated album when the Downloaded filter is off', async () => {
+    filterBarStore.setState({ downloadedOnly: false });
+    const r = render(<HomeScreen />);
+    await waitFor(() => expect(r.queryByTestId('album:ra1')).not.toBeNull());
+    expect(r.queryByTestId('album:ra2')).not.toBeNull();
   });
 });
 

@@ -19,7 +19,6 @@
  */
 import type { AlbumID3 } from './subsonicService';
 import { type AlbumListType } from '../store/albumListsStore';
-import { albumPassesDownloadedFilter } from '../store/persistence/cachedItemHelpers';
 
 /** Album-section identity: one of the curated lists, or the downloaded-albums list. */
 export type HomeAlbumSectionType = AlbumListType | 'downloadedAlbums';
@@ -31,16 +30,15 @@ export interface HomeAlbumSection {
   albums: AlbumID3[];
 }
 
-/** `musicCacheStore.cachedItems` shape — borrowed from the filter predicate. */
-type CachedItems = Parameters<typeof albumPassesDownloadedFilter>[1];
-
 export interface ComposeHomeInput {
   recentlyAdded: AlbumID3[];
   recentlyPlayed: AlbumID3[];
   frequentlyPlayed: AlbumID3[];
   randomSelection: AlbumID3[];
-  /** The downloaded albums (already filtered + sorted by the caller from the never-reaped
-   *  `cached_items` envelopes) — the body of the Downloaded Albums list. */
+  /** The downloaded albums — the body of the Downloaded Albums list, already read (from the
+   *  never-reaped download tables), filtered and sorted by the caller. This is the
+   *  VISIBILITY set and is passed through verbatim; `downloadedAlbumIds` below is a
+   *  different, wider predicate and is deliberately not applied to it. */
   downloadedAlbums: AlbumID3[];
   offlineMode: boolean;
   downloadedOnly: boolean;
@@ -48,8 +46,12 @@ export interface ComposeHomeInput {
   /** Starred album ids — used when `favoritesOnly`. Ids, not entities: the caller
    *  already holds the membership set and this only ever does `has()`. */
   starredAlbumIds: ReadonlySet<string>;
-  cachedItems: CachedItems;
-  includePartial: boolean;
+  /** Downloaded album ids — used when `downloadedOnly`. The MEMBERSHIP set from
+   *  `listDownloadedAlbumIds` (`cached_items` alone, partial gate already applied by the
+   *  caller): the albums here came from elsewhere and already carry their metadata, so an
+   *  item row is all "downloaded" means. Keeping this a plain set is what keeps this
+   *  function pure and synchronous while the read behind it is SQL. */
+  downloadedAlbumIds: ReadonlySet<string>;
 }
 
 /** Curated-list order (Random last; dropped offline). */
@@ -71,8 +73,7 @@ export function composeHomeAlbumSections(input: ComposeHomeInput): HomeAlbumSect
     downloadedOnly,
     favoritesOnly,
     starredAlbumIds,
-    cachedItems,
-    includePartial,
+    downloadedAlbumIds,
   } = input;
 
   const lists: Record<AlbumListType, AlbumID3[]> = {
@@ -88,9 +89,7 @@ export function composeHomeAlbumSections(input: ComposeHomeInput): HomeAlbumSect
   const filterList = (albums: AlbumID3[]): AlbumID3[] => {
     if (!hasFilters) return albums;
     return albums.filter((album) => {
-      if (downloadedOnly && !albumPassesDownloadedFilter(album, cachedItems, includePartial)) {
-        return false;
-      }
+      if (downloadedOnly && !downloadedAlbumIds.has(album.id)) return false;
       if (starredIds && !starredIds.has(album.id)) return false;
       return true;
     });

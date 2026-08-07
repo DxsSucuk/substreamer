@@ -32,6 +32,7 @@ import { useTheme } from '../hooks/useTheme';
 import type { AlbumID3, Playlist } from '../services/subsonicService';
 import { composeHomeAlbumSections } from '../services/homeSectionsService';
 import {
+  listDownloadedAlbumIds,
   listDownloadedAlbumsAsAlbumID3,
   listDownloadedPlaylistsAsPlaylist,
 } from '../db/repository/downloads';
@@ -397,21 +398,27 @@ export function HomeScreen() {
   const offlineMode = offlineModeStore((s) => s.offlineMode);
   const downloadedOnly = filterBarStore((s) => s.downloadedOnly);
   const favoritesOnly = filterBarStore((s) => s.favoritesOnly);
-  const cachedItems = musicCacheStore((s) => s.cachedItems);
-  // `revision` is the download tables' change signal. The two reads below are SQL now, and
+  // `revision` is the download tables' change signal. The three reads below are SQL now, and
   // SQL has no Zustand subscription — without this a completing download would leave both
-  // Downloaded sections silently stale.
+  // Downloaded sections AND the curated-list filter silently stale.
   const revision = musicCacheStore((s) => s.revision);
   const starredAlbumIds = favoritesStore((s) => s.albumIds);
   const includePartial = layoutPreferencesStore((s) => s.includePartialInDownloadedFilter);
   const albumSortOrder = layoutPreferencesStore((s) => s.albumSortOrder);
 
   // The Downloaded sections come from the never-reaped download tables (bounded,
-  // offline-safe), not the paged library. One effect for both: they share a trigger, and
-  // a single loading flag keeps the two sections and the whole-screen empty state from
-  // disagreeing about whether the answer is known yet.
+  // offline-safe), not the paged library. One effect for all three: they share a trigger,
+  // and a single loading flag keeps the two sections, the curated-list filter and the
+  // whole-screen empty state from disagreeing about whether the answer is known yet.
+  //
+  // The id set is the MEMBERSHIP predicate (`cached_items` alone) that filters the curated
+  // lists, whose albums arrive from the album-lists store already carrying their metadata;
+  // the two row reads are VISIBILITY (they must be renderable). See `downloads.ts`.
   const [downloadedAlbumRows, setDownloadedAlbumRows] = useState<AlbumID3[]>([]);
   const [downloadedPlaylistRows, setDownloadedPlaylistRows] = useState<Playlist[]>([]);
+  const [downloadedAlbumIds, setDownloadedAlbumIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
   const downloadedKey = `${includePartial}:${revision}`;
   // DERIVED, not seeded (see `album-library-list.tsx`): a mount-time seed only runs once,
@@ -423,15 +430,17 @@ export function HomeScreen() {
     let alive = true;
     void (async () => {
       const db = getDb();
-      const [albums, playlists] = db
+      const [albums, playlists, ids]: [AlbumID3[], Playlist[], ReadonlySet<string>] = db
         ? await Promise.all([
             listDownloadedAlbumsAsAlbumID3(db, { includePartial }),
             listDownloadedPlaylistsAsPlaylist(db),
+            listDownloadedAlbumIds(db, { includePartial }),
           ])
-        : [[], []];
+        : [[], [], new Set<string>()];
       if (!alive) return;
       setDownloadedAlbumRows(albums);
       setDownloadedPlaylistRows(playlists);
+      setDownloadedAlbumIds(ids);
       setLoadedKey(downloadedKey);
     })();
     return () => {
@@ -461,8 +470,7 @@ export function HomeScreen() {
         downloadedOnly,
         favoritesOnly,
         starredAlbumIds,
-        cachedItems,
-        includePartial,
+        downloadedAlbumIds,
       }),
     [
       recentlyAdded,
@@ -474,8 +482,7 @@ export function HomeScreen() {
       downloadedOnly,
       favoritesOnly,
       starredAlbumIds,
-      cachedItems,
-      includePartial,
+      downloadedAlbumIds,
     ],
   );
 

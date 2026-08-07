@@ -24,11 +24,12 @@ import {
   type ArtistID3,
   type Child,
 } from '../services/subsonicService';
+import { listDownloadedAlbumIds } from '../db/repository/downloads';
 import { favoritesStore } from '../store/favoritesStore';
 import { filterBarStore } from '../store/filterBarStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import { musicCacheStore } from '../store/musicCacheStore';
-import { albumPassesDownloadedFilter } from '../store/persistence/cachedItemHelpers';
+import { getDb } from '../store/persistence/db';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { recentSearchStore } from '../store/recentSearchStore';
 import { searchStore } from '../store/searchStore';
@@ -89,11 +90,41 @@ export function SearchScreen() {
 
   const downloadedOnly = filterBarStore((s) => s.downloadedOnly);
   const favoritesOnly = filterBarStore((s) => s.favoritesOnly);
-  const cachedItems = musicCacheStore((s) => s.cachedItems);
+  // `revision` is the download tables' change signal: the id set below is SQL, and SQL has
+  // no Zustand subscription, so without it a download completing (or being deleted) under
+  // the user leaves these results silently stale.
+  const revision = musicCacheStore((s) => s.revision);
   const includePartial = layoutPreferencesStore((s) => s.includePartialInDownloadedFilter);
   const starredSongIds = favoritesStore((s) => s.songIds);
   const starredAlbumIds = favoritesStore((s) => s.albumIds);
   const starredArtistIds = favoritesStore((s) => s.artistIds);
+
+  // The downloaded ALBUM ids — MEMBERSHIP (`cached_items` alone), because these albums came
+  // from the search results and already carry their metadata.
+  //
+  // `null` means NOT YET KNOWN, and it is a distinct state from "known to be empty" on
+  // purpose. The read is asynchronous, so without the distinction the filter has to guess,
+  // and both guesses are wrong: an unfiltered fall-through flashes music that is not on the
+  // device, and treating a refresh as unknown blanks a populated list every time a download
+  // completes. Unknown ⇒ no albums; a refresh keeps the previous answer on screen (the same
+  // trade `album-library-list.tsx` makes by keeping its rows while `loading`).
+  const [downloadedAlbumIds, setDownloadedAlbumIds] = useState<ReadonlySet<string> | null>(null);
+  // `revision` reaches the effect ONLY through this key, so it cannot be dropped without the
+  // re-read being dropped with it.
+  const downloadedKey = `${includePartial}:${revision}`;
+  useEffect(() => {
+    if (!downloadedOnly) return;
+    let alive = true;
+    void (async () => {
+      const db = getDb();
+      const ids = db ? await listDownloadedAlbumIds(db, { includePartial }) : new Set<string>();
+      if (alive) setDownloadedAlbumIds(ids);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [downloadedOnly, includePartial, downloadedKey]);
+  const downloadedUnknown = downloadedOnly && downloadedAlbumIds === null;
 
   const filtered = useMemo(() => {
     let artists = results.artists;
@@ -101,7 +132,10 @@ export function SearchScreen() {
     let songs = results.songs;
 
     if (downloadedOnly) {
-      albums = albums.filter((a) => albumPassesDownloadedFilter(a, cachedItems, includePartial));
+      // No set yet ⇒ no albums. Never fall through to the unfiltered list: showing music
+      // that isn't on the device is the one failure a Downloaded filter must not have.
+      albums =
+        downloadedAlbumIds === null ? [] : albums.filter((a) => downloadedAlbumIds.has(a.id));
       songs = songs.filter((s) => getLocalTrackUri(s.id) !== null);
       // Artists cannot be downloaded, so the filter drops them outright — the same
       // handling the library and favourites tabs give the Artists segment. The
@@ -122,8 +156,7 @@ export function SearchScreen() {
     results,
     downloadedOnly,
     favoritesOnly,
-    cachedItems,
-    includePartial,
+    downloadedAlbumIds,
     starredSongIds,
     starredAlbumIds,
     starredArtistIds,
@@ -133,6 +166,10 @@ export function SearchScreen() {
     filtered.artists.length > 0 ||
     filtered.albums.length > 0 ||
     filtered.songs.length > 0;
+
+  // "Nothing to show" is only meaningful once the downloaded set has answered — otherwise
+  // entering the filter renders "No results found" over results that are about to appear.
+  const busy = loading || downloadedUnknown;
 
   const sections: ResultSection[] = useMemo(() => {
     const result: ResultSection[] = [];
@@ -242,10 +279,10 @@ export function SearchScreen() {
     );
   }
 
-  // Query present, a search/refresh in flight with nothing to show yet — a spinner
-  // instead of a blank screen (covers the first search AND an offline↔online switch
-  // that has no prior results). Was: blank until results popped in.
-  if (loading && !hasResults) {
+  // Query present, a search/refresh (or the downloaded-set read) in flight with nothing to
+  // show yet — a spinner instead of a blank screen (covers the first search AND an
+  // offline↔online switch that has no prior results). Was: blank until results popped in.
+  if (busy && !hasResults) {
     return (
       <View style={[styles.container, { paddingTop: headerHeight }]}>
         <View style={styles.loadingCentered}>
@@ -258,8 +295,8 @@ export function SearchScreen() {
     );
   }
 
-  // Query present, no results, not mid-search: no-results placeholder.
-  if (!hasResults && !loading) {
+  // Query present, no results, nothing in flight: no-results placeholder.
+  if (!hasResults && !busy) {
     return (
       <View style={[styles.container, { paddingTop: headerHeight }]}>
         <EmptyState

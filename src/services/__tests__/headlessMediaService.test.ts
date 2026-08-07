@@ -22,6 +22,7 @@ import { favoritesStore } from '../../store/favoritesStore';
 import { fetchAlbumDetail, fetchPlaylistDetail } from '../detailFetchService';
 import { offlineModeStore } from '../../store/offlineModeStore';
 import { musicCacheStore } from '../../store/musicCacheStore';
+import { layoutPreferencesStore } from '../../store/layoutPreferencesStore';
 import { syncStatusStore } from '../../store/syncStatusStore';
 import { getDb } from '../../store/persistence/db';
 import { ensureNormalizedSchema } from '../../db/createNormalizedTables';
@@ -46,6 +47,7 @@ beforeAll(() => ensureNormalizedSchema(db()));
 beforeEach(async () => {
   offlineModeStore.setState({ offlineMode: false } as any);
   musicCacheStore.setState({ cachedItems: {}, cachedSongs: {} } as any);
+  layoutPreferencesStore.setState({ includePartialInDownloadedFilter: false } as any);
   // Headless now reads the normalized tables (not the doomed library stores) — seed
   // the DB so the CarPlay/Auto browse + voice vocab resolve.
   db().runSync('DELETE FROM albums');
@@ -63,6 +65,11 @@ beforeEach(async () => {
   db().runSync('DELETE FROM songs');
   db().runSync('DELETE FROM favorite_songs');
   db().runSync('DELETE FROM artists');
+  // Children before parents — `cached_item_songs.song_id` FKs to `cached_songs`.
+  db().runSync('DELETE FROM cached_item_songs');
+  db().runSync('DELETE FROM cached_albums');
+  db().runSync('DELETE FROM cached_playlists');
+  db().runSync('DELETE FROM cached_items');
   db().runSync('DELETE FROM cached_songs');
   await upsertSongs(db(), [song('s1'), song('s2'), song('s3')]);
   await markStarredSongs(db(), [
@@ -183,6 +190,108 @@ describe('the car Favorites node', () => {
 
     const { artists } = tp.donateVoiceVocabulary.mock.calls[0][0] as { artists: string[] };
     expect(artists).toEqual(expect.arrayContaining(['ABBA', 'Bowie']));
+  });
+});
+
+/**
+ * The offline car tree filters on the DOWNLOADED set, which is SQL now
+ * (`listDownloadedAlbumIds` / `listDownloadedAlbums`) rather than a walk over
+ * `musicCacheStore.cachedItems`. CarPlay is the riskiest consumer of that change: it runs
+ * with no UI mounted, so nothing else would notice a read that silently returned nothing.
+ */
+describe('the car tree OFFLINE — downloaded albums from SQL', () => {
+  /** MEMBERSHIP: a `cached_items` row and nothing else. The car's album lists come from the
+   *  library table and already carry metadata, so this alone means "downloaded". */
+  const seedDownloadedItem = (id: string, expected = 0, present: string[] = []): void => {
+    db().runSync(
+      'INSERT INTO cached_items (item_id, type, name, expected_song_count, last_sync_at, ' +
+        'downloaded_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [id, 'album', `Album ${id}`, expected, 0, 0],
+    );
+    present.forEach((songId, i) => {
+      seedCachedSong(songId);
+      db().runSync('INSERT INTO cached_item_songs (item_id, position, song_id) VALUES (?, ?, ?)', [
+        id,
+        i,
+        songId,
+      ]);
+    });
+  };
+
+  /** VISIBILITY: the component row that makes an item renderable as a Downloaded Album. */
+  const seedAlbumMeta = (id: string): void => {
+    db().runSync('INSERT INTO cached_albums (item_id, name) VALUES (?, ?)', [id, `Album ${id}`]);
+  };
+
+  beforeEach(() => {
+    offlineModeStore.setState({ offlineMode: true } as any);
+  });
+
+  it('A–Z buckets list only downloaded albums', async () => {
+    seedDownloadedItem('al-a'); // Abbey Road downloaded, Zooropa not
+    const albums = (await __test.buildSnapshot()).sections.find(
+      (s) => s.id === sectionId('albums'),
+    )!;
+    expect(albums.items.map((i) => i.title)).toEqual(['A']);
+  });
+
+  it('lists nothing when nothing is downloaded — never the whole library', async () => {
+    const albums = (await __test.buildSnapshot()).sections.find(
+      (s) => s.id === sectionId('albums'),
+    )!;
+    expect(albums.items).toEqual([]);
+  });
+
+  it('filters the Home curated lists to downloaded albums', async () => {
+    seedDownloadedItem('al-a');
+    albumListsStore.setState({
+      recentlyAdded: [album('al-a', 'Abbey Road'), album('al-z', 'Zooropa')],
+      recentlyPlayed: [],
+      frequentlyPlayed: [],
+      randomSelection: [],
+    } as any);
+    const rows = await __test.resolveBrowseChildren(listId('recentlyAdded'));
+    expect(rows.map((r) => r.id)).toEqual([albumId('al-a')]);
+  });
+
+  it('omits Downloaded Albums with no component row, while still counting it as downloaded', async () => {
+    // Membership vs visibility on one fixture: al-a keeps Recently Added alive but cannot
+    // be RENDERED as a Downloaded Album until `cached_albums` is populated.
+    seedDownloadedItem('al-a');
+    const home = (await __test.buildSnapshot()).sections.find((s) => s.id === sectionId('home'))!;
+    expect(home.items.map((i) => i.id)).toContain(listId('recentlyAdded'));
+    expect(home.items.map((i) => i.id)).not.toContain(listId('downloadedAlbums'));
+  });
+
+  it('shows Downloaded Albums once the component row exists', async () => {
+    seedDownloadedItem('al-a');
+    seedAlbumMeta('al-a');
+    const home = (await __test.buildSnapshot()).sections.find((s) => s.id === sectionId('home'))!;
+    expect(home.items.map((i) => i.id)).toContain(listId('downloadedAlbums'));
+    const rows = await __test.resolveBrowseChildren(listId('downloadedAlbums'));
+    expect(rows.map((r) => r.id)).toEqual([albumId('al-a')]);
+  });
+
+  it('honours the partial-download preference', async () => {
+    seedDownloadedItem('al-a', 3, ['ps1']); // 1 of 3 on disk
+    const hidden = (await __test.buildSnapshot()).sections.find(
+      (s) => s.id === sectionId('albums'),
+    )!;
+    expect(hidden.items).toEqual([]);
+
+    layoutPreferencesStore.setState({ includePartialInDownloadedFilter: true } as any);
+    const shown = (await __test.buildSnapshot()).sections.find(
+      (s) => s.id === sectionId('albums'),
+    )!;
+    expect(shown.items.map((i) => i.title)).toEqual(['A']);
+  });
+
+  it('ONLINE the tree is unfiltered — the downloaded set gates nothing', async () => {
+    offlineModeStore.setState({ offlineMode: false } as any);
+    const albums = (await __test.buildSnapshot()).sections.find(
+      (s) => s.id === sectionId('albums'),
+    )!;
+    expect(albums.items.map((i) => i.title)).toEqual(['A', 'Z']);
   });
 });
 
