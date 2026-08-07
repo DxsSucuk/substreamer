@@ -155,17 +155,16 @@ export async function resetAllStores(): Promise<void> {
   resetFavoritesSyncFlags();
   await clearKvStorage();
   await clearLegacyBlobTables();
-  // The normalized model is (becoming) the sole source of truth — wipe it too so a
-  // different account/server can't see the previous account's library after logout
-  // (downloads + blobs are cleared here as well, so a full reset is consistent).
+  // The normalized model is the sole source of truth — wipe it too so a different
+  // account/server can't see the previous account's library after logout (downloads +
+  // blobs are cleared here as well, so a full reset is consistent).
   const normDb = getDb();
   if (normDb) {
     // `resetNormalizedSchema` is `withTransactionSync` — its `BEGIN` runs on the JS
     // thread and hard-fails if a batch's savepoint is open on the pool. Wait for the
     // pool to be write-idle first, and never let a failure here abort the rest of the
     // teardown (scrobbles, the music cache, the image cache and the store resets all
-    // follow). The predecessor drained a JS-side write mutex, which proved nothing:
-    // the writers still live at logout were the ones that never joined that chain.
+    // follow).
     await awaitDbWritesIdle();
     try {
       resetNormalizedSchema(normDb);
@@ -174,15 +173,15 @@ export async function resetAllStores(): Promise<void> {
       console.warn('[resetAllStores] normalized schema reset failed:', e);
     }
   }
-  // completedScrobbleStore also persists to a per-row table (`scrobble_events`)
-  // in its own connection; truncate it here so logged-out state is clean.
+  // completedScrobbleStore also persists to a per-row table (`scrobble_events`);
+  // truncate it here so logged-out state is clean.
   await clearScrobbles();
   // pendingScrobbleStore persists to `pending_scrobble_events`; truncate
   // here so the offline transmit queue doesn't survive logout.
   await clearPendingScrobbles();
   // musicCacheStore persists its four v2 tables (cached_songs, cached_items,
-  // cached_item_songs, download_queue) in yet another connection; truncate
-  // them here and drop the settings blob too.
+  // cached_item_songs, download_queue); truncate them here and drop the
+  // settings blob too.
   await clearMusicCacheTables();
   kvStorage.removeItem('substreamer-music-cache-settings');
   // imageCacheStore persists the `cached_images` table; the service-owned

@@ -66,13 +66,11 @@ const closeCompleteResolvers: Array<{
 
 // Belt-and-braces fallback for `hideAndAwait`. The BottomSheet's
 // scheduleCloseComplete chain (RAF + 100ms setTimeout) normally fires
-// onCloseComplete within ~120ms of visible→false. If it doesn't — RAF
-// stalled with no rendering activity, ref cleared by an unmount race,
-// any other edge — the caller would hang forever and every chained
-// modal would silently no-op. This timeout guarantees we resolve within
-// SAFETY_TIMEOUT_MS so the next sheet still opens. The cost on the
-// happy path is zero (the close-complete signal removes the resolver
-// from the array before the timeout fires, making the timeout a no-op).
+// onCloseComplete within ~120ms of visible→false; if it doesn't (RAF stalled
+// with no rendering activity, ref cleared by an unmount race), the caller
+// would hang forever and every chained modal would silently no-op. Costs
+// nothing on the happy path — the close-complete signal removes the resolver
+// before the timeout fires.
 const SAFETY_TIMEOUT_MS = 500;
 
 export const moreOptionsStore = create<MoreOptionsState>()((set) => ({

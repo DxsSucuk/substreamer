@@ -40,9 +40,6 @@ export interface RehydrationResult {
  * reads queue on the native IO dispatcher; correctness is unaffected because
  * each store writes only its own slice of state.
  *
- * Each store hydrates in its own try/catch so a corrupt row in one store
- * cannot block the others; the caller receives a structured result.
- *
  * **Not exported from `./index.ts`.** This module imports stores; stores
  * import from `./index.ts` for table helpers. Re-exporting here would
  * create a cycle. Consumers import directly from
@@ -102,13 +99,13 @@ export async function rehydrateAllStores(): Promise<RehydrationResult> {
 const STARTUP_KV_STORES = [
   offlineModeStore,
   autoOfflineStore,
-  // albumLibraryStore is NO LONGER here: it's row-based now (not KV-persisted),
-  // so it has no `persist` API to await. Its `hydrateFromDbAsync` runs in
+  // albumLibraryStore is absent by design: it's row-based, not KV-persisted, so it
+  // has no `persist` API to await. Its `hydrateFromDbAsync` runs in
   // `rehydrateAllStores` above (awaited before `onStartup`), and the startup
   // "needs full fetch?" gate reads SQL `COUNT(*)` rather than the in-memory
   // array — so there's no empty-window race to guard here.
   albumListsStore,
-  // favoritesStore is NO LONGER here: membership lives in SQL (the `starred` marks +
+  // favoritesStore is absent by design: membership lives in SQL (the `starred` marks +
   // the `favorite_*` remainder), so it has no `persist` API to await. Its
   // `hydrateFromDbAsync` runs in `rehydrateAllStores` above, awaited before
   // `onStartup`.

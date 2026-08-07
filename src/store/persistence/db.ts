@@ -1,34 +1,26 @@
 /**
  * Central SQLite persistence service.
  *
- * Owns the single `SQLite.openDatabaseSync('substreamer7.db')` call, PRAGMAs,
- * schema creation for every table the app uses, health reporting, and the
- * test-injection seam. Every other module in `src/store/persistence/` (the
- * Zustand StateStorage adapter + the three row-table query helpers) pulls its
- * handle from `getDb()` instead of opening its own.
+ * Owns the single DB connection (`openDbConnection` in `@/db/client`, which applies
+ * the PRAGMAs), the boot-time one-time heals, schema creation for every table the
+ * app uses, health reporting, and the test-injection seam. Every other module in
+ * `src/store/persistence/` (the Zustand StateStorage adapter + the row-table query
+ * helpers) pulls its handle from `getDb()` instead of opening its own.
  *
- * Why one module:
- * - Before consolidation, four modules each called `openDatabaseSync` at
- *   import and each ran their own PRAGMA block. Expo-sqlite pools native
- *   connections by filename so runtime was fine, but the PRAGMAs drifted
- *   during the migration-14 bug hunt and kept us editing four files in
- *   lockstep. One PRAGMA block removes that class of bug.
- * - Schema CREATE statements ran in whatever order the import graph
- *   happened to resolve. With a single init block here, FK-dependent
- *   tables are created after their parents in explicit source order.
- * - Init-failure handling lives in one place. The KV-blob adapter
- *   (`kvStorage.ts`) still falls back to an in-memory Map so the UI
- *   can render; row-table modules still become safe no-ops. Both paths
- *   read the same `dbHealthy` / `dbInitError` here.
+ * One module rather than one per consumer, because:
+ * - Schema CREATEs run in explicit source order here, so FK-dependent tables are
+ *   created after their parents instead of in import-graph order.
+ * - Init-failure handling lives in one place. The KV-blob adapter (`kvStorage.ts`)
+ *   falls back to an in-memory Map so the UI can render; row-table modules become
+ *   safe no-ops. Both paths read the same `dbHealthy` / `dbInitError` here.
  *
- * Tests: call `__setDbForTests(fake)` to swap the handle. The single seam
- * replaces four per-module `__setDbForTests` exports.
+ * Tests: call `__setDbForTests(fake)` to swap the handle.
  */
 import { openDbConnection, type InternalDb } from '@/db/client';
 import { ensureNormalizedSchema } from '@/db/createNormalizedTables';
 
-// The DB surface types (`InternalDb`, `RunResult`) live in the op-SQLite client
-// now; re-export so existing consumers importing them from this module keep working.
+// The DB surface types (`InternalDb`, `RunResult`) live in the op-SQLite client;
+// re-exported here so consumers can import them from either module.
 export type { BatchCommand, InternalDb, RunResult } from '@/db/client';
 
 let db: InternalDb | null = null;
@@ -137,15 +129,10 @@ export function getDb(): InternalDb | null {
 /**
  * True when the SQLite-backing store is currently available.
  *
- * Implemented as a function (not a const captured at module load) so callers
- * see live state — both for the rare runtime swap via `__setDbForTests` and
- * because destructured ESM-import bindings under our CommonJS-style test
- * transpile are otherwise frozen at first import.
- *
- * In production the db handle is opened once at module load and never
- * reassigned, so this stays effectively constant for the JS bundle's
- * lifetime — but the function form keeps both consumers honest and tests
- * trivially mockable.
+ * A function, not a const captured at module load, so callers see live state — both
+ * for the runtime swap via `__setDbForTests` and because destructured ESM-import
+ * bindings under our CommonJS-style test transpile are otherwise frozen at first
+ * import. In production the handle is opened once and never reassigned.
  */
 export function isDbHealthy(): boolean {
   return db !== null;
@@ -155,8 +142,8 @@ export function isDbHealthy(): boolean {
 export const dbInitError: Error | null = initError;
 
 /**
- * Test-only: swap the shared handle. The sole `__setDbForTests` seam for
- * every persistence module — replaces four per-module exports.
+ * Test-only: swap the shared handle. The sole `__setDbForTests` seam for every
+ * persistence module.
  */
 export function __setDbForTests(fake: InternalDb | null): void {
   db = fake;

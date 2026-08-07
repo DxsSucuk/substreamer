@@ -55,7 +55,7 @@ const EMPTY_AGGREGATES: AnalyticsAggregates = {
 export interface CompletedScrobbleState {
   /** Bounded, NEWEST-FIRST recent slice — for the history browser + any recent
    *  display. NOT the full history: analytics come from SQL aggregates, never a
-   *  full in-memory array (the OOM fix). */
+   *  full in-memory array. */
   recentScrobbles: CompletedScrobble[];
   /** All-time stats + aggregates, computed by SQL GROUP BY (bounded by unique
    *  entities). Refreshed on add / hydrate / replace / merge. */

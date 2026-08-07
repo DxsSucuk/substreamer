@@ -2,13 +2,11 @@
  * Zustand store exposing the image-cache aggregate state held by the
  * per-row `cached_images` SQLite table.
  *
- * The old version of this store persisted its own totalBytes/fileCount
- * aggregates via `persist(createJSONStorage(kvStorage))`. Those are now
- * derived from SQL on every launch via `hydrateFromDbAsync()` and kept in sync
- * by service-layer callers invoking `recalculateFromDb()` after any
- * variant write or delete. `fileCount` used to double as both "files on
- * disk" and "logical images" — we now expose both explicitly plus a
- * count of covers that are missing one or more variants.
+ * The aggregates are not persisted: they are derived from SQL on every launch
+ * via `hydrateFromDbAsync()` and kept in sync by service-layer callers invoking
+ * `recalculateFromDb()` after any variant write or delete. "Files on disk"
+ * (`fileCount`) and "logical images" (`imageCount`) are separate counts, alongside
+ * a count of covers missing one or more variants.
  *
  * `maxConcurrentImageDownloads` is a user setting, not cache state, so it
  * lives in a separate tiny KV blob (`substreamer-image-cache-settings`),

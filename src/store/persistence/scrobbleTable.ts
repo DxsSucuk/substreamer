@@ -45,10 +45,9 @@ function insertCommands(scrobbles: readonly CompletedScrobble[]): BatchCommand[]
 
 /**
  * Read every scrobble row in time order. Used once on app start to hydrate
- * `completedScrobbleStore.completedScrobbles`. Unparseable rows are skipped;
- * invalid rows (missing id / song.id / song.title) are filtered out so the
- * store never sees the same garbage the old `onRehydrateStorage` guarded
- * against.
+ * `completedScrobbleStore.completedScrobbles`. Unparseable rows are skipped and
+ * invalid rows (missing id / song.id / song.title) are filtered out, so the store
+ * never sees a malformed record.
  */
 export function hydrateScrobbles(): CompletedScrobble[] {
   const db = getDb();
@@ -133,8 +132,7 @@ export async function hydrateScrobblesAsync(): Promise<CompletedScrobble[]> {
 }
 
 /**
- * Which of the given ids already exist as completed scrobbles — the SQL-backed
- * replacement for building a Set from the full in-memory array. Used by the
+ * Which of the given ids already exist as completed scrobbles. Used by the
  * scrobble processor to skip pending items already committed as completed.
  */
 export async function existingScrobbleIds(ids: readonly string[]): Promise<Set<string>> {
@@ -229,10 +227,9 @@ export async function replaceAllScrobbles(scrobbles: readonly CompletedScrobble[
 /**
  * Backfill the structured analytics columns for rows that predate them.
  *
- * The columns and the `hour` index are no longer ALTER-added here: `scrobble_events`
- * is declared in `src/db/schema.ts`, so `ensureNormalizedSchema` adds any missing column
- * and only then creates the indexes — which is what stops a `hour` index being created
- * before the `hour` column exists. Only the DATA half remains.
+ * DDL is deliberately not done here: `scrobble_events` is declared in `src/db/schema.ts`,
+ * so `ensureNormalizedSchema` adds any missing column and only then creates the indexes
+ * — which is what stops an `hour` index being created before the `hour` column exists.
  */
 export async function ensureScrobbleColumnsAsync(): Promise<void> {
   await backfillScrobbleColumnsAsync();

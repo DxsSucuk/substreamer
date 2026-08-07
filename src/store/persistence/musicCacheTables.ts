@@ -636,14 +636,11 @@ function mapQueueRow(row: RawQueueRow): DownloadQueueRow {
 }
 
 /**
- * Idempotent `ALTER TABLE ... ADD COLUMN` for older databases that predate a
- * column. The base schema in `db.ts` already includes the column for fresh
- * installs; this helper is for existing users whose DB was created by an
- * earlier release. Used by Migration 17.
+ * Idempotent `ALTER TABLE ... ADD COLUMN` for databases created before a column
+ * existed; the base schema in `db.ts` covers fresh installs. Used by Migration 17.
  *
- * Uses `PRAGMA table_info(<table>)` to check whether the column is present
- * rather than relying on the "duplicate column" error string, which is
- * awkward to match across SQLite releases.
+ * Checks `PRAGMA table_info(<table>)` rather than matching the "duplicate column"
+ * error string, which is awkward to match across SQLite releases.
  *
  * Returns `true` when the column was added, `false` when it already existed
  * or the operation was skipped (DB unavailable / malformed).
@@ -924,9 +921,9 @@ export function countDownloadQueueItems(): number {
  * Returns a Map songId → count of edges whose holder is
  * NOT a derived partial-album grouping (`COALESCE(derived,0)=0`). Songs with no real
  * holder are omitted (caller treats a missing key as 0). Chunked to stay under the
- * SQLite bound-variable limit. Fails SAFE like the per-song version: if the `derived`
- * column doesn't exist yet (migration #31 not run) the JOIN throws and we fall back
- * to the raw all-edges count rather than mass-orphaning.
+ * SQLite bound-variable limit. Fails SAFE: if the `derived` column doesn't exist yet
+ * (migration #31 not run) the JOIN throws and we fall back to the raw all-edges count
+ * rather than mass-orphaning.
  */
 export async function countRealSongRefsForSongsAsync(
   songIds: string[],
@@ -1306,10 +1303,9 @@ function cachedItemCommands(item: Omit<CachedItemRow, 'songIds'>): BatchCommand[
   // UPSERT (not `INSERT OR REPLACE`): SQLite implements `OR REPLACE` as
   // DELETE-then-INSERT, which would fire `ON DELETE CASCADE` on the
   // `cached_item_songs` edges table and silently wipe every edge for this
-  // item_id. UPSERT updates the row in place with no DELETE, preserving
-  // children. This is the root-cause fix for the music-downloads-v2
-  // durability bug where offline playlists evaporated after the first
-  // downstream write touched the parent item.
+  // item_id — an offline playlist would evaporate the first time a downstream
+  // write touched its parent item. UPSERT updates the row in place with no
+  // DELETE, preserving children.
   //
   // `raw_json` / `meta_v` use the same shape as cached_songs — see that helper.
   const commands: BatchCommand[] = [];
@@ -1532,10 +1528,9 @@ const downloadQueueParams = (
 ];
 
 function downloadQueueUpsertCommand(item: DownloadQueueRow): BatchCommand {
-  // `download_queue` has no FK children so `INSERT OR REPLACE` is safe here,
-  // but we use UPSERT anyway for consistency with the other tables — one
-  // pattern everywhere means nobody introduces a regression by copying the
-  // wrong line later.
+  // `download_queue` has no FK children so `INSERT OR REPLACE` would be safe
+  // here, but UPSERT is used anyway so every table in this file follows one
+  // pattern and nobody copies the wrong line onto a table that does have children.
   return [
     RESTORE_DOWNLOAD_QUEUE_SQL,
     [...downloadQueueParams(item), item.queuePosition, item.songsJson],
@@ -1776,9 +1771,7 @@ const truncateMusicCacheCommands = (): BatchCommand[] =>
   ].map((table): BatchCommand => [`DELETE FROM ${table};`, []]);
 
 /**
- * Truncate the download tables. Used by `resetAllStores` on logout / server
- * switch. Children and edges are deleted first to sidestep the FK constraint
- * regardless of PRAGMA state.
+ * Truncate the download tables. Used by `resetAllStores` on logout / server switch.
  */
 export async function clearAllMusicCacheRows(): Promise<void> {
   const db = getDb();

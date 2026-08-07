@@ -1,7 +1,7 @@
 /**
  * Derives the structured, indexable columns stored alongside a scrobble's
  * `song_json` blob so analytics can run as SQL GROUP BY aggregates instead of
- * loading + iterating the whole history in JS (the OOM fix).
+ * loading + iterating the whole history in JS.
  *
  * `hour` (0-23) and `day_key` (YYYY-MM-DD) are computed in the DEVICE's local
  * timezone at write time — SQLite can't derive local-calendar buckets from an

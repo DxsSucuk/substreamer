@@ -4,11 +4,10 @@ import { type CachedItemRow, type DownloadQueueRow } from './musicCacheTables';
  * True when an album `cached_items` row represents a partial download —
  * fewer songs on disk than the album actually contains.
  *
- * `expectedSongCount` is authoritative: `ensurePartialAlbumEdge` now
- * fetches the album from the server when the album-detail store doesn't
- * yet have it, so the count always reflects the real album size. No
- * heuristic is needed to distinguish a real single-track album from a
- * fallback estimate — fixes #159.
+ * `expectedSongCount` is authoritative: `ensurePartialAlbumEdge` fetches the
+ * album from the server when the album-detail store doesn't have it, so the
+ * count always reflects the real album size and no heuristic is needed to tell
+ * a genuine single-track album from a fallback estimate.
  *
  * Songs and playlists never classify as partial — songs are 1/1 by
  * definition, playlists download atomically in v2.

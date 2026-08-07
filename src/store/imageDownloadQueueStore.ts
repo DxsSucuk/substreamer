@@ -1,9 +1,8 @@
 /**
  * Image download queue store — Zustand wrapper around the persistent SQL
- * queue introduced in Phase 1/2 of the image-cache rework. Mirror of
- * `musicCacheStore`'s queue exposure shape, scaled down for the simpler
- * image-cache needs (no per-row UI inspection — Settings only needs the
- * cycle summary).
+ * queue. Mirror of `musicCacheStore`'s queue exposure shape, scaled down for
+ * the simpler image-cache needs (no per-row UI inspection — Settings only
+ * needs the cycle summary).
  *
  * Cycle metadata (cycleId, scope, total, isPaused) is owned by the
  * service-layer kvStorage blob (`substreamer-image-queue-meta`) and re-read

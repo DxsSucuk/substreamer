@@ -1,14 +1,13 @@
 /**
- * SQL analytics over `scrobble_events` — the OOM fix. Instead of loading the
- * whole scrobble history into a JS array and iterating it, the counts come from
- * GROUP BY queries over the structured columns (see scrobbleColumns.ts). Results
- * are bounded by UNIQUE entities (artists/albums/songs/genres/hours/days), never
- * by total plays, so memory stays flat as history grows.
+ * SQL analytics over `scrobble_events`. Counts come from GROUP BY queries over the
+ * structured columns (see scrobbleColumns.ts) rather than a JS pass over the whole
+ * history: results are bounded by UNIQUE entities (artists/albums/songs/genres/
+ * hours/days), never by total plays, so memory stays flat as history grows and a
+ * long history cannot OOM.
  *
- * Produces the exact `ListeningStats` / `AnalyticsAggregates` shapes the store
- * published before, so the analytics consumers (My Listening, Tuned In) are
- * unchanged apart from where the numbers come from. Pass `sinceMs` to scope to a
- * period (7d/30d/90d); `0` = all time.
+ * Produces the `ListeningStats` / `AnalyticsAggregates` shapes the analytics
+ * consumers (My Listening, Tuned In) read. Pass `sinceMs` to scope to a period
+ * (7d/30d/90d); `0` = all time.
  */
 import { getDb } from './db';
 import { type Child } from '../../services/subsonicService';

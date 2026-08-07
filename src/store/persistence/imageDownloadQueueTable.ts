@@ -65,8 +65,8 @@ function mapRow(row: RawImageQueueRow): ImageDownloadQueueRow {
  * Pick the next row to process (oldest queued first). NOT atomic with the
  * caller's follow-up `markImageDownloading` — they are separate awaits, and
  * `processImageQueue` runs `maxConcurrentImageDownloads` worker loops, so two
- * workers can claim the same row. Re-downloading one cover is harmless, which
- * is why this has never been tightened.
+ * workers can claim the same row. Left unsynchronised on purpose — re-downloading
+ * one cover is harmless.
  */
 export async function pickNextQueuedImageRow(): Promise<ImageDownloadQueueRow | null> {
   const db = getDb();

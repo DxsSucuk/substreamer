@@ -60,9 +60,8 @@ export interface AlbumListsState {
   /**
    * Refresh-all gated by minimum-interval-since-last-refresh, offline
    * mode, and server reachability. Used for auto-refresh at app launch
-   * + AppState 'active' transitions — fixes #148 ("Recently Played" not
-   * syncing without manual pull-to-refresh). Returns true if a refresh
-   * was actually triggered.
+   * + AppState 'active' transitions, so the lists stay current without a
+   * manual pull-to-refresh. Returns true if a refresh was triggered.
    */
   refreshAllIfDue: (minIntervalMs: number) => Promise<boolean>;
 }
@@ -76,9 +75,8 @@ export interface AlbumListsState {
  * (`core.ts`): these list endpoints return a partial album view, so an authoritative write
  * would blank genre/year/MBID on rows the library sync populated in full.
  *
- * The store keeps the rendered `AlbumID3[]` so every existing consumer and selector is
- * unchanged; SQL is now the durable copy rather than a persisted blob, so a star or a
- * rating applied elsewhere is reflected the next time the list is read.
+ * The store keeps the rendered `AlbumID3[]` for its consumers; SQL is the durable copy,
+ * so a star or a rating applied elsewhere shows up the next time the list is read.
  */
 async function persistList(
   listType: RepoAlbumListType,
@@ -102,7 +100,7 @@ async function persistList(
 }
 
 /** Seed the in-memory lists from SQL at startup, so the home screen renders the last
- *  known lists before (or without) a network refresh. Replaces blob rehydration. */
+ *  known lists before (or without) a network refresh. */
 export async function hydrateAlbumListsFromDb(): Promise<void> {
   const db = getDb();
   if (!db) return;
@@ -210,8 +208,8 @@ export const albumListsStore = create<AlbumListsState>()(
     {
       name: PERSIST_KEY,
       storage: createDebouncedPersistStorage(),
-      // The four lists live in `album_list_entries` + `albums` now; only the refresh
-      // timestamp is still KV state. `hydrateAlbumListsFromDb()` seeds them at startup.
+      // The four lists live in `album_list_entries` + `albums`; only the refresh
+      // timestamp is KV state. `hydrateAlbumListsFromDb()` seeds them at startup.
       partialize: (state) => ({ lastRefreshedAt: state.lastRefreshedAt }),
     }
   )

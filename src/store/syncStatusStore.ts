@@ -18,9 +18,9 @@ export type SyncScope =
   | 'change-detect';
 
 /** Phase of the SONG fetch (the second sync step). `syncing` covers both the
- *  fast paged-`search3` song loop and the basic-path per-album walk (the walk is
- *  now the basic-path song fetch). Named `DetailSync*` for history — it tracks
- *  the song population, not album detail (which is on-demand only). */
+ *  fast paged-`search3` song loop and the basic-path per-album walk. Despite the
+ *  `DetailSync*` name it tracks song population, not album detail (which is
+ *  on-demand only). */
 export type DetailSyncPhase =
   | 'idle'
   | 'syncing'
@@ -75,8 +75,8 @@ export interface SyncStatusState extends LastKnownMarkers {
    *  fast paged-`search3` path (advanced by each committed page). */
   librarySyncCursor: number;
   /** Epoch ms of the last completed album-list fetch — settings display.
-   *  Persisted here (not in `albumLibraryStore`, which is now row-based and
-   *  keeps no persisted scalar). */
+   *  Persisted here (not in `albumLibraryStore`, which is row-based and keeps
+   *  no persisted scalar). */
   librarySyncLastFetchedAt: number | null;
 
   // --- Sync strategy (capability probe) ---
@@ -91,9 +91,9 @@ export interface SyncStatusState extends LastKnownMarkers {
   // --- Artist / playlist list refresh (UI state channel) ---
   // These lists are fetched whole in one call, so they need no cursor — just the
   // `loading` + `lastFetchedAt` pair the list screens render from. They live here
-  // rather than in the library stores because those stores are being retired; the
-  // precedent is `librarySyncLastFetchedAt` below. `loading` is EPHEMERAL: a persisted
-  // true would strand the spinner after a kill mid-fetch.
+  // rather than in the library stores, same as `librarySyncLastFetchedAt` above.
+  // `loading` is EPHEMERAL: a persisted true would strand the spinner after a kill
+  // mid-fetch.
   artistLibraryLoading: boolean;
   artistLibraryLastFetchedAt: number | null;
   playlistLibraryLoading: boolean;
@@ -102,8 +102,8 @@ export interface SyncStatusState extends LastKnownMarkers {
   /** Resume cursor for the fast paged-`search3` song loop (`songOffset`). */
   songSyncCursor: number;
   /** A FULL resync asked for a total re-walk of every album's songs. The basic walk
-   *  normally skips albums that already have songs, which would make a full resync a
-   *  no-op now that it no longer drops the tables first. Persisted so an interrupted
+   *  skips albums that already have songs and a resync does not drop the tables, so
+   *  without this flag a full resync would be a no-op. Persisted so an interrupted
    *  full resync still re-walks on resume instead of silently completing. */
   fullWalkPending: boolean;
   /** True once every song has been fetched into the `songs` table. Startup gate. */

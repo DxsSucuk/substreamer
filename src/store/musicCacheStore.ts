@@ -1,9 +1,7 @@
 /**
  * Persistent Zustand store for offline music cache state (v2).
  *
- * Rewritten in the music-downloads v2 re-architecture — see
- * `plans/music-downloads-v2.md`. The store no longer uses the blob-based
- * `persist(createJSONStorage(...))` middleware. Instead:
+ * No `persist(createJSONStorage(...))` middleware — persistence is split three ways:
  *   - `cachedSongs`, `cachedItems`, and `downloadQueue` are persisted per-row
  *     via `./persistence/musicCacheTables`.
  *   - `maxConcurrentDownloads` is persisted as a tiny JSON blob under
@@ -14,8 +12,7 @@
  *
  * Every action writes through to the persistence layer BEFORE mutating the
  * in-memory state, so an observer reacting to the store change can trust that
- * disk is already in sync. This mirrors the pattern established in
- * `completedScrobbleStore`.
+ * disk is already in sync.
  */
 
 import { create, type StoreApi } from 'zustand';
@@ -137,10 +134,8 @@ export interface MusicCacheState {
   /**
    * Bumped on EVERY mutation of `cachedSongs` / `cachedItems`.
    *
-   * Screens used to derive their downloaded lists by walking these maps inside a
-   * `useMemo`, so a completing download re-rendered them for free — the map identity
-   * changed and the memo re-ran. Reads that move to SQL lose that trigger completely
-   * and would sit stale until the screen remounted, so they key an effect on this
+   * Downloaded lists read from SQL, so a changed map identity no longer re-runs them
+   * and they would sit stale until the screen remounted. They key an effect on this
    * counter instead. Same role as `favoritesStore.version`.
    *
    * In-memory only (this store has no persist middleware) and monotonic. No-op paths
@@ -376,9 +371,8 @@ let hydrateInFlight: Promise<void> | null = null;
 
 /**
  * Wrap a state patch that CHANGES `cachedSongs` or `cachedItems`, stamping the next
- * `revision`. Every such patch must go through this — a mutation that forgets to is a
- * silently stale downloaded list, which is exactly the failure this counter exists to
- * prevent, and it cannot be caught by reading the diff.
+ * `revision`. Every such patch must go through this — a mutation that forgets to leaves
+ * the downloaded lists silently stale.
  *
  * Deliberately NOT applied to no-op paths (a delete of an absent song, an edge index
  * out of range): those return an unchanged state and must not wake readers.
@@ -429,7 +423,7 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
     // the persistence layer moves rows by `queue_position`. Translate through the
     // rows' OWN slots, never `index + 1` — slots are unique and monotonic but not
     // dense, so `index + 1` names the wrong rows on any queue that has had an item
-    // removed or finish. This is the whole correctness story for the drag.
+    // removed or finish.
     const fromPosition = queue[fromIndex].queuePosition;
     const toPosition = queue[toIndex].queuePosition;
     reorderDownloadQueue(fromPosition, toPosition);
@@ -449,13 +443,10 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
     const existing = get().cachedItems[item.itemId];
     // For top-ups (existing row):
     //   - preserve `downloadedAt` (user "downloaded" this earlier).
-    //   - preserve `expectedSongCount`. The worker derives it from
-    //     `songs.length`, which for a top-up is only the *delta* (missing
-    //     songs). The existing row's `expectedSongCount` was already set by
-    //     `enqueueAlbumDownload` from the fresh server fetch, so it's the
-    //     authoritative album total. Clobbering it would misclassify a
-    //     later remove-with-survivors as "complete" when it's actually
-    //     partial.
+    //   - preserve `expectedSongCount`: the worker derives it from `songs.length`,
+    //     which for a top-up is only the missing-song delta. The existing row already
+    //     holds the authoritative album total from `enqueueAlbumDownload`; clobbering
+    //     it misclassifies a later remove-with-survivors as complete.
     const itemToPersist: Omit<CachedItemMeta, 'songIds'> = existing
       ? {
           ...preserveItemMetadata(item, existing),
@@ -556,9 +547,8 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
       }
       const nextSongs = { ...prev.cachedSongs };
       // Decrement the disk-usage aggregates by the orphaned songs' bytes/count
-      // (symmetric with addBytes/addFiles on download; boot recomputes from
-      // truth). Without this the card's file count + disk usage stay stale after
-      // a delete even though the item count and lists update.
+      // (symmetric with addBytes/addFiles on download; boot recomputes from truth).
+      // Without this the card's file count and disk usage stay stale after a delete.
       let freedBytes = 0;
       for (const songId of orphaned) {
         freedBytes += prev.cachedSongs[songId]?.bytes ?? 0;
@@ -774,9 +764,8 @@ export async function clearMusicCacheTables(): Promise<void> {
  * Lazy-build memoisation for song envelopes, keyed by the ROW object. A row is
  * replaced with a fresh object on every upsert and dropped on reset/clear, so
  * its WeakMap entry (the built `Child`) becomes unreachable and GCs naturally —
- * no manual invalidation. The previous design keyed a WeakMap off a per-`rawJson`
- * wrapper held in a plain Map that was never pruned, which pinned every parsed
- * envelope for the whole session (an unbounded leak that defeated the WeakMap).
+ * no manual invalidation. Never key it off `rawJson` through a plain Map: that pins
+ * every parsed envelope for the whole session.
  */
 const songEnvelopeCache = new WeakMap<object, Child>();
 
