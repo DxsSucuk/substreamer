@@ -1,12 +1,11 @@
 /**
  * Test-only op-SQLite ⇄ better-sqlite3 adapter.
  *
- * op-SQLite is a native TurboModule — it cannot load under Node/Jest (its own
- * Node build is broken in the shipped package). Every DB-touching test therefore
- * needs a stand-in. Rather than the old per-test hand-rolled SQL-string-matching
- * fakes (27 of them), this adapter presents op-SQLite's real API shape backed by
- * an in-memory `better-sqlite3`, so tests run REAL SQL — higher fidelity, one
- * shared seam.
+ * op-SQLite is a native TurboModule — it cannot load under Node/Jest (its own Node
+ * build is broken in the shipped package), so every DB-touching test needs a stand-in.
+ * This adapter presents op-SQLite's real API shape backed by an in-memory
+ * `better-sqlite3`, so tests run REAL SQL through one shared seam rather than
+ * hand-rolled SQL-string-matching fakes.
  *
  * Wire it up per-suite (or via `moduleNameMapper`):
  *   jest.mock('@op-engineering/op-sqlite', () =>

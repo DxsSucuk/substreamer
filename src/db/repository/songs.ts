@@ -91,8 +91,8 @@ export interface SongListRow extends SongColumns {
 }
 
 /** Typed against the row so a stale or misspelled column is a compile error, and both
- *  COLS strings derive from it so the SQL cannot drift from the row type (the failure
- *  mode was a field on the interface that no query selected — `undefined` at runtime). */
+ *  COLS strings derive from it so the SQL cannot drift from the row type — a field on
+ *  the interface that no query selects reads back `undefined` at runtime. */
 const SONG_LIST_FIELDS: readonly (keyof SongColumns)[] = [
   'id', 'album_id', 'artist_id', 'title', 'album', 'artist', 'display_artist',
   'display_album_artist', 'display_composer', 'track', 'disc_number', 'year', 'genre',
@@ -148,8 +148,8 @@ function replayGainOf(r: SongColumns): ReplayGain | undefined {
 }
 
 /** Adapt a projected row to the `Child` every consumer downstream of a list read
- *  expects — playback, scrobbling, downloads, the player Info tab and the options
- *  sheet all read fields a lean projection used to drop silently. */
+ *  expects — playback, scrobbling, downloads, the player Info tab and the options sheet
+ *  each read fields a leaner projection would drop silently. */
 export function songListRowToChild(r: SongListRow): LibrarySong {
   return {
     id: r.id,
@@ -157,8 +157,8 @@ export function songListRowToChild(r: SongListRow): LibrarySong {
     album: r.album ?? undefined,
     albumId: r.album_id ?? undefined,
     artist: r.artist ?? undefined,
-    // Drives 'Go to artist' + 'More by this artist' in the options sheet, which gate
-    // on `artistId` — omitting it from the projection silently hid both.
+    // 'Go to artist' and 'More by this artist' in the options sheet gate on `artistId`;
+    // drop it from the projection and both silently disappear.
     artistId: r.artist_id ?? undefined,
     displayArtist: r.display_artist ?? undefined,
     displayAlbumArtist: r.display_album_artist ?? undefined,
@@ -325,7 +325,7 @@ export function songCursorOf(r: SongListRow, sortOrder?: SongSortOrder): Cursor 
     : { sortKey: r.sort_title ?? '', id: r.id };
 }
 
-/** Full A–Z keyset browse of the song library (the big list that used to OOM). */
+/** Full A–Z keyset browse of the song library. */
 export async function listSongs(
   db: InternalDb,
   opts: {

@@ -1,12 +1,11 @@
 /**
  * Tiered candidate generation for local fuzzy search over the normalized
- * `songs`/`albums`/`artists` tables (which carry `norm_*`/`dmeta_*` columns).
- * The sole search-candidate source (replaced the old blob-based path). Casts a wide, per-tier-capped
- * net (exact → prefix → infix on `norm_*` → phonetic on `dmeta_*`), deduped in
- * tier-priority order. Returns the same projected rows the list reads return (children
- * hydrated once over the deduped set); the precision re-rank stays in
- * `searchService`. Callers pass the already-normalized query, its word tokens, and
- * the non-empty per-token Double-Metaphone codes (same contract as the legacy fns).
+ * `songs`/`albums`/`artists` tables (which carry `norm_*`/`dmeta_*` columns) — the sole
+ * search-candidate source. Casts a wide, per-tier-capped net (exact → prefix → infix on
+ * `norm_*` → phonetic on `dmeta_*`), deduped in tier-priority order. Returns the same
+ * projected rows the list reads return (children hydrated once over the deduped set);
+ * the precision re-rank stays in `searchService`. Callers pass the already-normalized
+ * query, its word tokens, and the non-empty per-token Double-Metaphone codes.
  */
 import type { InternalDb } from '../client';
 import { ALBUM_LIST_COLS, hydrateAlbumRows, type AlbumListRow } from './albums';
@@ -154,8 +153,8 @@ export const searchArtists = (
   );
 
 /** True iff the normalized song table has any rows — the routing gate for "do we have
- *  a local corpus to search, or go straight to the server?". Songs-only, matching the
- *  legacy `song_index`-only gate it replaces. Best-effort: any error → no corpus. */
+ *  a local corpus to search, or go straight to the server?". Songs-only by design.
+ *  Best-effort: any error → no corpus. */
 export const hasLocalCorpus = async (db: InternalDb): Promise<boolean> => {
   try {
     return (await db.getFirstAsync<{ x: number }>('SELECT 1 AS x FROM songs LIMIT 1')) != null;

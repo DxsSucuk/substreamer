@@ -192,8 +192,7 @@ export function listPlaylistsBefore(
 
 export const countPlaylists = (db: InternalDb): Promise<number> => countRows(db, 'playlists');
 
-/** Every playlist id — the normalized replacement for enumerating
- *  `playlistLibraryStore.playlists` (e.g. the full-library download). */
+/** Every playlist id — enumeration for callers such as the full-library download. */
 export const listPlaylistIds = (db: InternalDb): Promise<string[]> =>
   db.getAllAsync<{ id: string }>('SELECT id FROM playlists').then((rows) => rows.map((r) => r.id));
 
@@ -223,9 +222,8 @@ export const playlistBrowseRowToPlaylist = (r: PlaylistBrowseRow): Playlist => (
   duration: 0,
 });
 
-/** Every playlist as a browse row, sort-title order — the normalized replacement for
- *  reading `playlistLibraryStore.playlists` (CarPlay/headless browse + voice
- *  vocabulary, and the add-to-playlist sheet). */
+/** Every playlist as a browse row, sort-title order — the CarPlay/headless browse, the
+ *  voice vocabulary, and the add-to-playlist sheet. */
 export const listAllPlaylists = (db: InternalDb): Promise<PlaylistBrowseRow[]> =>
   db.getAllAsync<PlaylistBrowseRow>(
     `SELECT ${PLAYLIST_BROWSE_COLS} FROM playlists ORDER BY sort_title, "id"`,

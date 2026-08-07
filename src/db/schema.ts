@@ -1,22 +1,19 @@
 /**
- * Drizzle schema — the fully-normalized data model for the persistence rebuild.
+ * Drizzle schema — the normalized data model, and the source of truth for the library.
  * One column per typed Subsonic field (scalars on the entity tables,
  * arrays/nested objects as child tables or flattened columns) — NO raw_json blob.
  * Details are relationships, not blobs (album detail = songs WHERE album_id=?, etc.).
  *
  * Conventions:
- *  - `snake_case` columns; TEXT server-id primary keys on normal rowid tables
- *    (WITHOUT ROWID dropped — breaks op-SQLite rowid-keyed reactivity + Drizzle
- *    can't emit it). Bulk-sync inserts MUST be id-sorted batches (see the design doc).
+ *  - `snake_case` columns; TEXT server-id primary keys on normal rowid tables. WITHOUT
+ *    ROWID is not used — it breaks op-SQLite rowid-keyed reactivity and Drizzle can't
+ *    emit it. Bulk-sync inserts MUST be id-sorted batches.
  *  - Timestamps stored as epoch-ms INTEGER (repository converts Date↔epoch).
  *  - Booleans stored as 0/1 via `{ mode: 'boolean' }`.
  *  - ReplayGain flattened to `rg_*` REAL columns (1:1, no child table).
  *  - Search keeps the existing tiered `norm_*` (accent-folded) + `dmeta_*`
  *    (double-metaphone) columns — not FTS5.
  *  - Child tables cascade-delete with their parent entity.
- *
- * This schema is additive: it stands alongside the legacy blob tables until
- * consumers are cut over and the old tables dropped.
  */
 import { sql } from 'drizzle-orm';
 import {
@@ -106,8 +103,8 @@ export const songs = sqliteTable(
     artistIdx: index('idx_songs_artist').on(t.artistId),
     // favorites: only starred rows, keyed exactly to the Favourites tab's
     // `ORDER BY starred DESC, id DESC` so the keyset page is a backward index scan
-    // with no temp b-tree. (Supersedes idx_songs_starred, which carried sort_title
-    // between the two and so could not serve it; the old index lingers harmlessly.)
+    // with no temp b-tree. Distinct name from the superseded idx_songs_starred, which
+    // still exists on upgraded installs and is harmless.
     starredKeyIdx: index('idx_songs_starred_key')
       .on(t.starred, t.id)
       .where(sql`${t.starred} IS NOT NULL`),
@@ -561,9 +558,8 @@ export const artistTopSongs = sqliteTable(
 
 /**
  * The four home-screen album lists, as ordered album ids. The albums themselves live in
- * `albums` (upserted by the same refresh, with the MERGE policy — the list endpoints
- * return a partial view), so a list row and the library can never disagree the way the
- * old `AlbumID3[]` blob did.
+ * `albums`, upserted by the same refresh with the MERGE policy — the list endpoints
+ * return a partial view — so a list row and the library can never disagree.
  *
  * `album_id` cascades: an album deleted from the library should not linger in a home
  * list. Bounded by `listLength`, so each list is tens of rows.
@@ -615,16 +611,14 @@ export const playlistAllowedUsers = sqliteTable(
 // ─────────────────────────────────────────────────────────────────────────────
 // Kept tables — permanent user data, NOT part of the library model
 //
-// These predate the normalized rebuild and survive it: the KV blob store (auth,
-// settings, theme), scrobble history, the download tables and the image cache.
-// They live here so `ensureNormalizedSchema` owns every CREATE/ALTER/INDEX in one
-// ordered pass (tables → add missing columns → indexes) — the hand-written block in
-// `db.ts` had no such ordering, which is how a `hour` index came to be created before
-// the `hour` column and took DB init down.
+// The KV blob store (auth, settings, theme), scrobble history, the download tables and
+// the image cache. They live here so `ensureNormalizedSchema` owns every
+// CREATE/ALTER/INDEX in one ordered pass (tables → add missing columns → indexes); an
+// unordered block can create an index before the column it references and take DB init
+// down.
 //
 // They are classified as KEPT_TABLES in `createNormalizedTables.ts` so a resync,
-// logout or dev spike can never drop them. Definitions transcribed 1:1 from the
-// former `db.ts` block, which already includes every column ever ALTER-added.
+// logout or dev spike can never drop them.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Generic key/value blob store — Zustand `persist` targets this. */

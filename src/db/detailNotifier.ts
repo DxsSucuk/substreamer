@@ -1,12 +1,11 @@
 /**
- * Tiny per-entity "detail changed" notifier — the reactivity substitute for the
- * doomed detail blob stores' Zustand subscriptions. An open detail screen reads its
- * data from the normalized tables (a one-shot repo read) and subscribes here; a
- * background mutation that rewrites that entity's normalized rows (e.g. an MBID
- * override refetch) calls `bumpDetailChanged` so the screen re-reads.
+ * Per-entity "detail changed" notifier — how detail screens stay reactive against the
+ * normalized tables. An open screen reads its data with a one-shot repo read and
+ * subscribes here; a background mutation that rewrites that entity's normalized rows
+ * (e.g. an MBID override refetch) calls `bumpDetailChanged` so the screen re-reads.
  *
- * Deliberately minimal: no payload, no state — just "entity X of kind K changed,
- * re-read it". Keyed by `kind:id`.
+ * No payload, no state — just "entity X of kind K changed, re-read it". Keyed by
+ * `kind:id`.
  */
 export type DetailKind = 'album' | 'artist' | 'playlist';
 

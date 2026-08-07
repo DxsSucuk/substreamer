@@ -113,11 +113,6 @@ export function upsertArtists(
   );
 }
 
-/**
- * Merge getArtistInfo2 (bio/images + similar artists) into an existing artist.
- * A partial upsert — it only touches the bio columns, never the base ArtistID3
- * fields, so a later library re-sync and a bio fetch don't clobber each other.
- */
 /** The getArtistInfo2 envelope. `biography` is the SERVER bio; NULL means this server has
  *  none — empty and markup-only stubs are normalised away by the caller, so a non-null
  *  value always renders. Hand-written SQL rather than a mapper so `retrieved_at` is an
@@ -134,8 +129,9 @@ export interface ArtistInfoWrite {
 
 /** Sole writer of `artist_info` + `artist_similar`, in ONE atomic batch: a failure
  *  part-way leaves the previous similar-artist list in place rather than deleted and
- *  never reinserted. The bio RESOLUTION is a different concern and lives in
- *  `artist_bio`. */
+ *  never reinserted. Touches only these two tables, never the base `artists` row, so a
+ *  library re-sync and a bio fetch cannot clobber each other. The bio RESOLUTION is a
+ *  different concern and lives in `artist_bio`. */
 export const upsertArtistInfo = (
   db: InternalDb,
   id: string,
@@ -256,8 +252,6 @@ export const artistIdsPresent = (db: InternalDb, ids: string[]): Promise<Set<str
 export const getArtist = (db: InternalDb, id: string): Promise<Record<string, unknown> | null> =>
   db.getFirstAsync('SELECT * FROM artists WHERE id = ?', [id]);
 
-/** Artists that already have persisted top songs — the set whose top-song lists a
- *  list-length change refreshes (replaces the doomed detail store's in-memory map). */
 /** Replace an artist's ordered top-song membership (position = array index). The songs
  *  themselves must already be upserted into `songs` by the caller. ONE atomic batch: a
  *  failure part-way through restores the previous list rather than leaving the DELETE

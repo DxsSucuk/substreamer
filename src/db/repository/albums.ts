@@ -494,8 +494,8 @@ export const bumpAlbumPlayStats = (db: InternalDb, id: string, played: string): 
 export const getAlbum = (db: InternalDb, id: string): Promise<Record<string, unknown> | null> =>
   db.getFirstAsync('SELECT * FROM albums WHERE id = ?', [id]);
 
-/** Every album id in the table — the normalized replacement for the sync's in-memory
- *  `albumLibraryStore.albums` `knownIds` set (change-detect + walk enumeration). */
+/** Every album id in the table — the sync's known-id set, for change-detect and walk
+ *  enumeration. */
 export const listAlbumIds = (db: InternalDb): Promise<string[]> =>
   db.getAllAsync<{ id: string }>('SELECT id FROM albums').then((rows) => rows.map((r) => r.id));
 
@@ -527,10 +527,8 @@ export const albumBrowseRowToAlbumID3 = (r: AlbumBrowseRow): AlbumID3 => ({
   duration: 0,
 });
 
-/** Every album as a browse row, sort-title order. For the CarPlay/headless A–Z browse
- *  + voice vocabulary — the normalized replacement for reading
- *  `albumLibraryStore.albums`. (NB: whole-table read; a per-letter headless browse is a
- *  follow-up memory refinement.) */
+/** Every album as a browse row, sort-title order — the CarPlay/headless A–Z browse and
+ *  voice vocabulary. Whole-table read, which is why the projection is four columns. */
 export const listAllAlbums = (db: InternalDb): Promise<AlbumBrowseRow[]> =>
   db.getAllAsync<AlbumBrowseRow>(
     `SELECT ${ALBUM_BROWSE_COLS} FROM albums ORDER BY sort_title, "id"`,
@@ -538,9 +536,9 @@ export const listAllAlbums = (db: InternalDb): Promise<AlbumBrowseRow[]> =>
 
 /**
  * Non-destructive full-sync reconcile: delete album rows whose id is NOT in the current
- * server set AND NOT protected (downloaded/favorited detail we must never reap). Replaces
- * `resetNormalizedSchema` (DROP+recreate) for full sync so offline content survives.
- * Children cascade via FK. Both id sets pass as JSON via `json_each`.
+ * server set AND NOT protected (downloaded/favorited detail we must never reap). A full
+ * sync reconciles rather than dropping the tables so offline content survives. Children
+ * cascade via FK. Both id sets pass as JSON via `json_each`.
  */
 export const reconcileAlbums = (
   db: InternalDb,

@@ -12,9 +12,9 @@ import type { InternalDb } from './client';
 export interface ProtectedIds {
   /** Albums downloaded as albums — never reap the row or its songs. */
   downloadedAlbumIds: Set<string>;
-  /** Albums that merely PARENT a downloaded/favorited song. The blob model keeps their
-   *  detail but drops the browse row (they weren't downloaded as albums, so they must
-   *  not resurrect in the list); the normalized model can't express that split. */
+  /** Albums that merely PARENT a downloaded/favorited song, rather than being downloaded
+   *  as albums themselves — their detail must survive a prune, but they must not
+   *  resurrect in the browse list. */
   parentAlbumIds: Set<string>;
   /** Downloaded playlists — never prune. */
   playlistIds: Set<string>;

@@ -131,8 +131,8 @@ export const MODEL_TABLES: readonly string[] = [
   'song_genres',
   'song_moods',
   // The home-screen album lists: ordered ids over `albums`, server-scoped for the same
-  // reason favourites are. It FK-cascades from `albums` anyway, but the classification is
-  // explicit because the allowlist fails CLOSED — an unclassified table is never dropped.
+  // reason favourites are. It FK-cascades from `albums` anyway, but must still be listed
+  // — the allowlist fails CLOSED, so an unclassified table is never dropped.
   'album_list_entries',
   // Favourites are server-scoped, so logout must drop them: leaving them KEPT would
   // leak server A's favourites into server B.
@@ -143,9 +143,9 @@ export const MODEL_TABLES: readonly string[] = [
 
 /**
  * Permanent user data that lives in schema.ts for ordered schema management but must
- * NEVER be dropped by logout or the dev spikes. Losing any of these
- * means losing the login, the downloads (leaving orphaned files on disk), the listening
- * history or the image cache.
+ * NEVER be dropped by logout or the dev spikes. Losing any of these means losing the
+ * login, the downloads (leaving orphaned files on disk), the listening history or the
+ * image cache.
  */
 export const KEPT_TABLES: readonly string[] = [
   'storage',

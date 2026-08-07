@@ -14,10 +14,9 @@
  *    results, the home album lists), where the caller already holds the metadata.
  *  - **Visibility** — "which downloaded albums can we RENDER" (`listDownloadedAlbums`).
  *    INNER JOINs `cached_albums`, because a row with no component metadata cannot be drawn.
- *    This is the SQL form of `if (item.albumMeta)` in the store helper it replaces, and it is
- *    what keeps derived partial-album rows (which carry no metadata) out of the list. Never
- *    fall back to `cached_items.name`/`artist` — those are always populated and would surface
- *    rows that are hidden today.
+ *    That join is what keeps derived partial-album rows (which carry no metadata) out of the
+ *    list. Never fall back to `cached_items.name`/`artist` — those are always populated and
+ *    would surface rows that are hidden today.
  *
  * Conflating the two would either hide downloaded albums from search or surface metadata-less
  * rows in the library browser.
@@ -119,8 +118,8 @@ export interface DownloadedFilter {
  * never-reaped source of truth for downloaded metadata, independent of the (paged) library.
  *
  * Bounded by what is on disk, so this is a whole-set read by design; there is no cursor.
- * Children (`artists`/`genres`/…) are deliberately NOT hydrated: the store helper this
- * replaces produced none either, so absent is parity rather than a regression.
+ * Children (`artists`/`genres`/…) are deliberately NOT hydrated — the downloaded album
+ * list does not render them.
  */
 export async function listDownloadedAlbums(
   db: InternalDb,
@@ -178,12 +177,9 @@ export async function listDownloadedAlbumIds(
 }
 
 /**
- * A downloaded song, at the projection the Songs tab's downloaded filter renders.
- *
- * SIX columns of the ~55 `cached_songs` holds, because that is exactly what the JS walk
- * this replaces produced. Widening it (track, disc, year, genre, bitrate, rating, play
- * count) is a deliberate FOLLOW-UP, not part of the move: it changes what the rows render
- * and needs its own verification pass.
+ * A downloaded song, at the projection the Songs tab's downloaded filter renders — six
+ * columns of the ~55 `cached_songs` holds. Widening it changes what those rows render, so
+ * it needs its own verification pass.
  */
 export interface DownloadedSongRow {
   id: string;
@@ -192,11 +188,9 @@ export interface DownloadedSongRow {
   /**
    * The SERVER's album — `src_album_id`, NOT `cached_songs.album_id`.
    *
-   * `album_id` is the file's DIRECTORY (`_unknown` when the server gave none); both
-   * `schema.ts` and `CachedSongRow` say so outright. The map walk this read replaces
-   * projected the directory into `Child.albumId` regardless, so every downloaded song in
-   * the Songs filter carried a directory id where consumers expect an album id — and
-   * `Child.albumId` is what "go to album", album-mode cover art and navigation all read.
+   * `album_id` is the file's DIRECTORY (`_unknown` when the server gave none), so it must
+   * never reach `Child.albumId`, which "go to album", album-mode cover art and navigation
+   * all read.
    *
    * Falls back to `album_id` when `src_album_id` is NULL: that column post-dates some
    * rows, and for those the directory is still the only answer there is.
@@ -208,9 +202,9 @@ export interface DownloadedSongRow {
 
 /**
  * The DOWNLOADED songs. Bounded by what is on disk, so this is a whole-set read by design;
- * there is no cursor. `song_id` is the primary key, so the id-dedupe the map walk needed
- * is structural here. Unsorted — the caller sorts in JS via `byTitle`, which goes through
- * `defaultCollator` (SQL knows nothing about it).
+ * there is no cursor. `song_id` is the primary key, so ids are unique structurally.
+ * Unsorted — the caller sorts in JS via `byTitle`, which goes through `defaultCollator`
+ * (SQL knows nothing about it).
  */
 export async function listDownloadedSongs(db: InternalDb): Promise<DownloadedSongRow[]> {
   return db.getAllAsync<DownloadedSongRow>(
@@ -255,8 +249,8 @@ export async function listDownloadedPlaylistIds(db: InternalDb): Promise<Set<str
  * rather than a set read.
  *
  * Type-agnostic on purpose: its caller asks about the `__starred__` favourites aggregate,
- * which is neither an album nor a playlist. No partial gate either — the check it replaces
- * (`STARRED_SONGS_ITEM_ID in cachedItems`) is bare membership.
+ * which is neither an album nor a playlist. No partial gate either — this is bare
+ * membership.
  */
 export async function isItemDownloaded(db: InternalDb, itemId: string): Promise<boolean> {
   const row = await db.getFirstAsync<{ one: number }>(

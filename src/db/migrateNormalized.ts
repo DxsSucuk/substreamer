@@ -7,13 +7,12 @@
  * upserts them into the normalized schema. Every legacy location is read HERE, so the
  * ETL stands alone: it does not need the migration chain to have replayed the moves
  * between them. NO network. The SOURCE is read keyset-paginated by id so a
- * 200k-album / 467k-song library never loads whole tables into JS (the very OOM
- * this rebuild fixes); each page is parsed, upserted (id-sorted chunked txns),
- * freed, and the JS thread yields between pages.
+ * 200k-album / 467k-song library never loads whole tables into JS and OOMs; each page
+ * is parsed, upserted (id-sorted chunked txns), freed, and the JS thread yields
+ * between pages.
  *
- * Idempotent (upsert ON CONFLICT), so it's safe to re-run — which the dev spike
- * does for validation. Not yet wired into the boot migration runner; that happens
- * once it's validated on-device.
+ * Idempotent (upsert ON CONFLICT), so it is safe to re-run. Driven at boot by
+ * `services/dataModelUpgradeService`, and by the dev spike for validation.
  */
 import type {
   AlbumID3,
@@ -76,9 +75,9 @@ async function migrateBlobTable<T extends { id: string }>(
 
   for (;;) {
     const rd0 = nowMs();
-    // Async read: keep the source-blob paging OFF the JS thread (on Android the
-    // sync read of raw_json blobs was ~3.5s of UI-blocking; the mandate is that
-    // nothing in a background sync/migration blocks the UI).
+    // Async read: keep the source-blob paging OFF the JS thread. Reading raw_json
+    // blobs synchronously blocks the UI for seconds on Android, and nothing in a
+    // background sync/migration may block the UI.
     // eslint-disable-next-line no-await-in-loop
     const rows = await db.getAllAsync<{ id: string; j: string | null }>(
       `SELECT id, ${jsonCol} AS j FROM ${sourceTable} WHERE id > ? ORDER BY id LIMIT ?`,
@@ -122,9 +121,9 @@ const ARTIST_DETAILS_KEY = 'substreamer-artist-details';
 const PLAYLIST_LIBRARY_KEY = 'substreamer-playlist-library';
 const PLAYLIST_DETAILS_KEY = 'substreamer-playlist-details';
 const ALBUM_INFO_KEY = 'substreamer-album-info';
-/** Pre-`library_albums` installs (before 2026-07-11) kept the album list ONLY here.
- *  Its table seeder lived in the since-deleted `albumLibraryStore`, so without this
- *  read an upgrade from those versions loses the whole album library. */
+/** Pre-`library_albums` installs (before 2026-07-11) kept the album list ONLY here, and
+ *  nothing else still seeds the table from it — without this read an upgrade from those
+ *  versions loses the whole album library. */
 const ALBUM_LIBRARY_KEY = 'substreamer-album-library';
 /** Pre-`album_details` installs kept the same `{album, retrievedAt}` entries here.
  *  Read directly so this ETL doesn't need the migration that moved them to the table. */
@@ -270,8 +269,8 @@ async function migratePlaylists(
   return { source: libraryPlaylists.length, migrated, skipped: 0 };
 }
 
-/** Album info (getAlbumInfo2 + the Wikipedia enrichment) used to live in a KV blob.
- *  Move it into `album_info`, keyed by album, so it stops being a legacy split. */
+/** Album info (getAlbumInfo2 + the Wikipedia enrichment) from its KV blob into
+ *  `album_info`, keyed by album. */
 async function migrateAlbumInfo(db: InternalDb, log?: Log): Promise<number> {
   const state = await readKvState<{ entries?: Record<string, AlbumInfoEntryLite> }>(
     db,
@@ -334,14 +333,13 @@ async function upsertDetailEnvelopes(
 /**
  * `album_details` (`AlbumWithSongsID3` envelopes) as a DIRECT source.
  *
- * NB: this table used to be skipped deliberately, and the reasoning still holds for a
- * RECENT upgrader — it is written atomically alongside `song_index` (one disk write per
- * album-detail fetch), so `song_index` is a superset and reading both is redundant. It
- * INVERTS for an old one: rows written before `song_index.raw_json` existed (pre
- * 2026-06-04) carry NULL, the song pass skips them, and `album_details.song[]` is their
- * only local source. So each id is gated on an actual gap — no `albums` row, no
- * `song_index` rows, or a NULL `raw_json` among them — and the redundant case costs
- * three index probes per row with no JSON parsed at all.
+ * For a RECENT upgrader this is redundant: `album_details` is written atomically
+ * alongside `song_index` (one disk write per album-detail fetch), so `song_index` is a
+ * superset. For an OLD one it is the only source — rows written before
+ * `song_index.raw_json` existed (pre 2026-06-04) carry NULL, so the song pass skips them
+ * and `album_details.song[]` holds their tracks. Each id is therefore gated on an actual
+ * gap (no `albums` row, no `song_index` rows, or a NULL `raw_json` among them), which
+ * costs three index probes per row and parses no JSON in the redundant case.
  */
 async function migrateAlbumDetailsTable(
   db: InternalDb,
@@ -459,10 +457,10 @@ export async function migrateBlobsToNormalized(
   onProgress?: (done: number, total: number) => void,
 ): Promise<MigrationResult> {
   const start = Date.now();
-  // The legacy blob tables are no longer created at boot (F2d). Which of them exist
-  // depends on how old the install is — a pre-2026-07-11 upgrader has album_details +
-  // song_index but no library_albums — so probe each one independently. A fresh install
-  // has none and skips all three.
+  // The legacy blob tables are no longer created at boot. Which of them exist depends on
+  // how old the install is — a pre-2026-07-11 upgrader has album_details + song_index but
+  // no library_albums — so probe each one independently. A fresh install has none and
+  // skips all three.
   const present = new Set(
     (
       await db.getAllAsync<{ name: string }>(
@@ -529,10 +527,8 @@ export async function migrateBlobsToNormalized(
     : EMPTY;
   // Gap-fill from the album-detail envelopes (table, then the pre-table KV blob) — the
   // only local source for albums missing from the list and for songs whose `song_index`
-  // row predates `raw_json`. See `migrateAlbumDetailsTable` for why reading this is
-  // redundant for a recent upgrader but load-bearing for an old one.
-  // Its page query reads BOTH tables, so both must exist. (They shipped together, so
-  // gating on `album_details` alone is only incidentally safe — make it explicit.)
+  // row predates `raw_json`. The page query in `migrateAlbumDetailsTable` reads BOTH
+  // tables, so gate on both existing, not just `album_details`.
   const detailTable =
     present.has('album_details') && present.has('song_index')
       ? await migrateAlbumDetailsTable(db, articles, log, bump)
@@ -555,11 +551,10 @@ export async function migrateBlobsToNormalized(
   // Album info must run AFTER albums exist — its rows FK to `albums`.
   await migrateAlbumInfo(db, log);
   onProgress?.(total, total); // settle at 100% (artists/playlists done)
-  // NB: the WAL checkpoint is deliberately NOT run here. Folding the migration's
-  // (large) WAL takes seconds and must NOT hold up "migration complete" — the
-  // caller runs `checkpointWalAsync` in the BACKGROUND after signalling done (see
-  // Spike D and the boot wiring). Until it finishes, reads just traverse a larger
-  // WAL (slower, never broken).
+  // The WAL checkpoint is deliberately NOT run here: folding the migration's (large) WAL
+  // takes seconds and must not hold up "migration complete". The caller runs
+  // `checkpointWalAsync` in the BACKGROUND after signalling done; until it finishes,
+  // reads just traverse a larger WAL (slower, never broken).
   return { albums, songs, artists, playlists, ms: Date.now() - start };
 }
 

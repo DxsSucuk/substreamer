@@ -4,13 +4,13 @@
  * Favourites live in two halves, chosen by whether the library already holds the row:
  *  - **marked library rows** — `songs`/`albums`/`artists`.`starred` set by `markStarred*`.
  *    The reconcile NEVER inserts into those tables: a row there means "the library sync
- *    put it here", and sixteen production presence checks depend on that.
+ *    put it here", and the presence checks across the app depend on that.
  *  - **the remainder** — `favorite_songs`/`favorite_albums`/`favorite_artists`, holding
  *    the verbatim `getStarred2` envelope for starred items the library does not have.
  *    Normally EMPTY (the library sync enumerates everything the server has).
  *
  * The two halves are kept disjoint at READ time, by a `NOT EXISTS` clause on every
- * remainder query — never by assuming a past reconcile left them disjoint. It didn't:
+ * remainder query — never by assuming a past reconcile left them disjoint. It cannot:
  * a `getAlbum` response carries `starred`, and `albumRow` writes it, so tapping a
  * remainder album gives it a marked library row seconds later.
  *
@@ -473,11 +473,11 @@ export const clearStarredArtistsNotIn = (db: InternalDb, keepIds: readonly strin
  * Rebuild a remainder table from scratch, TRANSACTIONALLY.
  *
  * These rows are the only local copy of items the library does not have, and restoring
- * them needs a network call the user may not be able to make — so unlike the marks
- * they are not derivable offline. A delete-then-insert rebuild killed mid-way would
- * leave a fraction of the set: strictly worse than the single atomic `setItem` this
- * replaces. Hence ONE `runAtomicBatchAsync` — the JS thread never yields between the
- * DELETE and the last INSERT, so no other writer's statements land inside our savepoint.
+ * them needs a network call the user may not be able to make — so unlike the marks they
+ * are not derivable offline, and a delete-then-insert rebuild killed mid-way would leave
+ * a fraction of the set. Hence ONE `runAtomicBatchAsync` — the JS thread never yields
+ * between the DELETE and the last INSERT, so no other writer's statements land inside
+ * our savepoint.
  */
 async function replaceRemainder(
   db: InternalDb,

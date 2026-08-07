@@ -1,17 +1,17 @@
 /**
- * Detail reads over the normalized model — the relationship queries that replace the
- * legacy detail blob stores (`albumDetailStore`/`artistDetailStore`/`playlistDetailStore`).
+ * Detail reads over the normalized model — a detail view is a relationship query, not a
+ * stored blob.
  *
  * Album detail  = album row + `songs WHERE album_id`.
- * Artist detail = artist row + `albums WHERE artist_id` + `artist_similar` + bio cols.
- *                 (`topSongs` has no normalized table — it's re-fetched on screen open.)
+ * Artist detail = artist row + `albums WHERE artist_id` + `artist_similar` + bio cols,
+ *                 with top songs via `artist_top_songs` + its state row.
  * Playlist detail = playlist row + `playlist_songs JOIN songs` (position order).
  *
  * Every entity comes back through the SAME projection + adapter the list reads use, so
  * detail and list can never disagree about which fields a consumer gets.
  *
- * Pure reads; a `null` entity means the id isn't synced yet (the caller then does an
- * on-demand server fetch that upserts normalized — Phase A5).
+ * Pure reads; a `null` entity means the id isn't synced yet, and the caller then does an
+ * on-demand server fetch that upserts into the normalized tables.
  */
 import type { ArtistID3 } from 'subsonic-api';
 

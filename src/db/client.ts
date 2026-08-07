@@ -1,15 +1,12 @@
 /**
  * op-SQLite connection layer for the app's single database (`substreamer7.db`).
  *
- * This is the engine seam for the persistence rebuild: it opens the EXISTING
- * expo-sqlite file in place (validated by Phase-0 Spike A on iOS + Android),
- * applies the long-standing PRAGMAs, and adapts op-SQLite's API to the
- * `InternalDb` surface every persistence module already consumes — so the engine
- * swap is behavior-identical and no caller changes.
+ * Opens the DB file, applies the PRAGMAs, and adapts op-SQLite's API to the
+ * `InternalDb` surface every persistence module consumes.
+ * `store/persistence/db.ts` owns schema creation and the exports.
  *
  * op-SQLite mandates ONE connection per DB: every `execute`/`executeBatch` runs on
  * one dedicated pool thread, FIFO, so pool work is serialized by the engine itself.
- * `store/persistence/db.ts` owns schema creation and the exports.
  *
  * Import-safety: op-SQLite is a native module absent under Node/Jest, so a global
  * manual mock (`__mocks__/@op-engineering/op-sqlite.js`) backs it with an
@@ -24,8 +21,7 @@ import {
 } from '@op-engineering/op-sqlite';
 import { Directory, Paths } from 'expo-file-system';
 
-/** Mirrors expo-sqlite's `SQLiteRunResult` so existing callers that read
- *  row-modification counts keep working unchanged. */
+/** Row-modification counts for a write; shape mirrors expo-sqlite's `SQLiteRunResult`. */
 export interface RunResult {
   changes: number;
   lastInsertRowId: number;
@@ -35,11 +31,7 @@ export interface RunResult {
  *  binds string | number | null); the repository coerces before building these. */
 export type BatchCommand = readonly [sql: string, params: ReadonlyArray<string | number | null>];
 
-/**
- * The DB surface every persistence module consumes. Method names/shapes match
- * the expo-sqlite handle they used before, so the op-SQLite swap is invisible to
- * callers. The interactive `*Sync` methods are converted to async in Phase 1.4.
- */
+/** The DB surface every persistence module consumes. */
 export interface InternalDb {
   getFirstSync<T>(sql: string, params?: readonly unknown[]): T | undefined;
   getAllSync<T>(sql: string, params?: readonly unknown[]): T[];
@@ -49,11 +41,10 @@ export interface InternalDb {
   runAsync(sql: string, params?: readonly unknown[]): Promise<RunResult>;
   /**
    * Run many statements off the JS thread in AUTOCOMMIT — **not** a transaction.
-   * op-SQLite's `opsqlite_execute_batch` loops the statements with its
-   * `BEGIN EXCLUSIVE TRANSACTION` commented out (`cpp/bridge.cpp`), leaving the
-   * transaction to the caller, and it aborts on the first failing statement with
-   * everything before it already committed. Use it only where a half-applied run
-   * is self-repairing; use {@link InternalDb.runAtomicBatchAsync} otherwise.
+   * `opsqlite_execute_batch` has its `BEGIN EXCLUSIVE TRANSACTION` commented out
+   * (`cpp/bridge.cpp`) and aborts on the first failing statement with everything
+   * before it already committed. Use it only where a half-applied run is
+   * self-repairing; use {@link InternalDb.runAtomicBatchAsync} otherwise.
    */
   runBatchAsync(commands: readonly BatchCommand[]): Promise<void>;
   /**
@@ -77,12 +68,10 @@ export const DB_NAME = 'substreamer7.db';
 const DB_SUBDIR = 'SQLite';
 
 /**
- * The plain filesystem directory that holds the DB. expo-sqlite stored
- * `substreamer7.db` under `<document>/SQLite` on both platforms (confirmed in
- * place by Spike A: iOS `.../Documents/SQLite`, Android `.../files/SQLite`).
- * op-SQLite needs a plain path, not a `file://` URI. Defensive: falls back to a
- * bare subdir name if the FS API is unavailable (Jest — the mock forces
- * in-memory and ignores the location anyway).
+ * The plain filesystem directory that holds the DB: `<document>/SQLite` on both
+ * platforms (iOS `.../Documents/SQLite`, Android `.../files/SQLite`). op-SQLite
+ * needs a plain path, not a `file://` URI. Falls back to a bare subdir name if the
+ * FS API is unavailable (Jest — the mock forces in-memory and ignores the location).
  */
 function resolveDbLocation(): string {
   try {
@@ -93,8 +82,8 @@ function resolveDbLocation(): string {
   }
 }
 
-/** Ensure `<document>/SQLite` exists before opening (fresh install: op-SQLite
- *  won't create intermediate dirs the way expo-sqlite did). */
+/** Ensure `<document>/SQLite` exists before opening — op-SQLite does not create
+ *  intermediate dirs, so a fresh install would otherwise fail to open. */
 function ensureDbDir(): void {
   try {
     const dir = new Directory(Paths.document, DB_SUBDIR);
@@ -116,10 +105,9 @@ const toRunResult = (r: QueryResult): RunResult => ({
  * Pool writes currently outstanding, and everyone waiting for that to reach zero.
  *
  * This TRACKS writes, it does not serialize them: nothing waits on anything else, so
- * there is no ordering cost and no hot-path cost beyond a counter. It exists for the
- * one thing a mutex could never give us — knowing when it is safe to run a JS-thread
- * `BEGIN` (`withTransactionSync`), which bypasses the pool entirely and hard-fails on
- * Android if a pool transaction is open.
+ * there is no ordering cost and no hot-path cost beyond a counter. It exists to know
+ * when it is safe to run a JS-thread `BEGIN` (`withTransactionSync`), which bypasses
+ * the pool entirely and hard-fails on Android if a pool transaction is open.
  */
 let inFlightWrites = 0;
 let idleWaiters: Array<() => void> = [];
@@ -144,9 +132,7 @@ function trackWrite<T>(work: Promise<T>): Promise<T> {
  * Resolve once no pool-queued write is outstanding on the connection.
  *
  * Await this before any JS-thread `executeSync` transaction — logout's
- * `resetNormalizedSchema` DROP loop is the only runtime caller. It covers EVERY
- * writer, which the JS-side write mutex it replaced could not: a writer that never
- * joined that chain was invisible to it.
+ * `resetNormalizedSchema` DROP loop is the only runtime caller.
  */
 export function awaitDbWritesIdle(): Promise<void> {
   if (inFlightWrites === 0) return Promise.resolve();
@@ -154,9 +140,8 @@ export function awaitDbWritesIdle(): Promise<void> {
 }
 
 /** Adapt op-SQLite's DB to the `InternalDb` surface. `withTransactionSync` issues
- *  its BEGIN/COMMIT via `executeSync`, matching the previous expo-sqlite behavior;
- *  multi-statement ASYNC writes use `runAtomicBatchAsync` rather than a transaction
- *  spanning JS turns. */
+ *  its BEGIN/COMMIT via `executeSync`; multi-statement ASYNC writes use
+ *  `runAtomicBatchAsync` rather than a transaction spanning JS turns. */
 function adapt(op: DB): InternalDb {
   return {
     getFirstSync<T>(sql: string, params?: readonly unknown[]): T | undefined {
@@ -184,14 +169,13 @@ function adapt(op: DB): InternalDb {
     async runAtomicBatchAsync(commands: readonly BatchCommand[]): Promise<void> {
       if (commands.length === 0) return;
       // Issued SYNCHRONOUSLY — nothing may be awaited above this line, or a
-      // pipelining caller (`bulkUpsert`) would derive its next chunk before this
-      // one reaches the pool. op-SQLite's pool has exactly ONE thread
-      // (`node_modules/@op-engineering/op-sqlite/cpp/OPThreadPool.cpp:14`,
-      // `auto numberOfThreads = 1;`; `restartPool()` would rebuild it with
-      // `hardware_concurrency()` threads and break that, but has no callers) and
-      // runs tasks FIFO, so one `executeBatch` is one indivisible task: no other
-      // POOL-queued statement can land between the SAVEPOINT and the RELEASE.
-      // (`executeSync` runs on the JS thread and bypasses the pool entirely.)
+      // pipelining caller (`bulkUpsert`) would derive its next chunk before this one
+      // reaches the pool. op-SQLite's pool has exactly ONE thread and runs tasks FIFO
+      // (`cpp/OPThreadPool.cpp`), so one `executeBatch` is one indivisible task: no
+      // other POOL-queued statement can land between the SAVEPOINT and the RELEASE.
+      // (`executeSync` runs on the JS thread and bypasses the pool entirely. Never
+      // call `restartPool()` — it rebuilds the pool with `hardware_concurrency()`
+      // threads, which breaks that guarantee.)
       // SAVEPOINT, not BEGIN: it nests, so running inside another writer's open
       // transaction neither fails nor lets our recovery destroy their work.
       const batch = trackWrite(
@@ -202,23 +186,19 @@ function adapt(op: DB): InternalDb {
         ] as unknown as SQLBatchTuple[]),
       );
       // The recovery is enqueued in the SAME TICK, unconditionally, and that is
-      // load-bearing rather than tidy: `opsqlite_execute_batch` is a bare loop that
-      // rethrows the first statement failure (`cpp/bridge.cpp`), so an aborted batch
-      // never reaches its RELEASE and leaves the savepoint OPEN. Deciding to recover
-      // from the JS `catch` below would be too late — the rejection has to travel back
-      // to JS, and every task the pool drains in the meantime (including writes queued
-      // while this batch was still running) would commit inside the stranded savepoint
-      // and then be silently discarded by the ROLLBACK. One JS thread means nothing can
-      // be issued between two synchronous calls, and FIFO means nothing can execute
-      // between the two tasks, so there is no window to be captured by.
+      // load-bearing: `opsqlite_execute_batch` rethrows the first statement failure
+      // (`cpp/bridge.cpp`), so an aborted batch never reaches its RELEASE and leaves
+      // the savepoint OPEN. Recovering from the JS `catch` below would be too late —
+      // every task the pool drains while the rejection travels back to JS would commit
+      // inside the stranded savepoint and then be silently discarded by the ROLLBACK.
+      // One JS thread plus FIFO means there is no window between these two calls.
       //
       // On the success path the batch has already RELEASEd the savepoint, so
-      // `ROLLBACK TO` fails with "no such savepoint" and nothing is undone — that
-      // failure is expected and swallowed. Same swallow covers SQLITE_FULL / IOERR /
-      // NOMEM, which abort the whole transaction themselves: the batch is already
-      // undone, so the recovery's own failure is never the error to report.
-      // Tracked like any other write: on the success path it opens nothing, but it is
-      // still a queued pool task, and `awaitDbWritesIdle` promises there are none.
+      // `ROLLBACK TO` fails with "no such savepoint" and nothing is undone — expected,
+      // and swallowed. Same swallow covers SQLITE_FULL / IOERR / NOMEM, which abort the
+      // whole transaction themselves, so the recovery's failure is never the error to
+      // report. Tracked like any other write, because `awaitDbWritesIdle` promises
+      // there are no queued pool tasks.
       const recovery = trackWrite(
         op.executeBatch([
           ['ROLLBACK TO op_batch', []],
@@ -261,9 +241,8 @@ export interface DbConnection {
 }
 
 /**
- * Open the DB with op-SQLite and apply PRAGMAs (identical to the historical
- * settings). Folds any WAL sidecars expo-sqlite left behind via a one-shot
- * `wal_checkpoint(TRUNCATE)`. Throws on failure (the caller sets init-error state).
+ * Open the DB with op-SQLite and apply the PRAGMAs. Throws on failure (the caller
+ * sets init-error state).
  */
 export function openDbConnection(): DbConnection {
   ensureDbDir();
@@ -274,8 +253,7 @@ export function openDbConnection(): DbConnection {
   // Fold any leftover WAL at boot so the first (boot-critical, synchronous) reads
   // aren't stuck rebuilding/traversing a large WAL — e.g. after a big write that
   // didn't checkpoint before an unclean close (a crash/SIGKILL). Best-effort;
-  // normally a fast no-op since the WAL auto-checkpoints during use. Safe re: the
-  // expo-router mount race, which is fixed by the useLinking patch, not by timing.
+  // normally a fast no-op since the WAL auto-checkpoints during use.
   try {
     raw.executeSync('PRAGMA wal_checkpoint(TRUNCATE);');
   } catch {

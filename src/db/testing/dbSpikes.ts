@@ -1,19 +1,14 @@
 /**
- * Phase 0 de-risking spikes — DEV/on-device only.
+ * On-device persistence spikes — DEV only. Run from Settings → DB Spikes and logged to
+ * the in-app logger; each spike documents itself at its own `runSpike*`.
  *
- * These are throwaway validation harnesses for the persistence rebuild, run from
- * a dev trigger and logged to the in-app logger. They are NOT imported by app
- * code or tests; op-SQLite is lazy-`require`d so this module stays import-safe
- * where the native module is absent.
+ * They exist because Jest cannot reproduce the op-SQLite pool: the test seam runs
+ * `executeBatch` synchronously, so a green suite proves logic and never concurrency.
+ * Spike K is the worked example of a hazard only a device can show.
  *
- *  - Spike A (BLOCKING): can op-SQLite open the EXISTING `substreamer7.db` that
- *    expo-sqlite created, read real data, and does its resolved path stay under
- *    the "SQLite" backup-exclusion? This decides "keep the file" vs "copy/migrate".
- *  - Spike B: does ONE op-SQLite connection + a JS-side write mutex + WAL
- *    keep interactive read latency acceptable while a bulk sync writes? And does
- *    `reactiveExecute` fire on a transactional write + dispose on unsub?
- *
- * Delete this module (and its trigger) once Phase 0 exits.
+ * NOT imported by app code or tests. op-SQLite and the repository are lazy-`require`d so
+ * this module stays import-safe where the native module is absent, and never joins the
+ * app's boot import graph.
  */
 type Log = (message: string) => void;
 
@@ -73,8 +68,8 @@ function loadOpSqlite(log: Log): OpSqliteModule | null {
   }
 }
 
-/** The directory holding substreamer7.db — `<document>/SQLite`. op-SQLite owns it
- *  now (expo-sqlite removed); mirrors src/db/client.ts's resolveDbLocation. */
+/** The directory holding substreamer7.db — `<document>/SQLite`. Mirrors
+ *  `resolveDbLocation` in src/db/client.ts. */
 function dbDir(log: Log): string | undefined {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -87,8 +82,8 @@ function dbDir(log: Log): string | undefined {
   }
 }
 
-/** Open a throwaway op-SQLite DB at expo-sqlite's default directory (used by the
- *  Spike C UI screen). Returns null when op-SQLite isn't available. */
+/** Open a throwaway op-SQLite DB in the app's DB directory (used by the Spike C UI
+ *  screen). Returns null when op-SQLite isn't available. */
 export function openSpikeDb(name: string, log: Log = () => undefined): SpikeDb | null {
   const OP = loadOpSqlite(log);
   if (!OP) return null;
@@ -755,7 +750,7 @@ async function runFullSyncSpike(log: Log, strategy: 'search3' | 'basic'): Promis
 
   log(`forcing transport=${strategy}; full reset + timed run (drops + repopulates the`);
   log('normalized tables — the running app repopulates from this)...');
-  // The sync itself no longer drops (that destroyed detail the sync can't rebuild), so
+  // The sync does not drop the tables (that would destroy detail it cannot rebuild), so
   // the spike drops here instead — timing an idempotent re-upsert into a populated table
   // measures a different workload than the cold insert this spike exists to compare.
   const { resetNormalizedSchema } = require('../createNormalizedTables') as typeof import('../createNormalizedTables');
@@ -792,24 +787,17 @@ export async function runSpikeJ(log: Log): Promise<void> {
 /**
  * Spike K — prove a failed atomic batch cannot swallow another writer's work.
  *
- * The hazard this checks is DEVICE-ONLY: Jest's seam runs `executeBatch`
- * synchronously, so it has no pool, no FIFO queue and no window to reproduce.
+ * DEVICE-ONLY: Jest's seam runs `executeBatch` synchronously, so it has no pool, no FIFO
+ * queue and no window to reproduce. An aborted batch never reaches its RELEASE and leaves
+ * the savepoint OPEN, so anything the pool drains before the recovery lands commits inside
+ * it and is then discarded by the ROLLBACK — see `runAtomicBatchAsync` in `db/client.ts`.
  *
- * `opsqlite_execute_batch` is a bare loop that rethrows the first statement
- * failure, so an aborted batch never reaches its RELEASE and leaves the savepoint
- * OPEN. Recovering from the JS `catch` is too late: the rejection has to travel
- * back to JS, and the single-threaded FIFO pool keeps draining meanwhile — anything
- * it runs in that gap commits inside the stranded savepoint and is then silently
- * discarded by the ROLLBACK. The fix enqueues the recovery in the same tick as the
- * batch, so nothing can be queued between them.
+ * Deterministic, not racy: the independent write is issued synchronously while the batch
+ * is still in flight, so the pool order is fixed.
  *
- * Deterministic, not racy: the independent write is issued synchronously while the
- * batch is still in flight, so the pool order is fixed. Against the old code the
- * survivor row is destroyed every time.
- *
- * Runs against the REAL app connection (that is the point — it is the shipped
- * `runAtomicBatchAsync` under test), in two throwaway `spike_k_*` tables which are
- * dropped again at the end. It does not touch app data.
+ * Runs the SHIPPED `runAtomicBatchAsync` against the REAL app connection — that is the
+ * point — in two throwaway `spike_k_*` tables dropped again at the end. App data is never
+ * touched.
  */
 export async function runSpikeK(log: Log): Promise<void> {
   log('=== Spike K: a failed batch must not swallow a concurrent write ===');
@@ -856,8 +844,8 @@ export async function runSpikeK(log: Log): Promise<void> {
 
     const t0 = now();
     const batch = db.runAtomicBatchAsync(commands);
-    // SYNCHRONOUSLY, with the batch still on the pool — this is the writer the old
-    // code captured. No await may appear between these two lines.
+    // SYNCHRONOUSLY, with the batch still on the pool — this is the writer a stranded
+    // savepoint would capture. No await may appear between these two lines.
     const independent = db.runAsync('INSERT INTO spike_k_victim (id) VALUES (?)', ['survivor']);
 
     let batchRejected = false;

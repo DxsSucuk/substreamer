@@ -25,9 +25,9 @@ const num = (v: number | null | undefined): number | null => (v == null ? null :
 
 /**
  * `starred` is the favourites MEMBERSHIP marker, owned by the favourites reconcile —
- * so a library write must never CLEAR it. `buildUpsertRow` derives both the INSERT
- * column list and `DO UPDATE SET` from `Object.keys(row)` (`core.ts:89`), so omitting
- * the key entirely leaves an existing mark untouched; writing `null` would appear in
+ * so a library write must never CLEAR it. `buildUpsertRow` (`core.ts`) derives both the
+ * INSERT column list and `DO UPDATE SET` from `Object.keys(row)`, so omitting the key
+ * entirely leaves an existing mark untouched; writing `null` would appear in
  * `DO UPDATE SET` and wipe it on every out-of-band upsert (e.g. `fetchAlbumDetail`).
  */
 const starredKey = (starredAt: number | null): Record<string, number> =>

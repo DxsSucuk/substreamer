@@ -1,10 +1,10 @@
 /**
  * Generic repository primitives shared by the entity repositories.
  *
- * Writes: id-sorted, chunked upserts (the evidence-based fix for random-key B-tree
- * write fragmentation — see the design doc). Each chunk ships as ONE atomic
- * `runAtomicBatchAsync` off the JS thread, with a macrotask yield between chunks so
- * the JS thread stays responsive.
+ * Writes: id-sorted, chunked upserts — sorting the keys avoids the random-key B-tree
+ * write fragmentation that dominates an unsorted bulk write. Each chunk ships as ONE
+ * atomic `runAtomicBatchAsync` off the JS thread, with a macrotask yield between chunks
+ * so the JS thread stays responsive.
  *
  * Reads: ASYNC keyset pagination (`WHERE (sort_col, id) > (?, ?)`) off the JS
  * thread — O(log n) seeks, never offset scans, never whole-table loads.
@@ -204,8 +204,7 @@ export async function bulkUpsert<T>(
     // drain (or the final await below), and the macrotask yield in between is long
     // enough for a failed chunk to be reported as an unhandled rejection. The drain
     // still sees the rejection — `catch` here returns a new promise and leaves
-    // `prevWrite` rejecting. The write mutex this replaced did the same thing by
-    // accident, via the settle handler it attached to every write.
+    // `prevWrite` rejecting.
     prevWrite.catch(() => undefined);
     done += chunk.length;
     chunkProfiler?.({ deriveMs, writeMs, rows: chunk.length });
