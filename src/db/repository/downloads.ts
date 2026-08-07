@@ -21,12 +21,12 @@
  * Conflating the two would either hide downloaded albums from search or surface metadata-less
  * rows in the library browser.
  */
-import type { Child, Playlist } from 'subsonic-api';
+import type { Child } from 'subsonic-api';
 
 import type { InternalDb } from '../client';
-import { albumListRowToAlbumID3, type AlbumListRow, type LibraryAlbum } from './albums';
+import { type AlbumListRow } from './albums';
 import { colsOf } from './core';
-import { playlistListRowToPlaylist, type PlaylistListRow, type LibraryPlaylist } from './playlists';
+import { type PlaylistListRow } from './playlists';
 
 /** The three library tables that carry a `starred` mark, minus the ones that cannot be
  *  downloaded. Artists are excluded by construction — see `favorites.ts`. */
@@ -132,14 +132,6 @@ export async function listDownloadedAlbums(
   );
 }
 
-/** The downloaded albums as `AlbumID3`, for consumers not yet converted to rows. */
-export async function listDownloadedAlbumsAsAlbumID3(
-  db: InternalDb,
-  f: DownloadedFilter = {},
-): Promise<LibraryAlbum[]> {
-  return (await listDownloadedAlbums(db, f)).map(albumListRowToAlbumID3);
-}
-
 /**
  * The DOWNLOADED playlists. No partial gate: playlists download atomically, so there is no
  * partial state to include or exclude.
@@ -150,13 +142,6 @@ export async function listDownloadedPlaylists(db: InternalDb): Promise<PlaylistL
       'JOIN cached_items ci ON ci.item_id = cp.item_id ' +
       "WHERE ci.type='playlist'",
   );
-}
-
-/** The downloaded playlists as `Playlist`, for consumers not yet converted to rows. */
-export async function listDownloadedPlaylistsAsPlaylist(
-  db: InternalDb,
-): Promise<LibraryPlaylist[]> {
-  return (await listDownloadedPlaylists(db)).map(playlistListRowToPlaylist);
 }
 
 /**
@@ -259,7 +244,3 @@ export async function isItemDownloaded(db: InternalDb, itemId: string): Promise<
   );
   return row !== null;
 }
-
-/** Re-export so consumers can name the produced entity types without reaching into
- *  `albums`/`playlists` for them. */
-export type { Playlist };

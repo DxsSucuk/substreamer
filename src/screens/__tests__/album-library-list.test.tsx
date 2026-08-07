@@ -6,18 +6,28 @@ jest.mock('../../store/persistence/kvStorage', () =>
  *  regression is a single frame, so the render history — not the final state — is
  *  the assertion. */
 interface AlbumRender {
-  albums: { id: string }[];
+  items: { id: string }[];
   loading?: boolean;
   emptyMessage?: string;
   emptySubtitle?: string;
 }
 const mockRenders: AlbumRender[] = [];
-jest.mock('../../components/AlbumListView', () => ({
-  AlbumListView: (p: AlbumRender) => {
-    mockRenders.push(p);
-    return null;
-  },
-}));
+/** Mounts, not renders: the filtered screen picks its adapter per branch, so it renders
+ *  two different `AlbumListView` calls. They must reconcile as one instance — a remount
+ *  would drop the list's scroll position on every filter toggle. */
+const mockMounts: string[] = [];
+jest.mock('../../components/AlbumListView', () => {
+  const React = require('react');
+  return {
+    AlbumListView: (p: AlbumRender) => {
+      mockRenders.push(p);
+      React.useEffect(() => {
+        mockMounts.push('mount');
+      }, []);
+      return null;
+    },
+  };
+});
 
 import React from 'react';
 import { act, render, waitFor } from '@testing-library/react-native';
@@ -65,6 +75,7 @@ beforeAll(() => ensureNormalizedSchema(db()));
 
 beforeEach(() => {
   mockRenders.length = 0;
+  mockMounts.length = 0;
   for (const t of ['albums', 'favorite_albums', 'cached_albums', 'cached_items']) {
     db().runSync(`DELETE FROM ${t}`);
   }
@@ -82,21 +93,21 @@ describe('AlbumLibraryListScreen — favourites filter never flashes the empty s
     render(<AlbumLibraryListScreen favoritesOnly />);
     // The read runs in an effect, i.e. after this frame is on screen. Loading has to be
     // seeded true or the list falls through to "No albums found" with zero rows.
-    expect(mockRenders[0]).toMatchObject({ albums: [], loading: true });
+    expect(mockRenders[0]).toMatchObject({ items: [], loading: true });
   });
 
   it('is never handed an empty, non-loading list while the read is in flight', async () => {
     render(<AlbumLibraryListScreen favoritesOnly />);
-    await waitFor(() => expect(latest().albums).toHaveLength(1));
+    await waitFor(() => expect(latest().items).toHaveLength(1));
     // Every frame either has rows or says it is loading — the exact invariant that
     // keeps AlbumListView off its `ListEmptyComponent` branch.
-    expect(mockRenders.filter((r) => r.albums.length === 0 && !r.loading)).toEqual([]);
+    expect(mockRenders.filter((r) => r.items.length === 0 && !r.loading)).toEqual([]);
   });
 
   it('clears loading and renders the starred rows once the read resolves', async () => {
     render(<AlbumLibraryListScreen favoritesOnly />);
-    await waitFor(() => expect(latest().albums).toHaveLength(1));
-    expect(latest().albums.map((a) => a.id)).toEqual(['star-a']);
+    await waitFor(() => expect(latest().items).toHaveLength(1));
+    expect(latest().items.map((a) => a.id)).toEqual(['star-a']);
     expect(latest().loading).toBe(false);
   });
 
@@ -106,7 +117,7 @@ describe('AlbumLibraryListScreen — favourites filter never flashes the empty s
     expect(mockRenders[0].loading).toBe(true);
     // The placeholder is correct here — it just must not appear before the answer is known.
     await waitFor(() => expect(latest().loading).toBe(false));
-    expect(latest().albums).toEqual([]);
+    expect(latest().items).toEqual([]);
   });
 });
 
@@ -117,13 +128,13 @@ describe('AlbumLibraryListScreen — downloaded filter never flashes the empty s
 
   it('is already loading on the FIRST render, before the SQL read resolves', () => {
     render(<AlbumLibraryListScreen downloadedOnly />);
-    expect(mockRenders[0]).toMatchObject({ albums: [], loading: true });
+    expect(mockRenders[0]).toMatchObject({ items: [], loading: true });
   });
 
   it('is never handed an empty, non-loading list while the read is in flight', async () => {
     render(<AlbumLibraryListScreen downloadedOnly />);
-    await waitFor(() => expect(latest().albums.map((a) => a.id)).toEqual(['dl1']));
-    expect(mockRenders.filter((r) => r.albums.length === 0 && !r.loading)).toEqual([]);
+    await waitFor(() => expect(latest().items.map((a) => a.id)).toEqual(['dl1']));
+    expect(mockRenders.filter((r) => r.items.length === 0 && !r.loading)).toEqual([]);
     expect(latest().loading).toBe(false);
   });
 
@@ -132,7 +143,7 @@ describe('AlbumLibraryListScreen — downloaded filter never flashes the empty s
     render(<AlbumLibraryListScreen downloadedOnly />);
     expect(mockRenders[0].loading).toBe(true);
     await waitFor(() => expect(latest().loading).toBe(false));
-    expect(latest().albums).toEqual([]);
+    expect(latest().items).toEqual([]);
   });
 
   it('hides a download whose component row was never populated', async () => {
@@ -141,7 +152,7 @@ describe('AlbumLibraryListScreen — downloaded filter never flashes the empty s
     db().runSync('DELETE FROM cached_albums');
     render(<AlbumLibraryListScreen downloadedOnly />);
     await waitFor(() => expect(latest().loading).toBe(false));
-    expect(latest().albums).toEqual([]);
+    expect(latest().items).toEqual([]);
   });
 });
 
@@ -151,39 +162,39 @@ describe('AlbumLibraryListScreen — downloaded filter tracks musicCacheStore.re
   it('re-reads when a download completes while the list is on screen', async () => {
     seedDownloadedAlbum('dl1');
     render(<AlbumLibraryListScreen downloadedOnly />);
-    await waitFor(() => expect(latest().albums.map((a) => a.id)).toEqual(['dl1']));
+    await waitFor(() => expect(latest().items.map((a) => a.id)).toEqual(['dl1']));
 
     seedDownloadedAlbum('dl2');
     // Without the bump the row is on disk and invisible — the silent-staleness bug.
-    expect(latest().albums.map((a) => a.id)).toEqual(['dl1']);
+    expect(latest().items.map((a) => a.id)).toEqual(['dl1']);
 
     bumpRevision();
-    await waitFor(() => expect(latest().albums.map((a) => a.id)).toEqual(['dl1', 'dl2']));
+    await waitFor(() => expect(latest().items.map((a) => a.id)).toEqual(['dl1', 'dl2']));
   });
 
   it('keeps the rows it has on screen while the re-read is in flight', async () => {
     seedDownloadedAlbum('dl1');
     render(<AlbumLibraryListScreen downloadedOnly />);
-    await waitFor(() => expect(latest().albums).toHaveLength(1));
+    await waitFor(() => expect(latest().items).toHaveLength(1));
     mockRenders.length = 0;
 
     seedDownloadedAlbum('dl2');
     bumpRevision();
-    await waitFor(() => expect(latest().albums).toHaveLength(2));
+    await waitFor(() => expect(latest().items).toHaveLength(2));
     // A refresh must not blank the list: `AlbumListView` only shows its spinner when the
     // list is empty, so every frame here still has rows.
-    expect(mockRenders.filter((r) => r.albums.length === 0)).toEqual([]);
+    expect(mockRenders.filter((r) => r.items.length === 0)).toEqual([]);
   });
 
   it('drops a deleted download on the next bump', async () => {
     seedDownloadedAlbum('dl1');
     render(<AlbumLibraryListScreen downloadedOnly />);
-    await waitFor(() => expect(latest().albums).toHaveLength(1));
+    await waitFor(() => expect(latest().items).toHaveLength(1));
 
     db().runSync('DELETE FROM cached_items');
     db().runSync('DELETE FROM cached_albums');
     bumpRevision();
-    await waitFor(() => expect(latest().albums).toEqual([]));
+    await waitFor(() => expect(latest().items).toEqual([]));
     expect(latest().loading).toBe(false);
   });
 });
@@ -198,7 +209,7 @@ describe('AlbumLibraryListScreen — empty-state copy', () => {
     render(<AlbumLibraryListScreen favoritesOnly />);
     await waitFor(() => expect(latest().loading).toBe(false));
     expect(latest()).toMatchObject({
-      albums: [],
+      items: [],
       emptyMessage: 'Nothing matches your filters',
       emptySubtitle: 'Try adjusting your filters, or pull to refresh',
     });
@@ -208,7 +219,7 @@ describe('AlbumLibraryListScreen — empty-state copy', () => {
     render(<AlbumLibraryListScreen downloadedOnly />);
     await waitFor(() => expect(latest().loading).toBe(false));
     expect(latest()).toMatchObject({
-      albums: [],
+      items: [],
       emptyMessage: 'Nothing matches your filters',
       emptySubtitle: 'Try adjusting your filters, or pull to refresh',
     });
@@ -236,15 +247,15 @@ describe('AlbumLibraryListScreen — toggling Favourites on an already-mounted l
 
   it('is loading from the very first frame after Favourites goes on', async () => {
     const r = render(<AlbumLibraryListScreen downloadedOnly />);
-    await waitFor(() => expect(latest().albums).toHaveLength(1));
+    await waitFor(() => expect(latest().items).toHaveLength(1));
     mockRenders.length = 0;
 
     r.rerender(<AlbumLibraryListScreen downloadedOnly favoritesOnly />);
-    // Before the derived flag this frame was `{ albums: [], loading: false }` — one frame
+    // Before the derived flag this frame was `{ items: [], loading: false }` — one frame
     // of "No albums found" between the downloaded rows and the favourites rows.
-    expect(mockRenders[0]).toMatchObject({ albums: [], loading: true });
-    await waitFor(() => expect(latest().albums.map((a) => a.id)).toEqual(['star-a']));
-    expect(mockRenders.filter((m) => m.albums.length === 0 && !m.loading)).toEqual([]);
+    expect(mockRenders[0]).toMatchObject({ items: [], loading: true });
+    await waitFor(() => expect(latest().items.map((a) => a.id)).toEqual(['star-a']));
+    expect(mockRenders.filter((m) => m.items.length === 0 && !m.loading)).toEqual([]);
   });
 
   it('is loading from the very first frame after Favourites goes back OFF', async () => {
@@ -256,8 +267,57 @@ describe('AlbumLibraryListScreen — toggling Favourites on an already-mounted l
     // The downloaded read is asynchronous too, so this direction needs the derived flag
     // just as much as the other one — the favourites rows are dropped this frame and the
     // downloaded rows have not arrived.
-    expect(mockRenders[0]).toMatchObject({ albums: [], loading: true });
-    await waitFor(() => expect(latest().albums.map((a) => a.id)).toEqual(['star-a']));
-    expect(mockRenders.filter((m) => m.albums.length === 0 && !m.loading)).toEqual([]);
+    expect(mockRenders[0]).toMatchObject({ items: [], loading: true });
+    await waitFor(() => expect(latest().items.map((a) => a.id)).toEqual(['star-a']));
+    expect(mockRenders.filter((m) => m.items.length === 0 && !m.loading)).toEqual([]);
+  });
+
+  it('reuses the same list instance across the toggle in both directions', async () => {
+    const r = render(<AlbumLibraryListScreen downloadedOnly />);
+    await waitFor(() => expect(latest().items).toHaveLength(1));
+
+    r.rerender(<AlbumLibraryListScreen downloadedOnly favoritesOnly />);
+    await waitFor(() => expect(latest().loading).toBe(false));
+    r.rerender(<AlbumLibraryListScreen downloadedOnly />);
+    await waitFor(() => expect(latest().loading).toBe(false));
+
+    // The two branches hand the view different item shapes and different adapters, but
+    // they are the same component in the same slot, so React updates rather than remounts.
+    expect(mockMounts).toHaveLength(1);
+  });
+});
+
+/**
+ * The downloaded branch now sorts SQL rows and converts only the rows it draws, so the
+ * keys it sorts on are a projection rather than the envelope. These pin that the answer
+ * is unchanged — a row must not sort somewhere other than where its label puts it.
+ */
+describe('AlbumLibraryListScreen — the downloaded filter sort order', () => {
+  const seedSorted = (id: string, name: string, artist: string | null): void => {
+    db().runSync(
+      'INSERT INTO cached_items (item_id, type, name, expected_song_count, last_sync_at, ' +
+        'downloaded_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [id, 'album', name, 0, 0, 0],
+    );
+    db().runSync(
+      'INSERT INTO cached_albums (item_id, name, artist, display_artist) VALUES (?, ?, ?, ?)',
+      [id, name, artist, 'Zzz Display'],
+    );
+  };
+
+  it('orders by the artist tag under the default sort order', async () => {
+    seedSorted('dl-z', 'Album Z', 'Zebra');
+    seedSorted('dl-a', 'Album A', 'Alpha');
+    render(<AlbumLibraryListScreen downloadedOnly />);
+    await waitFor(() => expect(latest().items).toHaveLength(2));
+    expect(latest().items.map((a) => a.id)).toEqual(['dl-a', 'dl-z']);
+  });
+
+  it('falls back to display_artist when the artist tag is absent, as the envelope does', async () => {
+    seedSorted('dl-tagged', 'Album T', 'Alpha');
+    seedSorted('dl-display', 'Album D', null); // display_artist 'Zzz Display' is all it has
+    render(<AlbumLibraryListScreen downloadedOnly />);
+    await waitFor(() => expect(latest().items).toHaveLength(2));
+    expect(latest().items.map((a) => a.id)).toEqual(['dl-tagged', 'dl-display']);
   });
 });

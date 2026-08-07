@@ -7,7 +7,7 @@ import { starredAlbumsPage } from '../db/repository/favorites';
 import { useKeysetList } from '../hooks/useKeysetList';
 import type { Cursor } from '../db/repository/core';
 import type { AlbumID3 } from '../services/subsonicService';
-import { AlbumListView, type AlbumLayout } from './AlbumListView';
+import { AlbumListView, albumIdentity, type AlbumLayout } from './AlbumListView';
 
 const PAGE = 120;
 
@@ -71,7 +71,8 @@ export function StarredAlbumList({
 
   return (
     <AlbumListView
-      albums={rows}
+      items={rows}
+      toAlbum={albumIdentity}
       layout={layout}
       loading={initialLoading || loading}
       error={error}

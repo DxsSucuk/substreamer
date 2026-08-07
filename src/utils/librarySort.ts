@@ -4,7 +4,7 @@
  * transform (keys computed once per item). Callers pass the live articles/sort
  * preference, which keeps this module free of store imports.
  */
-import type { ArtistID3, Playlist } from 'subsonic-api';
+import type { ArtistID3 } from 'subsonic-api';
 
 import { baseCollator, defaultCollator } from './intl';
 import { getSortKey } from './sortHelpers';
@@ -26,6 +26,28 @@ export interface SortableAlbum {
   sortName?: string;
 }
 
+/** Sort by the user's album preference, projecting the sort keys out of each item —
+ *  a browse row holds them under different names, and projecting is cheaper than
+ *  building the whole envelope just to sort. */
+export function sortAlbumsBy<T>(
+  items: readonly T[],
+  keysOf: (item: T) => SortableAlbum,
+  sortOrder: AlbumSortOrder,
+  articles?: readonly string[],
+): T[] {
+  const decorated = items.map((item): [string, T] => {
+    const a = keysOf(item);
+    return [
+      sortOrder === 'title'
+        ? getSortKey(a.name ?? '', a.sortName, articles)
+        : getSortKey(a.artist ?? '', undefined, articles),
+      item,
+    ];
+  });
+  decorated.sort(([ka], [kb]) => baseCollator.compare(ka, kb));
+  return decorated.map(([, item]) => item);
+}
+
 /** Sort albums by the user's preference (title OR artist) — mirrors the library
  *  list's A-Z so the alphabet scroller aligns. */
 export function sortAlbumsByPreference<T extends SortableAlbum>(
@@ -33,14 +55,7 @@ export function sortAlbumsByPreference<T extends SortableAlbum>(
   sortOrder: AlbumSortOrder,
   articles?: readonly string[],
 ): T[] {
-  const decorated = albums.map((a): [string, T] => [
-    sortOrder === 'title'
-      ? getSortKey(a.name ?? '', a.sortName, articles)
-      : getSortKey(a.artist ?? '', undefined, articles),
-    a,
-  ]);
-  decorated.sort(([ka], [kb]) => baseCollator.compare(ka, kb));
-  return decorated.map(([, a]) => a);
+  return sortAlbumsBy(albums, (a) => a, sortOrder, articles);
 }
 
 /** Sort artists A-Z by (sort) name. */
@@ -56,12 +71,13 @@ export function sortArtistsByName(
   return decorated.map(([, a]) => a);
 }
 
-/** Sort playlists A-Z by name (playlists have no server sortName). */
-export function sortPlaylistsByName(
-  playlists: readonly Playlist[],
+/** Sort playlists A-Z by name (playlists have no server sortName). Structural in
+ *  `name` so a browse row sorts without being widened into a `Playlist` first. */
+export function sortPlaylistsByName<T extends { name?: string | null }>(
+  playlists: readonly T[],
   articles?: readonly string[],
-): Playlist[] {
-  const decorated = playlists.map((p): [string, Playlist] => [
+): T[] {
+  const decorated = playlists.map((p): [string, T] => [
     getSortKey(p.name ?? '', undefined, articles),
     p,
   ]);

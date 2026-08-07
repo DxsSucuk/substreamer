@@ -14,7 +14,7 @@ import {
   type PlaylistListRow,
 } from '../db/repository/playlists';
 import { type Cursor } from '../db/repository/core';
-import { listDownloadedPlaylistsAsPlaylist } from '../db/repository/downloads';
+import { listDownloadedPlaylists } from '../db/repository/downloads';
 import { getDb } from '../store/persistence/db';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { offlineModeStore } from '../store/offlineModeStore';
@@ -23,7 +23,6 @@ import { syncStatusStore } from '../store/syncStatusStore';
 import { serverInfoStore } from '../store/serverInfoStore';
 import { sortPlaylistsByName } from '../utils/librarySort';
 import { type IoniconsName } from '../utils/iconNames';
-import type { Playlist } from '../services/subsonicService';
 
 const PAGE = 120;
 /** Alphabet-scroller letters — all active in keyset mode (the loaded window can't
@@ -62,8 +61,6 @@ function KeysetPlaylistList({
   const prevCursorRef = useRef<Cursor | null>(null); // backward (start)
   const doneRef = useRef(false);
   const busyRef = useRef(false);
-
-  const playlists = useMemo(() => rows.map(playlistListRowToPlaylist), [rows]);
 
   const loadFirstPage = useCallback(async () => {
     busyRef.current = true;
@@ -178,7 +175,8 @@ function KeysetPlaylistList({
 
   return (
     <PlaylistListView
-      playlists={playlists}
+      items={rows}
+      toPlaylist={playlistListRowToPlaylist}
       layout={layout}
       loading={showLoading}
       showAlphabetScroller
@@ -211,7 +209,7 @@ function FilteredPlaylistList({
   // without it a download completing under the user leaves this list silently stale.
   const revision = musicCacheStore((s) => s.revision);
 
-  const [playlists, setPlaylists] = useState<Playlist[]>([]);
+  const [rows, setRows] = useState<PlaylistListRow[]>([]);
   const [loadedRevision, setLoadedRevision] = useState<number | null>(null);
   // DERIVED, not seeded — see the note in `album-library-list.tsx`. The read is
   // asynchronous, so a mount-time seed leaves one empty-and-not-loading frame that
@@ -221,9 +219,9 @@ function FilteredPlaylistList({
     let alive = true;
     void (async () => {
       const db = getDb();
-      const list = db ? await listDownloadedPlaylistsAsPlaylist(db) : [];
+      const list = db ? await listDownloadedPlaylists(db) : [];
       if (alive) {
-        setPlaylists(list);
+        setRows(list);
         setLoadedRevision(revision);
       }
     })();
@@ -232,10 +230,10 @@ function FilteredPlaylistList({
     };
   }, [revision]);
 
-  const filteredPlaylists = useMemo(() => {
+  const filteredRows = useMemo(() => {
     const articles = serverInfoStore.getState().ignoredArticles ?? undefined;
-    return sortPlaylistsByName(playlists, articles);
-  }, [playlists]);
+    return sortPlaylistsByName(rows, articles);
+  }, [rows]);
 
   const [refreshing, setRefreshing] = useState(false);
   const handleRefresh = useCallback(async () => {
@@ -249,7 +247,8 @@ function FilteredPlaylistList({
 
   return (
     <PlaylistListView
-      playlists={filteredPlaylists}
+      items={filteredRows}
+      toPlaylist={playlistListRowToPlaylist}
       layout={layout}
       loading={loading}
       onRefresh={handleRefresh}

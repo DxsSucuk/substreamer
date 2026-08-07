@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
-import { ArtistListView, type ArtistLayout } from '../components/ArtistListView';
+import { ArtistListView, artistIdentity, type ArtistLayout } from '../components/ArtistListView';
 import { useFetchOnHydrated } from '../hooks/useFetchOnHydrated';
 import { onPullToRefresh } from '../services/dataSyncService';
 import {
@@ -53,8 +53,6 @@ function KeysetArtistList({
   const prevCursorRef = useRef<Cursor | null>(null); // backward (start)
   const doneRef = useRef(false);
   const busyRef = useRef(false);
-
-  const artists = useMemo(() => rows.map(artistListRowToArtistID3), [rows]);
 
   const loadFirstPage = useCallback(async () => {
     busyRef.current = true;
@@ -171,7 +169,8 @@ function KeysetArtistList({
 
   return (
     <ArtistListView
-      artists={artists}
+      items={rows}
+      toArtist={artistListRowToArtistID3}
       layout={layout}
       loading={showLoading}
       showAlphabetScroller
@@ -244,7 +243,8 @@ function FilteredArtistList({
 
   return (
     <ArtistListView
-      artists={filteredArtists}
+      items={filteredArtists}
+      toArtist={artistIdentity}
       layout={layout}
       loading={starredLoading}
       onRefresh={handleRefresh}

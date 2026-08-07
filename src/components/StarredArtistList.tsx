@@ -6,7 +6,7 @@ import { starredArtistsPage } from '../db/repository/favorites';
 import { useKeysetList } from '../hooks/useKeysetList';
 import type { Cursor } from '../db/repository/core';
 import type { ArtistID3 } from '../services/subsonicService';
-import { ArtistListView, type ArtistLayout } from './ArtistListView';
+import { ArtistListView, artistIdentity, type ArtistLayout } from './ArtistListView';
 
 const PAGE = 120;
 
@@ -57,7 +57,8 @@ export function StarredArtistList({
 
   return (
     <ArtistListView
-      artists={rows}
+      items={rows}
+      toArtist={artistIdentity}
       layout={layout}
       loading={initialLoading || loading}
       error={error}

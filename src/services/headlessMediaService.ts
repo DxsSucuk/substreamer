@@ -43,12 +43,16 @@ import { logVoiceSearch } from './voiceSearchLogger';
 import { scoreCandidate, REJECT } from './searchMatch';
 import { composeHomeAlbumSections, type ComposeHomeInput } from './homeSectionsService';
 import { getDb } from '../store/persistence/db';
-import { listAllAlbums, albumBrowseRowToAlbumID3 } from '../db/repository/albums';
+import {
+  listAllAlbums,
+  albumBrowseRowToAlbumID3,
+  albumListRowToAlbumID3,
+} from '../db/repository/albums';
 import { listAllStarredSongs, listStarredArtistNames } from '../db/repository/favorites';
 import { listAllPlaylists, playlistBrowseRowToPlaylist } from '../db/repository/playlists';
 import {
   listDownloadedAlbumIds,
-  listDownloadedAlbumsAsAlbumID3,
+  listDownloadedAlbums,
   listDownloadedPlaylistIds,
 } from '../db/repository/downloads';
 import { favoritesStore } from '../store/favoritesStore';
@@ -163,7 +167,7 @@ async function homeInput(): Promise<ComposeHomeInput> {
   // filter only needs ids because those albums carry their own (MEMBERSHIP).
   const [downloadedRows, downloadedAlbumIds]: [AlbumID3[], ReadonlySet<string>] = db
     ? await Promise.all([
-        listDownloadedAlbumsAsAlbumID3(db, { includePartial }),
+        listDownloadedAlbums(db, { includePartial }).then((rs) => rs.map(albumListRowToAlbumID3)),
         listDownloadedAlbumIds(db, { includePartial }),
       ])
     : [[], new Set<string>()];

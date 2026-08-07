@@ -5,7 +5,7 @@ jest.mock('../../store/persistence/kvStorage', () =>
 import React from 'react';
 import { render, act, waitFor } from '@testing-library/react-native';
 
-let artistProps: { artists: { id: string }[]; onEndReached?: () => void };
+let artistProps: { items: { id: string }[]; onEndReached?: () => void };
 jest.mock('../ArtistListView', () => ({
   ArtistListView: (p: typeof artistProps) => {
     artistProps = p;
@@ -48,19 +48,19 @@ beforeEach(async () => {
 describe('StarredArtistList', () => {
   it('renders the merged first page, newest favourite first', async () => {
     render(<StarredArtistList />);
-    await waitFor(() => expect(artistProps.artists).toHaveLength(3));
-    expect(artistProps.artists.map((a) => a.id)).toEqual(['lib-a', 'rem-a', 'lib-b']);
+    await waitFor(() => expect(artistProps.items).toHaveLength(3));
+    expect(artistProps.items.map((a) => a.id)).toEqual(['lib-a', 'rem-a', 'lib-b']);
   });
 
   it('reloads when the membership version bumps', async () => {
     render(<StarredArtistList />);
-    await waitFor(() => expect(artistProps.artists).toHaveLength(3));
+    await waitFor(() => expect(artistProps.items).toHaveLength(3));
 
     db().runSync("DELETE FROM artists WHERE id='lib-b'");
     await act(async () => {
       favoritesStore.setState({ version: 1 });
     });
-    await waitFor(() => expect(artistProps.artists).toHaveLength(2));
+    await waitFor(() => expect(artistProps.items).toHaveLength(2));
   });
 
   // Artists cannot be downloaded, so this list takes no downloaded filter — owning a
@@ -74,7 +74,7 @@ describe('StarredArtistList', () => {
     );
     db().runSync('INSERT INTO cached_albums (item_id, artist_id) VALUES (?, ?)', ['al1', 'lib-b']);
     render(<StarredArtistList />);
-    await waitFor(() => expect(artistProps.artists).toHaveLength(3));
-    expect(artistProps.artists.map((a) => a.id)).toEqual(['lib-a', 'rem-a', 'lib-b']);
+    await waitFor(() => expect(artistProps.items).toHaveLength(3));
+    expect(artistProps.items.map((a) => a.id)).toEqual(['lib-a', 'rem-a', 'lib-b']);
   });
 });

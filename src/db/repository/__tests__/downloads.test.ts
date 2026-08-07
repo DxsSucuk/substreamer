@@ -11,9 +11,9 @@ import {
   listDownloadedPlaylists,
   listDownloadedSongs,
   downloadedSongRowToChild,
-  listDownloadedPlaylistsAsPlaylist,
   partialGate,
 } from '../downloads';
+import { playlistListRowToPlaylist } from '../playlists';
 
 const db = () => getDb()!;
 
@@ -194,7 +194,7 @@ describe('listDownloadedPlaylists', () => {
   it('adapts to a Playlist the list components can render', async () => {
     seedItem('pl1', 'playlist', 0);
     seedPlaylistMeta('pl1');
-    expect((await listDownloadedPlaylistsAsPlaylist(db()))[0]).toMatchObject({
+    expect(playlistListRowToPlaylist((await listDownloadedPlaylists(db()))[0])).toMatchObject({
       id: 'pl1',
       name: 'Playlist pl1',
       songCount: 2,

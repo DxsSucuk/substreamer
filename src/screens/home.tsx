@@ -31,11 +31,13 @@ import { computeStreaks, dateKey } from '../hooks/usePlaybackAnalytics';
 import { useTheme } from '../hooks/useTheme';
 import type { AlbumID3, Playlist } from '../services/subsonicService';
 import { composeHomeAlbumSections } from '../services/homeSectionsService';
+import { albumListRowToAlbumID3 } from '../db/repository/albums';
 import {
   listDownloadedAlbumIds,
-  listDownloadedAlbumsAsAlbumID3,
-  listDownloadedPlaylistsAsPlaylist,
+  listDownloadedAlbums,
+  listDownloadedPlaylists,
 } from '../db/repository/downloads';
+import { playlistListRowToPlaylist } from '../db/repository/playlists';
 import { getDb } from '../store/persistence/db';
 import {
   albumListsStore,
@@ -429,8 +431,10 @@ export function HomeScreen() {
       const db = getDb();
       const [albums, playlists, ids]: [AlbumID3[], Playlist[], ReadonlySet<string>] = db
         ? await Promise.all([
-            listDownloadedAlbumsAsAlbumID3(db, { includePartial }),
-            listDownloadedPlaylistsAsPlaylist(db),
+            listDownloadedAlbums(db, { includePartial }).then((rs) =>
+              rs.map(albumListRowToAlbumID3),
+            ),
+            listDownloadedPlaylists(db).then((rs) => rs.map(playlistListRowToPlaylist)),
             listDownloadedAlbumIds(db, { includePartial }),
           ])
         : [[], [], new Set<string>()];

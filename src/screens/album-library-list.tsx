@@ -2,24 +2,25 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
-import { AlbumListView, type AlbumLayout } from '../components/AlbumListView';
+import { AlbumListView, albumIdentity, type AlbumLayout } from '../components/AlbumListView';
 import { onPullToRefresh } from '../services/dataSyncService';
 import {
   albumCursorOf,
+  albumListRowSortKeys,
   albumListRowToAlbumID3,
   listAlbums,
   listAlbumsBefore,
   type AlbumListRow,
 } from '../db/repository/albums';
 import { type Cursor } from '../db/repository/core';
-import { listDownloadedAlbumsAsAlbumID3 } from '../db/repository/downloads';
+import { listDownloadedAlbums } from '../db/repository/downloads';
 import { listAllStarredAlbums } from '../db/repository/favorites';
 import { getDb } from '../store/persistence/db';
 import { favoritesStore } from '../store/favoritesStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { serverInfoStore } from '../store/serverInfoStore';
-import { sortAlbumsByPreference } from '../utils/librarySort';
+import { sortAlbumsBy, sortAlbumsByPreference } from '../utils/librarySort';
 import type { AlbumID3 } from '../services/subsonicService';
 
 const PAGE = 120;
@@ -47,8 +48,6 @@ function KeysetAlbumList({ layout, contentInsetTop }: { layout: AlbumLayout; con
   // Respects the user's album-list sort setting: 'artist' (default) groups by
   // artist then title; 'title' is a flat A-Z by album title.
   const sortOrder = layoutPreferencesStore((s) => s.albumSortOrder);
-
-  const albums = useMemo(() => rows.map(albumListRowToAlbumID3), [rows]);
 
   const loadFirstPage = useCallback(async () => {
     busyRef.current = true;
@@ -137,7 +136,8 @@ function KeysetAlbumList({ layout, contentInsetTop }: { layout: AlbumLayout; con
 
   return (
     <AlbumListView
-      albums={albums}
+      items={rows}
+      toAlbum={albumListRowToAlbumID3}
       layout={layout}
       loading={initialLoading}
       showAlphabetScroller
@@ -200,7 +200,7 @@ function FilteredAlbumList({
     };
   }, [favoritesOnly, downloadedOnly, includePartial, version, starredKey]);
 
-  const [downloadedAlbums, setDownloadedAlbums] = useState<AlbumID3[]>([]);
+  const [downloadedRows, setDownloadedRows] = useState<AlbumListRow[]>([]);
   const [downloadedLoadedKey, setDownloadedLoadedKey] = useState<string | null>(null);
   const downloadedKey = `${includePartial}:${revision}`;
   // DERIVED for the same reason as `starredLoading` above: the read is asynchronous, so a
@@ -212,9 +212,9 @@ function FilteredAlbumList({
     let alive = true;
     void (async () => {
       const db = getDb();
-      const list = db ? await listDownloadedAlbumsAsAlbumID3(db, { includePartial }) : [];
+      const list = db ? await listDownloadedAlbums(db, { includePartial }) : [];
       if (alive) {
-        setDownloadedAlbums(list);
+        setDownloadedRows(list);
         setDownloadedLoadedKey(downloadedKey);
       }
     })();
@@ -223,11 +223,18 @@ function FilteredAlbumList({
     };
   }, [favoritesOnly, includePartial, revision, downloadedKey]);
 
-  const filteredAlbums = useMemo(() => {
+  // The two halves are sorted separately because they hold different shapes: the
+  // favourites half merges marked library rows with the `favorite_albums` remainder,
+  // whose entries are parsed envelopes rather than browse rows.
+  const sortedStarred = useMemo(() => {
     const articles = serverInfoStore.getState().ignoredArticles ?? undefined;
-    const list: AlbumID3[] = favoritesOnly ? starredAlbums : downloadedAlbums;
-    return sortAlbumsByPreference(list, sortOrder, articles);
-  }, [favoritesOnly, starredAlbums, downloadedAlbums, sortOrder]);
+    return sortAlbumsByPreference(starredAlbums, sortOrder, articles);
+  }, [starredAlbums, sortOrder]);
+
+  const sortedDownloaded = useMemo(() => {
+    const articles = serverInfoStore.getState().ignoredArticles ?? undefined;
+    return sortAlbumsBy(downloadedRows, albumListRowSortKeys, sortOrder, articles);
+  }, [downloadedRows, sortOrder]);
 
   const [refreshing, setRefreshing] = useState(false);
   const handleRefresh = useCallback(async () => {
@@ -239,22 +246,28 @@ function FilteredAlbumList({
     }
   }, []);
 
-  return (
-    <AlbumListView
-      albums={filteredAlbums}
-      layout={layout}
-      loading={starredLoading || downloadedLoading}
-      onRefresh={handleRefresh}
-      refreshing={refreshing}
-      showAlphabetScroller
-      scrollToTopTrigger={`${downloadedOnly}:${favoritesOnly}`}
-      contentInsetTop={contentInsetTop}
-      // This component only exists under a filter, so an empty result here always means
-      // "the filter removed everything" — never "your library is empty". The unfiltered
-      // list (`KeysetAlbumList`) keeps the "No albums found" copy.
-      emptyMessage={t('noMatchesForFilters')}
-      emptySubtitle={t('tryAdjustingFilters')}
-    />
+  const viewProps = {
+    layout,
+    loading: starredLoading || downloadedLoading,
+    onRefresh: handleRefresh,
+    refreshing,
+    showAlphabetScroller: true,
+    scrollToTopTrigger: `${downloadedOnly}:${favoritesOnly}`,
+    contentInsetTop,
+    // This component only exists under a filter, so an empty result here always means
+    // "the filter removed everything" — never "your library is empty". The unfiltered
+    // list (`KeysetAlbumList`) keeps the "No albums found" copy.
+    emptyMessage: t('noMatchesForFilters'),
+    emptySubtitle: t('tryAdjustingFilters'),
+  };
+
+  // Both branches render the same component in the same slot, so switching filters
+  // updates the instance rather than remounting it — which is what the derived loading
+  // flags above depend on.
+  return favoritesOnly ? (
+    <AlbumListView items={sortedStarred} toAlbum={albumIdentity} {...viewProps} />
+  ) : (
+    <AlbumListView items={sortedDownloaded} toAlbum={albumListRowToAlbumID3} {...viewProps} />
   );
 }
 

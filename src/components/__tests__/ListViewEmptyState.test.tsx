@@ -32,8 +32,8 @@ import React from 'react';
 import { ActivityIndicator } from 'react-native';
 import { render } from '@testing-library/react-native';
 
-import { AlbumListView } from '../AlbumListView';
-import { ArtistListView } from '../ArtistListView';
+import { AlbumListView, albumIdentity } from '../AlbumListView';
+import { ArtistListView, artistIdentity } from '../ArtistListView';
 import { SongListView } from '../SongListView';
 
 /**
@@ -45,12 +45,16 @@ import { SongListView } from '../SongListView';
 const views = [
   {
     name: 'AlbumListView',
-    render: (loading: boolean) => <AlbumListView albums={[]} loading={loading} />,
+    render: (loading: boolean) => (
+      <AlbumListView items={[]} toAlbum={albumIdentity} loading={loading} />
+    ),
     empty: 'No albums found',
   },
   {
     name: 'ArtistListView',
-    render: (loading: boolean) => <ArtistListView artists={[]} loading={loading} />,
+    render: (loading: boolean) => (
+      <ArtistListView items={[]} toArtist={artistIdentity} loading={loading} />
+    ),
     empty: 'No artists found',
   },
   {

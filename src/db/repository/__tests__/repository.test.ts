@@ -6,6 +6,7 @@ import {
   ALBUM_LIST_COLS,
   albumCursorOf,
   albumIdsPresent,
+  albumListRowSortKeys,
   albumListRowToAlbumID3,
   countAlbums,
   getAlbum,
@@ -238,6 +239,34 @@ describe('albums repository', () => {
     expect(a.discTitles).toEqual([
       { disc: 1, title: 'Side A' },
       { disc: 2, title: 'Side B' },
+    ]);
+  });
+
+  /** The projection a browse list sorts on. It must answer exactly what the envelope
+   *  would, or a row sorts somewhere other than where its label puts it. */
+  it('projects the same sort keys the envelope carries', async () => {
+    db().runSync(
+      'INSERT INTO albums (id, name, artist, display_artist, sort_name, sort_title) ' +
+        "VALUES ('sk1', 'Abbey Road', 'The Beatles', 'Beatles, The', 'Abbey Road (sort)', 'abbey road')",
+    );
+    // `display_artist`-only, the case the fallback exists for.
+    db().runSync(
+      'INSERT INTO albums (id, name, display_artist, sort_title) ' +
+        "VALUES ('sk2', 'Let It Be', 'Beatles, The', 'let it be')",
+    );
+    const rows = (await listAlbums(db(), { limit: 10 })).rows.filter((r) => r.id.startsWith('sk'));
+    for (const row of rows) {
+      const envelope = albumListRowToAlbumID3(row);
+      expect(albumListRowSortKeys(row)).toEqual({
+        id: envelope.id,
+        name: envelope.name,
+        artist: envelope.artist,
+        sortName: envelope.sortName,
+      });
+    }
+    expect(rows.map((r) => albumListRowSortKeys(r).artist)).toEqual([
+      'The Beatles',
+      'Beatles, The',
     ]);
   });
 

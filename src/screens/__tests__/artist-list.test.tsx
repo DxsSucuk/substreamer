@@ -6,7 +6,7 @@ jest.mock('../../store/persistence/kvStorage', () =>
  *  regression is a single frame, so the render history — not the final state — is
  *  the assertion. */
 interface ArtistRender {
-  artists: { id: string }[];
+  items: { id: string }[];
   loading?: boolean;
   emptyMessage?: string;
   emptySubtitle?: string;
@@ -78,21 +78,21 @@ describe('ArtistListScreen — favourites filter never flashes the empty state',
     render(<ArtistListScreen favoritesOnly />);
     // The read runs in an effect, i.e. after this frame is on screen. Loading has to be
     // seeded true or the list falls through to "No artists found" with zero rows.
-    expect(mockRenders[0]).toMatchObject({ artists: [], loading: true });
+    expect(mockRenders[0]).toMatchObject({ items: [], loading: true });
   });
 
   it('is never handed an empty, non-loading list while the read is in flight', async () => {
     render(<ArtistListScreen favoritesOnly />);
-    await waitFor(() => expect(latest().artists).toHaveLength(1));
+    await waitFor(() => expect(latest().items).toHaveLength(1));
     // Every frame either has rows or says it is loading — the exact invariant that
     // keeps ArtistListView off its `ListEmptyComponent` branch.
-    expect(mockRenders.filter((r) => r.artists.length === 0 && !r.loading)).toEqual([]);
+    expect(mockRenders.filter((r) => r.items.length === 0 && !r.loading)).toEqual([]);
   });
 
   it('clears loading and renders the starred rows once the read resolves', async () => {
     render(<ArtistListScreen favoritesOnly />);
-    await waitFor(() => expect(latest().artists).toHaveLength(1));
-    expect(latest().artists.map((a) => a.id)).toEqual(['star-a']);
+    await waitFor(() => expect(latest().items).toHaveLength(1));
+    expect(latest().items.map((a) => a.id)).toEqual(['star-a']);
     expect(latest().loading).toBe(false);
   });
 
@@ -102,7 +102,7 @@ describe('ArtistListScreen — favourites filter never flashes the empty state',
     expect(mockRenders[0].loading).toBe(true);
     // The placeholder is correct here — it just must not appear before the answer is known.
     await waitFor(() => expect(latest().loading).toBe(false));
-    expect(latest().artists).toEqual([]);
+    expect(latest().items).toEqual([]);
   });
 });
 
@@ -116,7 +116,7 @@ describe('ArtistListScreen — empty-state copy', () => {
     render(<ArtistListScreen favoritesOnly />);
     await waitFor(() => expect(latest().loading).toBe(false));
     expect(latest()).toMatchObject({
-      artists: [],
+      items: [],
       emptyMessage: 'Nothing matches your filters',
       emptySubtitle: 'Try adjusting your filters, or pull to refresh',
     });
@@ -128,7 +128,7 @@ describe('ArtistListScreen — empty-state copy', () => {
     syncStatusStore.setState({ artistLibraryLastFetchedAt: 1, artistLibraryLoading: false });
     render(<ArtistListScreen />);
     await waitFor(() => expect(latest().loading).toBe(false));
-    expect(latest().artists).toEqual([]);
+    expect(latest().items).toEqual([]);
     expect(mockRenders.every((r) => r.emptyMessage === undefined)).toBe(true);
     expect(mockRenders.every((r) => r.emptySubtitle === undefined)).toBe(true);
   });
@@ -146,6 +146,6 @@ describe('ArtistListScreen — no downloaded filter exists', () => {
 
     render(<ArtistListScreen favoritesOnly />);
     await waitFor(() => expect(latest().loading).toBe(false));
-    expect(latest().artists.map((a) => a.id)).toEqual(['star-a']);
+    expect(latest().items.map((a) => a.id)).toEqual(['star-a']);
   });
 });

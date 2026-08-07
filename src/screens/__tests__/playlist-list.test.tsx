@@ -6,7 +6,7 @@ jest.mock('../../store/persistence/kvStorage', () =>
  *  regression is a single frame, so the render history — not the final state — is
  *  the assertion. */
 interface PlaylistRender {
-  playlists: { id: string }[];
+  items: { id: string }[];
   loading?: boolean;
   emptyMessage?: string;
   emptySubtitle?: string;
@@ -78,13 +78,13 @@ describe('PlaylistListScreen — downloaded filter never flashes the empty state
     render(<PlaylistListScreen downloadedOnly />);
     // The read runs in an effect, i.e. after this frame is on screen. Loading has to be
     // derived-true or the list falls through to its empty placeholder with zero rows.
-    expect(mockRenders[0]).toMatchObject({ playlists: [], loading: true });
+    expect(mockRenders[0]).toMatchObject({ items: [], loading: true });
   });
 
   it('is never handed an empty, non-loading list while the read is in flight', async () => {
     render(<PlaylistListScreen downloadedOnly />);
-    await waitFor(() => expect(latest().playlists.map((p) => p.id)).toEqual(['pl1']));
-    expect(mockRenders.filter((r) => r.playlists.length === 0 && !r.loading)).toEqual([]);
+    await waitFor(() => expect(latest().items.map((p) => p.id)).toEqual(['pl1']));
+    expect(mockRenders.filter((r) => r.items.length === 0 && !r.loading)).toEqual([]);
     expect(latest().loading).toBe(false);
   });
 
@@ -93,14 +93,14 @@ describe('PlaylistListScreen — downloaded filter never flashes the empty state
     render(<PlaylistListScreen downloadedOnly />);
     expect(mockRenders[0].loading).toBe(true);
     await waitFor(() => expect(latest().loading).toBe(false));
-    expect(latest().playlists).toEqual([]);
+    expect(latest().items).toEqual([]);
   });
 
   it('hides a download whose component row was never populated', async () => {
     db().runSync('DELETE FROM cached_playlists');
     render(<PlaylistListScreen downloadedOnly />);
     await waitFor(() => expect(latest().loading).toBe(false));
-    expect(latest().playlists).toEqual([]);
+    expect(latest().items).toEqual([]);
   });
 
   it('never returns an album', async () => {
@@ -110,7 +110,7 @@ describe('PlaylistListScreen — downloaded filter never flashes the empty state
       ['al1', 'album', 'Album al1', 0, 0, 0],
     );
     render(<PlaylistListScreen downloadedOnly />);
-    await waitFor(() => expect(latest().playlists.map((p) => p.id)).toEqual(['pl1']));
+    await waitFor(() => expect(latest().items.map((p) => p.id)).toEqual(['pl1']));
   });
 });
 
@@ -124,7 +124,7 @@ describe('PlaylistListScreen — empty-state copy', () => {
     render(<PlaylistListScreen downloadedOnly />);
     await waitFor(() => expect(latest().loading).toBe(false));
     expect(latest()).toMatchObject({
-      playlists: [],
+      items: [],
       emptyMessage: 'Nothing matches your filters',
       emptySubtitle: 'Try adjusting your filters, or pull to refresh',
     });
@@ -147,7 +147,7 @@ describe('PlaylistListScreen — empty-state copy', () => {
     syncStatusStore.setState({ playlistLibraryLastFetchedAt: 1, playlistLibraryLoading: false });
     render(<PlaylistListScreen />);
     await waitFor(() => expect(latest().loading).toBe(false));
-    expect(latest().playlists).toEqual([]);
+    expect(latest().items).toEqual([]);
     expect(mockRenders.every((r) => r.emptyMessage === undefined)).toBe(true);
     expect(mockRenders.every((r) => r.emptySubtitle === undefined)).toBe(true);
   });
@@ -159,37 +159,37 @@ describe('PlaylistListScreen — downloaded filter tracks musicCacheStore.revisi
   it('re-reads when a download completes while the list is on screen', async () => {
     seedDownloadedPlaylist('pl1');
     render(<PlaylistListScreen downloadedOnly />);
-    await waitFor(() => expect(latest().playlists.map((p) => p.id)).toEqual(['pl1']));
+    await waitFor(() => expect(latest().items.map((p) => p.id)).toEqual(['pl1']));
 
     seedDownloadedPlaylist('pl2');
     // Without the bump the row is on disk and invisible — the silent-staleness bug.
-    expect(latest().playlists.map((p) => p.id)).toEqual(['pl1']);
+    expect(latest().items.map((p) => p.id)).toEqual(['pl1']);
 
     bumpRevision();
-    await waitFor(() => expect(latest().playlists.map((p) => p.id)).toEqual(['pl1', 'pl2']));
+    await waitFor(() => expect(latest().items.map((p) => p.id)).toEqual(['pl1', 'pl2']));
   });
 
   it('keeps the rows it has on screen while the re-read is in flight', async () => {
     seedDownloadedPlaylist('pl1');
     render(<PlaylistListScreen downloadedOnly />);
-    await waitFor(() => expect(latest().playlists).toHaveLength(1));
+    await waitFor(() => expect(latest().items).toHaveLength(1));
     mockRenders.length = 0;
 
     seedDownloadedPlaylist('pl2');
     bumpRevision();
-    await waitFor(() => expect(latest().playlists).toHaveLength(2));
-    expect(mockRenders.filter((r) => r.playlists.length === 0)).toEqual([]);
+    await waitFor(() => expect(latest().items).toHaveLength(2));
+    expect(mockRenders.filter((r) => r.items.length === 0)).toEqual([]);
   });
 
   it('drops a deleted download on the next bump', async () => {
     seedDownloadedPlaylist('pl1');
     render(<PlaylistListScreen downloadedOnly />);
-    await waitFor(() => expect(latest().playlists).toHaveLength(1));
+    await waitFor(() => expect(latest().items).toHaveLength(1));
 
     db().runSync('DELETE FROM cached_items');
     db().runSync('DELETE FROM cached_playlists');
     bumpRevision();
-    await waitFor(() => expect(latest().playlists).toEqual([]));
+    await waitFor(() => expect(latest().items).toEqual([]));
     expect(latest().loading).toBe(false);
   });
 });

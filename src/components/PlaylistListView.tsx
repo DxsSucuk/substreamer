@@ -28,12 +28,55 @@ import { AlphabetScroller } from './AlphabetScroller';
 export type PlaylistLayout = 'list' | 'grid';
 
 /* ------------------------------------------------------------------ */
+/*  Per-row adapters                                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One rendered row, converted. The conversion is memoised on the item object, so
+ * appending a page converts the appended rows only — the accumulated array is never
+ * re-mapped, and the screen holds no second array of envelopes.
+ */
+function PlaylistListItem<T>({
+  item,
+  toPlaylist,
+}: {
+  item: T;
+  toPlaylist: (item: T) => Playlist;
+}) {
+  const playlist = useMemo(() => toPlaylist(item), [item, toPlaylist]);
+  return <PlaylistRow playlist={playlist} />;
+}
+
+function PlaylistGridItem<T>({
+  item,
+  toPlaylist,
+  index,
+  columns,
+}: {
+  item: T;
+  toPlaylist: (item: T) => Playlist;
+  index: number;
+  columns: number;
+}) {
+  const playlist = useMemo(() => toPlaylist(item), [item, toPlaylist]);
+  const { paddingLeft, paddingRight } = getGridItemPadding(index, columns, GRID_GAP);
+  return (
+    <View style={{ flex: 1, paddingLeft, paddingRight, marginBottom: GRID_GAP }}>
+      <PlaylistCard playlist={playlist} />
+    </View>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  PlaylistListView                                                  */
 /* ------------------------------------------------------------------ */
 
-export interface PlaylistListViewProps {
-  /** The list of playlists to display */
-  playlists: Playlist[];
+export interface PlaylistListViewProps<T extends { id: string }> {
+  /** The items to display — whatever the screen holds: SQL browse rows, envelopes. */
+  items: T[];
+  /** Adapts one item to the `Playlist` the row and card components take. Must be
+   *  stable across renders (module-level, or memoised at the consumer). */
+  toPlaylist: (item: T) => Playlist;
   /** Display layout: row list or grid of cards */
   layout?: PlaylistLayout;
   /** Whether data is currently loading */
@@ -65,12 +108,13 @@ export interface PlaylistListViewProps {
   /** A-Z tap seeks via the DB (replace the window) instead of scrolling the array. */
   onSeekLetter?: (letter: string) => void;
   /** The full set of active alphabet letters — the loaded window can't reveal them
-   *  all, so the screen supplies it. Falls back to computing from `playlists`. */
+   *  all, so the screen supplies it. Falls back to computing from `items`. */
   activeLetters?: Set<string>;
 }
 
-export function PlaylistListView({
-  playlists,
+export function PlaylistListView<T extends { id: string }>({
+  items,
+  toPlaylist,
   layout = 'list',
   loading = false,
   error = null,
@@ -86,13 +130,13 @@ export function PlaylistListView({
   onStartReached,
   onSeekLetter,
   activeLetters: activeLettersProp,
-}: PlaylistListViewProps) {
+}: PlaylistListViewProps<T>) {
   const { t } = useTranslation();
   const { colors } = useTheme();
   const resolvedEmptyMessage = emptyMessage ?? t('noPlaylists');
   const resolvedEmptySubtitle = emptySubtitle ?? t('playlistsEmptySubtitle');
   const gridColumns = useGridColumns();
-  const listRef = useRef<FlashListRef<Playlist>>(null);
+  const listRef = useRef<FlashListRef<T>>(null);
   const scrollY = useSharedValue(0);
   const refreshControlKey = useRefreshControlKey();
 
@@ -106,30 +150,18 @@ export function PlaylistListView({
   const listKey = scrollToTopTrigger ? `${layout}:${scrollToTopTrigger}` : layout;
 
   const renderListItem = useCallback(
-    ({ item }: { item: Playlist }) => <PlaylistRow playlist={item} />,
-    []
+    ({ item }: { item: T }) => <PlaylistListItem item={item} toPlaylist={toPlaylist} />,
+    [toPlaylist]
   );
 
   const renderGridItem = useCallback(
-    ({ item, index }: { item: Playlist; index: number }) => {
-      const { paddingLeft, paddingRight } = getGridItemPadding(index, gridColumns, GRID_GAP);
-      return (
-        <View
-          style={{
-            flex: 1,
-            paddingLeft,
-            paddingRight,
-            marginBottom: GRID_GAP,
-          }}
-        >
-          <PlaylistCard playlist={item} />
-        </View>
-      );
-    },
-    [gridColumns]
+    ({ item, index }: { item: T; index: number }) => (
+      <PlaylistGridItem item={item} toPlaylist={toPlaylist} index={index} columns={gridColumns} />
+    ),
+    [gridColumns, toPlaylist]
   );
 
-  const keyExtractor = useCallback((item: Playlist) => item.id, []);
+  const keyExtractor = useCallback((item: T) => item.id, []);
 
   const EmptyComponent = useMemo(
     () => (
@@ -143,17 +175,21 @@ export function PlaylistListView({
   );
 
   /* ---- Alphabet scroller support ---- */
-  const scrollerVisible = showAlphabetScroller && playlists.length > 0;
+  const scrollerVisible = showAlphabetScroller && items.length > 0;
   const ignoredArticles = serverInfoStore((s) => s.ignoredArticles);
 
+  const getLetter = useCallback(
+    (item: T): string =>
+      getSortFirstLetter(toPlaylist(item).name, undefined, ignoredArticles ?? undefined),
+    [ignoredArticles, toPlaylist],
+  );
+
+  // In keyset mode the window can't reveal every letter, so the screen supplies the full
+  // active set — and this whole-array pass would be discarded, so it is skipped.
   const computedLetters = useMemo(() => {
-    if (!scrollerVisible) return new Set<string>();
-    return new Set(
-      playlists.map((p) => getSortFirstLetter(p.name, undefined, ignoredArticles ?? undefined)),
-    );
-  }, [playlists, scrollerVisible, ignoredArticles]);
-  // In keyset mode the window can't reveal every letter, so the screen supplies the
-  // full active set; otherwise compute it from the (whole) array.
+    if (activeLettersProp || !scrollerVisible) return new Set<string>();
+    return new Set(items.map((item) => getLetter(item)));
+  }, [activeLettersProp, items, scrollerVisible, getLetter]);
   const activeLetters = activeLettersProp ?? computedLetters;
 
   const handleLetterChange = useCallback(
@@ -164,8 +200,8 @@ export function PlaylistListView({
         onSeekLetter(letter);
         return;
       }
-      const idx = playlists.findIndex((p) => {
-        const first = getSortFirstLetter(p.name, undefined, ignoredArticles ?? undefined);
+      const idx = items.findIndex((item) => {
+        const first = getLetter(item);
         if (letter === '#') return first === '#';
         return first === letter;
       });
@@ -173,10 +209,10 @@ export function PlaylistListView({
         listRef.current?.scrollToIndex({ index: idx, animated: false });
       }
     },
-    [playlists, ignoredArticles, onSeekLetter],
+    [items, getLetter, onSeekLetter],
   );
 
-  if (loading && playlists.length === 0) {
+  if (loading && items.length === 0) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator size="large" color={colors.primary} />
@@ -184,7 +220,7 @@ export function PlaylistListView({
     );
   }
 
-  if (error && playlists.length === 0) {
+  if (error && items.length === 0) {
     return (
       <View style={styles.centered}>
         <Text style={[styles.errorText, { color: colors.textSecondary }]}>
@@ -201,7 +237,7 @@ export function PlaylistListView({
       <FlashList
         ref={listRef}
         key={listKey}
-        data={playlists}
+        data={items}
         renderItem={isGrid ? renderGridItem : renderListItem}
         keyExtractor={keyExtractor}
         onScrollBeginDrag={closeOpenRow}
@@ -210,7 +246,7 @@ export function PlaylistListView({
           styles.listContent,
           isGrid && styles.listContentGrid,
           scrollerVisible && styles.listContentWithScroller,
-          playlists.length === 0 && styles.emptyListContent,
+          items.length === 0 && styles.emptyListContent,
         ]}
         onScroll={contentInsetTop > 0 && Platform.OS === 'ios' ? handleScroll : undefined}
         scrollEventThrottle={contentInsetTop > 0 && Platform.OS === 'ios' ? 16 : undefined}

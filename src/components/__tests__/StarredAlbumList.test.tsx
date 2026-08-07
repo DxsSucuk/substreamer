@@ -5,7 +5,7 @@ jest.mock('../../store/persistence/kvStorage', () =>
 import React from 'react';
 import { render, act, waitFor } from '@testing-library/react-native';
 
-let albumProps: { albums: { id: string }[]; onEndReached?: () => void; loading?: boolean };
+let albumProps: { items: { id: string }[]; onEndReached?: () => void; loading?: boolean };
 jest.mock('../AlbumListView', () => ({
   AlbumListView: (p: typeof albumProps) => {
     albumProps = p;
@@ -44,19 +44,19 @@ beforeEach(async () => {
 describe('StarredAlbumList', () => {
   it('renders the merged first page, newest favourite first', async () => {
     render(<StarredAlbumList downloadedOnly={false} includePartial={false} />);
-    await waitFor(() => expect(albumProps.albums).toHaveLength(3));
-    expect(albumProps.albums.map((a) => a.id)).toEqual(['lib-a', 'rem-a', 'lib-b']);
+    await waitFor(() => expect(albumProps.items).toHaveLength(3));
+    expect(albumProps.items.map((a) => a.id)).toEqual(['lib-a', 'rem-a', 'lib-b']);
   });
 
   it('reloads when the membership version bumps', async () => {
     render(<StarredAlbumList downloadedOnly={false} includePartial={false} />);
-    await waitFor(() => expect(albumProps.albums).toHaveLength(3));
+    await waitFor(() => expect(albumProps.items).toHaveLength(3));
 
     db().runSync('DELETE FROM favorite_albums');
     await act(async () => {
       favoritesStore.setState({ version: 1 });
     });
-    await waitFor(() => expect(albumProps.albums).toHaveLength(2));
+    await waitFor(() => expect(albumProps.items).toHaveLength(2));
   });
 
   it('applies the downloaded filter to the remainder half too', async () => {
@@ -66,12 +66,12 @@ describe('StarredAlbumList', () => {
       ['rem-a', 'album', 'A', 0, 0, 0],
     );
     render(<StarredAlbumList downloadedOnly includePartial={false} />);
-    await waitFor(() => expect(albumProps.albums.map((a) => a.id)).toEqual(['rem-a']));
+    await waitFor(() => expect(albumProps.items.map((a) => a.id)).toEqual(['rem-a']));
   });
 
   it('surfaces the store loading flag alongside its own', async () => {
     render(<StarredAlbumList downloadedOnly={false} includePartial={false} loading />);
-    await waitFor(() => expect(albumProps.albums).toHaveLength(3));
+    await waitFor(() => expect(albumProps.items).toHaveLength(3));
     expect(albumProps.loading).toBe(true);
   });
 });

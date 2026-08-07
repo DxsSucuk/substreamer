@@ -27,13 +27,54 @@ import { InsetRefreshSpacer } from './InsetRefreshSpacer';
 
 export type ArtistLayout = 'list' | 'grid';
 
+/** `toArtist` for consumers that already hold envelopes. Module-level so its identity is
+ *  stable: a fresh arrow per render would re-run every visible row's conversion. */
+export const artistIdentity = (artist: ArtistID3): ArtistID3 => artist;
+
+/* ------------------------------------------------------------------ */
+/*  Per-row adapters                                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One rendered row, converted. The conversion is memoised on the item object, so
+ * appending a page converts the appended rows only — the accumulated array is never
+ * re-mapped, and the screen holds no second array of envelopes.
+ */
+function ArtistListItem<T>({ item, toArtist }: { item: T; toArtist: (item: T) => ArtistID3 }) {
+  const artist = useMemo(() => toArtist(item), [item, toArtist]);
+  return <ArtistRow artist={artist} />;
+}
+
+function ArtistGridItem<T>({
+  item,
+  toArtist,
+  index,
+  columns,
+}: {
+  item: T;
+  toArtist: (item: T) => ArtistID3;
+  index: number;
+  columns: number;
+}) {
+  const artist = useMemo(() => toArtist(item), [item, toArtist]);
+  const { paddingLeft, paddingRight } = getGridItemPadding(index, columns, GRID_GAP);
+  return (
+    <View style={{ flex: 1, paddingLeft, paddingRight, marginBottom: GRID_GAP }}>
+      <ArtistCard artist={artist} />
+    </View>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /*  ArtistListView                                                    */
 /* ------------------------------------------------------------------ */
 
-export interface ArtistListViewProps {
-  /** The list of artists to display */
-  artists: ArtistID3[];
+export interface ArtistListViewProps<T extends { id: string }> {
+  /** The items to display — whatever the screen holds: SQL browse rows, envelopes. */
+  items: T[];
+  /** Adapts one item to the `ArtistID3` the row and card components take. Must be
+   *  stable across renders (module-level, or memoised at the consumer). */
+  toArtist: (item: T) => ArtistID3;
   /** Display layout: row list or grid of cards */
   layout?: ArtistLayout;
   /** Whether data is currently loading */
@@ -65,12 +106,13 @@ export interface ArtistListViewProps {
   /** A-Z tap seeks via the DB (replace the window) instead of scrolling the array. */
   onSeekLetter?: (letter: string) => void;
   /** The full set of active alphabet letters — the loaded window can't reveal them
-   *  all, so the screen supplies it. Falls back to computing from `artists`. */
+   *  all, so the screen supplies it. Falls back to computing from `items`. */
   activeLetters?: Set<string>;
 }
 
-export function ArtistListView({
-  artists,
+export function ArtistListView<T extends { id: string }>({
+  items,
+  toArtist,
   layout = 'list',
   loading = false,
   error = null,
@@ -86,13 +128,13 @@ export function ArtistListView({
   onStartReached,
   onSeekLetter,
   activeLetters: activeLettersProp,
-}: ArtistListViewProps) {
+}: ArtistListViewProps<T>) {
   const { t } = useTranslation();
   const { colors } = useTheme();
   const resolvedEmptyMessage = emptyMessage ?? t('noArtistsFound');
   const resolvedEmptySubtitle = emptySubtitle ?? t('tryAdjustingFilters');
   const gridColumns = useGridColumns();
-  const listRef = useRef<FlashListRef<ArtistID3>>(null);
+  const listRef = useRef<FlashListRef<T>>(null);
   const scrollY = useSharedValue(0);
   const refreshControlKey = useRefreshControlKey();
 
@@ -106,30 +148,18 @@ export function ArtistListView({
   const listKey = scrollToTopTrigger ? `${layout}:${scrollToTopTrigger}` : layout;
 
   const renderListItem = useCallback(
-    ({ item }: { item: ArtistID3 }) => <ArtistRow artist={item} />,
-    []
+    ({ item }: { item: T }) => <ArtistListItem item={item} toArtist={toArtist} />,
+    [toArtist]
   );
 
   const renderGridItem = useCallback(
-    ({ item, index }: { item: ArtistID3; index: number }) => {
-      const { paddingLeft, paddingRight } = getGridItemPadding(index, gridColumns, GRID_GAP);
-      return (
-        <View
-          style={{
-            flex: 1,
-            paddingLeft,
-            paddingRight,
-            marginBottom: GRID_GAP,
-          }}
-        >
-          <ArtistCard artist={item} />
-        </View>
-      );
-    },
-    [gridColumns]
+    ({ item, index }: { item: T; index: number }) => (
+      <ArtistGridItem item={item} toArtist={toArtist} index={index} columns={gridColumns} />
+    ),
+    [gridColumns, toArtist]
   );
 
-  const keyExtractor = useCallback((item: ArtistID3) => item.id, []);
+  const keyExtractor = useCallback((item: T) => item.id, []);
 
   const EmptyComponent = useMemo(
     () => (
@@ -143,17 +173,23 @@ export function ArtistListView({
   );
 
   /* ---- Alphabet scroller support ---- */
-  const scrollerVisible = showAlphabetScroller && artists.length > 0;
+  const scrollerVisible = showAlphabetScroller && items.length > 0;
   const ignoredArticles = serverInfoStore((s) => s.ignoredArticles);
 
+  const getLetter = useCallback(
+    (item: T): string => {
+      const a = toArtist(item);
+      return getSortFirstLetter(a.name, a.sortName, ignoredArticles ?? undefined);
+    },
+    [ignoredArticles, toArtist],
+  );
+
+  // In keyset mode the window can't reveal every letter, so the screen supplies the full
+  // active set — and this whole-array pass would be discarded, so it is skipped.
   const computedLetters = useMemo(() => {
-    if (!scrollerVisible) return new Set<string>();
-    return new Set(
-      artists.map((a) => getSortFirstLetter(a.name, a.sortName, ignoredArticles ?? undefined)),
-    );
-  }, [artists, scrollerVisible, ignoredArticles]);
-  // In keyset mode the window can't reveal every letter, so the screen supplies the
-  // full active set; otherwise compute it from the (whole) array.
+    if (activeLettersProp || !scrollerVisible) return new Set<string>();
+    return new Set(items.map((item) => getLetter(item)));
+  }, [activeLettersProp, items, scrollerVisible, getLetter]);
   const activeLetters = activeLettersProp ?? computedLetters;
 
   const handleLetterChange = useCallback(
@@ -164,8 +200,8 @@ export function ArtistListView({
         onSeekLetter(letter);
         return;
       }
-      const idx = artists.findIndex((a) => {
-        const first = getSortFirstLetter(a.name, a.sortName, ignoredArticles ?? undefined);
+      const idx = items.findIndex((item) => {
+        const first = getLetter(item);
         if (letter === '#') return first === '#';
         return first === letter;
       });
@@ -173,10 +209,10 @@ export function ArtistListView({
         listRef.current?.scrollToIndex({ index: idx, animated: false });
       }
     },
-    [artists, ignoredArticles, onSeekLetter],
+    [items, getLetter, onSeekLetter],
   );
 
-  if (loading && artists.length === 0) {
+  if (loading && items.length === 0) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator size="large" color={colors.primary} />
@@ -184,7 +220,7 @@ export function ArtistListView({
     );
   }
 
-  if (error && artists.length === 0) {
+  if (error && items.length === 0) {
     return (
       <View style={styles.centered}>
         <Text style={[styles.errorText, { color: colors.textSecondary }]}>
@@ -201,7 +237,7 @@ export function ArtistListView({
       <FlashList
         ref={listRef}
         key={listKey}
-        data={artists}
+        data={items}
         renderItem={isGrid ? renderGridItem : renderListItem}
         keyExtractor={keyExtractor}
         onScrollBeginDrag={closeOpenRow}
@@ -210,7 +246,7 @@ export function ArtistListView({
           styles.listContent,
           isGrid && styles.listContentGrid,
           scrollerVisible && styles.listContentWithScroller,
-          artists.length === 0 && styles.emptyListContent,
+          items.length === 0 && styles.emptyListContent,
         ]}
         onScroll={contentInsetTop > 0 && Platform.OS === 'ios' ? handleScroll : undefined}
         scrollEventThrottle={contentInsetTop > 0 && Platform.OS === 'ios' ? 16 : undefined}
