@@ -5,7 +5,7 @@ import { ensureNormalizedSchema } from '../../createNormalizedTables';
 import { upsertAlbums } from '../albums';
 import { upsertArtists } from '../artists';
 import { markStarredAlbums, markStarredArtists, markStarredSongs } from '../favorites';
-import { albumRow, artistRow, songRow } from '../mappers';
+import { albumRow, artistRow, playlistRow, songRow } from '../mappers';
 import { upsertSongs } from '../songs';
 
 const db = () => getDb()!;
@@ -85,5 +85,65 @@ describe('a library upsert can never CLEAR a mark', () => {
       db().getFirstSync<{ starred: number | null }>("SELECT starred FROM songs WHERE id='s1'")
         ?.starred,
     ).toBeNull();
+  });
+});
+
+/**
+ * Every mapper derives its A–Z keys through `db/sortKeys`, so a filtered list, the
+ * download tables and the favourites remainder all file a row in the same place. These
+ * pin the derivations themselves — the fallback chains differ PER ENTITY on purpose.
+ */
+describe('the stored sort keys', () => {
+  it('prefers a meaningful server sortName for the album title key', () => {
+    expect(albumRow(album('a1', { name: 'The Wall', sortName: 'Zzz Sorted' })).sort_title).toBe(
+      'zzz sorted',
+    );
+    // …and falls back to the article-stripped name when there is none.
+    expect(albumRow(album('a2', { name: 'The Wall' })).sort_title).toBe('wall');
+  });
+
+  it('takes displayArtist ahead of the artist tag for the album artist key', () => {
+    const row = albumRow(album('a1', { artist: 'Tagged', displayArtist: 'Displayed' }));
+    expect(row.sort_artist).toBe('displayed');
+    expect(albumRow(album('a2', { artist: 'Tagged' })).sort_artist).toBe('tagged');
+  });
+
+  it('falls back to the album NAME when an album has no artist at all', () => {
+    expect(albumRow(album('a1', { name: 'Orphan' })).sort_artist).toBe('orphan');
+  });
+
+  it('derives the song artist key from the song artist, falling back to its TITLE', () => {
+    // Deliberately NOT the album chain: a song's scroller reads `artist ?? title`.
+    expect(songRow(song('s1', { artist: 'Tagged' })).sort_artist).toBe('tagged');
+    expect(songRow(song('s2', { title: 'Lone Track' })).sort_artist).toBe('lone track');
+  });
+
+  it('prefers a meaningful sortName for the song title key too', () => {
+    expect(songRow(song('s1', { title: 'The Track', sortName: 'Zzz' })).sort_title).toBe('zzz');
+    expect(songRow(song('s2', { title: 'The Track' })).sort_title).toBe('track');
+  });
+
+  it('uses the artist sortName for the artist key', () => {
+    expect(artistRow(artist('ar1', { name: 'U2', sortName: 'You Two' })).sort_title).toBe(
+      'you two',
+    );
+    expect(artistRow(artist('ar2', { name: 'The Beatles' })).sort_title).toBe('beatles');
+  });
+
+  it('derives the playlist key from the name — playlists have no server sortName', () => {
+    expect(playlistRow({ id: 'p1', name: 'The Roadtrip' } as never).sort_title).toBe('roadtrip');
+    expect(playlistRow({ id: 'p2', name: '"Quoted"' } as never).sort_title).toBe('quoted"');
+  });
+
+  it('drops leading punctuation on every entity', () => {
+    expect(albumRow(album('a1', { name: '"Heroes"', artist: '(The) Band' }))).toMatchObject({
+      sort_title: 'heroes"',
+      sort_artist: 'the) band',
+    });
+    expect(songRow(song('s1', { title: '"Track"', artist: '"Who"' }))).toMatchObject({
+      sort_title: 'track"',
+      sort_artist: 'who"',
+    });
+    expect(artistRow(artist('ar1', { name: '"Who"' })).sort_title).toBe('who"');
   });
 });

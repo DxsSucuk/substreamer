@@ -1,8 +1,6 @@
 /** Albums repository: bulk upsert (row + children), keyset list, count, by-id. */
 import type { AlbumID3, ArtistID3, DiscTitle, ItemDate, RecordLabel } from 'subsonic-api';
 
-import type { SortableAlbum } from '@/utils/librarySort';
-
 import type { BatchCommand, InternalDb } from '../client';
 import {
   albumArtistRows,
@@ -108,9 +106,7 @@ const itemDate = (
 
 /** Adapt a projected row to the `AlbumID3` the row/card components, the details sheet
  *  and every more-options action read. `created` is left `undefined` when unknown —
- *  an epoch-0 default is truthy and renders as "Added 1 January 1970". `artist` takes
- *  `display_artist` first: the row's own `sort_artist` key is derived from it
- *  (`albumRow`), so anything else would label a row differently from where it sorts. */
+ *  an epoch-0 default is truthy and renders as "Added 1 January 1970". */
 export function albumListRowToAlbumID3(r: AlbumListRow): LibraryAlbum {
   return {
     id: r.id,
@@ -149,16 +145,6 @@ export function albumListRowToAlbumID3(r: AlbumListRow): LibraryAlbum {
     releaseTypes: r.releaseTypes,
   };
 }
-
-/** The sort keys `albumListRowToAlbumID3` would produce, without building the envelope —
- *  a browse list sorts its whole row set but converts only the rows it draws. Keep the
- *  three fields in step with the mapper above or a list sorts where it does not label. */
-export const albumListRowSortKeys = (r: AlbumListRow): SortableAlbum => ({
-  id: r.id,
-  name: r.name ?? '',
-  artist: r.artist ?? r.display_artist ?? undefined,
-  sortName: r.sort_name ?? undefined,
-});
 
 /** Reference stub for a nested artist — the child table holds id + name only and
  *  `ArtistID3.albumCount` is required, so it is fabricated. Never a complete artist. */

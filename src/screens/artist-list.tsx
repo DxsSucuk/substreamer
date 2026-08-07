@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
@@ -19,8 +19,6 @@ import { getDb } from '../store/persistence/db';
 import { refreshArtistLibrary } from '../services/normalizedLibrarySync';
 import { syncStatusStore } from '../store/syncStatusStore';
 import { favoritesStore } from '../store/favoritesStore';
-import { serverInfoStore } from '../store/serverInfoStore';
-import { sortArtistsByName } from '../utils/librarySort';
 import { type ArtistID3 } from '../services/subsonicService';
 
 const PAGE = 120;
@@ -187,7 +185,8 @@ function KeysetArtistList({
 }
 
 /** The favourites filter reads the whole starred artist set from SQL — marked library
- *  rows plus the `favorite_artists` remainder.
+ *  rows plus the `favorite_artists` remainder — A–Z on the same stored `sort_title` the
+ *  keyset browse orders by, so the filter cannot reorder the list.
  *
  *  There is deliberately NO downloaded branch: artists cannot be downloaded, so the
  *  Downloaded filter hides the Artists segment outright (`library.tsx`) and this
@@ -215,7 +214,7 @@ function FilteredArtistList({
     let alive = true;
     void (async () => {
       const db = getDb();
-      const list = db ? await listAllStarredArtists(db) : [];
+      const list = db ? await listAllStarredArtists(db, { sortOrder: 'name' }) : [];
       if (alive) {
         setStarredArtists(list);
         setLoadedKey(starredKey);
@@ -225,11 +224,6 @@ function FilteredArtistList({
       alive = false;
     };
   }, [favoritesOnly, version, starredKey]);
-
-  const filteredArtists = useMemo(() => {
-    const articles = serverInfoStore.getState().ignoredArticles ?? undefined;
-    return sortArtistsByName(starredArtists, articles);
-  }, [starredArtists]);
 
   const [refreshing, setRefreshing] = useState(false);
   const handleRefresh = useCallback(async () => {
@@ -243,7 +237,7 @@ function FilteredArtistList({
 
   return (
     <ArtistListView
-      items={filteredArtists}
+      items={starredArtists}
       toArtist={artistIdentity}
       layout={layout}
       loading={starredLoading}

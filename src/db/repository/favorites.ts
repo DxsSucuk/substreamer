@@ -14,16 +14,26 @@
  * a `getAlbum` response carries `starred`, and `albumRow` writes it, so tapping a
  * remainder album gives it a marked library row seconds later.
  *
- * Both halves order by `starred DESC, id DESC` (newest favourite first) and page
+ * The PAGED reads order by `starred DESC, id DESC` (newest favourite first) and page
  * through the SAME `keysetPage` primitive against ONE shared cursor, so their cursor
- * semantics cannot drift.
+ * semantics cannot drift. The whole-set reads take that as their default and also offer
+ * A–Z order on the stored `sort_*` keys — the Favourites TAB wants the former, the
+ * Library tab's favourites filter the latter, and both come from this one reader.
  */
 import type { AlbumID3, ArtistID3, Child } from 'subsonic-api';
 
-import { mergeStarredDesc, type StarredEntry } from '@/utils/mergeStarredDesc';
+import { mergeSorted, mergeStarredDesc, type StarredEntry } from '@/utils/mergeStarredDesc';
 
 import type { BatchCommand, InternalDb } from '../client';
-import { ALBUM_LIST_COLS, albumListRowToAlbumID3, hydrateAlbumRows, type AlbumListRow } from './albums';
+import { albumSortKeys, artistSortTitle } from '../sortKeys';
+import { getSortArticles } from '../sortArticles';
+import {
+  ALBUM_LIST_COLS,
+  albumListRowToAlbumID3,
+  hydrateAlbumRows,
+  type AlbumListRow,
+  type AlbumSortOrder,
+} from './albums';
 import { ARTIST_LIST_COLS, artistListRowToArtistID3, hydrateArtistRows, type ArtistListRow } from './artists';
 import { countRows, keysetPage, type Cursor } from './core';
 // The download predicates live in `downloads.ts` — ONE definition, so the library tab's
@@ -52,6 +62,17 @@ const CHUNK = 500;
 export interface StarredFilter {
   downloadedOnly?: boolean;
   includePartial?: boolean;
+}
+
+/** Whole-set album read. `sortOrder` ABSENT keeps the Favourites tab's
+ *  newest-favourite-first; set, it is the Library tab's A–Z filter. */
+export interface StarredAlbumListOpts extends StarredFilter {
+  sortOrder?: AlbumSortOrder;
+}
+
+/** Whole-set artist read — no download filter (artists are not downloadable). */
+export interface StarredArtistListOpts {
+  sortOrder?: 'name';
 }
 
 /* ------------------------------------------------------------------ */
@@ -97,13 +118,18 @@ interface RemainderRow {
   id: string;
   starred: number;
   json: string;
+  /** Mirrors the library table's key of the same name — present on the album and
+   *  artist remainders, absent on songs (nothing orders those A–Z). */
+  sort_title?: string | null;
+  sort_artist?: string | null;
 }
 interface RemainderSongRow extends RemainderRow {
   duration: number | null;
 }
 
 const REMAINDER_SONG_COLS = '"id", "starred", "duration", "json"';
-const REMAINDER_COLS = '"id", "starred", "json"';
+const REMAINDER_ALBUM_COLS = '"id", "starred", "sort_title", "sort_artist", "json"';
+const REMAINDER_ARTIST_COLS = '"id", "starred", "sort_title", "json"';
 
 /** Rehydrate the dates `JSON.stringify` flattened to ISO strings, so a remainder row
  *  and a library row present the same shape. `starred: 0` reads back as `undefined` —
@@ -218,7 +244,11 @@ export async function starredAlbumsPage(
     rows: page.rows.map((r) => ({ id: r.id, starred: r.starred ?? 0, item: albumListRowToAlbumID3(r) })),
     nextCursor: page.nextCursor,
   };
-  return mergePages(lib, await remainderPage<AlbumID3>(db, 'albums', REMAINDER_COLS, opts), opts.limit);
+  return mergePages(
+    lib,
+    await remainderPage<AlbumID3>(db, 'albums', REMAINDER_ALBUM_COLS, opts),
+    opts.limit,
+  );
 }
 
 /** Options for the artist reads — deliberately WITHOUT `StarredFilter`. Artists are not
@@ -245,24 +275,84 @@ export async function starredArtistsPage(
     rows: page.rows.map((r) => ({ id: r.id, starred: r.starred ?? 0, item: artistListRowToArtistID3(r) })),
     nextCursor: page.nextCursor,
   };
-  return mergePages(lib, await remainderPage<ArtistID3>(db, 'artists', REMAINDER_COLS, opts), opts.limit);
+  return mergePages(
+    lib,
+    await remainderPage<ArtistID3>(db, 'artists', REMAINDER_ARTIST_COLS, opts),
+    opts.limit,
+  );
 }
 
 /* ------------------------------------------------------------------ */
 /*  Whole-set reads — O(favourites), never O(library)                  */
 /* ------------------------------------------------------------------ */
 
+/** Newest favourite first — the Favourites tab's order, and the default everywhere. */
+const STARRED_DESC = '"starred" DESC, "id" DESC';
+
+/**
+ * The A–Z `ORDER BY` tuples, as column names. Both halves carry the same `sort_*`
+ * columns, so ONE tuple drives both queries and the JS merge of their results.
+ * `id` last makes the order total, so the merge below is deterministic.
+ */
+const NAME_ORDER: Record<AlbumSortOrder, readonly string[]> = {
+  title: ['sort_title', 'id'],
+  artist: ['sort_artist', 'sort_title', 'id'],
+};
+const ARTIST_NAME_ORDER: readonly string[] = ['sort_title', 'id'];
+
+const orderBySql = (cols: readonly string[]): string => cols.map((c) => `"${c}"`).join(', ');
+
+/**
+ * A row's ORDER BY tuple, read off the row. NULL keys collate first in SQLite and read
+ * as `''` here, which sorts first too — so a row the migration has not reached yet sits
+ * in the same place on both sides of the merge.
+ */
+const keyTupleOf = (r: object, cols: readonly string[]): string[] =>
+  cols.map((c) => ((r as Record<string, unknown>)[c] as string | null | undefined) ?? '');
+
+/** True when `x` sorts at or before `y` under the same tuple. `<` on strings is UTF-16
+ *  code units, which is what SQLite's BINARY collation does on TEXT. */
+const tupleAtOrBefore = <T>(x: Keyed<T>, y: Keyed<T>): boolean => {
+  for (let i = 0; i < x.keys.length; i++) {
+    if (x.keys[i] !== y.keys[i]) return x.keys[i] < y.keys[i];
+  }
+  return true;
+};
+
+type Keyed<T> = StarredEntry<T> & { keys: readonly string[] };
+
+/** Merge the two halves under `cols` when given, else newest-favourite-first. */
+function mergeHalves<T>(
+  lib: readonly StarredEntry<T>[],
+  rem: readonly StarredEntry<T>[],
+  libRows: readonly object[],
+  remRows: readonly object[],
+  cols: readonly string[] | null,
+): T[] {
+  if (!cols) return mergeStarredDesc(lib, rem).map((e) => e.item);
+  const key = (e: StarredEntry<T>, i: number, rows: readonly object[]): Keyed<T> => ({
+    ...e,
+    keys: keyTupleOf(rows[i], cols),
+  });
+  return mergeSorted(
+    lib.map((e, i) => key(e, i, libRows)),
+    rem.map((e, i) => key(e, i, remRows)),
+    tupleAtOrBefore,
+  ).map((e) => e.item);
+}
+
 async function allRemainder<T extends { created?: Date; starred?: Date }>(
   db: InternalDb,
   entity: Entity,
   columns: string,
   f: StarredFilter,
-): Promise<StarredEntry<T>[]> {
+  order: string = STARRED_DESC,
+): Promise<{ entries: StarredEntry<T>[]; rows: RemainderRow[] }> {
   const rows = await db.getAllAsync<RemainderRow>(
     `SELECT ${columns} FROM ${REMAINDER[entity]} WHERE ${remainderWhere(entity, f)} ` +
-      'ORDER BY "starred" DESC, "id" DESC',
+      `ORDER BY ${order}`,
   );
-  return rows.map((r) => parseEntry<T>(r));
+  return { entries: rows.map((r) => parseEntry<T>(r)), rows };
 }
 
 /**
@@ -273,21 +363,30 @@ async function allRemainder<T extends { created?: Date; starred?: Date }>(
  */
 export async function listAllStarredSongs(db: InternalDb, f: StarredFilter = {}): Promise<Child[]> {
   const rows = await db.getAllAsync<SongListRow>(
-    `SELECT ${SONG_LIST_COLS} FROM songs WHERE ${libraryWhere('songs', f)} ORDER BY "starred" DESC, "id" DESC`,
+    `SELECT ${SONG_LIST_COLS} FROM songs WHERE ${libraryWhere('songs', f)} ORDER BY ${STARRED_DESC}`,
   );
   await hydrateSongRows(db, rows);
   const lib = rows.map((r) => ({ id: r.id, starred: r.starred ?? 0, item: songListRowToChild(r) as Child }));
   const rem = await allRemainder<Child>(db, 'songs', REMAINDER_SONG_COLS, f);
-  return mergeStarredDesc(lib, rem).map((e) => e.item);
+  return mergeStarredDesc(lib, rem.entries).map((e) => e.item);
 }
 
-/** The whole starred album set, newest favourite first. O(favourites) — see above. */
+/**
+ * The whole starred album set. O(favourites) — see above.
+ *
+ * `sortOrder` ABSENT is newest favourite first, which is what the Favourites TAB shows
+ * and what every play/download caller wants. Set, it is the Library tab's A–Z filter,
+ * ordered in SQL by the same stored keys the browse list uses — so toggling the filter
+ * cannot reorder the rows.
+ */
 export async function listAllStarredAlbums(
   db: InternalDb,
-  f: StarredFilter = {},
+  f: StarredAlbumListOpts = {},
 ): Promise<AlbumID3[]> {
+  const cols = f.sortOrder ? NAME_ORDER[f.sortOrder] : null;
+  const order = cols ? orderBySql(cols) : STARRED_DESC;
   const rows = await db.getAllAsync<AlbumListRow>(
-    `SELECT ${ALBUM_LIST_COLS} FROM albums WHERE ${libraryWhere('albums', f)} ORDER BY "starred" DESC, "id" DESC`,
+    `SELECT ${ALBUM_LIST_COLS} FROM albums WHERE ${libraryWhere('albums', f)} ORDER BY ${order}`,
   );
   await hydrateAlbumRows(db, rows);
   const lib = rows.map((r) => ({
@@ -295,15 +394,21 @@ export async function listAllStarredAlbums(
     starred: r.starred ?? 0,
     item: albumListRowToAlbumID3(r) as AlbumID3,
   }));
-  const rem = await allRemainder<AlbumID3>(db, 'albums', REMAINDER_COLS, f);
-  return mergeStarredDesc(lib, rem).map((e) => e.item);
+  const rem = await allRemainder<AlbumID3>(db, 'albums', REMAINDER_ALBUM_COLS, f, order);
+  return mergeHalves(lib, rem.entries, rows, rem.rows, cols);
 }
 
-/** The whole starred artist set, newest favourite first. O(favourites) — see above.
- *  Takes no filter: artists are not downloadable (see {@link DownloadableEntity}). */
-export async function listAllStarredArtists(db: InternalDb): Promise<ArtistID3[]> {
+/** The whole starred artist set. `sortOrder: 'name'` is the Library tab's A–Z filter;
+ *  absent is newest favourite first (the Favourites tab). O(favourites) — see above.
+ *  Takes no download filter: artists are not downloadable (see {@link DownloadableEntity}). */
+export async function listAllStarredArtists(
+  db: InternalDb,
+  opts: StarredArtistListOpts = {},
+): Promise<ArtistID3[]> {
+  const cols = opts.sortOrder === 'name' ? ARTIST_NAME_ORDER : null;
+  const order = cols ? orderBySql(cols) : STARRED_DESC;
   const rows = await db.getAllAsync<ArtistListRow>(
-    `SELECT ${ARTIST_LIST_COLS} FROM artists WHERE ${libraryWhere('artists', {})} ORDER BY "starred" DESC, "id" DESC`,
+    `SELECT ${ARTIST_LIST_COLS} FROM artists WHERE ${libraryWhere('artists', {})} ORDER BY ${order}`,
   );
   await hydrateArtistRows(db, rows);
   const lib = rows.map((r) => ({
@@ -311,8 +416,8 @@ export async function listAllStarredArtists(db: InternalDb): Promise<ArtistID3[]
     starred: r.starred ?? 0,
     item: artistListRowToArtistID3(r) as ArtistID3,
   }));
-  const rem = await allRemainder<ArtistID3>(db, 'artists', REMAINDER_COLS, {});
-  return mergeStarredDesc(lib, rem).map((e) => e.item);
+  const rem = await allRemainder<ArtistID3>(db, 'artists', REMAINDER_ARTIST_COLS, {}, order);
+  return mergeHalves(lib, rem.entries, rows, rem.rows, cols);
 }
 
 /* ------------------------------------------------------------------ */
@@ -503,25 +608,36 @@ export const replaceFavoriteSongs = (db: InternalDb, songs: readonly Child[]): P
     ]),
   );
 
-export const replaceFavoriteAlbums = (db: InternalDb, albums: readonly AlbumID3[]): Promise<void> =>
-  replaceRemainder(
+/** The sort keys come from the SAME envelope in the same statement, through the same
+ *  `db/sortKeys` derivation the `albums` table uses — nothing is parsed back out of
+ *  `json`, and the remainder can never order differently from the library half. */
+export const replaceFavoriteAlbums = (db: InternalDb, albums: readonly AlbumID3[]): Promise<void> => {
+  const articles = getSortArticles();
+  return replaceRemainder(
     db,
     'albums',
-    albums.map((a): BatchCommand => [
-      'INSERT OR REPLACE INTO favorite_albums (id, starred, json) VALUES (?, ?, ?)',
-      [a.id, epochOf(a.starred), JSON.stringify(a)],
-    ]),
+    albums.map((a): BatchCommand => {
+      const keys = albumSortKeys(a, articles);
+      return [
+        'INSERT OR REPLACE INTO favorite_albums (id, starred, sort_title, sort_artist, json) ' +
+          'VALUES (?, ?, ?, ?, ?)',
+        [a.id, epochOf(a.starred), keys.sort_title, keys.sort_artist, JSON.stringify(a)],
+      ];
+    }),
   );
+};
 
-export const replaceFavoriteArtists = (db: InternalDb, artists: readonly ArtistID3[]): Promise<void> =>
-  replaceRemainder(
+export const replaceFavoriteArtists = (db: InternalDb, artists: readonly ArtistID3[]): Promise<void> => {
+  const articles = getSortArticles();
+  return replaceRemainder(
     db,
     'artists',
     artists.map((a): BatchCommand => [
-      'INSERT OR REPLACE INTO favorite_artists (id, starred, json) VALUES (?, ?, ?)',
-      [a.id, epochOf(a.starred), JSON.stringify(a)],
+      'INSERT OR REPLACE INTO favorite_artists (id, starred, sort_title, json) VALUES (?, ?, ?, ?)',
+      [a.id, epochOf(a.starred), artistSortTitle(a, articles), JSON.stringify(a)],
     ]),
   );
+};
 
 /** `0` when the server sent no date: keeps `IS NOT NULL` membership, reads back as
  *  `undefined`, and sorts last. Never a fabricated date. */

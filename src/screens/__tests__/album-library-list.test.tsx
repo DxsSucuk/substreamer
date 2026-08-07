@@ -38,8 +38,11 @@ import { ensureNormalizedSchema } from '../../db/createNormalizedTables';
 import { upsertAlbums } from '../../db/repository/albums';
 import { markStarredAlbums } from '../../db/repository/favorites';
 import { getDb } from '../../store/persistence/db';
+import { upsertCachedItem } from '../../store/persistence/musicCacheTables';
 import { favoritesStore } from '../../store/favoritesStore';
+import { layoutPreferencesStore } from '../../store/layoutPreferencesStore';
 import { musicCacheStore } from '../../store/musicCacheStore';
+import { getSortFirstLetter } from '../../utils/sortHelpers';
 import { AlbumLibraryListScreen } from '../album-library-list';
 
 const db = () => getDb()!;
@@ -80,6 +83,7 @@ beforeEach(() => {
     db().runSync(`DELETE FROM ${t}`);
   }
   favoritesStore.setState({ version: 0 });
+  layoutPreferencesStore.setState({ albumSortOrder: 'artist' });
   musicCacheStore.setState({ cachedItems: {}, revision: 0 });
 });
 
@@ -288,36 +292,98 @@ describe('AlbumLibraryListScreen — toggling Favourites on an already-mounted l
 });
 
 /**
- * The downloaded branch now sorts SQL rows and converts only the rows it draws, so the
- * keys it sorts on are a projection rather than the envelope. These pin that the answer
- * is unchanged — a row must not sort somewhere other than where its label puts it.
+ * The downloaded branch renders the rows in the order SQL returned them, on the
+ * `sort_*` keys the download WRITER stored. These go through that writer rather than
+ * seeding the columns by hand, so the derivation and the `ORDER BY` are both under test.
  */
 describe('AlbumLibraryListScreen — the downloaded filter sort order', () => {
-  const seedSorted = (id: string, name: string, artist: string | null): void => {
-    db().runSync(
-      'INSERT INTO cached_items (item_id, type, name, expected_song_count, last_sync_at, ' +
-        'downloaded_at) VALUES (?, ?, ?, ?, ?, ?)',
-      [id, 'album', name, 0, 0, 0],
-    );
-    db().runSync(
-      'INSERT INTO cached_albums (item_id, name, artist, display_artist) VALUES (?, ?, ?, ?)',
-      [id, name, artist, 'Zzz Display'],
-    );
-  };
+  const seedSorted = (
+    itemId: string,
+    name: string,
+    meta: { artist?: string; displayArtist?: string } = {},
+  ): Promise<void> =>
+    upsertCachedItem({
+      itemId,
+      type: 'album',
+      name,
+      expectedSongCount: 0,
+      lastSyncAt: 0,
+      downloadedAt: 0,
+      albumMeta: { name, ...meta },
+    });
 
-  it('orders by the artist tag under the default sort order', async () => {
-    seedSorted('dl-z', 'Album Z', 'Zebra');
-    seedSorted('dl-a', 'Album A', 'Alpha');
+  it('orders by the artist key under the default sort order', async () => {
+    await seedSorted('dl-z', 'Album Z', { artist: 'Zebra' });
+    await seedSorted('dl-a', 'Album A', { artist: 'Alpha' });
     render(<AlbumLibraryListScreen downloadedOnly />);
     await waitFor(() => expect(latest().items).toHaveLength(2));
     expect(latest().items.map((a) => a.id)).toEqual(['dl-a', 'dl-z']);
   });
 
-  it('falls back to display_artist when the artist tag is absent, as the envelope does', async () => {
-    seedSorted('dl-tagged', 'Album T', 'Alpha');
-    seedSorted('dl-display', 'Album D', null); // display_artist 'Zzz Display' is all it has
+  it('takes displayArtist ahead of the artist tag — the ALBUM derivation, verbatim', async () => {
+    // `albums.sort_artist` is `getSortKey(displayArtist ?? artist ?? name)`. Anything
+    // else here and the filtered list orders differently from browse over the same rows.
+    await seedSorted('dl-1', 'Album 1', { artist: 'Zebra', displayArtist: 'Alpha' });
+    await seedSorted('dl-2', 'Album 2', { artist: 'Alpha', displayArtist: 'Zebra' });
     render(<AlbumLibraryListScreen downloadedOnly />);
     await waitFor(() => expect(latest().items).toHaveLength(2));
-    expect(latest().items.map((a) => a.id)).toEqual(['dl-tagged', 'dl-display']);
+    expect(latest().items.map((a) => a.id)).toEqual(['dl-1', 'dl-2']);
+  });
+
+  it('falls back to the album name when there is no artist at all', async () => {
+    await seedSorted('dl-z', 'Zulu');
+    await seedSorted('dl-a', 'Alpha');
+    render(<AlbumLibraryListScreen downloadedOnly />);
+    await waitFor(() => expect(latest().items).toHaveLength(2));
+    expect(latest().items.map((a) => a.id)).toEqual(['dl-a', 'dl-z']);
+  });
+
+  it('RE-READS when the sort preference changes — the ORDER BY is the DB\'s now', async () => {
+    // Nothing is re-sorted in JS any more, so a preference change that did not re-read
+    // would leave the list in the previous order.
+    await seedSorted('dl-1', 'Zulu', { artist: 'Alpaca' });
+    await seedSorted('dl-2', 'Alpha', { artist: 'Zebra' });
+    render(<AlbumLibraryListScreen downloadedOnly />);
+    await waitFor(() => expect(latest().items.map((a) => a.id)).toEqual(['dl-1', 'dl-2']));
+    mockRenders.length = 0;
+
+    act(() => layoutPreferencesStore.setState({ albumSortOrder: 'title' }));
+    // The derived flag says so the moment the request changes: the rows we hold are no
+    // longer the rows this sort order asks for. The view keeps drawing them (it only
+    // spins with zero rows), so this never flashes.
+    expect(mockRenders[0].loading).toBe(true);
+    await waitFor(() => expect(latest().items.map((a) => a.id)).toEqual(['dl-2', 'dl-1']));
+    expect(mockRenders.filter((m) => m.items.length === 0)).toEqual([]);
+  });
+
+  it('re-reads the FAVOURITES half on a sort change too', async () => {
+    await upsertAlbums(db(), [
+      album('fav-1', { name: 'Zulu', artist: 'Alpaca' }),
+      album('fav-2', { name: 'Alpha', artist: 'Zebra' }),
+    ]);
+    await markStarredAlbums(db(), [
+      { id: 'fav-1', starredAt: 1 },
+      { id: 'fav-2', starredAt: 2 },
+    ]);
+    render(<AlbumLibraryListScreen favoritesOnly />);
+    await waitFor(() => expect(latest().items.map((a) => a.id)).toEqual(['fav-1', 'fav-2']));
+    mockRenders.length = 0;
+
+    act(() => layoutPreferencesStore.setState({ albumSortOrder: 'title' }));
+    expect(mockRenders[0].loading).toBe(true);
+    await waitFor(() => expect(latest().items.map((a) => a.id)).toEqual(['fav-2', 'fav-1']));
+    expect(mockRenders.filter((m) => m.items.length === 0)).toEqual([]);
+  });
+
+  it('files a punctuation-leading title where the scroller says it is', async () => {
+    layoutPreferencesStore.setState({ albumSortOrder: 'title' });
+    await seedSorted('dl-heroes', '"Heroes"');
+    await seedSorted('dl-gh', 'Ghosts');
+    await seedSorted('dl-ivy', 'Ivy');
+    render(<AlbumLibraryListScreen downloadedOnly />);
+    await waitFor(() => expect(latest().items).toHaveLength(3));
+    // Between G and I, exactly where `getSortFirstLetter('"Heroes"')` → 'H' points.
+    expect(latest().items.map((a) => a.id)).toEqual(['dl-gh', 'dl-heroes', 'dl-ivy']);
+    expect(getSortFirstLetter('"Heroes"')).toBe('H');
   });
 });

@@ -20,6 +20,9 @@
  */
 import type { AlbumID3, Child, Playlist } from 'subsonic-api';
 
+import { getSortArticles } from '@/db/sortArticles';
+import { albumSortKeys, playlistSortTitle } from '@/db/sortKeys';
+
 import { getDb, type BatchCommand } from './db';
 
 export interface CachedSongRow {
@@ -1276,27 +1279,39 @@ export async function deleteCachedSong(songId: string): Promise<void> {
 /*  cached_items writes                                                */
 /* ------------------------------------------------------------------ */
 
+/**
+ * The A–Z keys are DERIVED at write time from the metadata already in hand, not carried
+ * on the meta object — nothing in JS reads them back, only the Downloaded filter's
+ * `ORDER BY` does. They are appended past the `ColumnDef` list for that reason: adding
+ * them to `ALBUM_META_COLUMNS` would round-trip a database artefact through
+ * `CachedAlbumMeta` and every hydrate.
+ */
 const CACHED_ALBUM_UPSERT_SQL = `INSERT INTO cached_albums
-   (item_id, ${columnNames(ALBUM_META_COLUMNS)})
-   VALUES (${placeholders(1 + ALBUM_META_COLUMNS.length)})
-   ON CONFLICT(item_id) DO UPDATE SET ${excludedAssignments(ALBUM_META_COLUMNS)};`;
+   (item_id, ${columnNames(ALBUM_META_COLUMNS)}, sort_title, sort_artist)
+   VALUES (${placeholders(3 + ALBUM_META_COLUMNS.length)})
+   ON CONFLICT(item_id) DO UPDATE SET ${excludedAssignments(ALBUM_META_COLUMNS)},
+     sort_title = excluded.sort_title, sort_artist = excluded.sort_artist;`;
 
 const CACHED_PLAYLIST_UPSERT_SQL = `INSERT INTO cached_playlists
-   (item_id, ${columnNames(PLAYLIST_META_COLUMNS)})
-   VALUES (${placeholders(1 + PLAYLIST_META_COLUMNS.length)})
-   ON CONFLICT(item_id) DO UPDATE SET ${excludedAssignments(PLAYLIST_META_COLUMNS)};`;
+   (item_id, ${columnNames(PLAYLIST_META_COLUMNS)}, sort_title)
+   VALUES (${placeholders(2 + PLAYLIST_META_COLUMNS.length)})
+   ON CONFLICT(item_id) DO UPDATE SET ${excludedAssignments(PLAYLIST_META_COLUMNS)},
+     sort_title = excluded.sort_title;`;
 
 // Component rows are written unconditionally from `excluded.*`: the caller only
 // reaches here holding a complete server snapshot, and a write without one skips
 // the component row entirely (see `cachedItemCommands`).
-const cachedAlbumUpsertCommand = (itemId: string, meta: CachedAlbumMeta): BatchCommand => [
-  CACHED_ALBUM_UPSERT_SQL,
-  [itemId, ...columnParams(ALBUM_META_COLUMNS, meta)],
-];
+const cachedAlbumUpsertCommand = (itemId: string, meta: CachedAlbumMeta): BatchCommand => {
+  const keys = albumSortKeys(meta, getSortArticles());
+  return [
+    CACHED_ALBUM_UPSERT_SQL,
+    [itemId, ...columnParams(ALBUM_META_COLUMNS, meta), keys.sort_title, keys.sort_artist],
+  ];
+};
 
 const cachedPlaylistUpsertCommand = (itemId: string, meta: CachedPlaylistMeta): BatchCommand => [
   CACHED_PLAYLIST_UPSERT_SQL,
-  [itemId, ...columnParams(PLAYLIST_META_COLUMNS, meta)],
+  [itemId, ...columnParams(PLAYLIST_META_COLUMNS, meta), playlistSortTitle(meta, getSortArticles())],
 ];
 
 function cachedItemCommands(item: Omit<CachedItemRow, 'songIds'>): BatchCommand[] {

@@ -149,3 +149,36 @@ describe('ArtistListScreen — no downloaded filter exists', () => {
     expect(latest().items.map((a) => a.id)).toEqual(['star-a']);
   });
 });
+
+/** The favourites filter is A–Z, not newest-favourite-first: it is a LIBRARY tab view of
+ *  the same list the keyset browse shows, so a filter toggle must not reorder it. */
+describe('ArtistListScreen — the favourites filter is name-ordered', () => {
+  it('orders A–Z regardless of when each artist was starred', async () => {
+    await upsertArtists(db(), [
+      artist('zulu', { name: 'Zulu' }),
+      artist('alpha', { name: 'Alpha' }),
+    ]);
+    await markStarredArtists(db(), [
+      { id: 'zulu', starredAt: 900 }, // newest — first under the Favourites TAB's order
+      { id: 'alpha', starredAt: 100 },
+    ]);
+    render(<ArtistListScreen favoritesOnly />);
+    await waitFor(() => expect(latest().items).toHaveLength(2));
+    expect(latest().items.map((a) => a.id)).toEqual(['alpha', 'zulu']);
+  });
+
+  it('strips articles and leading punctuation, exactly as the browse list does', async () => {
+    await upsertArtists(db(), [
+      artist('the-b', { name: 'The Zebra' }),
+      artist('quoted', { name: '"Alpaca"' }),
+    ]);
+    await markStarredArtists(db(), [
+      { id: 'the-b', starredAt: 1 },
+      { id: 'quoted', starredAt: 2 },
+    ]);
+    render(<ArtistListScreen favoritesOnly />);
+    await waitFor(() => expect(latest().items).toHaveLength(2));
+    // "Alpaca" → a…, "The Zebra" → zebra.
+    expect(latest().items.map((a) => a.id)).toEqual(['quoted', 'the-b']);
+  });
+});

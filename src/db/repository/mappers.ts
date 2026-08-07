@@ -1,15 +1,16 @@
 /**
  * Map Subsonic API objects to normalized row records (snake_case column keys) +
- * child-table row arrays. Derives `sort_title` (getSortKey), `norm_*`/`dmeta_*`
- * search columns (searchMatch), flattens ReplayGain → `rg_*` and ItemDate →
+ * child-table row arrays. Derives the `sort_*` A–Z keys (`db/sortKeys`, shared with
+ * the favourites remainder and the download tables), the `norm_*`/`dmeta_*` search
+ * columns (searchMatch), flattens ReplayGain → `rg_*` and ItemDate →
  * `*_year/_month/_day`. Dates are accepted as live `Date` OR ISO string (the
  * migration reads them back from JSON blobs where Dates are serialized to strings).
  */
 import type { AlbumID3, AlbumInfo, ArtistID3, ArtistInfo2, Child, Playlist } from 'subsonic-api';
 
 import { metaphoneKeyFromNormalized, normalize, normalizeArtist } from '@/services/searchMatch';
-import { getSortKey } from '@/utils/sortHelpers';
 
+import { albumSortKeys, artistSortTitle, playlistSortTitle, songSortKeys } from '../sortKeys';
 import type { Row } from './core';
 
 export const toEpoch = (v: Date | string | number | null | undefined): number | null => {
@@ -41,8 +42,8 @@ const genreName = (g: unknown): string =>
 // ── Songs (Child) ────────────────────────────────────────────────────────────
 
 /** `articles` = the effective ignored-article list (server's, else undefined →
- *  `getSortKey` falls back to `DEFAULT_IGNORED_ARTICLES`) — passed by the caller so
- *  the stored sort keys match the alphabet scroller. */
+ *  the local default) — passed by the caller so the stored sort keys match the
+ *  alphabet scroller. */
 export function songRow(c: Child, articles?: readonly string[]): Row {
   // Normalize once, then derive the phonetic key from the normalized string
   // (skips a redundant re-normalize — the bulk of the per-row search-derive cost).
@@ -84,10 +85,7 @@ export function songRow(c: Child, articles?: readonly string[]): Row {
     bpm: num(c.bpm),
     comment: str(c.comment),
     sort_name: str(c.sortName),
-    sort_title: getSortKey(c.title ?? '', c.sortName, articles),
-    // Artist sort key: derive from the SAME `artist` field TrackRow displays and
-    // the scroller reads, so the section letter matches where the song sorts.
-    sort_artist: getSortKey(c.artist ?? c.title ?? '', undefined, articles),
+    ...songSortKeys(c, articles),
     music_brainz_id: str(c.musicBrainzId),
     explicit_status: str(c.explicitStatus),
     bookmark_position: num(c.bookmarkPosition),
@@ -132,9 +130,9 @@ export const songMoodRows = (c: Child, id: string): Row[] =>
 
 /**
  * `articles` = the effective ignored-article list (server's `ignoredArticles` if
- * present, else undefined → `getSortKey` falls back to `DEFAULT_IGNORED_ARTICLES`).
- * The caller passes the SAME list the alphabet scroller uses so the stored sort keys
- * and the scroller's section letters stay coherent (e.g. "The Beatles" → B).
+ * present, else undefined → the local default). The caller passes the SAME list the
+ * alphabet scroller uses so the stored sort keys and the scroller's section letters
+ * stay coherent (e.g. "The Beatles" → B).
  */
 export function albumRow(a: AlbumID3, articles?: readonly string[]): Row {
   const displayArtist = a.displayArtist ?? a.artist;
@@ -159,10 +157,7 @@ export function albumRow(a: AlbumID3, articles?: readonly string[]): Row {
     version: str(a.version),
     music_brainz_id: str(a.musicBrainzId),
     sort_name: str(a.sortName),
-    sort_title: getSortKey(a.name ?? '', a.sortName, articles),
-    // Artist sort key: mirror the scroller's `artist ?? name` source so an
-    // artist-less album still lands under its title's letter.
-    sort_artist: getSortKey(displayArtist ?? a.name ?? '', undefined, articles),
+    ...albumSortKeys(a, articles),
     is_compilation: toBool(a.isCompilation),
     explicit_status: str(a.explicitStatus),
     original_release_year: num(a.originalReleaseDate?.year),
@@ -194,9 +189,9 @@ export const albumDiscTitleRows = (a: AlbumID3, id: string): Row[] =>
 
 // ── Artists (ArtistID3 + ArtistInfo2) ─────────────────────────────────────────
 
-/** `articles` = effective ignored-article list (server's, else undefined →
- *  `getSortKey` falls back to `DEFAULT_IGNORED_ARTICLES`) — same as albums/songs so
- *  the stored A–Z key matches the scroller ("The Beatles" → B). */
+/** `articles` = effective ignored-article list (server's, else undefined → the local
+ *  default) — same as albums/songs so the stored A–Z key matches the scroller
+ *  ("The Beatles" → B). */
 export function artistRow(a: ArtistID3, articles?: readonly string[]): Row {
   const normName = normalize(a.name);
   const starredAt = toEpoch(a.starred);
@@ -204,7 +199,7 @@ export function artistRow(a: ArtistID3, articles?: readonly string[]): Row {
     id: a.id,
     name: str(a.name),
     sort_name: str(a.sortName),
-    sort_title: getSortKey(a.name ?? '', a.sortName, articles),
+    sort_title: artistSortTitle(a, articles),
     cover_art: str(a.coverArt),
     artist_image_url: str(a.artistImageUrl),
     album_count: num(a.albumCount),
@@ -243,9 +238,9 @@ export const artistSimilarRows = (info: ArtistInfo2, id: string): Row[] =>
 
 // ── Playlists (Playlist) ──────────────────────────────────────────────────────
 
-/** `articles` = effective ignored-article list (server's, else undefined → default) —
- *  same as albums/songs/artists so the stored A–Z key matches the scroller. Playlists
- *  have no server `sortName`, so the key derives from `name`. */
+/** `articles` = effective ignored-article list (server's, else undefined → the local
+ *  default) — same as albums/songs/artists so the stored A–Z key matches the scroller.
+ *  Playlists have no server `sortName`, so the key derives from `name`. */
 export function playlistRow(p: Playlist, articles?: readonly string[]): Row {
   const normName = normalize(p.name);
   return {
@@ -259,7 +254,7 @@ export function playlistRow(p: Playlist, articles?: readonly string[]): Row {
     owner: str(p.owner),
     public: toBool(p.public),
     song_count: num(p.songCount),
-    sort_title: getSortKey(p.name ?? '', undefined, articles),
+    sort_title: playlistSortTitle(p, articles),
     norm_name: normName,
     dmeta_name: metaphoneKeyFromNormalized(normName),
   };

@@ -24,7 +24,7 @@
 import type { Child } from 'subsonic-api';
 
 import type { InternalDb } from '../client';
-import { type AlbumListRow } from './albums';
+import { type AlbumListRow, type AlbumSortOrder } from './albums';
 import { colsOf } from './core';
 import { type PlaylistListRow } from './playlists';
 
@@ -64,46 +64,52 @@ export function downloadedClause(entity: DownloadableEntity, includePartial: boo
 /* ------------------------------------------------------------------ */
 
 /**
- * `cached_albums` carries every `AlbumListRow` column except the two sort keys, which only
- * the keyset cursor uses — the downloaded list is bounded and sorts in JS via
- * `sortAlbumsByPreference` (which honours `ignoredArticles`, something the SQL has no
- * knowledge of). They project as NULL so the row type is satisfied honestly.
+ * `cached_albums` carries every `AlbumListRow` column, sort keys included: they are
+ * written from the same metadata through the same `db/sortKeys` derivation the `albums`
+ * table uses, so the Downloaded filter can `ORDER BY` them and land on exactly the order
+ * the unfiltered browse list shows.
  *
  * Typed against `AlbumListRow` so a stale or misspelled column is a compile error.
  */
 type CachedAlbumField = Exclude<
   keyof AlbumListRow,
-  | 'id' | 'sort_title' | 'sort_artist'
-  | 'artists' | 'genres' | 'discTitles' | 'moods' | 'recordLabels' | 'releaseTypes'
+  'id' | 'artists' | 'genres' | 'discTitles' | 'moods' | 'recordLabels' | 'releaseTypes'
 >;
 
 const CACHED_ALBUM_FIELDS: readonly CachedAlbumField[] = [
   'artist_id', 'name', 'artist', 'display_artist', 'cover_art', 'song_count', 'duration',
   'play_count', 'created', 'starred', 'year', 'genre', 'played', 'user_rating', 'version',
-  'music_brainz_id', 'sort_name', 'is_compilation', 'explicit_status',
-  'original_release_year', 'original_release_month', 'original_release_day',
-  'release_year', 'release_month', 'release_day',
+  'music_brainz_id', 'sort_name', 'sort_title', 'sort_artist', 'is_compilation',
+  'explicit_status', 'original_release_year', 'original_release_month',
+  'original_release_day', 'release_year', 'release_month', 'release_day',
 ];
 
 const CACHED_ALBUM_COLS = [
   'ca."item_id" AS "id"',
   colsOf(CACHED_ALBUM_FIELDS, 'ca'),
-  'NULL AS "sort_title"',
-  'NULL AS "sort_artist"',
 ].join(', ');
 
-type CachedPlaylistField = Exclude<keyof PlaylistListRow, 'id' | 'sort_title'>;
+type CachedPlaylistField = Exclude<keyof PlaylistListRow, 'id'>;
 
 const CACHED_PLAYLIST_FIELDS: readonly CachedPlaylistField[] = [
   'name', 'comment', 'cover_art', 'created', 'changed', 'duration', 'owner', 'public',
-  'song_count',
+  'song_count', 'sort_title',
 ];
 
 const CACHED_PLAYLIST_COLS = [
   'cp."item_id" AS "id"',
   colsOf(CACHED_PLAYLIST_FIELDS, 'cp'),
-  'NULL AS "sort_title"',
 ].join(', ');
+
+/**
+ * The ORDER BY for a downloaded album list. `sort_artist` first groups an artist's
+ * albums and alphabetises within them; `item_id` last makes the order total, matching
+ * `albums`' `(sort_artist, sort_title, id)` / `(sort_title, id)` keyset exactly.
+ */
+const albumOrderBy = (sortOrder?: AlbumSortOrder): string =>
+  sortOrder === 'artist'
+    ? 'ca."sort_artist", ca."sort_title", ca."item_id"'
+    : 'ca."sort_title", ca."item_id"';
 
 /* ------------------------------------------------------------------ */
 /*  Reads                                                              */
@@ -111,6 +117,11 @@ const CACHED_PLAYLIST_COLS = [
 
 export interface DownloadedFilter {
   includePartial?: boolean;
+}
+
+export interface DownloadedAlbumFilter extends DownloadedFilter {
+  /** The user's album-list preference. Defaults to title order, as `listAlbums` does. */
+  sortOrder?: AlbumSortOrder;
 }
 
 /**
@@ -123,24 +134,27 @@ export interface DownloadedFilter {
  */
 export async function listDownloadedAlbums(
   db: InternalDb,
-  f: DownloadedFilter = {},
+  f: DownloadedAlbumFilter = {},
 ): Promise<AlbumListRow[]> {
   return db.getAllAsync<AlbumListRow>(
     `SELECT ${CACHED_ALBUM_COLS} FROM cached_albums ca ` +
       'JOIN cached_items ci ON ci.item_id = ca.item_id ' +
-      `WHERE ci.type='album'${partialGate(f.includePartial === true)}`,
+      `WHERE ci.type='album'${partialGate(f.includePartial === true)} ` +
+      `ORDER BY ${albumOrderBy(f.sortOrder)}`,
   );
 }
 
 /**
- * The DOWNLOADED playlists. No partial gate: playlists download atomically, so there is no
- * partial state to include or exclude.
+ * The DOWNLOADED playlists, in the same `sort_title` A–Z the playlist browse uses. No
+ * partial gate: playlists download atomically, so there is no partial state to include
+ * or exclude.
  */
 export async function listDownloadedPlaylists(db: InternalDb): Promise<PlaylistListRow[]> {
   return db.getAllAsync<PlaylistListRow>(
     `SELECT ${CACHED_PLAYLIST_COLS} FROM cached_playlists cp ` +
       'JOIN cached_items ci ON ci.item_id = cp.item_id ' +
-      "WHERE ci.type='playlist'",
+      "WHERE ci.type='playlist' " +
+      'ORDER BY cp."sort_title", cp."item_id"',
   );
 }
 

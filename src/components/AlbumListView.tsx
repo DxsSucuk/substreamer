@@ -179,14 +179,21 @@ export function AlbumListView<T extends { id: string }>({
   const albumSortOrder = layoutPreferencesStore((s) => s.albumSortOrder);
   const ignoredArticles = serverInfoStore((s) => s.ignoredArticles);
 
-  /** Compute the alphabet-scroller letter for a given item, mirroring
-   *  the article-stripped sort key used by `albumLibraryStore`. */
+  /** The alphabet-scroller letter for an item — the first character of the SAME key the
+   *  list is ordered by (`albums.sort_title` / `sort_artist`, see `db/sortKeys`). The
+   *  artist branch must read `displayArtist` FIRST: `sort_artist` does, so on a server
+   *  that sends both fields with different values, `artist ?? name` files the row under
+   *  a letter it does not sort at. */
   const getLetter = useCallback(
     (item: T): string => {
       const a = toAlbum(item);
       return albumSortOrder === 'title'
         ? getSortFirstLetter(a.name ?? '', a.sortName, ignoredArticles ?? undefined)
-        : getSortFirstLetter(a.artist ?? a.name ?? '', undefined, ignoredArticles ?? undefined);
+        : getSortFirstLetter(
+            a.displayArtist ?? a.artist ?? a.name ?? '',
+            undefined,
+            ignoredArticles ?? undefined,
+          );
     },
     [albumSortOrder, ignoredArticles, toAlbum],
   );

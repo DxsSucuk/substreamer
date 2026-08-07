@@ -207,6 +207,8 @@ CREATE TABLE `cached_albums` (
 	`version` text,
 	`music_brainz_id` text,
 	`sort_name` text,
+	`sort_title` text,
+	`sort_artist` text,
 	`is_compilation` integer,
 	`explicit_status` text,
 	`original_release_year` integer,
@@ -266,6 +268,7 @@ CREATE TABLE `cached_playlists` (
 	`owner` text,
 	`public` integer,
 	`song_count` integer,
+	`sort_title` text,
 	FOREIGN KEY (`item_id`) REFERENCES `cached_items`(`item_id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
@@ -398,6 +401,8 @@ CREATE UNIQUE INDEX `idx_download_queue_position_unique` ON `download_queue` (`q
 CREATE TABLE `favorite_albums` (
 	`id` text PRIMARY KEY NOT NULL,
 	`starred` integer NOT NULL,
+	`sort_title` text,
+	`sort_artist` text,
 	`json` text NOT NULL
 );
 --> statement-breakpoint
@@ -405,6 +410,7 @@ CREATE INDEX `idx_favorite_albums_starred_key` ON `favorite_albums` (`starred`,`
 CREATE TABLE `favorite_artists` (
 	`id` text PRIMARY KEY NOT NULL,
 	`starred` integer NOT NULL,
+	`sort_title` text,
 	`json` text NOT NULL
 );
 --> statement-breakpoint

@@ -58,6 +58,7 @@ import {
   recoverStalledSync,
 } from '../services/dataSyncService';
 import { runDataModelUpgradeIfNeeded } from '../services/dataModelUpgradeService';
+import { runSortKeyRebuildIfNeeded } from '../services/sortKeyRebuildService';
 import { hydrateDownloadedAlbumCoverArt } from '../hooks/useSongCoverArt';
 import { useLibrarySyncBackgroundNotification } from '../hooks/useLibrarySyncBackgroundNotification';
 import { useLibrarySyncKeepAwake } from '../hooks/useLibrarySyncKeepAwake';
@@ -262,6 +263,12 @@ async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
   // so it never blocks first paint; drift/version-gated and idempotent, and it waits for
   // an active library/song sync to settle, so it co-exists with the live normalized sync.
   idleStage('dataModelUpgrade', () => runDataModelUpgradeIfNeeded());
+  if (getCancelled()) return;
+
+  // One-time-per-key-format recompute of the stored A–Z sort keys, from data the rows
+  // already hold. Idle-scheduled and chunked because `songs` is tens of thousands of rows;
+  // resumable, so it finishes across launches if it is interrupted.
+  idleStage('sortKeyRebuild', () => runSortKeyRebuildIfNeeded());
   if (getCancelled()) return;
 
   // Re-push the CarPlay / Android Auto browse snapshot now the library stores

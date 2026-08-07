@@ -28,6 +28,7 @@ import { act, render, waitFor } from '@testing-library/react-native';
 
 import { ensureNormalizedSchema } from '../../db/createNormalizedTables';
 import { getDb } from '../../store/persistence/db';
+import { upsertCachedItem } from '../../store/persistence/musicCacheTables';
 import { musicCacheStore } from '../../store/musicCacheStore';
 import { offlineModeStore } from '../../store/offlineModeStore';
 import { syncStatusStore } from '../../store/syncStatusStore';
@@ -191,5 +192,32 @@ describe('PlaylistListScreen — downloaded filter tracks musicCacheStore.revisi
     bumpRevision();
     await waitFor(() => expect(latest().items).toEqual([]));
     expect(latest().loading).toBe(false);
+  });
+});
+
+/** The Downloaded filter is the same A–Z the keyset browse pages through, ordered in SQL
+ *  on the `sort_title` the download writer stored. */
+describe('PlaylistListScreen — the downloaded filter is name-ordered', () => {
+  const seedNamed = (itemId: string, name: string): Promise<void> =>
+    upsertCachedItem({
+      itemId,
+      type: 'playlist',
+      name,
+      expectedSongCount: 0,
+      lastSyncAt: 0,
+      downloadedAt: 0,
+      playlistMeta: { name },
+    });
+
+  it('orders A–Z, article- and punctuation-stripped', async () => {
+    // Ids run OPPOSITE to the names, so a list ordered by anything but the stored key
+    // (an unwritten NULL falls through to item_id) gives the other answer.
+    await seedNamed('m-zulu', 'Zulu Mix');
+    await seedNamed('a-bravo', 'The Bravo Mix');
+    await seedNamed('z-alpha', '"Alpha" Mix');
+    render(<PlaylistListScreen downloadedOnly />);
+    await waitFor(() => expect(latest().items).toHaveLength(3));
+    // `"Alpha"` → a…, `The Bravo Mix` → bravo…, `Zulu Mix` → zulu…
+    expect(latest().items.map((p) => p.id)).toEqual(['z-alpha', 'a-bravo', 'm-zulu']);
   });
 });

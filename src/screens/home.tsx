@@ -51,8 +51,6 @@ import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { LIST_LENGTH_DISPLAY_CAP } from '../store/layoutPreferencesStore';
 import { offlineModeStore } from '../store/offlineModeStore';
-import { serverInfoStore } from '../store/serverInfoStore';
-import { sortAlbumsByPreference, sortPlaylistsByName } from '../utils/librarySort';
 import { searchStore } from '../store/searchStore';
 
 import { absoluteFill } from '../utils/styles';
@@ -419,7 +417,9 @@ export function HomeScreen() {
     () => new Set(),
   );
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
-  const downloadedKey = `${includePartial}:${revision}`;
+  // `albumSortOrder` is part of the key because the ORDER BY is the DB's: changing the
+  // preference re-reads rather than re-sorting what we hold.
+  const downloadedKey = `${includePartial}:${revision}:${albumSortOrder}`;
   // DERIVED, not seeded (see `album-library-list.tsx`): a mount-time seed only runs once,
   // so turning the Downloaded filter on later would render one empty-and-not-loading frame
   // and flash "No downloaded music" over the whole screen.
@@ -431,7 +431,7 @@ export function HomeScreen() {
       const db = getDb();
       const [albums, playlists, ids]: [AlbumID3[], Playlist[], ReadonlySet<string>] = db
         ? await Promise.all([
-            listDownloadedAlbums(db, { includePartial }).then((rs) =>
+            listDownloadedAlbums(db, { includePartial, sortOrder: albumSortOrder }).then((rs) =>
               rs.map(albumListRowToAlbumID3),
             ),
             listDownloadedPlaylists(db).then((rs) => rs.map(playlistListRowToPlaylist)),
@@ -447,14 +447,14 @@ export function HomeScreen() {
     return () => {
       alive = false;
     };
-  }, [downloadedOnly, includePartial, revision, downloadedKey]);
+  }, [downloadedOnly, includePartial, revision, albumSortOrder, downloadedKey]);
 
-  // Sorted outside the effect so changing the album sort order doesn't re-run the read.
-  const downloadedAlbums = useMemo(() => {
-    if (!downloadedOnly) return [];
-    const articles = serverInfoStore.getState().ignoredArticles ?? undefined;
-    return sortAlbumsByPreference(downloadedAlbumRows, albumSortOrder, articles);
-  }, [downloadedOnly, downloadedAlbumRows, albumSortOrder]);
+  // Both reads come back ORDERED (SQL, on the stored `sort_*` keys). The guard stays:
+  // the rows outlive a filter toggle-off, and the sections must empty with the filter.
+  const downloadedAlbums = useMemo(
+    () => (downloadedOnly ? downloadedAlbumRows : []),
+    [downloadedOnly, downloadedAlbumRows],
+  );
 
   // Which album lists appear (order + downloaded/favorites filtering + offline
   // drop-Random + Downloaded Albums) is owned by the shared homeSectionsService
@@ -489,13 +489,13 @@ export function HomeScreen() {
 
   const hasAnyFilters = downloadedOnly || favoritesOnly;
 
-  const downloadedPlaylists = useMemo(() => {
-    // Playlists download atomically (no partial state), so the read carries no gate; sorted
-    // A-Z here. Never-reaped source, independent of the paged library.
-    if (!downloadedOnly) return [];
-    const articles = serverInfoStore.getState().ignoredArticles ?? undefined;
-    return sortPlaylistsByName(downloadedPlaylistRows, articles);
-  }, [downloadedOnly, downloadedPlaylistRows]);
+  // Playlists download atomically (no partial state), so the read carries no gate; it
+  // comes back A-Z on the stored `sort_title`. Never-reaped source, independent of the
+  // paged library.
+  const downloadedPlaylists = useMemo(
+    () => (downloadedOnly ? downloadedPlaylistRows : []),
+    [downloadedOnly, downloadedPlaylistRows],
+  );
 
   // Every album section emptied by the active filter(s). Individual sections emptied by a
   // filter are hidden rather than placeheld (see the render below), so without this a

@@ -1,86 +1,14 @@
 /**
- * Pure, store-independent list sorts for the bounded filtered library views
- * (favorites / downloaded). Article- + accent-folded keys via a Schwartzian
- * transform (keys computed once per item). Callers pass the live articles/sort
- * preference, which keeps this module free of store imports.
+ * The one JS list sort left: raw-title order for the bounded song filter views.
+ *
+ * Album, artist and playlist ordering lives in SQL, on the stored `sort_*` keys
+ * (`db/sortKeys` → `ORDER BY`) — one comparator, one place, so a filtered list cannot
+ * order differently from browse.
  */
-import type { ArtistID3 } from 'subsonic-api';
-
-import { baseCollator, defaultCollator } from './intl';
-import { getSortKey } from './sortHelpers';
+import { defaultCollator } from './intl';
 
 /** Title-order comparator for the bounded song filter views. `defaultCollator`, not
  *  `localeCompare` — Hermes on Android ARM64 clones a fresh ICU collator per call
  *  (#867), which is why the raw method is banned repo-wide. */
 export const byTitle = (a: { title?: string }, b: { title?: string }): number =>
   defaultCollator.compare(a.title ?? '', b.title ?? '');
-
-export type AlbumSortOrder = 'title' | 'artist';
-
-/** The album fields this sort reads — structural, not `AlbumID3`, so a narrow browse
- *  row sorts without being widened into a full entity first. */
-export interface SortableAlbum {
-  id: string;
-  name?: string;
-  artist?: string;
-  sortName?: string;
-}
-
-/** Sort by the user's album preference, projecting the sort keys out of each item —
- *  a browse row holds them under different names, and projecting is cheaper than
- *  building the whole envelope just to sort. */
-export function sortAlbumsBy<T>(
-  items: readonly T[],
-  keysOf: (item: T) => SortableAlbum,
-  sortOrder: AlbumSortOrder,
-  articles?: readonly string[],
-): T[] {
-  const decorated = items.map((item): [string, T] => {
-    const a = keysOf(item);
-    return [
-      sortOrder === 'title'
-        ? getSortKey(a.name ?? '', a.sortName, articles)
-        : getSortKey(a.artist ?? '', undefined, articles),
-      item,
-    ];
-  });
-  decorated.sort(([ka], [kb]) => baseCollator.compare(ka, kb));
-  return decorated.map(([, item]) => item);
-}
-
-/** Sort albums by the user's preference (title OR artist) — mirrors the library
- *  list's A-Z so the alphabet scroller aligns. */
-export function sortAlbumsByPreference<T extends SortableAlbum>(
-  albums: readonly T[],
-  sortOrder: AlbumSortOrder,
-  articles?: readonly string[],
-): T[] {
-  return sortAlbumsBy(albums, (a) => a, sortOrder, articles);
-}
-
-/** Sort artists A-Z by (sort) name. */
-export function sortArtistsByName(
-  artists: readonly ArtistID3[],
-  articles?: readonly string[],
-): ArtistID3[] {
-  const decorated = artists.map((a): [string, ArtistID3] => [
-    getSortKey(a.name ?? '', a.sortName, articles),
-    a,
-  ]);
-  decorated.sort(([ka], [kb]) => baseCollator.compare(ka, kb));
-  return decorated.map(([, a]) => a);
-}
-
-/** Sort playlists A-Z by name (playlists have no server sortName). Structural in
- *  `name` so a browse row sorts without being widened into a `Playlist` first. */
-export function sortPlaylistsByName<T extends { name?: string | null }>(
-  playlists: readonly T[],
-  articles?: readonly string[],
-): T[] {
-  const decorated = playlists.map((p): [string, T] => [
-    getSortKey(p.name ?? '', undefined, articles),
-    p,
-  ]);
-  decorated.sort(([ka], [kb]) => baseCollator.compare(ka, kb));
-  return decorated.map(([, p]) => p);
-}

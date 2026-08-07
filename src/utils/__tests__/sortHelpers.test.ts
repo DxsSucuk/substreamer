@@ -3,7 +3,32 @@ import {
   getSortFirstLetter,
   getSortKey,
   stripArticle,
+  stripLeadingPunctuation,
 } from '../sortHelpers';
+
+describe('stripLeadingPunctuation', () => {
+  it('drops every leading non-alphanumeric character', () => {
+    expect(stripLeadingPunctuation('"Heroes"')).toBe('Heroes"');
+    expect(stripLeadingPunctuation('(How to Live)')).toBe('How to Live)');
+    expect(stripLeadingPunctuation("'74 Jailbreak")).toBe('74 Jailbreak');
+    expect(stripLeadingPunctuation('  Spaced')).toBe('Spaced');
+  });
+
+  it('leaves a name that already starts with a letter or digit alone', () => {
+    expect(stripLeadingPunctuation('Pearl Jam')).toBe('Pearl Jam');
+    expect(stripLeadingPunctuation('12 Stones')).toBe('12 Stones');
+  });
+
+  it('never collapses to empty', () => {
+    expect(stripLeadingPunctuation('???')).toBe('???');
+    expect(stripLeadingPunctuation('')).toBe('');
+  });
+
+  it('keeps non-Latin letters, which are letters', () => {
+    expect(stripLeadingPunctuation('Ω Project')).toBe('Ω Project');
+    expect(stripLeadingPunctuation('«Мир»')).toBe('Мир»');
+  });
+});
 
 describe('stripArticle (default list)', () => {
   it('strips each default article when followed by whitespace', () => {
@@ -114,6 +139,30 @@ describe('getSortKey', () => {
     expect(getSortKey('Pearl Jam')).toBe('pearl jam');
     expect(getSortKey('U2')).toBe('u2');
   });
+
+  it('drops leading punctuation so it cannot decide where a row files', () => {
+    expect(getSortKey('"Heroes"')).toBe('heroes"');
+    expect(getSortKey('(How to Live) As Ghosts')).toBe('how to live) as ghosts');
+    expect(getSortKey('…And Justice for All')).toBe('and justice for all');
+  });
+
+  it('leaves a DIGIT leading — a number is not a letter and belongs in #', () => {
+    expect(getSortKey("'74 Jailbreak")).toBe('74 jailbreak');
+    expect(getSortKey('12 Stones')).toBe('12 stones');
+  });
+
+  it('strips punctuation BEFORE the article, so a quoted article still strips', () => {
+    expect(getSortKey('"The Wall"')).toBe('wall"');
+  });
+
+  it('drops leading punctuation from a server sortName too', () => {
+    expect(getSortKey('Heroes', '"Heroes"')).toBe('heroes"');
+  });
+
+  it('never collapses a punctuation-only name to empty', () => {
+    expect(getSortKey('???')).toBe('???');
+    expect(getSortKey('!!!')).toBe('!!!');
+  });
 });
 
 describe('getSortFirstLetter', () => {
@@ -122,9 +171,21 @@ describe('getSortFirstLetter', () => {
     expect(getSortFirstLetter('Pearl Jam')).toBe('P');
   });
 
-  it('returns "#" for non-alpha leading characters', () => {
+  it('returns "#" for a leading DIGIT', () => {
     expect(getSortFirstLetter('12 Stones')).toBe('#');
-    expect(getSortFirstLetter('!Action')).toBe('#');
+    expect(getSortFirstLetter("'74 Jailbreak")).toBe('#');
+  });
+
+  /** The scroller reads `charAt(0)` of the key, so the punctuation strip reaches it for
+   *  free — which is exactly what keeps the letter and the row's position coherent. */
+  it('files a punctuation-leading name under its first LETTER', () => {
+    expect(getSortFirstLetter('!Action')).toBe('A');
+    expect(getSortFirstLetter('"Heroes"')).toBe('H');
+    expect(getSortFirstLetter('(How to Live) As Ghosts')).toBe('H');
+  });
+
+  it('still returns "#" when there is no letter or digit at all', () => {
+    expect(getSortFirstLetter('???')).toBe('#');
   });
 
   it('returns the accent-folded letter — "Élise" → E', () => {

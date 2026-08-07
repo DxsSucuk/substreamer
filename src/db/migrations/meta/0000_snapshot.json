@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "9feb0a01-85bc-4d5e-80de-f8e58f9175af",
+  "id": "b99e3840-b58b-4050-997c-6cbe5d59a091",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "album_artists": {
@@ -1405,6 +1405,20 @@
           "notNull": false,
           "autoincrement": false
         },
+        "sort_title": {
+          "name": "sort_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "sort_artist": {
+          "name": "sort_artist",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "is_compilation": {
           "name": "is_compilation",
           "type": "integer",
@@ -1796,6 +1810,13 @@
         "song_count": {
           "name": "song_count",
           "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "sort_title": {
+          "name": "sort_title",
+          "type": "text",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
@@ -2685,6 +2706,20 @@
           "notNull": true,
           "autoincrement": false
         },
+        "sort_title": {
+          "name": "sort_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "sort_artist": {
+          "name": "sort_artist",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "json": {
           "name": "json",
           "type": "text",
@@ -2723,6 +2758,13 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "sort_title": {
+          "name": "sort_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "json": {

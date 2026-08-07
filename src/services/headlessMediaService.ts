@@ -62,8 +62,6 @@ import { offlineModeStore } from '../store/offlineModeStore';
 import { syncStatusStore } from '../store/syncStatusStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
-import { serverInfoStore } from '../store/serverInfoStore';
-import { sortAlbumsByPreference } from '../utils/librarySort';
 import { awaitKvHydration, rehydrateAllStores } from '../store/persistence/rehydrate';
 import i18n from '../i18n/i18n';
 import {
@@ -165,18 +163,17 @@ async function homeInput(): Promise<ComposeHomeInput> {
   // Two different predicates, both from the never-reaped download tables (offline-safe):
   // the Downloaded Albums body needs renderable metadata (VISIBILITY), the curated-list
   // filter only needs ids because those albums carry their own (MEMBERSHIP).
-  const [downloadedRows, downloadedAlbumIds]: [AlbumID3[], ReadonlySet<string>] = db
+  // ORDERED by SQL under the phone's own album-sort preference, so the browse tree and
+  // the Home screen show the same sequence.
+  const sortOrder = layoutPreferencesStore.getState().albumSortOrder;
+  const [downloadedAlbums, downloadedAlbumIds]: [AlbumID3[], ReadonlySet<string>] = db
     ? await Promise.all([
-        listDownloadedAlbums(db, { includePartial }).then((rs) => rs.map(albumListRowToAlbumID3)),
+        listDownloadedAlbums(db, { includePartial, sortOrder }).then((rs) =>
+          rs.map(albumListRowToAlbumID3),
+        ),
         listDownloadedAlbumIds(db, { includePartial }),
       ])
     : [[], new Set<string>()];
-  // Sorted like the phone so the browse tree matches.
-  const downloadedAlbums = sortAlbumsByPreference(
-    downloadedRows,
-    layoutPreferencesStore.getState().albumSortOrder,
-    serverInfoStore.getState().ignoredArticles ?? undefined,
-  );
   return {
     recentlyAdded: lists.recentlyAdded,
     recentlyPlayed: lists.recentlyPlayed,

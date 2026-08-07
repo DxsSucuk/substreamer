@@ -1,6 +1,8 @@
 import { getDb } from '../../../store/persistence/db';
+import { upsertCachedItem } from '../../../store/persistence/musicCacheTables';
+import { getSortFirstLetter } from '../../../utils/sortHelpers';
 import { ensureNormalizedSchema } from '../../createNormalizedTables';
-import { albumListRowToAlbumID3, upsertAlbums } from '../albums';
+import { albumListRowToAlbumID3, listAlbums, upsertAlbums } from '../albums';
 import { listAllStarredAlbums, markStarredAlbums } from '../favorites';
 import {
   downloadedClause,
@@ -80,12 +82,11 @@ const seedAlbumMeta = (itemId: string, extra: Record<string, ColValue> = {}): vo
   );
 };
 
-const seedPlaylistMeta = (itemId: string): void => {
-  db().runSync('INSERT INTO cached_playlists (item_id, name, song_count) VALUES (?, ?, ?)', [
-    itemId,
-    `Playlist ${itemId}`,
-    2,
-  ]);
+const seedPlaylistMeta = (itemId: string, sortTitle?: string): void => {
+  db().runSync(
+    'INSERT INTO cached_playlists (item_id, name, song_count, sort_title) VALUES (?, ?, ?, ?)',
+    [itemId, `Playlist ${itemId}`, 2, sortTitle ?? `playlist ${itemId}`],
+  );
 };
 
 describe('listDownloadedAlbums — the VISIBILITY predicate', () => {
@@ -147,12 +148,51 @@ describe('listDownloadedAlbums — the VISIBILITY predicate', () => {
     expect(rows[0].artist_id).toBeNull();
   });
 
-  it('projects the sort keys as NULL — the bounded list sorts in JS, not SQL', async () => {
+  it('projects the stored sort keys — the list orders in SQL, not JS', async () => {
     seedItem('al1', 'album', 1, ['s1']);
-    seedAlbumMeta('al1');
+    seedAlbumMeta('al1', { sort_title: 'album al1', sort_artist: 'someone' });
     const row = (await listDownloadedAlbums(db()))[0];
-    expect(row.sort_title).toBeNull();
-    expect(row.sort_artist).toBeNull();
+    expect(row.sort_title).toBe('album al1');
+    expect(row.sort_artist).toBe('someone');
+  });
+});
+
+/** The downloaded list is BOUNDED, so it is a whole-set read — but it still comes back
+ *  in the same order the keyset browse would put those albums in, on the same keys. */
+describe('listDownloadedAlbums — the ORDER BY', () => {
+  const seedSortable = (id: string, title: string, artistKey: string): void => {
+    seedItem(id, 'album', 1, [`song-${id}`]);
+    seedAlbumMeta(id, { sort_title: title, sort_artist: artistKey });
+  };
+
+  it('orders by title when asked', async () => {
+    seedSortable('c', 'charlie', 'zulu');
+    seedSortable('a', 'alpha', 'yankee');
+    const rows = await listDownloadedAlbums(db(), { sortOrder: 'title' });
+    expect(rows.map((r) => r.id)).toEqual(['a', 'c']);
+  });
+
+  it('defaults to title order when no sort order is given', async () => {
+    seedSortable('c', 'charlie', 'zulu');
+    seedSortable('a', 'alpha', 'yankee');
+    expect((await listDownloadedAlbums(db())).map((r) => r.id)).toEqual(['a', 'c']);
+  });
+
+  it('orders by (artist, title) when asked — the compound browse key', async () => {
+    seedSortable('z2', 'zulu', 'one band');
+    seedSortable('z1', 'alpha', 'one band');
+    seedSortable('other', 'alpha', 'zzz band');
+    const rows = await listDownloadedAlbums(db(), { sortOrder: 'artist' });
+    expect(rows.map((r) => r.id)).toEqual(['z1', 'z2', 'other']);
+  });
+
+  it('breaks a full tie on item_id, so the order is total and stable', async () => {
+    seedSortable('b', 'same', 'same');
+    seedSortable('a', 'same', 'same');
+    expect((await listDownloadedAlbums(db(), { sortOrder: 'artist' })).map((r) => r.id)).toEqual([
+      'a',
+      'b',
+    ]);
   });
 });
 
@@ -214,6 +254,16 @@ describe('listDownloadedPlaylists', () => {
     seedItem('pl1', 'playlist', 99);
     seedPlaylistMeta('pl1');
     expect((await listDownloadedPlaylists(db())).map((r) => r.id)).toEqual(['pl1']);
+  });
+
+  it('orders by the stored sort_title, the same key the playlist browse pages on', async () => {
+    seedItem('p-c', 'playlist', 0);
+    seedPlaylistMeta('p-c', 'charlie');
+    seedItem('p-a', 'playlist', 0);
+    seedPlaylistMeta('p-a', 'alpha');
+    const rows = await listDownloadedPlaylists(db());
+    expect(rows.map((r) => r.id)).toEqual(['p-a', 'p-c']);
+    expect(rows.map((r) => r.sort_title)).toEqual(['alpha', 'charlie']);
   });
 });
 
@@ -296,6 +346,71 @@ describe('the shared predicates', () => {
 
     const starredDownloaded = await listAllStarredAlbums(db(), { downloadedOnly: true });
     expect(starredDownloaded.map((a) => a.id)).toEqual([...(await listDownloadedAlbumIds(db()))]);
+  });
+});
+
+/**
+ * The point of step 3b: ONE ordering. These go through the real download writer and
+ * compare the filtered list against the unfiltered keyset browse over the same albums —
+ * if the two ever disagree, toggling the Downloaded chip reorders the screen.
+ */
+describe('the downloaded list and the browse list are the SAME order', () => {
+  const NAMES: readonly [string, string][] = [
+    ['"Heroes"', 'David Bowie'],
+    ['(How to Live) As Ghosts', 'Thrice'],
+    ["'74 Jailbreak", 'AC/DC'],
+    ['The Wall', 'Pink Floyd'],
+    ['Abbey Road', 'The Beatles'],
+    ['Élise', 'Beethoven'],
+  ];
+
+  const seedBoth = async (): Promise<void> => {
+    for (const [i, [name, artist]] of NAMES.entries()) {
+      const id = `a${i}`;
+      // eslint-disable-next-line no-await-in-loop
+      await upsertAlbums(db(), [{ id, name, artist, duration: 0, songCount: 0 }] as never);
+      // eslint-disable-next-line no-await-in-loop
+      await upsertCachedItem({
+        itemId: id,
+        type: 'album',
+        name,
+        expectedSongCount: 0,
+        lastSyncAt: 0,
+        downloadedAt: 0,
+        albumMeta: { name, artist },
+      });
+    }
+  };
+
+  it.each(['title', 'artist'] as const)('agrees under the %s order', async (sortOrder) => {
+    await seedBoth();
+    const browse = await listAlbums(db(), { limit: 100, sortOrder });
+    const downloaded = await listDownloadedAlbums(db(), { sortOrder });
+    expect(downloaded.map((r) => r.id)).toEqual(browse.rows.map((r) => r.id));
+    // Same keys, not merely the same sequence — a coincidence would still be a defect.
+    expect(downloaded.map((r) => [r.sort_title, r.sort_artist])).toEqual(
+      browse.rows.map((r) => [r.sort_title, r.sort_artist]),
+    );
+  });
+
+  it('files each row where the alphabet scroller says it is', async () => {
+    await seedBoth();
+    const rows = await listDownloadedAlbums(db(), { sortOrder: 'title' });
+    // `"Heroes"` under H, `(How to Live)` under H, `'74 Jailbreak` in `#`.
+    expect(rows.map((r) => getSortFirstLetter(r.name ?? ''))).toEqual([
+      '#', // '74 Jailbreak
+      'A', // Abbey Road
+      'E', // Élise
+      'H', // "Heroes"
+      'H', // (How to Live) As Ghosts
+      'W', // The Wall
+    ]);
+    // Each row's letter is `charAt(0)` of the very key it was ordered by — that is what
+    // makes an A–Z tap land on the row it points at.
+    for (const r of rows) {
+      const ch = (r.sort_title ?? '').charAt(0).toUpperCase();
+      expect(getSortFirstLetter(r.name ?? '')).toBe(/[A-Z]/.test(ch) ? ch : '#');
+    }
   });
 });
 

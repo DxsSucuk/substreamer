@@ -1,5 +1,6 @@
 import type { AlbumID3, ArtistID3, Child } from 'subsonic-api';
 
+import { getSortFirstLetter } from '../../../utils/sortHelpers';
 import { getDb } from '../../../store/persistence/db';
 import { ensureNormalizedSchema } from '../../createNormalizedTables';
 import { upsertAlbums } from '../albums';
@@ -444,6 +445,179 @@ describe('membership ids + names', () => {
     ]);
     await replaceFavoriteArtists(db(), [artist('ar3')]);
     expect((await listAllStarredArtists(db())).map((a) => a.id)).toEqual(['ar2', 'ar1', 'ar3']);
+  });
+});
+
+/**
+ * The SAME reader serves two orderings, chosen by the caller: the Favourites TAB is
+ * "newest favourite first", the LIBRARY tab's favourites filter is A–Z on the stored
+ * `sort_*` keys. Both must merge the two halves under whichever order was asked for.
+ */
+describe('the whole-set reads take a sort order', () => {
+  /** `lib-*` land in `albums`; `rem-*` in the `favorite_albums` remainder. Starred order
+   *  and name order deliberately disagree, so a read that ignored `sortOrder` would fail. */
+  const seedTwoHalves = async (): Promise<void> => {
+    await upsertAlbums(db(), [
+      album('lib-zulu', { name: 'Zulu', artist: 'Zebra' }),
+      album('lib-alpha', { name: 'Alpha', artist: 'Alpaca' }),
+    ]);
+    await markStarredAlbums(db(), [
+      { id: 'lib-zulu', starredAt: 400 },
+      { id: 'lib-alpha', starredAt: 100 },
+    ]);
+    await replaceFavoriteAlbums(db(), [
+      album('rem-mike', { name: 'Mike', artist: 'Mongoose', starred: new Date(300) }),
+      album('rem-bravo', { name: 'Bravo', artist: 'Badger', starred: new Date(200) }),
+    ]);
+  };
+
+  it('defaults to newest favourite first — the Favourites TAB must not change', async () => {
+    await seedTwoHalves();
+    expect((await listAllStarredAlbums(db())).map((a) => a.id)).toEqual([
+      'lib-zulu',
+      'rem-mike',
+      'rem-bravo',
+      'lib-alpha',
+    ]);
+  });
+
+  it('orders by title across both halves when asked', async () => {
+    await seedTwoHalves();
+    expect((await listAllStarredAlbums(db(), { sortOrder: 'title' })).map((a) => a.id)).toEqual([
+      'lib-alpha',
+      'rem-bravo',
+      'rem-mike',
+      'lib-zulu',
+    ]);
+  });
+
+  it('orders by artist across both halves when asked', async () => {
+    await seedTwoHalves();
+    expect((await listAllStarredAlbums(db(), { sortOrder: 'artist' })).map((a) => a.id)).toEqual([
+      'lib-alpha', // Alpaca
+      'rem-bravo', // Badger
+      'rem-mike', // Mongoose
+      'lib-zulu', // Zebra
+    ]);
+  });
+
+  it('breaks an artist tie on the title key, exactly as the browse keyset does', async () => {
+    // Ids deliberately run OPPOSITE to the titles, so an order that fell through to the
+    // id tiebreak instead of `sort_title` gives the other answer.
+    await upsertAlbums(db(), [
+      album('aaa', { name: 'Zulu', artist: 'One Band' }),
+      album('zzz', { name: 'Alpha', artist: 'One Band' }),
+    ]);
+    await markStarredAlbums(db(), [
+      { id: 'aaa', starredAt: 400 },
+      { id: 'zzz', starredAt: 100 },
+    ]);
+    // The remainder half joins the same tie, so the JS merge has to compare the same
+    // tuple the SQL did, not just the leading key.
+    await replaceFavoriteAlbums(db(), [
+      album('mmm', { name: 'Mike', artist: 'One Band', starred: new Date(300) }),
+    ]);
+    expect((await listAllStarredAlbums(db(), { sortOrder: 'artist' })).map((a) => a.id)).toEqual([
+      'zzz', // alpha
+      'mmm', // mike
+      'aaa', // zulu
+    ]);
+  });
+
+  it('applies the downloaded filter under a name order too', async () => {
+    await seedTwoHalves();
+    seedCachedAlbum('lib-zulu', 1, ['s1']);
+    const rows = await listAllStarredAlbums(db(), { sortOrder: 'title', downloadedOnly: true });
+    expect(rows.map((a) => a.id)).toEqual(['lib-zulu']);
+  });
+
+  it('orders starred artists by name when asked, and newest-first by default', async () => {
+    await upsertArtists(db(), [artist('lib-z', 'Zebra'), artist('lib-a', 'Alpaca')]);
+    await markStarredArtists(db(), [
+      { id: 'lib-z', starredAt: 400 },
+      { id: 'lib-a', starredAt: 100 },
+    ]);
+    await replaceFavoriteArtists(db(), [artist('rem-m', 'Mongoose')]);
+
+    expect((await listAllStarredArtists(db())).map((a) => a.id)).toEqual([
+      'lib-z',
+      'lib-a',
+      'rem-m',
+    ]);
+    expect((await listAllStarredArtists(db(), { sortOrder: 'name' })).map((a) => a.id)).toEqual([
+      'lib-a',
+      'rem-m',
+      'lib-z',
+    ]);
+  });
+
+  it('strips articles in the remainder exactly as it does in the library half', async () => {
+    await upsertAlbums(db(), [album('lib-b', { name: 'Bravo', artist: 'Bravo Band' })]);
+    await markStarredAlbums(db(), [{ id: 'lib-b', starredAt: 1 }]);
+    await replaceFavoriteAlbums(db(), [
+      album('rem-the-a', { name: 'The Alpha', artist: 'The Alpha Band', starred: new Date(2) }),
+    ]);
+    // "The Alpha" → "alpha", so it sorts BEFORE "bravo". Unstripped it would sort after.
+    expect((await listAllStarredAlbums(db(), { sortOrder: 'title' })).map((a) => a.id)).toEqual([
+      'rem-the-a',
+      'lib-b',
+    ]);
+  });
+
+  it('files a punctuation-leading remainder title where the scroller says it is', async () => {
+    await upsertAlbums(db(), [
+      album('lib-g', { name: 'Ghosts' }),
+      album('lib-i', { name: 'Ivy' }),
+    ]);
+    await markStarredAlbums(db(), [
+      { id: 'lib-g', starredAt: 1 },
+      { id: 'lib-i', starredAt: 2 },
+    ]);
+    await replaceFavoriteAlbums(db(), [album('rem-h', { name: '"Heroes"', starred: new Date(3) })]);
+    expect((await listAllStarredAlbums(db(), { sortOrder: 'title' })).map((a) => a.id)).toEqual([
+      'lib-g',
+      'rem-h',
+      'lib-i',
+    ]);
+    expect(getSortFirstLetter('"Heroes"')).toBe('H');
+  });
+});
+
+describe('the remainder tables carry the sort keys', () => {
+  it('writes them from the SAME envelope, through the album derivation', async () => {
+    await replaceFavoriteAlbums(db(), [
+      album('r1', { name: 'The Wall', artist: 'Tagged', displayArtist: 'Displayed' }),
+    ]);
+    const row = await db().getFirstAsync<{ sort_title: string; sort_artist: string }>(
+      'SELECT sort_title, sort_artist FROM favorite_albums WHERE id = ?',
+      ['r1'],
+    );
+    // `displayArtist ?? artist` — the ALBUM derivation, not the song one.
+    expect(row).toEqual({ sort_title: 'wall', sort_artist: 'displayed' });
+  });
+
+  it('matches what the library table stores for the same album', async () => {
+    const a = album('same', { name: 'The Wall', artist: 'Pink Floyd' });
+    await upsertAlbums(db(), [a]);
+    await replaceFavoriteAlbums(db(), [a]);
+    const lib = await db().getFirstAsync<{ sort_title: string; sort_artist: string }>(
+      'SELECT sort_title, sort_artist FROM albums WHERE id = ?',
+      ['same'],
+    );
+    const rem = await db().getFirstAsync<{ sort_title: string; sort_artist: string }>(
+      'SELECT sort_title, sort_artist FROM favorite_albums WHERE id = ?',
+      ['same'],
+    );
+    expect(rem).toEqual(lib);
+  });
+
+  it('writes the artist key too', async () => {
+    await replaceFavoriteArtists(db(), [artist('r1', 'The Beatles')]);
+    const row = await db().getFirstAsync<{ sort_title: string }>(
+      'SELECT sort_title FROM favorite_artists WHERE id = ?',
+      ['r1'],
+    );
+    expect(row?.sort_title).toBe('beatles');
   });
 });
 

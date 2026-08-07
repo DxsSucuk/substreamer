@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
@@ -6,7 +6,6 @@ import { AlbumListView, albumIdentity, type AlbumLayout } from '../components/Al
 import { onPullToRefresh } from '../services/dataSyncService';
 import {
   albumCursorOf,
-  albumListRowSortKeys,
   albumListRowToAlbumID3,
   listAlbums,
   listAlbumsBefore,
@@ -19,8 +18,6 @@ import { getDb } from '../store/persistence/db';
 import { favoritesStore } from '../store/favoritesStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import { musicCacheStore } from '../store/musicCacheStore';
-import { serverInfoStore } from '../store/serverInfoStore';
-import { sortAlbumsBy, sortAlbumsByPreference } from '../utils/librarySort';
 import type { AlbumID3 } from '../services/subsonicService';
 
 const PAGE = 120;
@@ -156,7 +153,8 @@ function KeysetAlbumList({ layout, contentInsetTop }: { layout: AlbumLayout; con
 /** Downloaded/favorites filters read BOUNDED sources straight from SQL — favourites from
  *  the marked library rows plus the `favorite_albums` remainder, downloaded from the
  *  `cached_items` ⋈ `cached_albums` download tables (never-reaped, offline-safe) — never
- *  the (paged) library table. Sorted to match the main list's A-Z scroller. */
+ *  the (paged) library table. Both come back ORDERED by the same stored `sort_*` keys the
+ *  main list's keyset uses, so a filter can never reorder the list. */
 function FilteredAlbumList({
   layout,
   downloadedOnly,
@@ -178,7 +176,9 @@ function FilteredAlbumList({
 
   const [starredAlbums, setStarredAlbums] = useState<AlbumID3[]>([]);
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
-  const starredKey = `${downloadedOnly}:${includePartial}:${version}`;
+  // `sortOrder` is part of the key because the ORDER BY is now the DB's: changing the
+  // preference has to re-read, not re-sort what we hold.
+  const starredKey = `${downloadedOnly}:${includePartial}:${version}:${sortOrder}`;
   // DERIVED, never seeded: "the rows we hold aren't the rows this filter asks for".
   // A `useState(favoritesOnly)` seed only runs on mount, and this component stays
   // mounted when Favourites is switched on over an already-on Downloaded — that frame
@@ -189,7 +189,9 @@ function FilteredAlbumList({
     let alive = true;
     void (async () => {
       const db = getDb();
-      const list = db ? await listAllStarredAlbums(db, { downloadedOnly, includePartial }) : [];
+      const list = db
+        ? await listAllStarredAlbums(db, { downloadedOnly, includePartial, sortOrder })
+        : [];
       if (alive) {
         setStarredAlbums(list);
         setLoadedKey(starredKey);
@@ -198,11 +200,11 @@ function FilteredAlbumList({
     return () => {
       alive = false;
     };
-  }, [favoritesOnly, downloadedOnly, includePartial, version, starredKey]);
+  }, [favoritesOnly, downloadedOnly, includePartial, version, sortOrder, starredKey]);
 
   const [downloadedRows, setDownloadedRows] = useState<AlbumListRow[]>([]);
   const [downloadedLoadedKey, setDownloadedLoadedKey] = useState<string | null>(null);
-  const downloadedKey = `${includePartial}:${revision}`;
+  const downloadedKey = `${includePartial}:${revision}:${sortOrder}`;
   // DERIVED for the same reason as `starredLoading` above: the read is asynchronous, so a
   // mount-time seed leaves one empty-and-not-loading frame on the way in AND on every
   // Favourites toggle-off, both of which flash "No albums found".
@@ -212,7 +214,7 @@ function FilteredAlbumList({
     let alive = true;
     void (async () => {
       const db = getDb();
-      const list = db ? await listDownloadedAlbums(db, { includePartial }) : [];
+      const list = db ? await listDownloadedAlbums(db, { includePartial, sortOrder }) : [];
       if (alive) {
         setDownloadedRows(list);
         setDownloadedLoadedKey(downloadedKey);
@@ -221,20 +223,7 @@ function FilteredAlbumList({
     return () => {
       alive = false;
     };
-  }, [favoritesOnly, includePartial, revision, downloadedKey]);
-
-  // The two halves are sorted separately because they hold different shapes: the
-  // favourites half merges marked library rows with the `favorite_albums` remainder,
-  // whose entries are parsed envelopes rather than browse rows.
-  const sortedStarred = useMemo(() => {
-    const articles = serverInfoStore.getState().ignoredArticles ?? undefined;
-    return sortAlbumsByPreference(starredAlbums, sortOrder, articles);
-  }, [starredAlbums, sortOrder]);
-
-  const sortedDownloaded = useMemo(() => {
-    const articles = serverInfoStore.getState().ignoredArticles ?? undefined;
-    return sortAlbumsBy(downloadedRows, albumListRowSortKeys, sortOrder, articles);
-  }, [downloadedRows, sortOrder]);
+  }, [favoritesOnly, includePartial, revision, sortOrder, downloadedKey]);
 
   const [refreshing, setRefreshing] = useState(false);
   const handleRefresh = useCallback(async () => {
@@ -265,9 +254,9 @@ function FilteredAlbumList({
   // updates the instance rather than remounting it — which is what the derived loading
   // flags above depend on.
   return favoritesOnly ? (
-    <AlbumListView items={sortedStarred} toAlbum={albumIdentity} {...viewProps} />
+    <AlbumListView items={starredAlbums} toAlbum={albumIdentity} {...viewProps} />
   ) : (
-    <AlbumListView items={sortedDownloaded} toAlbum={albumListRowToAlbumID3} {...viewProps} />
+    <AlbumListView items={downloadedRows} toAlbum={albumListRowToAlbumID3} {...viewProps} />
   );
 }
 

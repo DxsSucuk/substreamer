@@ -25,6 +25,7 @@ import { musicCacheStore } from '../../store/musicCacheStore';
 import { layoutPreferencesStore } from '../../store/layoutPreferencesStore';
 import { syncStatusStore } from '../../store/syncStatusStore';
 import { getDb } from '../../store/persistence/db';
+import { upsertCachedItem } from '../../store/persistence/musicCacheTables';
 import { ensureNormalizedSchema } from '../../db/createNormalizedTables';
 import { upsertAlbums } from '../../db/repository/albums';
 import { upsertPlaylists } from '../../db/repository/playlists';
@@ -292,6 +293,41 @@ describe('the car tree OFFLINE — downloaded albums from SQL', () => {
       (s) => s.id === sectionId('albums'),
     )!;
     expect(albums.items.map((i) => i.title)).toEqual(['A', 'Z']);
+  });
+
+  /** The car reads the SAME SQL order the phone does, under the phone's own preference —
+   *  CarPlay is a direct caller of `listDownloadedAlbums`, not an inheritor. */
+  it('orders Downloaded Albums by the phone\'s album-sort preference', async () => {
+    // Ids run opposite to both keys, so an unordered read gives the other answer.
+    await upsertCachedItem({
+      itemId: 'a-zulu',
+      type: 'album',
+      name: 'Zulu',
+      expectedSongCount: 0,
+      lastSyncAt: 0,
+      downloadedAt: 0,
+      albumMeta: { name: 'Zulu', artist: 'Alpaca' },
+    });
+    await upsertCachedItem({
+      itemId: 'z-alpha',
+      type: 'album',
+      name: 'Alpha',
+      expectedSongCount: 0,
+      lastSyncAt: 0,
+      downloadedAt: 0,
+      albumMeta: { name: 'Alpha', artist: 'Zebra' },
+    });
+
+    layoutPreferencesStore.setState({ albumSortOrder: 'artist' } as any);
+    expect(
+      (await __test.resolveBrowseChildren(listId('downloadedAlbums'))).map((r) => r.id),
+    ).toEqual([albumId('a-zulu'), albumId('z-alpha')]); // Alpaca, then Zebra
+
+    // …and it FOLLOWS the preference rather than hard-coding one order.
+    layoutPreferencesStore.setState({ albumSortOrder: 'title' } as any);
+    expect(
+      (await __test.resolveBrowseChildren(listId('downloadedAlbums'))).map((r) => r.id),
+    ).toEqual([albumId('z-alpha'), albumId('a-zulu')]); // Alpha, then Zulu
   });
 });
 

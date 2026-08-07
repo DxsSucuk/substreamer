@@ -6,7 +6,6 @@ import {
   ALBUM_LIST_COLS,
   albumCursorOf,
   albumIdsPresent,
-  albumListRowSortKeys,
   albumListRowToAlbumID3,
   countAlbums,
   getAlbum,
@@ -242,32 +241,15 @@ describe('albums repository', () => {
     ]);
   });
 
-  /** The projection a browse list sorts on. It must answer exactly what the envelope
-   *  would, or a row sorts somewhere other than where its label puts it. */
-  it('projects the same sort keys the envelope carries', async () => {
-    db().runSync(
-      'INSERT INTO albums (id, name, artist, display_artist, sort_name, sort_title) ' +
-        "VALUES ('sk1', 'Abbey Road', 'The Beatles', 'Beatles, The', 'Abbey Road (sort)', 'abbey road')",
-    );
-    // `display_artist`-only, the case the fallback exists for.
-    db().runSync(
-      'INSERT INTO albums (id, name, display_artist, sort_title) ' +
-        "VALUES ('sk2', 'Let It Be', 'Beatles, The', 'let it be')",
-    );
-    const rows = (await listAlbums(db(), { limit: 10 })).rows.filter((r) => r.id.startsWith('sk'));
-    for (const row of rows) {
-      const envelope = albumListRowToAlbumID3(row);
-      expect(albumListRowSortKeys(row)).toEqual({
-        id: envelope.id,
-        name: envelope.name,
-        artist: envelope.artist,
-        sortName: envelope.sortName,
-      });
-    }
-    expect(rows.map((r) => albumListRowSortKeys(r).artist)).toEqual([
-      'The Beatles',
-      'Beatles, The',
-    ]);
+  /** The sort keys are COLUMNS now, written by `albumRow`, so a list read projects
+   *  them rather than reprojecting the envelope's fields to sort on. */
+  it('projects the stored sort keys', async () => {
+    await upsertAlbums(db(), [
+      { id: 'sk1', name: 'The Wall', artist: 'Pink Floyd', duration: 0, songCount: 0 },
+    ] as never);
+    const row = (await listAlbums(db(), { limit: 50 })).rows.find((r) => r.id === 'sk1')!;
+    expect(row.sort_title).toBe('wall');
+    expect(row.sort_artist).toBe('pink floyd');
   });
 
   it('leaves `created` undefined rather than defaulting to the epoch', async () => {

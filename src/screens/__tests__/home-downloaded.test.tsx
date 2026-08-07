@@ -112,9 +112,11 @@ import { act, render, waitFor } from '@testing-library/react-native';
 
 import { ensureNormalizedSchema } from '../../db/createNormalizedTables';
 import { getDb } from '../../store/persistence/db';
+import { upsertCachedItem } from '../../store/persistence/musicCacheTables';
 import { albumListsStore } from '../../store/albumListsStore';
 import { favoritesStore } from '../../store/favoritesStore';
 import { filterBarStore } from '../../store/filterBarStore';
+import { layoutPreferencesStore } from '../../store/layoutPreferencesStore';
 import { musicCacheStore } from '../../store/musicCacheStore';
 import { offlineModeStore } from '../../store/offlineModeStore';
 import { HomeScreen } from '../home';
@@ -175,6 +177,7 @@ beforeEach(() => {
   }
   musicCacheStore.setState({ cachedItems: {}, revision: 0 });
   filterBarStore.setState({ downloadedOnly: true, favoritesOnly: false });
+  layoutPreferencesStore.setState({ albumSortOrder: 'artist' });
   offlineModeStore.setState({ offlineMode: false });
   favoritesStore.setState({ albumIds: new Set() });
   albumListsStore.setState({
@@ -364,5 +367,68 @@ describe('HomeScreen — Downloaded sections track musicCacheStore.revision', ()
     db().runSync('DELETE FROM cached_albums');
     bumpRevision();
     await waitFor(() => expect(r.queryByTestId('album:dl1')).toBeNull());
+  });
+});
+
+/** The Downloaded sections come back ORDERED from SQL, on the same stored keys the
+ *  library browse pages through — the Home screen no longer re-sorts them. */
+describe('HomeScreen — the Downloaded sections are SQL-ordered', () => {
+  const seedAlbum = (itemId: string, name: string, artist?: string): Promise<void> =>
+    upsertCachedItem({
+      itemId,
+      type: 'album',
+      name,
+      expectedSongCount: 0,
+      lastSyncAt: 0,
+      downloadedAt: 0,
+      albumMeta: { name, artist },
+    });
+
+  const seedPlaylist = (itemId: string, name: string): Promise<void> =>
+    upsertCachedItem({
+      itemId,
+      type: 'playlist',
+      name,
+      expectedSongCount: 0,
+      lastSyncAt: 0,
+      downloadedAt: 0,
+      playlistMeta: { name },
+    });
+
+  const idsFor = (r: ReturnType<typeof render>, kind: string): string[] =>
+    r
+      .queryAllByText(kind)
+      .map((n) => String(n.props.testID ?? ''))
+      .map((id) => id.slice(kind.length + 1));
+
+  it('renders downloaded albums in artist order, punctuation-stripped', async () => {
+    // Ids run opposite to the artist keys, so an unordered read gives the other answer.
+    await seedAlbum('a-zulu', 'Zulu', 'Zebra');
+    await seedAlbum('z-quoted', 'Quoted', '"Alpaca"');
+    const r = render(<HomeScreen />);
+    await waitFor(() => expect(r.queryByTestId('album:a-zulu')).not.toBeNull());
+    expect(idsFor(r, 'album')).toEqual(['z-quoted', 'a-zulu']);
+  });
+
+  it('re-reads when the album-sort preference changes', async () => {
+    await seedAlbum('a-zulu', 'Zulu', 'Alpaca');
+    await seedAlbum('z-alpha', 'Alpha', 'Zebra');
+    const r = render(<HomeScreen />);
+    await waitFor(() => expect(idsFor(r, 'album')).toEqual(['a-zulu', 'z-alpha']));
+
+    act(() => {
+      layoutPreferencesStore.setState({ albumSortOrder: 'title' });
+    });
+    // Nothing re-sorts in JS any more, so this only moves if the read ran again.
+    await waitFor(() => expect(idsFor(r, 'album')).toEqual(['z-alpha', 'a-zulu']));
+  });
+
+  it('renders downloaded playlists A–Z', async () => {
+    // Ids run opposite to the names, so an unordered read gives the other answer.
+    await seedPlaylist('a-zulu', 'Zulu Mix');
+    await seedPlaylist('z-alpha', 'The Alpha Mix');
+    const r = render(<HomeScreen />);
+    await waitFor(() => expect(r.queryByTestId('playlist:a-zulu')).not.toBeNull());
+    expect(idsFor(r, 'playlist')).toEqual(['z-alpha', 'a-zulu']);
   });
 });

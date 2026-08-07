@@ -259,23 +259,34 @@ export const favoriteSongs = sqliteTable(
   (t) => ({ starredKeyIdx: index('idx_favorite_songs_starred_key').on(t.starred, t.id) }),
 );
 
-/** Starred albums with no `albums` row — verbatim `AlbumID3` envelope. */
+/**
+ * Starred albums with no `albums` row — verbatim `AlbumID3` envelope.
+ *
+ * `sort_title`/`sort_artist` mirror the `albums` columns of the same name, written from
+ * the same envelope through `db/sortKeys`. They exist so the Library tab's favourites
+ * filter can `ORDER BY` the union of both halves in SQL instead of the screen re-sorting
+ * it — the Favourites TAB still reads this table `starred DESC`.
+ */
 export const favoriteAlbums = sqliteTable(
   'favorite_albums',
   {
     id: text('id').primaryKey(),
     starred: integer('starred').notNull(),
+    sortTitle: text('sort_title'),
+    sortArtist: text('sort_artist'),
     json: text('json').notNull(),
   },
   (t) => ({ starredKeyIdx: index('idx_favorite_albums_starred_key').on(t.starred, t.id) }),
 );
 
-/** Starred artists with no `artists` row — verbatim `ArtistID3` envelope. */
+/** Starred artists with no `artists` row — verbatim `ArtistID3` envelope. `sort_title`
+ *  as on `favorite_albums`. */
 export const favoriteArtists = sqliteTable(
   'favorite_artists',
   {
     id: text('id').primaryKey(),
     starred: integer('starred').notNull(),
+    sortTitle: text('sort_title'),
     json: text('json').notNull(),
   },
   (t) => ({ starredKeyIdx: index('idx_favorite_artists_starred_key').on(t.starred, t.id) }),
@@ -867,6 +878,10 @@ export const cachedAlbums = sqliteTable('cached_albums', {
   version: text('version'),
   musicBrainzId: text('music_brainz_id'),
   sortName: text('sort_name'),
+  // Mirror the `albums` columns of the same name, written from the same metadata
+  // through `db/sortKeys`, so the Downloaded filter orders in SQL exactly as browse does.
+  sortTitle: text('sort_title'),
+  sortArtist: text('sort_artist'),
   isCompilation: integer('is_compilation', { mode: 'boolean' }),
   explicitStatus: text('explicit_status'),
   originalReleaseYear: integer('original_release_year'),
@@ -890,6 +905,8 @@ export const cachedPlaylists = sqliteTable('cached_playlists', {
   owner: text('owner'),
   public: integer('public', { mode: 'boolean' }),
   songCount: integer('song_count'),
+  /** Mirrors `playlists.sort_title` — see `cached_albums`. */
+  sortTitle: text('sort_title'),
 });
 
 /** Ordered membership of a cached item. The UNIQUE index enforces one edge per

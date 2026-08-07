@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
@@ -20,8 +20,6 @@ import { musicCacheStore } from '../store/musicCacheStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { refreshPlaylistLibrary } from '../services/normalizedLibrarySync';
 import { syncStatusStore } from '../store/syncStatusStore';
-import { serverInfoStore } from '../store/serverInfoStore';
-import { sortPlaylistsByName } from '../utils/librarySort';
 import { type IoniconsName } from '../utils/iconNames';
 
 const PAGE = 120;
@@ -195,7 +193,8 @@ function KeysetPlaylistList({
 
 /** Downloaded filter reads the BOUNDED download tables straight from SQL
  *  (`cached_items` ⋈ `cached_playlists`, never-reaped and offline-safe), not the paged
- *  library. No partial gate: playlists download atomically. */
+ *  library — A–Z on the same stored `sort_title` the keyset browse orders by, so the
+ *  filter cannot reorder the list. No partial gate: playlists download atomically. */
 function FilteredPlaylistList({
   layout,
   contentInsetTop,
@@ -230,11 +229,6 @@ function FilteredPlaylistList({
     };
   }, [revision]);
 
-  const filteredRows = useMemo(() => {
-    const articles = serverInfoStore.getState().ignoredArticles ?? undefined;
-    return sortPlaylistsByName(rows, articles);
-  }, [rows]);
-
   const [refreshing, setRefreshing] = useState(false);
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -247,7 +241,7 @@ function FilteredPlaylistList({
 
   return (
     <PlaylistListView
-      items={filteredRows}
+      items={rows}
       toPlaylist={playlistListRowToPlaylist}
       layout={layout}
       loading={loading}
