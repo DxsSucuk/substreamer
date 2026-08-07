@@ -13,6 +13,13 @@ jest.mock('../../store/persistence/kvStorage', () =>
   require('../../store/persistence/__mocks__/kvStorage'),
 );
 
+// See migrationService.test.ts — `clearImageCache` is a real import in
+// migrationService, and its module graph reaches netinfo, which has no native
+// bridge under Jest.
+jest.mock('../imageCacheService', () => ({
+  clearImageCache: jest.fn(async () => 0),
+}));
+
 // Migration #21 imports deviceIdentityStore which transitively pulls
 // expo-device + expo-crypto + i18n. Mock the store so the migration runs
 // without dragging the native bridge into the test.

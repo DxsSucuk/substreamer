@@ -56,6 +56,9 @@ import {
   type CacheBrowserFilter,
 } from '../store/persistence/imageCacheTable';
 import { isDbHealthy } from '../store/persistence/db';
+import { hydrateCachedItems, hydrateCachedSongs } from '../store/persistence/musicCacheTables';
+import { musicCacheStore } from '../store/musicCacheStore';
+import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import {
   clearImageQueueByCycle,
   countImageQueueRowsByCycle,
@@ -422,9 +425,6 @@ let _dlCoverSongsSrc: unknown = null;
 let _dlCoverMode: string | null = null;
 let _dlCoverIds = new Set<string>();
 function downloadedCoverArtIds(): Set<string> {
-  // Lazy require to avoid an import cycle (musicCacheStore → services → here).
-  const { musicCacheStore } = require('../store/musicCacheStore');
-  const { layoutPreferencesStore } = require('../store/layoutPreferencesStore');
   const state = musicCacheStore.getState();
   const cachedItems = state.cachedItems;
   const cachedSongs = state.cachedSongs;
@@ -2010,9 +2010,7 @@ export function prefetchCoverArt(
 
 /**
  * Snapshot every cached item row's `(type, coverArtId)` for the
- * persistent image-download queue's `refresh-downloads` scope. Broken
- * out so it can be mocked in unit tests without dragging in the entire
- * `musicCacheTables` import surface.
+ * persistent image-download queue's `refresh-downloads` scope.
  *
  * Keys off each entity's stored `coverArt` value — the cached item's
  * `coverArtId` field for albums/playlists, and the mode-aware song cover value
@@ -2029,12 +2027,6 @@ function hydrateCachedItemsForRecache(): {
    */
   songCoverArtIds: string[];
 } {
-  // Lazy-required: keeps the recache worker testable without forcing
-  // every test that touches imageCacheService to mock musicCacheTables.
-  const { hydrateCachedItems, hydrateCachedSongs } = require('../store/persistence/musicCacheTables') as {
-    hydrateCachedItems: () => Record<string, { itemId: string; type: string; coverArtId?: string }>;
-    hydrateCachedSongs: () => Record<string, { id: string; albumId?: string | null; coverArt?: string | null }>;
-  };
   const items = Object.values(hydrateCachedItems()).map((r) => ({
     type: r.type,
     coverArtId: r.coverArtId ?? null,

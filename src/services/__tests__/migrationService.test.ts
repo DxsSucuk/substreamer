@@ -12,6 +12,14 @@ let mockDirExistsForUri: ((uri: string) => boolean) | null = null;
 
 jest.mock('../../store/persistence/kvStorage', () => require('../../store/persistence/__mocks__/kvStorage'));
 
+// m25/m29 wipe the image cache. `migrationService` imports `clearImageCache`
+// normally, which pulls in connectivityService → netinfo (no native bridge under
+// Jest), so the dependency is stubbed here rather than hidden behind a lazy
+// require in production code.
+jest.mock('../imageCacheService', () => ({
+  clearImageCache: jest.fn(async () => 0),
+}));
+
 // detailTables imports expo-sqlite directly; stub it so the migration test
 // doesn't drag the real native handle through expo-asset + expo-constants.
 jest.mock('expo-sqlite', () => ({

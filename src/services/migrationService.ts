@@ -17,6 +17,7 @@ import { Platform } from 'react-native';
 import { defaultCollator } from '../utils/intl';
 
 import { migrateV3BackupMetas, migrateV4BackupMetas } from './backupService';
+import { clearImageCache } from './imageCacheService';
 import { deviceIdentityStore } from '../store/deviceIdentityStore';
 import {
   completedScrobbleStore,
@@ -1907,9 +1908,6 @@ const MIGRATION_TASKS: MigrationTask[] = [
       // offline-first users, Settings → Image Cache → "Refresh
       // Downloaded" eager-repopulates while online.
       try {
-        const { clearImageCache } = require('./imageCacheService') as {
-          clearImageCache: () => Promise<number>;
-        };
         const freed = await clearImageCache();
         log(`[m25] wiped image cache, freed=${freed} bytes`);
       } catch (e) {
@@ -1946,9 +1944,6 @@ const MIGRATION_TASKS: MigrationTask[] = [
       // runtime path. Network fetch from here would gate the migration
       // on connectivity, which the splash flow shouldn't depend on.
       try {
-        const { getDb } = require('./../store/persistence/db') as {
-          getDb: () => any;
-        };
         const db = getDb();
         if (db === null) {
           log('[m27] db unavailable — skipping');
@@ -2013,9 +2008,6 @@ const MIGRATION_TASKS: MigrationTask[] = [
       // wipe also reclaims the orphaned bytes immediately. (Mirrors m25, which
       // did the inverse switch.)
       try {
-        const { clearImageCache } = require('./imageCacheService') as {
-          clearImageCache: () => Promise<number>;
-        };
         const freed = await clearImageCache();
         log(`[m29] wiped image cache, freed=${freed} bytes`);
       } catch (e) {
