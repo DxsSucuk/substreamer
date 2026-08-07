@@ -30,26 +30,15 @@ import { upsertSongs } from '../../db/repository/songs';
 import { markStarredSongs } from '../../db/repository/favorites';
 import { getDb } from '../../store/persistence/db';
 import { favoritesStore } from '../../store/favoritesStore';
-import { musicCacheStore, type CachedSongMeta } from '../../store/musicCacheStore';
+import { musicCacheStore } from '../../store/musicCacheStore';
 import { SongLibraryListScreen } from '../song-library-list';
 
 const db = () => getDb()!;
 const song = (id: string, extra: Partial<Child> = {}): Child =>
   ({ id, title: `Song ${id}`, isDir: false, duration: 10, ...extra }) as Child;
 
-const downloadedSong = (id: string): CachedSongMeta => ({
-  id,
-  title: `Song ${id}`,
-  albumId: 'al1',
-  bytes: 1,
-  duration: 10,
-  suffix: 'mp3',
-  formatCapturedAt: 0,
-  downloadedAt: 0,
-});
-
-/** The same fact in SQL — the favourites read applies `downloadedOnly` in the query, so
- *  a fixture with both filters on has to satisfy the store AND the database. */
+/** A downloaded song. BOTH filters read this from SQL now — the favourites read applies
+ *  `downloadedOnly` in the query, and the downloaded filter is a whole-set read of it. */
 const markDownloadedInDb = (id: string): void => {
   db().runSync(
     'INSERT INTO cached_songs (song_id, album_id, suffix, bytes, format_captured_at, ' +
@@ -67,7 +56,7 @@ beforeEach(() => {
   mockRenders.length = 0;
   for (const t of ['songs', 'favorite_songs', 'cached_songs']) db().runSync(`DELETE FROM ${t}`);
   favoritesStore.setState({ version: 0 });
-  musicCacheStore.setState({ cachedItems: {}, cachedSongs: {} });
+  musicCacheStore.setState({ cachedItems: {}, cachedSongs: {}, revision: 0 });
 });
 
 describe('SongLibraryListScreen — favourites filter never flashes the empty state', () => {
@@ -109,13 +98,36 @@ describe('SongLibraryListScreen — favourites filter never flashes the empty st
 });
 
 describe('SongLibraryListScreen — downloaded filter', () => {
-  it('keeps the downloaded path on its own loading flag, not the favourites one', async () => {
-    musicCacheStore.setState({ cachedSongs: { dl1: downloadedSong('dl1') } });
+  it('renders the downloaded rows from SQL, not from the store map', async () => {
+    // The store is deliberately NOT seeded here: if the hook still walked `cachedSongs`
+    // this would render nothing.
+    markDownloadedInDb('dl1');
     render(<SongLibraryListScreen downloadedOnly />);
     await waitFor(() => expect(latest().songs.map((s) => s.id)).toEqual(['dl1']));
-    // `useAllSongsByTitle` reads an already-hydrated store, so it never reports loading —
-    // the seeded favourites flag must not leak a spinner into this branch.
-    expect(mockRenders.filter((r) => r.loading)).toEqual([]);
+    expect(latest().loading).toBe(false);
+  });
+
+  it('is already loading on the FIRST render, before the SQL read resolves', () => {
+    markDownloadedInDb('dl1');
+    render(<SongLibraryListScreen downloadedOnly />);
+    // The downloaded read is asynchronous now, so it needs the same derived flag the
+    // favourites branch has — otherwise this frame is empty-and-not-loading and
+    // SongListView flashes "No songs found".
+    expect(mockRenders[0]).toMatchObject({ songs: [], loading: true });
+  });
+
+  it('is never handed an empty, non-loading list while the read is in flight', async () => {
+    markDownloadedInDb('dl1');
+    render(<SongLibraryListScreen downloadedOnly />);
+    await waitFor(() => expect(latest().songs).toHaveLength(1));
+    expect(mockRenders.filter((r) => r.songs.length === 0 && !r.loading)).toEqual([]);
+  });
+
+  it('reports a genuinely empty downloaded set only AFTER the read completes', async () => {
+    render(<SongLibraryListScreen downloadedOnly />);
+    expect(mockRenders[0].loading).toBe(true);
+    await waitFor(() => expect(latest().loading).toBe(false));
+    expect(latest().songs).toEqual([]);
   });
 });
 
@@ -127,7 +139,6 @@ describe('SongLibraryListScreen — toggling Favourites on an already-mounted li
     await upsertSongs(db(), [song('star-a')]);
     await markStarredSongs(db(), [{ id: 'star-a', starredAt: 400 }]);
     markDownloadedInDb('star-a');
-    musicCacheStore.setState({ cachedSongs: { 'star-a': downloadedSong('star-a') } });
   });
 
   it('is loading from the very first frame after Favourites goes on', async () => {
@@ -143,16 +154,19 @@ describe('SongLibraryListScreen — toggling Favourites on an already-mounted li
     expect(mockRenders.filter((m) => m.songs.length === 0 && !m.loading)).toEqual([]);
   });
 
-  it('drops the spinner immediately when Favourites goes back off', async () => {
+  it('is loading from the very first frame after Favourites goes back OFF too', async () => {
     const r = render(<SongLibraryListScreen downloadedOnly favoritesOnly />);
     await waitFor(() => expect(latest().loading).toBe(false));
     mockRenders.length = 0;
 
     r.rerender(<SongLibraryListScreen downloadedOnly />);
+    // This assertion used to say the opposite: the downloaded branch read the store
+    // synchronously, so a spinner here meant a stale favourites flag. It is a SQL read
+    // now, so the same mounted component drops the favourites rows and waits — and the
+    // frame in between has to say loading, exactly as the toggle-ON direction does.
+    expect(mockRenders[0]).toMatchObject({ songs: [], loading: true });
     await waitFor(() => expect(latest().songs.map((s) => s.id)).toEqual(['star-a']));
-    // The downloaded branch reads the store synchronously — a spinner here would be a
-    // stale favourites flag leaking across the toggle.
-    expect(mockRenders.filter((m) => m.loading)).toEqual([]);
+    expect(mockRenders.filter((m) => m.songs.length === 0 && !m.loading)).toEqual([]);
   });
 });
 

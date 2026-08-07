@@ -1,5 +1,7 @@
-import { useMemo } from 'react';
+import { useEffect, useState } from 'react';
 
+import { downloadedSongRowToChild, listDownloadedSongs } from '../db/repository/downloads';
+import { getDb } from '../store/persistence/db';
 import { musicCacheStore } from '../store/musicCacheStore';
 import type { Child } from '../services/subsonicService';
 import { byTitle } from '../utils/librarySort';
@@ -17,51 +19,52 @@ interface UseAllSongsByTitleResult {
 
 const EMPTY: Child[] = [];
 
-/** Shape a cached_songs row into the `Child` the song rows render. */
-function childFromCached(s: {
-  id: string;
-  title?: string;
-  artist?: string;
-  albumId?: string;
-  duration?: number;
-  coverArt?: string;
-}): Child {
-  return {
-    id: s.id,
-    title: s.title ?? '',
-    artist: s.artist,
-    albumId: s.albumId,
-    duration: s.duration ?? 0,
-    coverArt: s.coverArt,
-    isDir: false,
-  } as Child;
-}
-
 /**
- * Songs for the DOWNLOADED filter view, title-sorted. Sourced from
- * `musicCacheStore.cachedSongs` — the bounded, never-reaped download set — so it
- * carries no whole-library read. Only mounted when that filter is active; the main
- * A–Z browse pages the DB directly, and the favourites filter reads SQL
+ * Songs for the DOWNLOADED filter view, title-sorted. Reads the never-reaped
+ * `cached_songs` table straight from SQL, so it carries no whole-library read and no
+ * walk over `musicCacheStore.cachedSongs`. Only mounted when that filter is active; the
+ * main A–Z browse pages the DB directly, and the favourites filter reads SQL
  * (`listAllStarredSongs`).
  */
 export function useAllSongsByTitle(opts: UseAllSongsByTitleOpts = {}): UseAllSongsByTitleResult {
   const downloadedOnly = opts.downloadedOnly === true;
+  // `revision` is the download tables' change signal. It reaches the read below as a dep,
+  // and it is what a completing download (or a deletion) has instead of the Zustand
+  // subscription the JS walk used to get for free.
+  const revision = musicCacheStore((s) => s.revision);
 
-  const cachedItems = musicCacheStore((s) => s.cachedItems);
-  const cachedSongs = musicCacheStore((s) => s.cachedSongs);
+  const [songs, setSongs] = useState<Child[]>(EMPTY);
+  const [loadedRevision, setLoadedRevision] = useState<number | null>(null);
+  // DERIVED, not seeded — the read runs in an effect, i.e. after the first frame is on
+  // screen, and `SongListView` falls through to "No songs found" on any empty frame that
+  // does not say it is loading. Seeded `null` so that very first frame is already loading.
+  // The rows themselves stay on screen across a re-read: the view only draws its spinner
+  // when the list is empty, so a completing download never blanks a populated list.
+  const loading = downloadedOnly && loadedRevision !== revision;
 
-  const songs = useMemo(() => {
-    if (!downloadedOnly) return EMPTY;
-    const seen = new Set<string>();
-    const result: Child[] = [];
-    for (const cs of Object.values(cachedSongs)) {
-      if (!cs || seen.has(cs.id)) continue;
-      seen.add(cs.id);
-      result.push(childFromCached(cs));
-    }
-    return result.sort(byTitle);
-    // `cachedItems` is a dep so the list refreshes when a download completes/is deleted.
-  }, [downloadedOnly, cachedItems, cachedSongs]);
+  useEffect(() => {
+    // The unfiltered list never mounts this read — the main browse pages `songs` instead.
+    if (!downloadedOnly) return;
+    let alive = true;
+    void (async () => {
+      const db = getDb();
+      const rows = db ? await listDownloadedSongs(db) : [];
+      if (alive) {
+        setSongs(rows.map(downloadedSongRowToChild).sort(byTitle));
+        setLoadedRevision(revision);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [downloadedOnly, revision]);
 
-  return { songs, totalCount: songs.length, loading: false, refresh: () => {} };
+  // Nothing to re-fetch: the source is the local download tables, and every write to them
+  // bumps `revision`, which re-runs the effect above.
+  return {
+    songs: downloadedOnly ? songs : EMPTY,
+    totalCount: downloadedOnly ? songs.length : 0,
+    loading,
+    refresh: () => {},
+  };
 }
