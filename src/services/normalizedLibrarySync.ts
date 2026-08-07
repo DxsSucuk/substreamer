@@ -1,8 +1,8 @@
 /**
- * Target-state remote library sync — writes ONLY the normalized model (`albums`
- * and `songs` + children, via the repository). Single writer, bounded memory:
- * page → upsert → free. NO blob tables (`library_albums`/`song_index`), NO
- * in-memory whole-library arrays, NO `rebuildFromDb`, NO reconcile fan-out.
+ * Remote library sync — writes ONLY the normalized model (`albums` and `songs` +
+ * children, via the repository). Single writer, bounded memory: page → upsert →
+ * free. NO blob tables (`library_albums`/`song_index`), NO in-memory whole-library
+ * arrays, NO reconcile fan-out.
  *
  * Progress is derived from the RESUME CURSOR, not from counting rows: the search3 phase
  * maps `songSyncCursor` onto the album list via the server's total track count, and the
@@ -108,9 +108,9 @@ async function doBasicSongWalk(
   const isOffline = (): boolean => offlineModeStore.getState().offlineMode;
 
   const allIds = await listAlbumIds(db);
-  // A full resync must re-fetch EVERY album's songs. The incremental walk skips albums
-  // that already have songs, which — now that a full resync no longer drops the tables —
-  // would make it an instant no-op and silently mark the sync complete.
+  // A full resync must re-fetch EVERY album's songs. A full resync does not drop the
+  // tables, so the incremental walk's skip-albums-that-have-songs rule would make it an
+  // instant no-op and silently mark the sync complete.
   const fullWalk = !onlyMissing && syncStatusStore.getState().fullWalkPending;
   const have = fullWalk ? new Set<string>() : new Set(await listSongAlbumIds(db));
   const missing = allIds.filter((id) => !have.has(id));
@@ -212,9 +212,9 @@ async function runSearch3SongPhase(
     if (page.length === 0) {
       if (getApi() === null) return 'bailed';
       emptyPages += 1;
-      // One empty page is not proof. Ask again, with backoff, and only believe the end
-      // of the library when the answer repeats — a single hiccup here used to cost the
-      // user every song after this offset, permanently, under a `complete` flag.
+      // One empty page is not proof. Ask again, with backoff, and only believe the end of
+      // the library when the answer repeats: believing a single hiccup costs the user
+      // every song after this offset, permanently, under a `complete` flag.
       if (emptyPages > EMPTY_PAGE_RETRIES) return 'done';
       // eslint-disable-next-line no-await-in-loop
       await new Promise<void>((r) => setTimeout(r, EMPTY_PAGE_RETRY_MS * 2 ** (emptyPages - 1)));
@@ -225,10 +225,9 @@ async function runSearch3SongPhase(
       firstPage = false;
       const missing = page.filter((s) => !s.albumId).length;
       if (missing / page.length > 0.01) {
-        // Songs lack albumId — fall back to the per-album walk. Record it: this
-        // branch turns a ~40-request paged sync into thousands of per-album fetches,
-        // and it has never been observed on a real server, so if it ever fires we want
-        // it visible on the sync card rather than showing as unexplained slowness.
+        // Songs lack albumId — fall back to the per-album walk, and record it on the sync
+        // card: this branch turns a ~40-request paged sync into thousands of per-album
+        // fetches, which would otherwise read as unexplained slowness.
         syncStatusStore.getState().setSongSyncStrategy('basic');
         // eslint-disable-next-line no-console
         console.warn(
@@ -411,10 +410,8 @@ async function reconcilePlaylistDetails(
 /**
  * Refresh the artist list from the server into `artists`.
  *
- * Wraps {@link syncArtistsNormalized} with the dedup guard + `loading`/`lastFetchedAt`
- * the list screens render from — the behaviour that used to live in
- * `artistLibraryStore.fetchAllArtists`, re-homed onto `syncStatusStore` so it survives
- * that store's removal.
+ * Wraps {@link syncArtistsNormalized} with the dedup guard + the `loading` /
+ * `lastFetchedAt` state on `syncStatusStore` that the list screens render from.
  */
 export async function refreshArtistLibrary(): Promise<void> {
   if (syncStatusStore.getState().artistLibraryLoading) return;
@@ -556,10 +553,8 @@ async function doNormalizedSync(
         continue;
       }
       prevFirstId = page[0]?.id ?? null;
-      // Correct any stale optimistic rating override against the server value — parity
-      // with the blob album-list sync (`albumLibraryStore.fetchAllAlbums`), which is the
-      // only thing doing this today and goes away with that store. Per page rather than
-      // at the end so it stays bounded-memory.
+      // Correct any stale optimistic rating override against the server value. Per page
+      // rather than at the end, so it stays bounded-memory.
       ratingStore.getState().reconcileRatings(
         page.map((a) => ({ id: a.id, serverRating: a.userRating ?? 0 })),
       );

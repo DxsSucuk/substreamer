@@ -33,9 +33,8 @@ export async function performOnlineSearch(query: string): Promise<SearchResults>
 /**
  * Construct a Child from a cached_songs row + its parent cached_item.
  *
- * Carries every field the cached row holds — including `coverArt`, which song
- * cover-art resolution reads (#202). Never narrow a reconstruction because "no
- * consumer reads it today"; the data is here, so pass it through.
+ * Carries every field the cached row holds, including `coverArt`, which song
+ * cover-art resolution reads. Never narrow a reconstruction to today's consumers.
  */
 function childFromCachedSong(
   track: {
@@ -63,14 +62,11 @@ function childFromCachedSong(
 /**
  * Offline search over the cached library.
  *
- * The per-song scan can sweep the entire downloaded catalog (tens of
- * thousands of rows on a heavily-cached device), so it runs as an async,
- * chunked loop that yields the JS thread every {@link OFFLINE_SCAN_CHUNK}
- * song iterations — without this, typing in the search box on a large
- * offline library froze the UI for the whole scan. `shouldAbort` lets the
- * caller cancel a superseded scan early when the user has typed further
- * (the keystroke that started this scan is no longer the current query).
- * setTimeout, not rAF — rAF can stall on RN 0.85/Fabric.
+ * The per-song scan can sweep the entire downloaded catalog (tens of thousands of
+ * rows on a heavily-cached device), so it must not run in one JS turn: it yields
+ * every {@link OFFLINE_SCAN_CHUNK} song iterations, or typing in the search box
+ * freezes the UI for the whole scan. `shouldAbort` cancels a scan whose keystroke
+ * is no longer the current query. setTimeout, not rAF — rAF can stall on Fabric.
  */
 const OFFLINE_SCAN_CHUNK = 1024;
 
@@ -90,9 +86,8 @@ export async function performOfflineSearch(
       artist ? scoreField(query, artist).score : 0,
     );
 
-  // Downloaded albums/playlists: the normalized rows for the downloaded id set, scored
-  // in full (perfect recall over that small set — same coverage as the old array filter,
-  // now off the retired full-library arrays). No downloads / no db → nothing to match.
+  // Downloaded albums/playlists: the normalized rows for the downloaded id set, scored in
+  // full — perfect recall over that small set. No downloads / no db → nothing to match.
   const db = getDb();
   const albums = (db && cachedIds.length ? await listAlbumsByIds(db, cachedIds) : [])
     .map((r) => ({ a: albumListRowToAlbumID3(r), s: rel(r.name ?? '', r.display_artist) }))
@@ -151,11 +146,10 @@ export async function performOfflineSearch(
 
 const EMPTY_RESULTS: SearchResults = { albums: [], artists: [], songs: [] };
 
-// Output caps. Local search can score hundreds of candidates; the on-screen
-// results list (a SectionList) re-renders the whole set per keystroke, so an
-// uncapped list makes the full Search screen janky. Mirror the server path's
-// per-category cap (`search3` returns 20 each) so the two paths feel the same
-// — not an arbitrary number. Ranked, so the cap keeps the best matches.
+// Output caps. Local search can score hundreds of candidates and the results
+// SectionList re-renders the whole set per keystroke, so an uncapped list makes the
+// Search screen janky. Set to the server path's per-category cap (`search3` returns 20
+// each) so the two paths feel the same. Results are ranked, so the cap keeps the best.
 const SONG_RESULT_CAP = SEARCH3_RESULT_LIMIT;
 const ALBUM_RESULT_CAP = SEARCH3_RESULT_LIMIT;
 const ARTIST_RESULT_CAP = SEARCH3_RESULT_LIMIT;
@@ -198,8 +192,7 @@ export async function searchFullLibraryScored(
     .filter((k) => k.length > 0);
 
   // Tiered candidate generation over the normalized tables (norm_*/dmeta_* columns),
-  // then the JS precision re-rank below. Artists now come from candidate generation
-  // too (was an un-prefiltered array scan) — same recall/scale tradeoff as songs/albums.
+  // then the JS precision re-rank below.
   const [songCands, albumCands, artistCands] = await Promise.all([
     searchSongs(db, norm, tokens, dmetaTokens),
     searchAlbums(db, norm, tokens, dmetaTokens),
@@ -216,9 +209,9 @@ export async function searchFullLibraryScored(
     .filter((x) => x.s >= REJECT)
     .sort((a, b) => b.s - a.s);
 
-  // Artists keep the CONFIDENT floor (stricter than songs/albums' REJECT) intentionally:
-  // it matches today's artist strictness, so the cutover changes only the candidate set,
-  // not the ranking. Candidates are already norm/dmeta-matched, so no noise is admitted.
+  // Artists are held to the CONFIDENT floor, deliberately stricter than songs/albums'
+  // REJECT: a wrong artist row misroutes the whole browse, so only a near-certain name
+  // match is worth surfacing.
   const artists = artistCands
     .map((r) => ({ r, s: scoreField(query, r.name ?? '').score }))
     .filter((x) => x.s >= CONFIDENT)
@@ -419,12 +412,10 @@ export function getOfflineSongsByGenre(genre: string): Child[] {
 
 /**
  * The set of genre names (lowercased) present anywhere in the offline (cached)
- * library. Single pass over all cached songs, building each `Child` once.
- *
- * Replaces the O(genres × songs) pattern of calling `getOfflineSongsByGenre`
- * once per candidate genre (which re-walks the whole library per genre) — used
- * by the Tuned-In builder's offline genre list, which previously froze on a
- * large offline library at screen mount.
+ * library. ONE pass over all cached songs, building each `Child` once — callers
+ * needing the genre list (the Tuned-In builder) must use this rather than calling
+ * `getOfflineSongsByGenre` per candidate genre, which re-walks the whole library
+ * each time and blocks the JS thread at mount on a large offline library.
  */
 export function getOfflineGenresPresent(): Set<string> {
   const { cachedItems, cachedSongs } = musicCacheStore.getState();

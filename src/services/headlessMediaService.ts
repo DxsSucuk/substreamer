@@ -5,7 +5,7 @@
  * taps/voice to the app's `playTrack()` (which carries all app bookkeeping —
  * offline filtering, streaming, artwork, scrobble). Registered at bootstrap
  * (AFTER `configure()`) so a cold car / Siri / Assistant wake is served before
- * any UI mounts. Mirrors the RNQP demo's `headlessMediaService.ts` lifecycle:
+ * any UI mounts. Lifecycle:
  *   installHeadlessMediaService → registerPlaybackService(() => handler) + pushSnapshot,
  *   push on onCarConnect, re-install on onServiceReady('service-reborn').
  *
@@ -92,15 +92,14 @@ function isOffline(): boolean {
   return offlineModeStore.getState().offlineMode;
 }
 
-/** All library albums from the normalized `albums` table (sort-title order). Replaces
- *  reading `albumLibraryStore.albums`. NB: whole-table load, matching the previous
- *  in-memory-array behaviour; a per-letter browse is a follow-up memory refinement. */
+/** All library albums from the normalized `albums` table (sort-title order). This is a
+ *  WHOLE-TABLE load — the car browse tree needs the full A–Z set to bucket it. */
 async function allAlbums(): Promise<AlbumID3[]> {
   const db = getDb();
   return db ? (await listAllAlbums(db)).map(albumBrowseRowToAlbumID3) : [];
 }
 
-/** All playlists from the normalized `playlists` table. Replaces `playlistLibraryStore`. */
+/** All playlists from the normalized `playlists` table. */
 async function allPlaylists(): Promise<Playlist[]> {
   const db = getDb();
   return db ? (await listAllPlaylists(db)).map(playlistBrowseRowToPlaylist) : [];
@@ -151,9 +150,8 @@ async function azItems(): Promise<AzItem[]> {
 }
 
 /**
- * Async because both downloaded reads are SQL now. Free here, unlike the phone screens:
- * there is no UI to flash an empty state at, and both call sites (`buildSnapshot`,
- * `resolveBrowseChildren`) already awaited this when it was synchronous.
+ * The `ComposeHomeInput` for the car's Home section. Async because both downloaded
+ * reads are SQL; costless here, since there is no UI to flash an empty state at.
  */
 async function homeInput(): Promise<ComposeHomeInput> {
   const offline = isOffline();
@@ -197,7 +195,7 @@ async function homeInput(): Promise<ComposeHomeInput> {
 /**
  * Row artwork via the app's SHARED resolver (`resolveDisplayImage`) — the same
  * file:// cache → server-URL decision (offline/remote-failed-gated) `CachedImage`
- * uses. Keyed off the entity's coverArt VALUE (never the id — #202).
+ * uses. Keyed off the entity's coverArt VALUE, never its id.
  */
 async function resolveRowArtwork(coverArtValue: string | undefined): Promise<string | undefined> {
   if (!coverArtValue) return undefined;

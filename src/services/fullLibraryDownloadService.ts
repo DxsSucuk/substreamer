@@ -43,14 +43,13 @@ export async function enqueueFullLibraryDownload(): Promise<void> {
   let failed = 0;
   let total = 0;
   try {
-    // Phase 1 — enumerate what we already know. The album list is NOT re-fetched here:
-    // on search3 that was a no-op, and on basic servers it re-paged the whole list off
-    // the legacy `library_albums` count the normalized sync never writes. Albums added
-    // since the last sync arrive via the next sync / change-detect.
+    // Phase 1 — enumerate what we already know. The album list is deliberately NOT
+    // re-fetched: on basic servers that re-pages the whole list off the legacy
+    // `library_albums` count, which the normalized sync never writes. Albums added since
+    // the last sync arrive via the next sync / change-detect.
     fullLibraryDownloadStore.getState().setPhase('preparing');
     await refreshPlaylistLibrary();
 
-    // Enumerate from the normalized model (the fetch actions above dual-write it).
     const db = getDb();
     const albumIds = db ? await listAlbumIds(db) : [];
     const playlistIds = db ? await listPlaylistIds(db) : [];

@@ -617,13 +617,12 @@ export async function getAlbumListAlphabetical(
 }
 
 /**
- * Fetch a page of albums sorted alphabetically by NAME. Used by the paginated
- * library-list sync (`albumLibraryStore.fetchAllAlbums`). `alphabeticalByName`
- * (vs `…ByArtist`) gives the most stable offset paging across servers — album
- * name is a stable per-row key, whereas artist sorting has known ordering
- * quirks (e.g. Navidrome #3185). Order only needs to be stable + complete
- * across offsets; the client re-sorts by the user's preference afterward.
- * `getAlbumList2.size` is spec-capped at 500 across all supported servers.
+ * Fetch a page of albums sorted alphabetically by NAME — the basic-server album
+ * phase of the library sync. `alphabeticalByName` (vs `…ByArtist`) gives the most
+ * stable offset paging across servers: album name is a stable per-row key, whereas
+ * artist sorting has known ordering bugs (e.g. Navidrome #3185). Order only needs to
+ * be stable + complete across offsets; the client re-sorts by the user's preference
+ * afterward. `getAlbumList2.size` is spec-capped at 500 across all supported servers.
  */
 export async function getAlbumsPageByName(size: number, offset: number): Promise<AlbumID3[]> {
   const api = getApi();
@@ -986,9 +985,9 @@ export async function getStarred2(): Promise<{
 }
 
 /**
- * Per-category result cap for the interactive `search3` box search. Local
- * fuzzy search mirrors this so switching between the server path and the
- * local-first path yields a comparably-sized list (not an arbitrary number).
+ * Per-category result cap for the interactive `search3` box search. Local fuzzy
+ * search mirrors this so the server path and the local-first path return
+ * comparably-sized lists.
  */
 export const SEARCH3_RESULT_LIMIT = 20;
 

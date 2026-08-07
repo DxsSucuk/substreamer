@@ -4,8 +4,8 @@
  * MARK, DON'T MATERIALISE: a favourite whose library row exists gets `UPDATE … SET
  * starred`; one without goes into the `favorite_*` remainder tables with its verbatim
  * envelope. The reconcile issues **no INSERT into `songs`/`albums`/`artists`, ever** —
- * a row there means "the library sync put it here", and sixteen production presence
- * checks read it that way.
+ * a row there means "the library sync put it here", and the presence checks across the
+ * app read it that way.
  */
 import {
   clearStarredAlbumsNotIn,
@@ -173,9 +173,7 @@ interface FavoritesBlob {
 
 /**
  * One-shot import of the pre-SQL favourites blob, replayed through the SAME reconcile.
- *
- * Version-stamped by the ABSENCE of the key, which is the re-runnable form the
- * no-migrations-on-migrations rule asks for — no migration id, no counter bump.
+ * Gated on the ABSENCE of the key rather than a migration id, so it stays re-runnable.
  *
  * The key is removed ONLY after a reconcile that both resolves and does not skip. A
  * skip resolves successfully, so deleting unconditionally would destroy the user's only

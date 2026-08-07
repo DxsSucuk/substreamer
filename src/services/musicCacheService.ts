@@ -11,7 +11,7 @@
  * so, it just inserts a new `cached_item_songs` edge — no bytes, no network.
  *
  * See `plans/music-downloads-v2.md` for the full architectural plan. Key
- * guarantees preserved from v1:
+ * guarantees:
  *   - Tmp-file atomicity (download to .tmp, move on success)
  *   - Kill-mid-item resumption via pre-scan + `recoverStalledDownloadsAsync`
  *   - Retry-once-on-null inside `downloadItem`
@@ -285,9 +285,8 @@ export async function deferredMusicCacheInit(): Promise<void> {
     );
   }
 
-  // Capture filesystem ground-truth byte/file totals. Store aggregates are
-  // derived from cachedSongs on hydrate (dedup-correct), but a filesystem
-  // recalculate belts-and-braces against any Task-14 migration drift.
+  // Capture filesystem ground-truth byte/file totals. Store aggregates are derived
+  // from cachedSongs on hydrate (dedup-correct); this corrects any drift from them.
   scheduleRecalculate();
 
   await recoverStalledDownloadsAsync();
@@ -323,23 +322,19 @@ async function populateTrackMapsAsync(): Promise<void> {
     }
   }
 
-  // Diagnostic (gated by the image-cache diagnostics flag). Compares rows in
-  // SQLite vs the hydrated store vs the map just built — a `dbSongs>0 mapSize=0`
-  // line is the signature of the empty-map-from-unhydrated-store regression.
+  // Diagnostic (gated by the image-cache diagnostics flag). Compares rows in SQLite
+  // vs the hydrated store vs the map just built; `dbSongs>0 mapSize=0` means the
+  // maps were built from an unhydrated store.
   logImageCache(
     `musiccache trackmaps hydrated=${hasHydrated} `
     + `dbSongs=${countCachedSongs()} storeSongs=${Object.keys(cachedSongs).length} `
     + `mapSize=${trackUriMap.size}`,
   );
 
-  // Only latch "ready" once the store is actually hydrated. The store hydrates
-  // on a SEPARATE async boot effect from the requestIdleCallback that runs
-  // deferredMusicCacheInit; if this ever runs mid-hydration it would build an
-  // empty `trackUriMap` and — without this guard — latch it, leaving every
-  // downloaded track shown as unavailable until the next launch (files on disk
-  // are intact; only the in-memory lookup is empty). Leaving it un-latched lets
-  // a later post-hydration call rebuild instead of short-circuiting in
-  // `ensureTrackMapsReady`.
+  // Only latch "ready" once the store is actually hydrated — see
+  // `deferredMusicCacheInit`. Latching an empty `trackUriMap` shows every downloaded
+  // track as unavailable until the next launch; leaving it un-latched lets a later
+  // post-hydration call rebuild instead of short-circuiting in `ensureTrackMapsReady`.
   if (hasHydrated) {
     trackMapsReady = true;
     flushTrackMapsReadyWaiters();
@@ -1108,12 +1103,10 @@ async function buildCachedItemMetadata(
  * downloaded from a non-album item. No-op when the triggering item IS the
  * album itself.
  *
- * Authoritative track count comes from the server: when albumDetailStore
- * doesn't already have this album, we fetch it (we're online — we're
- * downloading) and use `album.song.length`. The historical `?? 1`
- * fallback is kept only for the cases where the fetch fails outright
- * (server unreachable, album deleted between getSong and getAlbum) so
- * we still stitch the edge in; the next refresh path corrects the count.
+ * The authoritative track count is the album's song rows in the normalized model,
+ * fetched if absent (we are online — we are downloading). A failed fetch leaves the
+ * count unknown rather than blocking: the edge is still stitched in, and the next
+ * refresh corrects the count.
  */
 async function ensurePartialAlbumEdge(
   triggerItemId: string,
@@ -1123,21 +1116,14 @@ async function ensurePartialAlbumEdge(
   if (!song.albumId) return;
   if (triggerItemType === 'album' && triggerItemId === song.albumId) return;
 
-  // Resolve the album's authoritative track count once up-front. Memory
-  // hit when albumDetailStore already has it (the common case — user
-  // visited the album-detail screen, or a prior ensurePartialAlbumEdge
-  // for the same album already populated it). One getAlbum call when
-  // it doesn't. `fetchAlbum` caches the result in albumDetailStore so
-  // subsequent calls in the same session reuse it.
   const albumId = song.albumId;
   const db = getDb();
   // Authoritative track count = songs the normalized model holds for this album.
   let detail = db ? await getAlbumDetail(db, albumId) : null;
   if (!detail || detail.songs.length === 0) {
-    // `prefetchCovers: false` — we're inside a song-download hot path
-    // and don't want to kick off hundreds of cover-art downloads here.
-    // The album-detail screen visit re-fetches with covers when needed.
-    // fetchAlbum dual-writes the normalized rows we then re-read.
+    // `prefetchCovers: false` — this is a song-download hot path, so it must not
+    // kick off hundreds of cover-art downloads. An album-detail screen visit
+    // re-fetches with covers when needed.
     try {
       await fetchAlbumDetail(albumId, { prefetchCovers: false });
     } catch { /* fall through to the unknown-count branch */ }
@@ -1149,10 +1135,9 @@ async function ensurePartialAlbumEdge(
   const existing = state.cachedItems[albumId];
 
   if (existing) {
-    // Refresh expectedSongCount to match the authoritative server count
-    // when we have it (corrects any historical `?? 1` write). Also fill the
-    // component row if the existing one carries no metadata in either form —
-    // a legacy envelope still counts, the conversion promotes it in place.
+    // Refresh expectedSongCount to the authoritative count when we have one. Also
+    // fill the component row when the existing one carries no metadata in either
+    // form — a raw-JSON envelope still counts; the conversion promotes it in place.
     const metadata =
       existing.albumMeta || existing.rawJson
         ? {}
@@ -1953,15 +1938,12 @@ export async function syncCachedPlaylistTracks(
 }
 
 /**
- * Full sync for a cached item: removes tracks no longer present and
- * re-enqueues through the download queue when new tracks are detected.
+ * Full sync for a cached item: removes tracks no longer present and re-enqueues
+ * through the download queue when new tracks are detected.
  *
- * v2 behaviour: addition path no longer manually spliced out of
- * `cachedItems` — the new tracks go through the normal download pipeline,
- * which knows how to add edges to an existing item (via the same itemId,
- * songs are transferred, then `markItemComplete` upserts the item row and
- * fresh edges). This is equivalent to v1 semantics for users but cleaner
- * at the model level.
+ * Additions are NOT spliced into `cachedItems` here — they go through the normal
+ * download pipeline, which adds edges to the existing item under the same itemId
+ * and lets `markItemComplete` upsert the row and its fresh edges.
  */
 export function syncCachedItemTracks(
   itemId: string,
@@ -1978,13 +1960,10 @@ export function syncCachedItemTracks(
   // Removes + reorders via the playlist sync.
   syncCachedPlaylistTracks(itemId, newTrackIds);
 
-  // Belt-and-braces cover-art reconciliation for this offline item only.
-  // `ensureCached` and `prefetchCoverArt` are idempotent — instant
-  // no-op when every variant is already on disk (imageCacheService.ts:447),
-  // refills only what's missing (e.g. a variant dropped by the
+  // Cover-art reconciliation for this offline item only — never the full library.
+  // `ensureCached` / `prefetchCoverArt` are idempotent: an instant no-op when every
+  // variant is on disk, refilling only what is missing (a variant dropped by the
   // reconcileImageCache zero-byte pass, or an OS cache eviction).
-  // This check never walks the full library — only this single cached
-  // item and its tracks.
   if (cached.coverArtId) {
     ensureCached(cached.coverArtId).catch(() => { /* non-critical */ });
   }

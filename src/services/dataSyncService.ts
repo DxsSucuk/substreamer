@@ -47,12 +47,10 @@ import {
 /** Bounded concurrency for the album-detail walk. */
 const WALK_CONCURRENCY = 4;
 /**
- * Delay after the JS thread reports idle before kicking off deferred
- * startup prefetches (library lists, genres, detail walk). Empirically
- * chosen — at ~1.5s the first paint has settled, hydration is done, and
- * the initial network/auth handshakes have either landed or timed out
- * locally. Shorter values stutter the splash; longer values delay the
- * library appearing on screen.
+ * Delay after the JS thread reports idle before kicking off deferred startup
+ * prefetches (library lists, genres, detail walk). At ~1.5s the first paint has
+ * settled, hydration is done, and the initial network/auth handshakes have landed
+ * or timed out. Shorter stutters the splash; longer delays the library appearing.
  */
 const STARTUP_PREFETCH_SETTLE_MS = 1500;
 
@@ -103,14 +101,12 @@ async function performScope(scope: SyncScope): Promise<void> {
       return;
     case 'albums':
     case 'songs':
-      // Pull-to-refresh (albums AND the songs tab — one library). If the initial
-      // paginated list fetch never finished, resume it (fetchAllAlbums picks up
-      // from COUNT(*)). Once the library is fully fetched, a full re-download would
-      // be wasteful at scale — instead run the cheap incremental change-detection
-      // (newest-album probe) which ingests server-added albums and fires the detail
-      // walk (dual-writing the changed albums' songs into the normalized table).
-      // (Server-side removals / bulk metadata rewrites are handled by the explicit
-      // Settings → Sync Library force-resync.)
+      // Pull-to-refresh (albums AND the songs tab — one library). An unfinished list
+      // fetch resumes from its cursor. Once the library is fully fetched a full
+      // re-download would be wasteful at scale, so run the cheap incremental
+      // change-detection (newest-album probe) instead, which ingests server-added
+      // albums and their songs. Server-side removals and bulk metadata rewrites are
+      // only picked up by the explicit Settings → Sync Library force-resync.
       if (!syncStatusStore.getState().librarySyncComplete) {
         await runNormalizedLibrarySync({ reason: 'pull-to-refresh' });
       } else {
@@ -192,9 +188,8 @@ function dispatch(scope: SyncScope, work: () => Promise<void>): Promise<void> {
  */
 export async function onStartup(): Promise<void> {
   if (offlineModeStore.getState().offlineMode) {
-    // Surface "paused — offline" so the user knows sync is waiting on
-    // connectivity. Without this the banner stayed silent and users
-    // couldn't tell whether their library was stale or already synced.
+    // Surface "paused — offline" so the user can tell a stale library from a
+    // synced one rather than reading a silent banner as "up to date".
     if (await isLibrarySyncPending()) {
       syncStatusStore.getState().setDetailSyncPhase('paused-offline');
     }
@@ -212,15 +207,13 @@ export async function onOnlineResume(): Promise<void> {
 }
 
 async function startupOrResumeFlow(): Promise<void> {
-  // Immediate chain — mirrors _layout.tsx:321-326.
   fetchServerInfo().then((info) => {
     if (info) serverInfoStore.getState().setServerInfo(info);
   });
   fetchScanStatus();
-  // Eager home-list refresh (so the home updates promptly), but gated on
-  // offline/reachability via refreshAllIfDue(0) so we don't fire a doomed
-  // fetch when the server isn't reachable. This is the single cold-start
-  // refresh — runDeferredStartup no longer duplicates it.
+  // Eager home-list refresh, gated on offline/reachability via refreshAllIfDue(0)
+  // so a doomed fetch never fires against an unreachable server. This is the only
+  // cold-start home refresh.
   albumListsStore.getState().refreshAllIfDue(0);
   // Startup sync — metadata only, art pre-caches on user-initiated views.
   favoritesStore.getState().fetchStarred({ prefetchCovers: false });
@@ -275,17 +268,15 @@ async function startupOrResumeFlow(): Promise<void> {
       }
       genreStore.getState().fetchGenres();
 
-      // One-time repair for the 8.0.89 on-demand-detail regression: re-cache
-      // detail + cover art for downloaded items missing it. Flagged by migration
-      // #33; runs once the server is genuinely reachable.
+      // One-time repair: re-cache detail + cover art for downloaded items missing it.
+      // Flagged by migration #33; runs once the server is genuinely reachable.
       //
-      // RESUME, don't restart: `missing` mode only fetches detail that's still
-      // absent, so an interrupted run's completed work is never redone — each
-      // launch picks up just the stragglers. The flag clears to 'done' only when
-      // NOTHING is left missing. To avoid looping forever on permanently-
-      // unfetchable items (deleted albums, chronic errors), a pass that makes NO
-      // progress counts toward a cap; after MAX passes we give up (on-demand
-      // browse + the manual "Refresh metadata" button still cover the rest).
+      // RESUME, don't restart: `missing` mode only fetches detail that is still
+      // absent, so an interrupted run's completed work is never redone and the flag
+      // clears to 'done' only when nothing is left missing. A pass that makes NO
+      // progress counts toward a cap, so permanently-unfetchable items (deleted
+      // albums, chronic errors) can't loop forever — on-demand browse and the manual
+      // "Refresh metadata" button still cover the rest.
       {
         const conn = connectivityStore.getState();
         if (
@@ -328,12 +319,9 @@ async function startupOrResumeFlow(): Promise<void> {
         /* library fetch swallows its own errors; walk will see empty albums */
       }
       if (!offlineModeStore.getState().offlineMode) {
-        // One-time upgrade seed: existing installs already have a populated
-        // song_index (from the old walk). Mark the new song sync complete so
-        // they don't needlessly re-fetch the whole song catalog.
-        // Detect changes since last session (scan status or newest-album
-        // probe) and surface any new albums + their songs. Detect errors are
-        // swallowed — fire the song sync either way.
+        // Detect changes since last session (scan status or newest-album probe) and
+        // surface any new albums + their songs. Detect errors are swallowed — fire
+        // the song sync either way.
         fireAndForget(
           detectChanges().then((result) => {
             if (result.changedAlbumIds.length > 0) {
@@ -361,11 +349,10 @@ async function startupOrResumeFlow(): Promise<void> {
 let _offlineSyncPhaseUnsub: (() => void) | null = null;
 
 /**
- * Wire the runtime offline-mode → sync-phase reaction. Idempotent. Moved
- * out of module scope in Phase 5 so test imports of `dataSyncService` don't
- * register a sticky subscription that bleeds across test files. Called once
- * from `deferredDataSyncInit` per session (re-registers automatically on
- * logout → login cycles via the existing unsub stored in module state).
+ * Wire the runtime offline-mode → sync-phase reaction. Idempotent, and deliberately
+ * NOT at module scope: a module-scope subscribe fires on every test import of
+ * `dataSyncService` and bleeds across test files. Called once per session from
+ * `deferredDataSyncInit`; the module-state unsub re-registers it on logout → login.
  */
 function ensureOfflineSyncPhaseSubscription(): void {
   if (_offlineSyncPhaseUnsub) return;
@@ -494,17 +481,14 @@ export async function onScrobbleCompleted(): Promise<void> {
 /**
  * Called when a caller encounters an album id that may not be in the library
  * cache yet (e.g. download-time from `musicCacheService`, a just-added album
- * surfaced via `recentlyAdded`). Replacement for the legacy
- * `albumLibraryStore.subscribe(albumListsStore)` side-effect retired in
- * Phase 5.
+ * surfaced via `recentlyAdded`).
  *
  * Semantics:
  *   - If the id is already in the library: no-op.
  *   - If the library is cold (zero albums cached): no-op — the startup
  *     path already handles first-fetch via its `length === 0` guard.
- *   - Otherwise: fetch ONLY that album and merge it into the library (#202).
- *     A targeted single-album upsert — never a full-library re-download, which
- *     was prohibitively expensive on large libraries.
+ *   - Otherwise: fetch ONLY that album and merge it in. A targeted single-album
+ *     upsert, never a full-library re-download (prohibitive at scale).
  */
 export async function onAlbumReferenced(albumId: string): Promise<void> {
   if (offlineModeStore.getState().offlineMode) return;
@@ -534,13 +518,7 @@ export async function onAlbumReferenced(albumId: string): Promise<void> {
   }
 }
 
-/** Bounded concurrency for the playlist-detail prefetch (smaller than the
- *  album walk since playlist details can be large per entry). */
 
-/** Max playlists whose detail we eagerly refetch per reconcile. Bounds bandwidth
- *  when a server bumps `changed` on many playlists at once; the rest refresh on
- *  the next pass / on-demand. Downloaded playlists are exempt (their tracks must
- *  re-sync). */
 
 /**
  * User-triggered full resync from settings — the "something is wrong, start over" hatch.
@@ -553,10 +531,8 @@ export async function onAlbumReferenced(albumId: string): Promise<void> {
  */
 export async function forceFullResync(): Promise<void> {
   cancelAllSyncs('force-resync');
-  // Target-state resync: populate ONLY the normalized model (single writer, bounded
-  // memory). Re-probe transport. The normalized sync clears + repopulates the
-  // normalized tables itself (`full`); the legacy blob tables + in-memory stores are
-  // intentionally left as-is (the read UI still hydrates from them until Phase 3).
+  // Clear the persisted transport so the run re-probes search3 vs basic — a server
+  // upgrade is one of the things "start over" is meant to recover from.
   syncStatusStore.getState().setSyncStrategy(null);
   if (offlineModeStore.getState().offlineMode) return;
   await runNormalizedLibrarySync({ full: true, reason: 'forceFullResync' });
@@ -603,9 +579,8 @@ function parseCreatedMs(created: Date | string | undefined | null): number {
  *
  * Updates `syncStatusStore.lastKnown*` markers on every call.
  *
- * Returns only the IDs of albums that appear to be new since our last
- * observation. Callers are expected to upsert them into
- * `albumLibraryStore` and then trigger a detail fetch for each.
+ * Returns only the ids of albums that appear to be new since the last observation;
+ * the caller upserts them and fetches their songs.
  */
 let detectChangesInFlight: Promise<{
   changedAlbumIds: string[];
@@ -619,9 +594,8 @@ export function detectChanges(): Promise<{
   if (offlineModeStore.getState().offlineMode) {
     return Promise.resolve({ changedAlbumIds: [], newestAlbums: [] });
   }
-  // Coalesce concurrent callers onto a single probe and hand every caller the
-  // same real result — the loser previously returned an empty result, masking
-  // the changes the winner found.
+  // Coalesce concurrent callers onto a single probe and hand every one the SAME
+  // result. A loser that returned empty would mask the changes the winner found.
   if (detectChangesInFlight) return detectChangesInFlight;
   detectChangesInFlight = runDetectChanges().finally(() => {
     detectChangesInFlight = null;
@@ -708,15 +682,12 @@ async function runDetectChanges(): Promise<{
 }
 
 /**
- * Walk every album in `albumLibraryStore` and populate `albumDetailStore`
- * for any IDs missing from the detail cache. Reconciliation-based:
- * `missing = libraryIds - detailIds` is recomputed at walk start; no persisted
- * queue. Same resumability contract as `musicCacheService.downloadItem` —
- * kill mid-walk, restart, reconciliation picks up where we left off.
+ * Re-enter a library sync that a previous session left mid-flight, resuming from its
+ * persisted cursors. No persisted queue: the sync recomputes what is missing at start,
+ * so a kill mid-walk costs nothing but the current page.
  *
- * Idempotent: overlapping calls collapse via `syncStatusStore.inFlight`.
- * Honors `offlineModeStore.offlineMode` (bails early) and the generation
- * counter on `syncStatusStore` (stale workers exit).
+ * Honors `offlineModeStore.offlineMode` (bails early); the sync's own in-flight guard
+ * collapses overlapping calls.
  */
 export async function recoverStalledSync(): Promise<void> {
   const status = syncStatusStore.getState();
@@ -729,8 +700,8 @@ export async function recoverStalledSync(): Promise<void> {
     'error',
   ];
   // An interrupted ALBUM phase leaves `detailSyncPhase` at 'idle' — only
-  // `librarySyncPhase` moves — so checking the song phase alone meant a sync killed
-  // during the album walk never self-healed on foreground, only on a cold boot.
+  // `librarySyncPhase` moves — so the album phase must be checked separately or a sync
+  // killed during it never self-heals on foreground, only on a cold boot.
   const albumPhaseStalled = !status.librarySyncComplete && status.librarySyncPhase !== 'idle';
   if (!resumablePhases.includes(phase) && !albumPhaseStalled) return;
   if (offlineModeStore.getState().offlineMode) {
@@ -777,11 +748,9 @@ registerMusicCacheOnAlbumReferencedHook((albumId) => {
   fireAndForget(onAlbumReferenced(albumId), 'sync.hook.onAlbumReferenced');
 });
 
-// Retire the legacy `albumListsStore` → `albumLibraryStore` subscribe by
-// reimplementing it here: when `recentlyAdded` surfaces an id the library
-// doesn't have, route through `onAlbumReferenced`. This keeps the same
-// "new album on home page triggers library refresh" behavior but without
-// a store-level import cycle.
+// When `recentlyAdded` surfaces an id the library doesn't have, route it through
+// `onAlbumReferenced`. Lives here rather than as a store-to-store subscribe, which
+// would be an import cycle.
 async function referenceFirstNewRecentlyAdded(recentlyAdded: readonly AlbumID3[]): Promise<void> {
   const db = getDb();
   if (!db) return;
@@ -803,10 +772,6 @@ albumListsStore.subscribe((state, prev) => {
   fireAndForget(referenceFirstNewRecentlyAdded(state.recentlyAdded), 'sync.recentlyAddedReferenced');
 });
 
-// NOTE: The runtime offline-mode → sync-phase reaction lived here at module
-// scope until Phase 5 of the audit remediation. It now registers inside
-// `deferredDataSyncInit` via `ensureOfflineSyncPhaseSubscription()` so test
-// imports of this module don't fire the side effect.
 
 /* ------------------------------------------------------------------ */
 /*  Internals exposed for tests                                        */

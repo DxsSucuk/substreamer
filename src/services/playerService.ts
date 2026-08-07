@@ -411,10 +411,9 @@ function restorePersistedQueue(): boolean {
 }
 
 /**
- * Load the restored queue into the native engine. A single atomic
- * `setQueue(tracks, startIndex)` (which does NOT auto-play) replaces the
- * former RNTP mute→reset→verify→skip→seek→pause ceremony. The prerequisite
- * waits stay — they resolve local URIs / cover-art auth / the iOS SSL proxy so
+ * Load the restored queue into the native engine with a single atomic
+ * `setQueue(tracks, startIndex)`, which does NOT auto-play. The prerequisite waits
+ * are load-bearing: they resolve local URIs / cover-art auth / the iOS SSL proxy, so
  * downloaded songs use local files rather than server URLs that stall offline.
  */
 async function hydrateRestoredQueue(): Promise<void> {

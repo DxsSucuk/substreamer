@@ -72,11 +72,9 @@ export function initScrobbleService(): void {
   const retryInterval = setInterval(processScrobbles, PROCESS_INTERVAL_MS);
   (retryInterval as { unref?: () => void }).unref?.();
 
-  // U17 (facebook/react-native#56324): on Samsung Android the
-  // setInterval above can stop firing while the app is backgrounded
-  // without active audio playback. Re-trigger a processing pass when
-  // the app returns to the foreground so the queue drains promptly
-  // instead of waiting up to a minute (or longer) for the next tick.
+  // On Samsung Android the interval above can stop firing while the app is
+  // backgrounded without active audio playback (facebook/react-native#56324), so
+  // also drain on foreground rather than waiting out the next tick.
   onAppForeground(() => {
     processScrobbles();
   });
@@ -113,10 +111,8 @@ export async function sendNowPlaying(song: Child, playlistId?: string): Promise<
 export function addCompletedScrobble(song: Child, playlistId?: string): void {
   if (!song?.id || !song.title) return;
   if (isExcluded(song, playlistId)) return;
-  // Eagerly bump local play-count + last-played across every store that
-  // holds a copy of this song or its album so UI reflects the play before
-  // the server round-trip. Respects the exclusion gate above for free —
-  // excluded plays skip this automatically.
+  // Bump local play-count + last-played so the UI reflects the play before the
+  // server round-trip. Below the exclusion gate, so excluded plays skip it.
   applyLocalPlay(song);
   pendingScrobbleStore.getState().addScrobble(song, Date.now());
   processScrobbles();
@@ -146,8 +142,7 @@ async function processScrobbles(): Promise<void> {
     // Snapshot the queue – iterate over a copy so mutations don't
     // interfere with the loop.
     const pending = [...pendingScrobbleStore.getState().pendingScrobbles];
-    // Which of the pending items are already committed as completed (SQL-backed,
-    // replaces scanning the full in-memory completed array).
+    // Which of the pending items are already committed as completed.
     const completedIds = await existingScrobbleIds(pending.map((s) => s.id));
     let anySucceeded = false;
 
@@ -185,9 +180,8 @@ async function processScrobbles(): Promise<void> {
       }
     }
 
-    // Refresh the home screen's recently played list if any scrobbles
-    // were submitted so it reflects the latest play history. Routed through
-    // dataSyncService so future change-detection hooks can observe it.
+    // Refresh the home screen's recently played list so it reflects the latest play
+    // history. Routed through dataSyncService so change-detection hooks can observe it.
     if (anySucceeded) {
       onBatchCompleted?.();
     }

@@ -1,6 +1,5 @@
 /**
- * Shared, normalized-only detail fetch for album / artist / playlist — the target-state
- * replacement for the doomed `*DetailStore.fetchX` actions.
+ * Shared, normalized-only detail fetch for album / artist / playlist.
  *
  * Online: fetch from the server, upsert into the normalized tables (the SOLE write — no
  * blob), reconcile ratings, optionally pre-cache cover art, notify open detail screens via
@@ -90,8 +89,8 @@ export interface ArtistDetailEntry {
 
 /**
  * Album detail. Online → `getAlbum`, upsert the album row + its songs into the normalized
- * model (which also reflects it in the library list — #202), reconcile ratings, pre-cache
- * art, notify, return the server envelope. Offline → the persisted normalized detail.
+ * model (which also reflects it in the library list), reconcile ratings, pre-cache art,
+ * notify, return the server envelope. Offline → the persisted normalized detail.
  */
 export async function fetchAlbumDetail(
   id: string,
@@ -216,11 +215,10 @@ export function fetchArtistBase(id: string, opts?: ArtistFetchOpts): Promise<Art
         ...albums.map((a) => ({ id: a.id, serverRating: a.userRating ?? 0 })),
       ]);
       if (db) {
-        // Both take the (non-re-entrant) mutex per chunk themselves — see `fetchAlbumDetail`.
         await upsertArtists(db, [artist], undefined, articles());
-        // MERGE: `getArtist` returns a partial album view. Without this, opening an
-        // artist blanked genre/year/MBID and wiped the child rows on every album the
-        // library sync had already populated in full — live before this change.
+        // MERGE: `getArtist` returns a PARTIAL album view. A full upsert would blank
+        // genre/year/MBID and wipe the child rows on every album the library sync had
+        // already populated in full.
         if (albums.length > 0) await upsertAlbums(db, albums, undefined, articles(), { merge: true });
         bumpDetailChanged('artist', id);
       }
@@ -283,7 +281,7 @@ export function fetchArtistInfo(id: string, opts?: ArtistFetchOpts): Promise<Art
 
 /**
  * Top songs. Size-dependent, so a `listLength` that no longer matches the setting is a
- * miss — which is what lets the bulk `refreshArtistTopSongs` loop go away.
+ * miss and the row is refetched at that size.
  */
 export function fetchArtistTopSongs(
   id: string,
@@ -320,8 +318,6 @@ export function fetchArtistTopSongs(
         ratingStore.getState().reconcileRatings(
           top.map((sg) => ({ id: sg.id, serverRating: sg.userRating ?? 0 })),
         );
-        // `upsertSongs` takes the (non-re-entrant) mutex per chunk itself; only
-        // `setArtistTopSongs`, which has none, is wrapped.
         if (top.length > 0) await upsertSongs(db, top, undefined, articles());
         await setArtistTopSongs(db, id, top.map((sg) => sg.id), { listLength: size });
         bumpDetailChanged('artist', id);
@@ -458,8 +454,6 @@ export async function fetchPlaylistDetail(
     ratingStore.getState().reconcileRatings(ratingEntries);
     if (db) {
       const entry = data.entry ?? [];
-      // The bulk upserts take the (non-re-entrant) mutex per chunk themselves; only
-      // `setPlaylistSongs`, which has none, is wrapped.
       await upsertPlaylists(db, [data], undefined, articles());
       if (entry.length > 0) await upsertSongs(db, entry, undefined, articles());
       await setPlaylistSongs(db, id, entry.map((e) => e.id));

@@ -8,17 +8,14 @@
  * 200k-album library the migration is minutes long). It is completeness-agnostic:
  * it converts whatever the legacy blob caches (`library_albums`, `song_index`,
  * `album_details`) + the KV blobs they replaced currently hold. A partial prior sync is
- * fine — the user manually re-syncs if songs are missing (see the plan's deferred
- * "reliable-completeness" item; the sync-complete flags are known to lie at scale).
+ * fine — the user manually re-syncs if songs are missing.
  *
  * Gated on the migration chain having completed: it reads the legacy tables directly,
  * and a chain halted part-way leaves rows later tasks were meant to backfill.
  *
- * Trigger = a ONE-SHOT flag. It was a drift check ("blobs hold more rows than
- * normalized") while both models were written together; the blob tables are frozen now,
- * so that comparison would re-import a stale library on any later shrink. Upserts are
- * idempotent, so a kill mid-run just re-runs next launch (the flag is only stamped on
- * success). Progress surfaces on the library-sync chrome.
+ * Trigger = a ONE-SHOT flag. Upserts are idempotent, so a kill mid-run just re-runs
+ * next launch (the flag is only stamped on success). Progress surfaces on the
+ * library-sync chrome.
  */
 import { checkpointWalAsync, migrateBlobsToNormalized } from '@/db/migrateNormalized';
 import { getDb } from '@/store/persistence/db';
@@ -28,10 +25,9 @@ import { LATEST_MIGRATION_ID } from './migrationService';
 
 /** Stamped after a successful full migration; the sole trigger gate.
  *
- * VERSIONED rather than a boolean: this work is unshipped, so when the migration gains a
- * step (e.g. the album-info KV blob) the fix is to bump this and let already-stamped
- * installs re-run — `migrateBlobsToNormalized` is idempotent upserts — instead of
- * stacking a second migration on top of the first. */
+ * VERSIONED rather than a boolean: when the migration gains a step, bump this so
+ * already-stamped installs re-run (`migrateBlobsToNormalized` is idempotent upserts)
+ * rather than stacking a second migration on top of the first. */
 const MIGRATION_VERSION = '3';
 const MIGRATION_DONE_KEY = 'substreamer-normalized-migration-complete';
 
@@ -89,19 +85,16 @@ export function runDataModelUpgradeIfNeeded(): Promise<void> {
       // half-migrated legacy data — see `migrationChainComplete`.
       if (!(await migrationChainComplete())) return;
 
-      // ONE-SHOT, not a drift check. The drift form ("blobs hold more than normalized")
-      // was only meaningful while both sides were written together. The blob tables are
-      // frozen now, so their counts are a permanent high-water mark — any later shrink in
-      // normalized (a reap, an interrupted resync) would re-migrate that stale library
-      // back in on top of current data.
+      // ONE-SHOT, never a drift check ("blobs hold more rows than normalized"). The blob
+      // tables are frozen, so their counts are a permanent high-water mark: any later
+      // shrink in normalized (a reap, an interrupted resync) would re-migrate that stale
+      // library back in on top of current data.
       if ((await kvStorage.getItem(MIGRATION_DONE_KEY)) === MIGRATION_VERSION) return;
 
       syncStatusStore.getState().setNormalizedMigration('migrating', 0, 0);
       const result = await migrateBlobsToNormalized(db, undefined, undefined, (done, total) =>
         syncStatusStore.getState().setNormalizedMigration('migrating', done, total),
       );
-      // Stamp complete so the one-time artist/playlist migration isn't re-evaluated on
-      // every launch once albums/songs are in step.
       await kvStorage.setItem(MIGRATION_DONE_KEY, MIGRATION_VERSION);
       syncStatusStore.getState().setNormalizedMigration('idle', 0, 0);
       // Fold the (large) WAL in the background — does NOT block completion.
@@ -116,7 +109,7 @@ export function runDataModelUpgradeIfNeeded(): Promise<void> {
         ms: result.ms,
       });
     } catch (e) {
-      // Leave the tables as-is; the drift check re-triggers next launch.
+      // Leave the tables as-is; the flag is unstamped, so the next launch retries.
       syncStatusStore.getState().setNormalizedMigration('idle', 0, 0);
       // eslint-disable-next-line no-console
       console.warn('[normalized-migration] failed', e);

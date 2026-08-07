@@ -214,11 +214,10 @@ function buildVariantUri(coverArtId: string, size: number, ext: string): string 
 }
 
 /**
- * Resolve the local `file://` URI for a cached cover variant — the async,
- * DB-authoritative replacement for the old synchronous in-memory index. Reads
- * the cover's rows off the JS thread (`getCachedImagesForCoverArtAsync`) and
- * builds the deterministic path. No in-memory index, no synchronous FS/SQLite:
- * the DB is the single source of truth and render resolves into state.
+ * Resolve the local `file://` URI for a cached cover variant. Reads the cover's rows
+ * off the JS thread (`getCachedImagesForCoverArtAsync`) and builds the deterministic
+ * path. No in-memory index, no synchronous FS/SQLite: the DB is the single source of
+ * truth and render resolves into state.
  *
  * `sourceFallback` returns the 600px source URI when the requested smaller
  * variant isn't cached yet (the server served the original but the resize
@@ -242,9 +241,9 @@ export async function resolveCachedImageUri(
 
 /**
  * Which variant sizes a cover has on disk, per the DB — the source of truth for
- * download/skip decisions (`needed`, all-cached, still-missing). Async, off the
- * JS thread. Replaces the old `getCachedImageUri`-against-`uriCache` checks that
- * could skip a size when the in-memory index was transiently stale at boot.
+ * download/skip decisions (`needed`, all-cached, still-missing). Async, off the JS
+ * thread. Never decide these from an in-memory index: one that is transiently stale
+ * at boot silently skips a size.
  */
 async function cachedSizesForCover(coverArtId: string): Promise<Set<number>> {
   const rows = await getCachedImagesForCoverArtAsync(coverArtId);
@@ -260,15 +259,10 @@ async function cachedSizesForCover(coverArtId: string): Promise<Set<number>> {
  * lands a new file on disk, every subscriber for that coverArtId is
  * notified so it can re-derive its cached URI.
  *
- * Motivation: CachedImage instances on the home screen sometimes "give
- * up" on a flaky cover after two server errors and sit on the
- * placeholder. Later, the same coverArtId may successfully download via
- * a different code path — e.g. the user navigates to the album-detail
- * hero which retriggers cacheAllSizes from a fresh CachedImage mount,
- * and that attempt succeeds (server-side transient cleared). Without
- * the subscription, the placeholder card has no way to learn about the
- * new file landing on disk. With it, the card auto-refreshes as soon
- * as any subsequent download completes for its coverArtId.
+ * A `CachedImage` gives up on a flaky cover after two server errors and sits on the
+ * placeholder. The same coverArtId often lands later via another code path (an
+ * album-detail hero remounting and retriggering `cacheAllSizes`), and without this
+ * registry the placeholder card has no way to learn the file arrived.
  */
 const cacheUpdateListeners = new Map<string, Set<() => void>>();
 
@@ -925,10 +919,9 @@ function ensureCacheDir(): Directory {
  * variant generation, then re-queue every cover-art ID that's missing
  * one or more size variants on disk.
  *
- * The "incomplete" check used to walk every subdirectory; it now runs
- * as one SQL query (`findIncompleteCovers`). The `.tmp` sweep still
- * walks — `.tmp` files aren't in the DB by design, and a full tree
- * walk catches any that accumulated before the DB row was written.
+ * The "incomplete" check is one SQL query (`findIncompleteCovers`). The `.tmp`
+ * sweep still walks the tree: `.tmp` files are never in the DB by design, so a
+ * walk is the only way to catch ones written before their DB row.
  *
  * Exposed to the UI as the "Repair" action (settings-storage card +
  * image-cache browser row badge); also fires automatically at launch
@@ -1675,11 +1668,9 @@ async function generateResizedVariant(
   try {
     await resizeImageToFileAsync(sourceUri, tmpFile.uri, size, RESIZE_COMPRESS);
 
-    // Capture the size off tmpFile BEFORE the move. Reading dest.size
-    // after move worked OK with the sync moveSync, but capturing here
-    // is robust to either move/moveSync ordering and survives a
-    // refactor that swaps the sync variant for the async one (the bug
-    // that produced 0-byte upserts pre-fix).
+    // Capture the size off tmpFile BEFORE the move, never off `dest` after it —
+    // reading the destination is sensitive to move/moveSync ordering and yields
+    // 0-byte upserts when it loses that race.
     const fileBytes = tmpFile.size;
 
     if (await existsAsync(dest.uri)) {
@@ -1706,12 +1697,10 @@ async function generateResizedVariant(
   } catch (e) {
     const next = (variantFailureCount.get(coverArtId) ?? 0) + 1;
     variantFailureCount.set(coverArtId, next);
-    // Phase 1 diagnostics — capture source-side context on every resize
-    // failure so we can pin down the actual offending format from user
-    // logs without another instrumentation round-trip. Gated by the
-    // image-cache logging flag (see imageCacheLogger). The native
-    // modules emit their own decode-path information via the thrown
-    // error message when their low-level fallbacks kick in.
+    // Capture source-side context on every resize failure so the offending format
+    // is identifiable from a user's logs. Gated by the image-cache logging flag
+    // (see imageCacheLogger); the native modules add their own decode-path detail
+    // to the thrown error message when their low-level fallbacks kick in.
     let sourceBytes = -1;
     let sourceExt = 'unknown';
     try {
@@ -1769,10 +1758,8 @@ export interface ImageCacheStats {
 }
 
 /**
- * Pull cache statistics directly from SQL aggregates. Previously walked
- * the whole `{image-cache}/` tree on every launch; now it's a single
- * indexed scan. Returns `Promise` only to preserve the existing async
- * contract for callers.
+ * Pull cache statistics from SQL aggregates — one indexed scan, never a walk of the
+ * `{image-cache}/` tree. Async only to keep the existing caller contract.
  */
 export async function getImageCacheStats(): Promise<ImageCacheStats> {
   const agg = (await hydrateImageCacheAggregatesAsync());
@@ -2048,11 +2035,9 @@ function hydrateCachedItemsForRecache(): {
 /* ------------------------------------------------------------------ */
 
 /**
- * Scalar cycle metadata persisted via kvStorage. The queue rows live in
- * SQL; only the cycle's denominator (`total`), identity (`cycleId`), and
- * pause flag survive separately so the UI can show "X / Y" and so the
- * worker can short-circuit when the user has paused. Phase 3 wraps these
- * accessors in `imageDownloadQueueStore` for store-friendly consumption.
+ * Scalar cycle metadata persisted via kvStorage. The queue rows live in SQL; only
+ * the cycle's denominator (`total`), identity (`cycleId`) and pause flag survive
+ * separately, so the UI can show "X / Y" and the worker can short-circuit on pause.
  */
 const IMAGE_QUEUE_META_KEY = 'substreamer-image-queue-meta';
 
@@ -2119,12 +2104,10 @@ export interface ImageQueueState {
 }
 
 /**
- * One-shot snapshot of every consumer-relevant queue field. Replaces the
- * three-getter dance (isImageQueuePaused + getImageQueueCycle +
- * getImageQueueCycleProgress) so the store only takes one read per refresh
- * and there's a single place to add new fields. The "processed" derivation
- * is: anything not 'queued' OR 'downloading' counts as attempted; errored
- * rows are attempted-and-failed, not still-in-queue.
+ * One-shot snapshot of every consumer-relevant queue field, so the store takes one
+ * read per refresh and new fields have a single home. `processed` counts anything
+ * not 'queued' or 'downloading' as attempted; errored rows are attempted-and-failed,
+ * not still-in-queue.
  */
 export async function getImageQueueState(): Promise<ImageQueueState> {
   const meta = readImageQueueMeta();
@@ -2183,18 +2166,16 @@ function notifyImageQueueChange(): void {
 /* ----- Worker ----- */
 
 /**
- * The currently-running worker promise, or null if no worker is active.
- * Held so re-entrant callers (and test code) can `await processImageQueue()`
- * and reliably wait for the drain to finish — matches the test-ergonomic
- * shape we want without breaking the fire-and-forget call sites.
+ * The currently-running worker promise, or null if no worker is active. Held so
+ * re-entrant callers (and tests) can `await processImageQueue()` and reliably wait
+ * for the drain, without breaking the fire-and-forget call sites.
  */
 let imageWorkerPromise: Promise<void> | null = null;
 
 /**
- * Debounced aggregate recalc — replaces the per-image `recalculateFromDb()`
- * call that historically caused the Settings UI flicker. A 750ms window
- * with force-flush at cycle end means a 200-image cycle goes from 200
- * SQL aggregate queries to a handful.
+ * Debounced aggregate recalc. Recalculating per image flickers the Settings UI; a
+ * 750ms window with a force-flush at cycle end takes a 200-image cycle from 200 SQL
+ * aggregate queries to a handful.
  */
 let recalcTimer: ReturnType<typeof setTimeout> | null = null;
 function scheduleAggregateRecalc(): void {

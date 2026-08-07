@@ -4,7 +4,7 @@
  * Shared by the Home screen (`src/screens/home.tsx`) and the CarPlay / Android
  * Auto browse tree (`headlessMediaService`) so both agree exactly, especially offline.
  *
- * Rules (mirrors the historical inline `home.tsx` logic):
+ * Rules:
  * - Online, unfiltered: Recently Added / Recently Played / Frequently Played /
  *   Random, in that order.
  * - `downloadedOnly`: prepend a **Downloaded Albums** list (every downloaded
@@ -49,8 +49,8 @@ export interface ComposeHomeInput {
   /** Downloaded album ids — used when `downloadedOnly`. The MEMBERSHIP set from
    *  `listDownloadedAlbumIds` (`cached_items` alone, partial gate already applied by the
    *  caller): the albums here came from elsewhere and already carry their metadata, so an
-   *  item row is all "downloaded" means. Keeping this a plain set is what keeps this
-   *  function pure and synchronous while the read behind it is SQL. */
+   *  item row is all "downloaded" means. A plain set keeps this function pure and
+   *  synchronous while the read behind it is SQL. */
   downloadedAlbumIds: ReadonlySet<string>;
 }
 

@@ -63,9 +63,9 @@ export function tokenize(input: string | null | undefined): string[] {
 
 /**
  * Per-token Double-Metaphone primary codes from an ALREADY-normalized string
- * (whitespace-separated tokens). Skips the re-normalize — a caller that already
- * holds a `norm_*` value derives its phonetic key for free (this was ~80% of the
- * per-row dmeta cost, measured). Empty codes (non-Latin tokens) are excluded.
+ * (whitespace-separated tokens). Skipping the re-normalize is most of the per-row
+ * dmeta cost, so a caller holding a `norm_*` value gets its phonetic key nearly free.
+ * Empty codes (non-Latin tokens) are excluded.
  */
 export function metaphoneKeyFromNormalized(normalized: string): string {
   if (!normalized) return '';

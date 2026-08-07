@@ -75,8 +75,8 @@ interface MigrationTask {
 /**
  * Every `album_details` row parsed into the `{ album, retrievedAt }` shape
  * Migrations 18/19/20 consume. Raw SQL local to the chain: the legacy blob tables
- * outlive the store-persistence module that used to wrap them, so the migrations
- * must not depend on it. Unparseable rows are skipped, like the reader it replaces.
+ * outlive the store-persistence module that wrapped them, so the migrations must not
+ * depend on it. Unparseable rows are skipped.
  */
 function readAlbumDetailRows(): Record<string, { album: any; retrievedAt: number }> {
   const out: Record<string, { album: any; retrievedAt: number }> = {};

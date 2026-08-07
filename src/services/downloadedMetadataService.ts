@@ -1,10 +1,9 @@
 /**
  * Re-cache metadata (album/playlist detail) + cover art for DOWNLOADED items.
  *
- * Downloads are meant to carry their own metadata (see the download flow in
- * `musicCacheService`), so offline is just a filtered view over cached data.
- * This pass repairs downloaded items whose detail/art is missing (e.g. the
- * 8.0.89 on-demand-detail regression) and backs the proactive migration + the
+ * Downloads carry their own metadata (see the download flow in `musicCacheService`),
+ * so offline is just a filtered view over cached data. This pass repairs downloaded
+ * items whose detail/art is missing, and backs both the proactive migration and the
  * manual "Refresh downloaded metadata" settings button.
  *
  * - `missing`: only fetch detail that isn't already cached (cheap; migration).
@@ -103,20 +102,18 @@ export async function refreshDownloadedMetadata(opts: {
       },
       { concurrency: CONCURRENCY },
     );
-    // Covers are prefetched by `fetchAlbum`/`fetchPlaylist` (prefetchCovers:true)
-    // onto imageCacheService's self-draining in-memory download queue, so they
-    // land without an explicit drain here — and they're purge-protected +
-    // reconcile-recached + backfilled, so an in-flight cover survives an app
-    // kill. We report done on DETAIL presence (measured below), not covers.
+    // Covers go onto imageCacheService's self-draining download queue, so they land
+    // without an explicit drain here, and they're purge-protected + reconcile-recached
+    // + backfilled so an in-flight cover survives an app kill. Done is reported on
+    // DETAIL presence (measured below), not covers.
   } finally {
     downloadedMetadataRefreshStore.getState().finish();
   }
 
-  // Measure what's STILL missing from actual store presence (not fetch return
-  // values — `fetchAlbum` resolves null on a timeout/error without throwing).
-  // `remaining < attempted` ⇒ progress was made; `=== attempted` ⇒ the
-  // stragglers keep failing. The backfill caller uses this to resume-until-
-  // complete across launches without looping forever on unfetchable items.
+  // Measure what's STILL missing from actual presence, not fetch return values —
+  // `fetchAlbum` resolves null on a timeout/error without throwing. The backfill caller
+  // uses this to resume-until-complete across launches without looping forever on
+  // unfetchable items.
   const albumTaskIds = tasks.filter((t) => t.kind === 'album').map((t) => t.id);
   const playlistTaskIds = tasks.filter((t) => t.kind === 'playlist').map((t) => t.id);
   const albumsHaveAfter = db ? await albumIdsWithSongs(db, albumTaskIds) : new Set<string>();

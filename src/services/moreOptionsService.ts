@@ -173,11 +173,10 @@ export async function removeItemFromQueue(index: number): Promise<void> {
 /**
  * Build a "more like this" play queue for a given source song.
  *
- * Many Subsonic servers (Navidrome in particular) lean on last.fm
- * metadata for `getSimilarSongs`, so the result is often just 2-3 tracks
- * for less-popular artists — way short of the user's list-length setting.
- * To keep the queue useful we top up via a layered fallback chain,
- * stopping as soon as we reach the target:
+ * Many Subsonic servers (Navidrome in particular) lean on last.fm metadata for
+ * `getSimilarSongs`, so the result is often just 2-3 tracks for a less-popular
+ * artist — well short of the user's list-length setting. Top up via a layered
+ * fallback chain, stopping as soon as the target is reached:
  *
  *   1. `getSimilarSongs(id)`          — per-song similarity (highest signal)
  *   2. `getSimilarSongs2(artistId)`   — artist-level similarity
@@ -186,8 +185,6 @@ export async function removeItemFromQueue(index: number): Promise<void> {
  *
  * Each layer is deduped against the running set (and the source song),
  * preserving layer order so the highest-signal tracks play first.
- *
- * Exported for unit tests. Used by `playMoreLikeThis`.
  */
 async function buildMoreLikeThisQueue(
   source: Child,
@@ -327,11 +324,10 @@ async function fetchAllArtistSongs(
   artistId: string,
   artistName: string,
 ): Promise<Child[] | null> {
-  // Both callers show the processing overlay, then immediately await this
-  // function. Yield one tick so that overlay frame paints before the
-  // synchronous offline flatMap/filter (or the online flat().filter()) below
-  // blocks the JS thread on a prolific artist's discography. setTimeout, not
-  // rAF — rAF can stall on RN 0.85/Fabric.
+  // Both callers show the processing overlay then immediately await this function,
+  // so yield one tick to let that overlay frame paint: the flatMap/filter below
+  // blocks the JS thread on a prolific artist's discography. setTimeout, not rAF —
+  // rAF can stall on Fabric.
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   const offline = offlineModeStore.getState().offlineMode;

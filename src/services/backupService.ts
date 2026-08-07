@@ -414,7 +414,7 @@ export async function restoreBackup(
   // Yield once so the caller's "restoring" spinner paints a frame before the
   // synchronous JSON.parse of the (potentially multi-MB) scrobble blob and the
   // O(n) buildAggregates/buildStats inside replaceAll/mergeAll block the JS
-  // thread. setTimeout, not rAF (rAF can stall on RN 0.85/Fabric).
+  // thread. setTimeout, not rAF — rAF can stall on Fabric.
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   if (entry.scrobbleCount > 0) {
