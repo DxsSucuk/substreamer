@@ -318,6 +318,9 @@ export function fetchArtistTopSongs(
         ratingStore.getState().reconcileRatings(
           top.map((sg) => ({ id: sg.id, serverRating: sg.userRating ?? 0 })),
         );
+        // Songs before membership. `artist_top_songs` FKs only to `artists` — a top song
+        // need not be in the library — so the order is convention, not enforcement. Each
+        // write is atomic on its own; the pair is not, and a refetch repairs a torn run.
         if (top.length > 0) await upsertSongs(db, top, undefined, articles());
         await setArtistTopSongs(db, id, top.map((sg) => sg.id), { listLength: size });
         bumpDetailChanged('artist', id);
@@ -455,6 +458,8 @@ export async function fetchPlaylistDetail(
     if (db) {
       const entry = data.entry ?? [];
       await upsertPlaylists(db, [data], undefined, articles());
+      // Songs before membership — see the artist top-songs write. `playlist_songs` FKs
+      // only to `playlists`, so nothing enforces the order.
       if (entry.length > 0) await upsertSongs(db, entry, undefined, articles());
       await setPlaylistSongs(db, id, entry.map((e) => e.id));
       bumpDetailChanged('playlist', id);
