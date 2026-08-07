@@ -307,7 +307,9 @@ Save every non-trivial plan to `plans/` (gitignored) before implementation begin
 
 ### Commits
 
-Short, factual subject lines. **No** preamble, recap, ceremonial summaries. **No** mentions of test counts, coverage %, TS/lint status unless the commit is specifically about those. **No** attribution trailers — `Co-Authored-By`, `Signed-off-by`, "Generated with", "🤖", tool credits — ever, in any commit, full stop. Only commit when explicitly asked.
+Short, factual subject lines. **No** preamble, recap, ceremonial summaries. **No** mentions of test counts, coverage %, TS/lint status unless the commit is specifically about those. **No** attribution trailers — `Co-Authored-By`, `Signed-off-by`, "Generated with", "🤖", tool credits — ever, in any commit, full stop.
+
+**Local commits are allowed; pushing is not.** When working through an approved plan, commit each step at a gate-green boundary — that is what makes the work resumable and reviewable step by step. **Never `git push`, open a PR, or publish anything to a remote without explicit approval**, every time; approval to commit is never approval to push. Outside an approved plan, ask before committing.
 
 **Closing issues:** to close a GitHub issue, put `Closes #N` **in the commit message** — it auto-closes when the commit is pushed. This is the ONLY way to close an issue. **Never** run `gh issue close` manually. When the user says "close the ticket with the commit message" (or "close #N with the commit"), they mean literally add `Closes #N` to the commit message — not close it by hand. "Commit" still means commit locally and stop (never push unless told); the issue closes later when the commit is pushed, which is fine — do not manually close it in the meantime.
 
@@ -321,7 +323,13 @@ Prefer Symdex MCP server (when available) over Glob/Grep for symbol lookup, file
 
 - Editing `android/` or `ios/` directly — generated, will be lost.
 - `expo run:android` / `expo run:ios` directly — use `npm run android` / `npm run ios` (they handle env setup and emulator). Direct `./gradlew` invocations are fine when you've sourced `scripts/env-android.sh` first.
-- Lazy `require()` inside store actions — architectural smell; restructure.
+- Lazy `require()` of project code — **anywhere**, not just store actions: services, components,
+  migrations, all of it. It hides a cycle from the compiler instead of fixing it, defeats typing
+  (the destructured binding is `any` unless hand-cast), and hides a real dependency from the test
+  graph. If there is a cycle, **re-architect to remove it**; a lazy require is never the answer.
+  If the blocker is a test-environment gap (a native module with no Jest bridge), mock it in the
+  SUITE — production code does not carry workarounds for test wiring. Only exceptions: RN static
+  assets (`require('../assets/x.png')`, the required idiom) and `jest.mock` factories.
 - Brand-gating (`Build.MANUFACTURER` checks) in native code — prefer generic dispatch.
 - `String.prototype.localeCompare(...)` — use `defaultCollator` / `baseCollator` from `src/utils/intl.ts`. Hermes Android ARM64 has a perf bug (#867) cloning a fresh ICU collator per call. CI guards via `validate-intl.js`.
 - `new Intl.DateTimeFormat(...)` — use `getDateTimeFormat(locale, options)` from `src/utils/intl.ts`. Same reason; same guard.
@@ -330,7 +338,7 @@ Prefer Symdex MCP server (when available) over Glob/Grep for symbol lookup, file
 - Raw `<Image>` for Subsonic cover art — `<CachedImage>`.
 - FlatList-only props on FlashList (`estimatedItemSize`, `windowSize`, etc.).
 - Author tags in commits.
-- Committing without explicit user request.
+- Pushing to a remote, opening a PR, or publishing anything outward without explicit approval — every time. Local commits at gate-green step boundaries are fine (see Commits).
 
 ---
 
@@ -375,6 +383,8 @@ Prefer Symdex MCP server (when available) over Glob/Grep for symbol lookup, file
 When the user corrects your approach, append a one-line rule here before ending the session. Write it concretely ("Always use X for Y"), never abstractly ("be careful with Y"). If an existing line already covers the correction, tighten it instead of adding a new one. Remove lines when the underlying issue goes away (model upgrades, refactors, process changes).
 
 - **Never defer a pre-existing defect you find on the way.** If work uncovers a bug in shipped code, it goes in scope and gets its own commit. Do not relay a subagent's "out of scope" as if it were settled.
+- **Don't soften a rule to fit what the code does.** A lazy `require()` in a service was described as "adjacent to the rule" because the rule said "store actions"; it was a breach. When shipped code violates the *rationale* of a rule, the finding is a breach and the rule's wording is what needs fixing.
+- **A comment explaining why a smell is necessary is a claim, not evidence.** Three of the four lazy requires cited cycles or test needs; `madge` found no cycle at any of them. Verify the justification before preserving the workaround.
 - **Fix native-layer inconsistencies in native code**, not with JS workarounds.
 - **Verify a subagent's findings yourself** before acting on them, and before reporting them as fact. They are frequently right and occasionally confidently wrong.
 - **Run sub-agents one at a time** on multi-phase work — protects context and avoids conflicting edits.
