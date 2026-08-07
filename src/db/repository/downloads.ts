@@ -189,9 +189,18 @@ export interface DownloadedSongRow {
   id: string;
   title: string;
   artist: string | null;
-  /** `cached_songs.album_id` is the file's DIRECTORY, not `Child.albumId` — the server's
-   *  album lives in `src_album_id`. Carried across as-is because the map walk did the
-   *  same; correcting it belongs with the enrichment follow-up. */
+  /**
+   * The SERVER's album — `src_album_id`, NOT `cached_songs.album_id`.
+   *
+   * `album_id` is the file's DIRECTORY (`_unknown` when the server gave none); both
+   * `schema.ts` and `CachedSongRow` say so outright. The map walk this read replaces
+   * projected the directory into `Child.albumId` regardless, so every downloaded song in
+   * the Songs filter carried a directory id where consumers expect an album id — and
+   * `Child.albumId` is what "go to album", album-mode cover art and navigation all read.
+   *
+   * Falls back to `album_id` when `src_album_id` is NULL: that column post-dates some
+   * rows, and for those the directory is still the only answer there is.
+   */
   album_id: string;
   duration: number;
   cover_art: string | null;
@@ -205,7 +214,8 @@ export interface DownloadedSongRow {
  */
 export async function listDownloadedSongs(db: InternalDb): Promise<DownloadedSongRow[]> {
   return db.getAllAsync<DownloadedSongRow>(
-    'SELECT "song_id" AS "id", "title", "artist", "album_id", "duration", "cover_art" ' +
+    'SELECT "song_id" AS "id", "title", "artist", ' +
+      'COALESCE("src_album_id", "album_id") AS "album_id", "duration", "cover_art" ' +
       'FROM cached_songs',
   );
 }

@@ -9,6 +9,8 @@ import {
   listDownloadedAlbums,
   listDownloadedPlaylistIds,
   listDownloadedPlaylists,
+  listDownloadedSongs,
+  downloadedSongRowToChild,
   listDownloadedPlaylistsAsPlaylist,
   partialGate,
 } from '../downloads';
@@ -294,5 +296,63 @@ describe('the shared predicates', () => {
 
     const starredDownloaded = await listAllStarredAlbums(db(), { downloadedOnly: true });
     expect(starredDownloaded.map((a) => a.id)).toEqual([...(await listDownloadedAlbumIds(db()))]);
+  });
+});
+
+/** A downloaded song with an explicit directory vs server-album split. `srcAlbumId: null`
+ *  is a row written before `src_album_id` existed. */
+const seedSongWithAlbums = (
+  id: string,
+  dirAlbumId: string,
+  srcAlbumId: string | null,
+): void => {
+  db().runSync(
+    'INSERT INTO cached_songs (song_id, album_id, src_album_id, suffix, bytes, ' +
+      'format_captured_at, downloaded_at, title, artist, duration, cover_art) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, dirAlbumId, srcAlbumId, 'mp3', 1, 0, 0, `Song ${id}`, 'The Artist', 100, `co-${id}`],
+  );
+};
+
+describe('listDownloadedSongs', () => {
+  it('projects exactly the six fields the song rows render', async () => {
+    seedSongWithAlbums('s1', 'dir-1', 'srv-1');
+    const rows = await listDownloadedSongs(db());
+    expect(rows).toHaveLength(1);
+    // Exact shape: widening this is a deliberate follow-up, not a drive-by.
+    expect(Object.keys(rows[0]).sort()).toEqual(
+      ['album_id', 'artist', 'cover_art', 'duration', 'id', 'title'].sort(),
+    );
+  });
+
+  it('adapts to the Child the song rows render', async () => {
+    seedSongWithAlbums('s1', 'dir-1', 'srv-1');
+    expect(downloadedSongRowToChild((await listDownloadedSongs(db()))[0])).toEqual({
+      id: 's1',
+      title: 'Song s1',
+      artist: 'The Artist',
+      albumId: 'srv-1',
+      duration: 100,
+      coverArt: 'co-s1',
+      isDir: false,
+    });
+  });
+
+  // `cached_songs.album_id` is the file's DIRECTORY; the server's album is `src_album_id`
+  // (schema.ts and CachedSongRow both say so). The map walk this read replaced projected the
+  // directory into `Child.albumId`, which is what "go to album" and album-mode cover art read.
+  it('uses the SERVER album, not the file directory', async () => {
+    seedSongWithAlbums('s1', 'dir-1', 'srv-1');
+    expect((await listDownloadedSongs(db()))[0].album_id).toBe('srv-1');
+  });
+
+  it('falls back to the directory when the server album is unknown', async () => {
+    // Rows predating `src_album_id`: the directory is the only answer there is.
+    seedSongWithAlbums('s1', 'dir-1', null);
+    expect((await listDownloadedSongs(db()))[0].album_id).toBe('dir-1');
+  });
+
+  it('is empty when nothing is downloaded', async () => {
+    expect(await listDownloadedSongs(db())).toEqual([]);
   });
 });
