@@ -11,13 +11,13 @@ import {
   type AlbumListRow,
 } from '../db/repository/albums';
 import { type Cursor } from '../db/repository/core';
+import { listDownloadedAlbumsAsAlbumID3 } from '../db/repository/downloads';
 import { listAllStarredAlbums } from '../db/repository/favorites';
 import { getDb } from '../store/persistence/db';
 import { favoritesStore } from '../store/favoritesStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { serverInfoStore } from '../store/serverInfoStore';
-import { downloadedAlbumsFromCache } from '../store/persistence/cachedItemHelpers';
 import { sortAlbumsByPreference } from '../utils/librarySort';
 import type { AlbumID3 } from '../services/subsonicService';
 
@@ -152,10 +152,10 @@ function KeysetAlbumList({ layout, contentInsetTop }: { layout: AlbumLayout; con
   );
 }
 
-/** Downloaded/favorites filters read BOUNDED sources — favourites straight from SQL
- *  (marked library rows + the `favorite_albums` remainder), downloaded rebuilt from each
- *  `cached_items` self-cached envelope (never-reaped, offline-safe) — never the (paged)
- *  library table. Sorted to match the main list's A-Z scroller. */
+/** Downloaded/favorites filters read BOUNDED sources straight from SQL — favourites from
+ *  the marked library rows plus the `favorite_albums` remainder, downloaded from the
+ *  `cached_items` ⋈ `cached_albums` download tables (never-reaped, offline-safe) — never
+ *  the (paged) library table. Sorted to match the main list's A-Z scroller. */
 function FilteredAlbumList({
   layout,
   downloadedOnly,
@@ -167,7 +167,9 @@ function FilteredAlbumList({
   favoritesOnly: boolean;
   contentInsetTop: number;
 }) {
-  const cachedItems = musicCacheStore((s) => s.cachedItems);
+  // `revision` is the download tables' change signal: SQL has no Zustand subscription, so
+  // without it a download completing under the user leaves this list silently stale.
+  const revision = musicCacheStore((s) => s.revision);
   const version = favoritesStore((s) => s.version);
   const includePartial = layoutPreferencesStore((s) => s.includePartialInDownloadedFilter);
   const sortOrder = layoutPreferencesStore((s) => s.albumSortOrder);
@@ -197,13 +199,34 @@ function FilteredAlbumList({
     };
   }, [favoritesOnly, downloadedOnly, includePartial, version, starredKey]);
 
+  const [downloadedAlbums, setDownloadedAlbums] = useState<AlbumID3[]>([]);
+  const [downloadedLoadedKey, setDownloadedLoadedKey] = useState<string | null>(null);
+  const downloadedKey = `${includePartial}:${revision}`;
+  // DERIVED for the same reason as `starredLoading` above — this read is asynchronous now,
+  // so a mount-time seed would leave one empty-and-not-loading frame on the way in AND on
+  // every Favourites toggle-off, both of which flash "No albums found".
+  const downloadedLoading = !favoritesOnly && downloadedLoadedKey !== downloadedKey;
+  useEffect(() => {
+    if (favoritesOnly) return;
+    let alive = true;
+    void (async () => {
+      const db = getDb();
+      const list = db ? await listDownloadedAlbumsAsAlbumID3(db, { includePartial }) : [];
+      if (alive) {
+        setDownloadedAlbums(list);
+        setDownloadedLoadedKey(downloadedKey);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [favoritesOnly, includePartial, revision, downloadedKey]);
+
   const filteredAlbums = useMemo(() => {
     const articles = serverInfoStore.getState().ignoredArticles ?? undefined;
-    const list: AlbumID3[] = favoritesOnly
-      ? starredAlbums
-      : downloadedAlbumsFromCache(cachedItems, includePartial);
+    const list: AlbumID3[] = favoritesOnly ? starredAlbums : downloadedAlbums;
     return sortAlbumsByPreference(list, sortOrder, articles);
-  }, [favoritesOnly, cachedItems, starredAlbums, includePartial, sortOrder]);
+  }, [favoritesOnly, starredAlbums, downloadedAlbums, sortOrder]);
 
   const [refreshing, setRefreshing] = useState(false);
   const handleRefresh = useCallback(async () => {
@@ -219,7 +242,7 @@ function FilteredAlbumList({
     <AlbumListView
       albums={filteredAlbums}
       layout={layout}
-      loading={starredLoading}
+      loading={starredLoading || downloadedLoading}
       onRefresh={handleRefresh}
       refreshing={refreshing}
       showAlphabetScroller

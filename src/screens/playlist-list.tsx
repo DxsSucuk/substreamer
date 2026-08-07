@@ -14,15 +14,16 @@ import {
   type PlaylistListRow,
 } from '../db/repository/playlists';
 import { type Cursor } from '../db/repository/core';
+import { listDownloadedPlaylistsAsPlaylist } from '../db/repository/downloads';
 import { getDb } from '../store/persistence/db';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { refreshPlaylistLibrary } from '../services/normalizedLibrarySync';
 import { syncStatusStore } from '../store/syncStatusStore';
 import { serverInfoStore } from '../store/serverInfoStore';
-import { downloadedPlaylistsFromCache } from '../store/persistence/cachedItemHelpers';
 import { sortPlaylistsByName } from '../utils/librarySort';
 import { type IoniconsName } from '../utils/iconNames';
+import type { Playlist } from '../services/subsonicService';
 
 const PAGE = 120;
 /** Alphabet-scroller letters — all active in keyset mode (the loaded window can't
@@ -194,8 +195,9 @@ function KeysetPlaylistList({
   );
 }
 
-/** Downloaded filter reads the BOUNDED cache — the downloaded playlists rebuilt from each
- *  `cached_items` self-cached envelope (never-reaped, offline-safe), not the paged library. */
+/** Downloaded filter reads the BOUNDED download tables straight from SQL
+ *  (`cached_items` ⋈ `cached_playlists`, never-reaped and offline-safe), not the paged
+ *  library. No partial gate: playlists download atomically. */
 function FilteredPlaylistList({
   layout,
   contentInsetTop,
@@ -205,12 +207,35 @@ function FilteredPlaylistList({
   contentInsetTop: number;
   emptyProps: EmptyProps;
 }) {
-  const cachedItems = musicCacheStore((s) => s.cachedItems);
+  // `revision` is the download tables' change signal: SQL has no Zustand subscription, so
+  // without it a download completing under the user leaves this list silently stale.
+  const revision = musicCacheStore((s) => s.revision);
+
+  const [playlists, setPlaylists] = useState<Playlist[]>([]);
+  const [loadedRevision, setLoadedRevision] = useState<number | null>(null);
+  // DERIVED, not seeded — see the note in `album-library-list.tsx`. The read is
+  // asynchronous, so a mount-time seed leaves one empty-and-not-loading frame that
+  // flashes the "no playlists" placeholder.
+  const loading = loadedRevision !== revision;
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      const db = getDb();
+      const list = db ? await listDownloadedPlaylistsAsPlaylist(db) : [];
+      if (alive) {
+        setPlaylists(list);
+        setLoadedRevision(revision);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [revision]);
 
   const filteredPlaylists = useMemo(() => {
     const articles = serverInfoStore.getState().ignoredArticles ?? undefined;
-    return sortPlaylistsByName(downloadedPlaylistsFromCache(cachedItems), articles);
-  }, [cachedItems]);
+    return sortPlaylistsByName(playlists, articles);
+  }, [playlists]);
 
   const [refreshing, setRefreshing] = useState(false);
   const handleRefresh = useCallback(async () => {
@@ -226,7 +251,7 @@ function FilteredPlaylistList({
     <PlaylistListView
       playlists={filteredPlaylists}
       layout={layout}
-      loading={false}
+      loading={loading}
       onRefresh={handleRefresh}
       refreshing={refreshing}
       showAlphabetScroller

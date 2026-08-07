@@ -2,7 +2,7 @@ import Ionicons from "@react-native-vector-icons/ionicons/static";
 import { useIsFocused } from "expo-router/react-navigation";
 import { FlashList } from '@shopify/flash-list';
 import { useRouter } from 'expo-router';
-import { Fragment, useCallback, useEffect, useMemo, useRef } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Pressable,
   ScrollView,
@@ -32,6 +32,11 @@ import { useTheme } from '../hooks/useTheme';
 import type { AlbumID3, Playlist } from '../services/subsonicService';
 import { composeHomeAlbumSections } from '../services/homeSectionsService';
 import {
+  listDownloadedAlbumsAsAlbumID3,
+  listDownloadedPlaylistsAsPlaylist,
+} from '../db/repository/downloads';
+import { getDb } from '../store/persistence/db';
+import {
   albumListsStore,
   type AlbumListType,
 } from '../store/albumListsStore';
@@ -44,10 +49,6 @@ import { musicCacheStore } from '../store/musicCacheStore';
 import { LIST_LENGTH_DISPLAY_CAP } from '../store/layoutPreferencesStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { serverInfoStore } from '../store/serverInfoStore';
-import {
-  downloadedAlbumsFromCache,
-  downloadedPlaylistsFromCache,
-} from '../store/persistence/cachedItemHelpers';
 import { sortAlbumsByPreference, sortPlaylistsByName } from '../utils/librarySort';
 import { searchStore } from '../store/searchStore';
 
@@ -236,9 +237,13 @@ function AlbumSection({
 function DownloadedAlbumSection({
   albums,
   colors,
+  loading,
 }: {
   albums: AlbumID3[];
   colors: ReturnType<typeof useTheme>['colors'];
+  /** The SQL read is in flight — hold the placeholder back rather than claim "nothing
+   *  downloaded" before the answer is known. */
+  loading: boolean;
 }) {
   const { t } = useTranslation();
   const renderItem = useCallback(
@@ -255,7 +260,9 @@ function DownloadedAlbumSection({
         {t('downloadedAlbums')}
       </Text>
       {albums.length === 0 ? (
-        <SectionPlaceholder message={t('downloadAlbumsOffline')} colors={colors} />
+        loading ? null : (
+          <SectionPlaceholder message={t('downloadAlbumsOffline')} colors={colors} />
+        )
       ) : (
         <FlashList
           data={albums}
@@ -275,9 +282,12 @@ function DownloadedAlbumSection({
 function PlaylistSection({
   playlists,
   colors,
+  loading,
 }: {
   playlists: Playlist[];
   colors: ReturnType<typeof useTheme>['colors'];
+  /** See `DownloadedAlbumSection` — same in-flight guard. */
+  loading: boolean;
 }) {
   const { t } = useTranslation();
   const renderItem = useCallback(
@@ -294,7 +304,9 @@ function PlaylistSection({
         {t('downloadedPlaylists')}
       </Text>
       {playlists.length === 0 ? (
-        <SectionPlaceholder message={t('downloadPlaylistsOffline')} colors={colors} />
+        loading ? null : (
+          <SectionPlaceholder message={t('downloadPlaylistsOffline')} colors={colors} />
+        )
       ) : (
         <FlashList
           data={playlists}
@@ -386,21 +398,53 @@ export function HomeScreen() {
   const downloadedOnly = filterBarStore((s) => s.downloadedOnly);
   const favoritesOnly = filterBarStore((s) => s.favoritesOnly);
   const cachedItems = musicCacheStore((s) => s.cachedItems);
+  // `revision` is the download tables' change signal. The two reads below are SQL now, and
+  // SQL has no Zustand subscription — without this a completing download would leave both
+  // Downloaded sections silently stale.
+  const revision = musicCacheStore((s) => s.revision);
   const starredAlbumIds = favoritesStore((s) => s.albumIds);
   const includePartial = layoutPreferencesStore((s) => s.includePartialInDownloadedFilter);
   const albumSortOrder = layoutPreferencesStore((s) => s.albumSortOrder);
 
-  // The Downloaded Albums list comes from the never-reaped `cached_items` envelopes
-  // (bounded, offline-safe), sorted to match the album list — not the paged library.
+  // The Downloaded sections come from the never-reaped download tables (bounded,
+  // offline-safe), not the paged library. One effect for both: they share a trigger, and
+  // a single loading flag keeps the two sections and the whole-screen empty state from
+  // disagreeing about whether the answer is known yet.
+  const [downloadedAlbumRows, setDownloadedAlbumRows] = useState<AlbumID3[]>([]);
+  const [downloadedPlaylistRows, setDownloadedPlaylistRows] = useState<Playlist[]>([]);
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  const downloadedKey = `${includePartial}:${revision}`;
+  // DERIVED, not seeded (see `album-library-list.tsx`): a mount-time seed only runs once,
+  // so turning the Downloaded filter on later would render one empty-and-not-loading frame
+  // and flash "No downloaded music" over the whole screen.
+  const downloadedLoading = downloadedOnly && loadedKey !== downloadedKey;
+  useEffect(() => {
+    if (!downloadedOnly) return;
+    let alive = true;
+    void (async () => {
+      const db = getDb();
+      const [albums, playlists] = db
+        ? await Promise.all([
+            listDownloadedAlbumsAsAlbumID3(db, { includePartial }),
+            listDownloadedPlaylistsAsPlaylist(db),
+          ])
+        : [[], []];
+      if (!alive) return;
+      setDownloadedAlbumRows(albums);
+      setDownloadedPlaylistRows(playlists);
+      setLoadedKey(downloadedKey);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [downloadedOnly, includePartial, revision, downloadedKey]);
+
+  // Sorted outside the effect so changing the album sort order doesn't re-run the read.
   const downloadedAlbums = useMemo(() => {
     if (!downloadedOnly) return [];
     const articles = serverInfoStore.getState().ignoredArticles ?? undefined;
-    return sortAlbumsByPreference(
-      downloadedAlbumsFromCache(cachedItems, includePartial),
-      albumSortOrder,
-      articles,
-    );
-  }, [downloadedOnly, cachedItems, includePartial, albumSortOrder]);
+    return sortAlbumsByPreference(downloadedAlbumRows, albumSortOrder, articles);
+  }, [downloadedOnly, downloadedAlbumRows, albumSortOrder]);
 
   // Which album lists appear (order + downloaded/favorites filtering + offline
   // drop-Random + Downloaded Albums) is owned by the shared homeSectionsService
@@ -438,15 +482,18 @@ export function HomeScreen() {
   const hasAnyFilters = downloadedOnly || favoritesOnly;
 
   const downloadedPlaylists = useMemo(() => {
+    // Playlists download atomically (no partial state), so the read carries no gate; sorted
+    // A-Z here. Never-reaped source, independent of the paged library.
     if (!downloadedOnly) return [];
-    // Playlists download atomically (no partial state) — rebuild from their self-cached
-    // envelopes, sorted A-Z. Never-reaped source, independent of the paged library.
     const articles = serverInfoStore.getState().ignoredArticles ?? undefined;
-    return sortPlaylistsByName(downloadedPlaylistsFromCache(cachedItems), articles);
-  }, [downloadedOnly, cachedItems]);
+    return sortPlaylistsByName(downloadedPlaylistRows, articles);
+  }, [downloadedOnly, downloadedPlaylistRows]);
 
   const offlineEmpty = useMemo(() => {
     if (!downloadedOnly) return false;
+    // "Nothing downloaded" is only true once the reads have answered — otherwise entering
+    // the filter replaces the whole screen with the empty state for a frame.
+    if (downloadedLoading) return false;
     const hasDownloadedAlbums = albumSections.some(
       (s) => s.type === 'downloadedAlbums' && s.albums.length > 0,
     );
@@ -454,7 +501,7 @@ export function HomeScreen() {
     return albumSections
       .filter((s) => s.type !== 'downloadedAlbums')
       .every((s) => s.albums.length === 0);
-  }, [downloadedOnly, albumSections, downloadedPlaylists]);
+  }, [downloadedOnly, downloadedLoading, albumSections, downloadedPlaylists]);
 
   return (
     <View style={styles.container}>
@@ -584,8 +631,16 @@ export function HomeScreen() {
               // immediately followed by the downloaded-playlists section.
               return (
                 <Fragment key={section.type}>
-                  <DownloadedAlbumSection albums={section.albums} colors={colors} />
-                  <PlaylistSection playlists={downloadedPlaylists} colors={colors} />
+                  <DownloadedAlbumSection
+                    albums={section.albums}
+                    colors={colors}
+                    loading={downloadedLoading}
+                  />
+                  <PlaylistSection
+                    playlists={downloadedPlaylists}
+                    colors={colors}
+                    loading={downloadedLoading}
+                  />
                 </Fragment>
               );
             }
