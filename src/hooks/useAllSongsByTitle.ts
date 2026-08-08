@@ -1,23 +1,22 @@
 import { useEffect, useState } from 'react';
 
-import { downloadedSongRowToChild, listDownloadedSongs } from '../db/repository/downloads';
+import { listDownloadedSongs, type DownloadedSongRow } from '../db/repository/downloads';
 import { getDb } from '../store/persistence/db';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import { musicCacheStore } from '../store/musicCacheStore';
-import type { Child } from '../services/subsonicService';
 
 interface UseAllSongsByTitleOpts {
   downloadedOnly?: boolean;
 }
 
 interface UseAllSongsByTitleResult {
-  songs: Child[];
+  rows: DownloadedSongRow[];
   totalCount: number;
   loading: boolean;
   refresh: () => void;
 }
 
-const EMPTY: Child[] = [];
+const EMPTY: DownloadedSongRow[] = [];
 
 /**
  * Songs for the DOWNLOADED filter view, read straight from the never-reaped
@@ -25,6 +24,9 @@ const EMPTY: Child[] = [];
  * keys the main browse list's keyset uses, under the user's song sort order. Only that
  * filter uses this hook: the main A–Z browse pages the DB directly, and the favourites
  * filter reads SQL (`listAllStarredSongs`).
+ *
+ * Returns the ROWS, not envelopes: the list view converts one row per rendered row, and
+ * the row carries the `sort_*` key the A–Z scroller letters on.
  */
 export function useAllSongsByTitle(opts: UseAllSongsByTitleOpts = {}): UseAllSongsByTitleResult {
   const downloadedOnly = opts.downloadedOnly === true;
@@ -34,7 +36,7 @@ export function useAllSongsByTitle(opts: UseAllSongsByTitleOpts = {}): UseAllSon
   const revision = musicCacheStore((s) => s.revision);
   const sortOrder = layoutPreferencesStore((s) => s.songSortOrder);
 
-  const [songs, setSongs] = useState<Child[]>(EMPTY);
+  const [rows, setRows] = useState<DownloadedSongRow[]>(EMPTY);
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
   // DERIVED, not seeded — the read runs in an effect, i.e. after the first frame is on
   // screen, and `SongListView` falls through to "No songs found" on any empty frame that
@@ -51,9 +53,9 @@ export function useAllSongsByTitle(opts: UseAllSongsByTitleOpts = {}): UseAllSon
     let alive = true;
     void (async () => {
       const db = getDb();
-      const rows = db ? await listDownloadedSongs(db, { sortOrder }) : [];
+      const next = db ? await listDownloadedSongs(db, { sortOrder }) : [];
       if (alive) {
-        setSongs(rows.map(downloadedSongRowToChild));
+        setRows(next);
         setLoadedKey(wantedKey);
       }
     })();
@@ -65,8 +67,8 @@ export function useAllSongsByTitle(opts: UseAllSongsByTitleOpts = {}): UseAllSon
   // Nothing to re-fetch: the source is the local download tables, and every write to them
   // bumps `revision`, which re-runs the effect above.
   return {
-    songs: downloadedOnly ? songs : EMPTY,
-    totalCount: downloadedOnly ? songs.length : 0,
+    rows: downloadedOnly ? rows : EMPTY,
+    totalCount: downloadedOnly ? rows.length : 0,
     loading,
     refresh: () => {},
   };

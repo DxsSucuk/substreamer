@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
-import { AlbumListView, albumIdentity, type AlbumLayout } from '../components/AlbumListView';
+import { AlbumListView, type AlbumLayout } from '../components/AlbumListView';
 import { onPullToRefresh } from '../services/dataSyncService';
 import {
   albumCursorOf,
@@ -12,8 +12,13 @@ import {
   type AlbumListRow,
 } from '../db/repository/albums';
 import { type Cursor } from '../db/repository/core';
-import { listDownloadedAlbums } from '../db/repository/downloads';
-import { listAllStarredAlbums } from '../db/repository/favorites';
+import { downloadedAlbumSortKey, listDownloadedAlbums } from '../db/repository/downloads';
+import {
+  listAllStarredAlbums,
+  starredItemOf,
+  starredSortKeyOf,
+  type StarredItem,
+} from '../db/repository/favorites';
 import { getDb } from '../store/persistence/db';
 import { favoritesStore } from '../store/favoritesStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
@@ -174,7 +179,7 @@ function FilteredAlbumList({
   const includePartial = layoutPreferencesStore((s) => s.includePartialInDownloadedFilter);
   const sortOrder = layoutPreferencesStore((s) => s.albumSortOrder);
 
-  const [starredAlbums, setStarredAlbums] = useState<AlbumID3[]>([]);
+  const [starredAlbums, setStarredAlbums] = useState<StarredItem<AlbumID3>[]>([]);
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
   // `sortOrder` is part of the key because the ORDER BY is now the DB's: changing the
   // preference has to re-read, not re-sort what we hold.
@@ -235,6 +240,14 @@ function FilteredAlbumList({
     }
   }, []);
 
+  // The key the DOWNLOADED read ordered by, so the scroller letters on it rather than
+  // re-deriving one from the envelope. Memoised: a fresh arrow per render would recompute
+  // the whole letter set every time.
+  const downloadedSortKeyOf = useCallback(
+    (r: AlbumListRow) => downloadedAlbumSortKey(r, sortOrder),
+    [sortOrder],
+  );
+
   const viewProps = {
     layout,
     loading: starredLoading || downloadedLoading,
@@ -254,9 +267,19 @@ function FilteredAlbumList({
   // updates the instance rather than remounting it — which is what the derived loading
   // flags above depend on.
   return favoritesOnly ? (
-    <AlbumListView items={starredAlbums} toAlbum={albumIdentity} {...viewProps} />
+    <AlbumListView
+      items={starredAlbums}
+      toAlbum={starredItemOf}
+      sortKeyOf={starredSortKeyOf}
+      {...viewProps}
+    />
   ) : (
-    <AlbumListView items={downloadedRows} toAlbum={albumListRowToAlbumID3} {...viewProps} />
+    <AlbumListView
+      items={downloadedRows}
+      toAlbum={albumListRowToAlbumID3}
+      sortKeyOf={downloadedSortKeyOf}
+      {...viewProps}
+    />
   );
 }
 

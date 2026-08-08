@@ -14,7 +14,17 @@ import {
   type SongListRow,
 } from '../db/repository/songs';
 import { type Cursor } from '../db/repository/core';
-import { listAllStarredSongs } from '../db/repository/favorites';
+import {
+  downloadedSongRowToChild,
+  downloadedSongSortKey,
+  type DownloadedSongRow,
+} from '../db/repository/downloads';
+import {
+  listAllStarredSongs,
+  starredItemOf,
+  starredSortKeyOf,
+  type StarredItem,
+} from '../db/repository/favorites';
 import { getDb } from '../store/persistence/db';
 import { favoritesStore } from '../store/favoritesStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
@@ -54,8 +64,6 @@ function KeysetSongList({
   const doneRef = useRef(false);
   const busyRef = useRef(false);
   const sortOrder = layoutPreferencesStore((s) => s.songSortOrder);
-
-  const songs = useMemo(() => rows.map(songListRowToChild), [rows]);
 
   const loadFirstPage = useCallback(async () => {
     busyRef.current = true;
@@ -143,7 +151,8 @@ function KeysetSongList({
 
   return (
     <SongListView
-      songs={songs}
+      items={rows}
+      toSong={songListRowToChild}
       layout={layout}
       loading={initialLoading}
       showAlphabetScroller
@@ -178,12 +187,12 @@ function FilteredSongList({
   contentInsetTop: number;
 }) {
   const { t } = useTranslation();
-  const { songs: downloaded, refresh, loading } = useAllSongsByTitle({
+  const { rows: downloadedRows, refresh, loading } = useAllSongsByTitle({
     downloadedOnly: downloadedOnly && !favoritesOnly,
   });
   const version = favoritesStore((s) => s.version);
   const sortOrder = layoutPreferencesStore((s) => s.songSortOrder);
-  const [starred, setStarred] = useState<Child[]>([]);
+  const [starred, setStarred] = useState<StarredItem<Child>[]>([]);
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
   // `sortOrder` is part of the key because the ORDER BY is now the DB's: changing the
   // preference has to re-read, not re-sort what we hold.
@@ -207,8 +216,6 @@ function FilteredSongList({
     };
   }, [favoritesOnly, downloadedOnly, version, sortOrder, starredKey]);
 
-  const songs = favoritesOnly ? starred : downloaded;
-
   const [refreshing, setRefreshing] = useState(false);
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -219,22 +226,47 @@ function FilteredSongList({
     }
   }, [refresh]);
 
-  return (
+  // The key the DOWNLOADED read ordered by, so the scroller letters on it rather than
+  // re-deriving one from the envelope. Memoised: a fresh arrow per render would recompute
+  // the whole letter set every time.
+  const downloadedSortKeyOf = useCallback(
+    (r: DownloadedSongRow) => downloadedSongSortKey(r, sortOrder),
+    [sortOrder],
+  );
+
+  const viewProps = {
+    layout,
+    onRefresh: handleRefresh,
+    refreshing,
+    onSongPress: handleSongPress,
+    showAlphabetScroller: true,
+    scrollToTopTrigger: `${downloadedOnly}:${favoritesOnly}`,
+    contentInsetTop,
+    // This component only exists under a filter, so an empty result here always means
+    // "the filter removed everything" — never "your library is empty". The unfiltered
+    // list (`KeysetSongList`) keeps the "No songs found" copy.
+    emptyMessage: t('noMatchesForFilters'),
+    emptySubtitle: t('tryAdjustingFilters'),
+  };
+
+  // Both branches render the same component in the same slot, so switching filters
+  // updates the instance rather than remounting it — which is what the derived loading
+  // flags above depend on.
+  return favoritesOnly ? (
     <SongListView
-      songs={songs}
-      layout={layout}
-      loading={favoritesOnly ? starredLoading : loading}
-      onRefresh={handleRefresh}
-      refreshing={refreshing}
-      onSongPress={handleSongPress}
-      showAlphabetScroller
-      scrollToTopTrigger={`${downloadedOnly}:${favoritesOnly}`}
-      contentInsetTop={contentInsetTop}
-      // This component only exists under a filter, so an empty result here always means
-      // "the filter removed everything" — never "your library is empty". The unfiltered
-      // list (`KeysetSongList`) keeps the "No songs found" copy.
-      emptyMessage={t('noMatchesForFilters')}
-      emptySubtitle={t('tryAdjustingFilters')}
+      items={starred}
+      toSong={starredItemOf}
+      sortKeyOf={starredSortKeyOf}
+      loading={starredLoading}
+      {...viewProps}
+    />
+  ) : (
+    <SongListView
+      items={downloadedRows}
+      toSong={downloadedSongRowToChild}
+      sortKeyOf={downloadedSortKeyOf}
+      loading={loading}
+      {...viewProps}
     />
   );
 }

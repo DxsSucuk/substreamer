@@ -10,7 +10,7 @@ jest.mock('../../services/playerService', () => ({ playTrack: (...a: unknown[]) 
 
 // The list views are exercised by their own suites; stub them down to the props under test.
 let songProps: {
-  songs: { id: string }[];
+  items: { id: string }[];
   onEndReached?: () => void;
   onSongPress?: (s: unknown) => void;
   showAlphabetScroller?: boolean;
@@ -55,8 +55,8 @@ const renderList = () =>
 describe('StarredSongList', () => {
   it('renders the merged first page, newest favourite first', async () => {
     renderList();
-    await waitFor(() => expect(songProps.songs).toHaveLength(3));
-    expect(songProps.songs.map((s) => s.id)).toEqual(['lib-a', 'rem-a', 'lib-b']);
+    await waitFor(() => expect(songProps.items).toHaveLength(3));
+    expect(songProps.items.map((s) => s.id)).toEqual(['lib-a', 'rem-a', 'lib-b']);
   });
 
   it('appends the next page on loadMore, across both halves', async () => {
@@ -68,47 +68,47 @@ describe('StarredSongList', () => {
       rows.map((r, i) => ({ id: r.id, starredAt: 10_000 - i })),
     );
     renderList();
-    await waitFor(() => expect(songProps.songs).toHaveLength(120));
+    await waitFor(() => expect(songProps.items).toHaveLength(120));
 
     await act(async () => {
       songProps.onEndReached?.();
     });
-    await waitFor(() => expect(songProps.songs.length).toBeGreaterThan(120));
+    await waitFor(() => expect(songProps.items.length).toBeGreaterThan(120));
   });
 
   it('reloads when the membership version bumps', async () => {
     renderList();
-    await waitFor(() => expect(songProps.songs).toHaveLength(3));
+    await waitFor(() => expect(songProps.items).toHaveLength(3));
 
     db().runSync("DELETE FROM songs WHERE id='lib-b'");
     await act(async () => {
       favoritesStore.setState({ version: 1 });
     });
-    await waitFor(() => expect(songProps.songs).toHaveLength(2));
+    await waitFor(() => expect(songProps.items).toHaveLength(2));
   });
 
   it('moves a newly starred track to the top when the version bumps', async () => {
     renderList();
-    await waitFor(() => expect(songProps.songs).toHaveLength(3));
+    await waitFor(() => expect(songProps.items).toHaveLength(3));
 
     await upsertSongs(db(), [song('fresh')]);
     await markStarredSongs(db(), [{ id: 'fresh', starredAt: 9_000 }]);
     await act(async () => {
       favoritesStore.setState({ version: 1 });
     });
-    await waitFor(() => expect(songProps.songs).toHaveLength(4));
-    expect(songProps.songs[0].id).toBe('fresh');
+    await waitFor(() => expect(songProps.items).toHaveLength(4));
+    expect(songProps.items[0].id).toBe('fresh');
   });
 
   it('renders no A–Z scroller — the order is recency, not the alphabet', async () => {
     renderList();
-    await waitFor(() => expect(songProps.songs).toHaveLength(3));
+    await waitFor(() => expect(songProps.items).toHaveLength(3));
     expect(songProps.showAlphabetScroller).toBeFalsy();
   });
 
   it('queues the WHOLE favourites list from a tapped row, starting at that row', async () => {
     renderList();
-    await waitFor(() => expect(songProps.songs).toHaveLength(3));
+    await waitFor(() => expect(songProps.items).toHaveLength(3));
 
     await act(async () => {
       songProps.onSongPress?.(song('lib-b'));
@@ -121,7 +121,7 @@ describe('StarredSongList', () => {
 
   it('falls back to the single song when the tapped id is no longer starred', async () => {
     renderList();
-    await waitFor(() => expect(songProps.songs).toHaveLength(3));
+    await waitFor(() => expect(songProps.items).toHaveLength(3));
 
     await act(async () => {
       songProps.onSongPress?.(song('gone'));
@@ -138,7 +138,7 @@ describe('StarredSongList', () => {
       ['rem-a', 'a1', 'mp3', 1, 0, 0, 'T', 10],
     );
     render(<StarredSongList downloadedOnly includePartial={false} />);
-    await waitFor(() => expect(songProps.songs.map((s) => s.id)).toEqual(['rem-a']));
+    await waitFor(() => expect(songProps.items.map((s) => s.id)).toEqual(['rem-a']));
   });
 
   it('queues ONLY downloaded tracks under the downloaded filter', async () => {
@@ -156,7 +156,7 @@ describe('StarredSongList', () => {
       ['lib-b', 'a1', 'mp3', 1, 0, 0, 'T', 10],
     );
     render(<StarredSongList downloadedOnly includePartial={false} />);
-    await waitFor(() => expect(songProps.songs.map((s) => s.id)).toEqual(['rem-a', 'lib-b']));
+    await waitFor(() => expect(songProps.items.map((s) => s.id)).toEqual(['rem-a', 'lib-b']));
 
     await act(async () => {
       songProps.onSongPress?.(song('lib-b'));

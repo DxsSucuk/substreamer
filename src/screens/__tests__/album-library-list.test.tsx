@@ -7,6 +7,7 @@ jest.mock('../../store/persistence/kvStorage', () =>
  *  the assertion. */
 interface AlbumRender {
   items: { id: string }[];
+  sortKeyOf?: (item: { id: string }) => string;
   loading?: boolean;
   emptyMessage?: string;
   emptySubtitle?: string;
@@ -42,7 +43,7 @@ import { upsertCachedItem } from '../../store/persistence/musicCacheTables';
 import { favoritesStore } from '../../store/favoritesStore';
 import { layoutPreferencesStore } from '../../store/layoutPreferencesStore';
 import { musicCacheStore } from '../../store/musicCacheStore';
-import { getSortFirstLetter } from '../../utils/sortHelpers';
+import { letterOfSortKey } from '../../utils/sortHelpers';
 import { AlbumLibraryListScreen } from '../album-library-list';
 
 const db = () => getDb()!;
@@ -382,8 +383,10 @@ describe('AlbumLibraryListScreen — the downloaded filter sort order', () => {
     await seedSorted('dl-ivy', 'Ivy');
     render(<AlbumLibraryListScreen downloadedOnly />);
     await waitFor(() => expect(latest().items).toHaveLength(3));
-    // Between G and I, exactly where `getSortFirstLetter('"Heroes"')` → 'H' points.
+    // Between G and I, and the scroller says so: the letter is `charAt(0)` of the key
+    // the row was ordered by, so `"Heroes"` files under H rather than in `#`.
     expect(latest().items.map((a) => a.id)).toEqual(['dl-gh', 'dl-heroes', 'dl-ivy']);
-    expect(getSortFirstLetter('"Heroes"')).toBe('H');
+    const keyOf = latest().sortKeyOf!;
+    expect(latest().items.map((a) => letterOfSortKey(keyOf(a)))).toEqual(['G', 'H', 'I']);
   });
 });

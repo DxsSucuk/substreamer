@@ -18,23 +18,85 @@ import { AlphabetScroller } from './AlphabetScroller';
 import { EmptyState } from './EmptyState';
 import { type IoniconsName } from '../utils/iconNames';
 import { InsetRefreshSpacer } from './InsetRefreshSpacer';
-import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
-import { serverInfoStore } from '../store/serverInfoStore';
+import { playTrack } from '../services/playerService';
 import type { Child } from '../services/subsonicService';
-import { getSortFirstLetter } from '../utils/sortHelpers';
+import { letterOfSortKey } from '../utils/sortHelpers';
 import { SongCard } from './SongCard';
 import { closeOpenRow } from './SwipeableRow';
 import { TrackRow } from './TrackRow';
 
+import type { ThemeColors } from '../constants/theme';
+
 export type SongLayout = 'list' | 'grid';
+
+/** `toSong` for consumers that already hold envelopes. Module-level so its identity is
+ *  stable: a fresh arrow per render would re-run every visible row's conversion. */
+export const songIdentity = (song: Child): Child => song;
+
+/* ------------------------------------------------------------------ */
+/*  Per-row adapters                                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One rendered row, converted. The conversion is memoised on the item object, so
+ * appending a page converts the appended rows only — the accumulated array is never
+ * re-mapped, and the screen holds no second array of envelopes.
+ */
+function SongListItem<T>({
+  item,
+  toSong,
+  colors,
+  onPress,
+}: {
+  item: T;
+  toSong: (item: T) => Child;
+  colors: ThemeColors;
+  onPress: (song: Child) => void;
+}) {
+  const song = useMemo(() => toSong(item), [item, toSong]);
+  const handlePress = useCallback(() => onPress(song), [onPress, song]);
+  return <TrackRow track={song} colors={colors} onPress={handlePress} showCoverArt showAlbumName />;
+}
+
+function SongGridItem<T>({
+  item,
+  toSong,
+  onPress,
+  index,
+  columns,
+}: {
+  item: T;
+  toSong: (item: T) => Child;
+  onPress: (song: Child) => void;
+  index: number;
+  columns: number;
+}) {
+  const song = useMemo(() => toSong(item), [item, toSong]);
+  const handlePress = useCallback(() => onPress(song), [onPress, song]);
+  const { paddingLeft, paddingRight } = getGridItemPadding(index, columns, GRID_GAP);
+  return (
+    <View style={{ flex: 1, paddingLeft, paddingRight, marginBottom: GRID_GAP }}>
+      <SongCard song={song} onPress={handlePress} />
+    </View>
+  );
+}
 
 /* ------------------------------------------------------------------ */
 /*  SongListView                                                      */
 /* ------------------------------------------------------------------ */
 
-export interface SongListViewProps {
-  /** The list of songs to display */
-  songs: Child[];
+export interface SongListViewProps<T extends { id: string }> {
+  /** The items to display — whatever the screen holds: SQL browse rows, envelopes. */
+  items: T[];
+  /** Adapts one item to the `Child` the row and card components take. Must be stable
+   *  across renders (module-level, or memoised at the consumer). */
+  toSong: (item: T) => Child;
+  /** The key this list is ORDERED BY, read off the item. The A–Z scroller's letter is
+   *  derived from it (`letterOfSortKey`) rather than recomputed from the envelope, so
+   *  the letter a row files under is by construction the one it sorts at.
+   *  Required only when the scroller computes its own letters — the keyset lists supply
+   *  `activeLetters` and seek in SQL, and the favourites tab has no A–Z order at all. */
+  sortKeyOf?: (item: T) => string;
   /** Display layout: row list or grid of cards */
   layout?: SongLayout;
   /** Whether data is currently loading */
@@ -59,7 +121,7 @@ export interface SongListViewProps {
   listHeaderExtra?: ReactNode;
   /** Render the A–Z alphabet scroller on the right edge (list layout only) */
   showAlphabetScroller?: boolean;
-  /** Tap handler override. Defaults to `playTrack(song, songs)`. */
+  /** Tap handler override. Defaults to `playTrack(song, <the whole list>)`. */
   onSongPress?: (song: Child) => void;
   // ── Keyset paging (bounded window from the normalized DB). Optional: array-based
   //    consumers omit these. ──
@@ -71,12 +133,14 @@ export interface SongListViewProps {
    *  loaded array. */
   onSeekLetter?: (letter: string) => void;
   /** The full set of active alphabet letters — the loaded window can't reveal them
-   *  all, so the screen supplies it. Falls back to computing from `songs`. */
+   *  all, so the screen supplies it. Falls back to computing from `items`. */
   activeLetters?: Set<string>;
 }
 
-export function SongListView({
-  songs,
+export function SongListView<T extends { id: string }>({
+  items,
+  toSong,
+  sortKeyOf,
   layout = 'list',
   loading = false,
   error = null,
@@ -94,7 +158,7 @@ export function SongListView({
   onStartReached,
   onSeekLetter,
   activeLetters: activeLettersProp,
-}: SongListViewProps) {
+}: SongListViewProps<T>) {
   const { t } = useTranslation();
   const { colors } = useTheme();
   const resolvedEmptyMessage = emptyMessage ?? t('noSongsFound');
@@ -102,7 +166,7 @@ export function SongListView({
   const gridColumns = useGridColumns();
   const scrollY = useSharedValue(0);
   const refreshControlKey = useRefreshControlKey();
-  const listRef = useRef<FlashListRef<Child>>(null);
+  const listRef = useRef<FlashListRef<T>>(null);
 
   const handleScroll = useCallback(
     (e: { nativeEvent: { contentOffset: { y: number } } }) => {
@@ -113,65 +177,57 @@ export function SongListView({
 
   const listKey = scrollToTopTrigger ? `${layout}:${scrollToTopTrigger}` : layout;
 
+  // The default tap plays the whole list. The queue is built HERE, at press time, rather
+  // than held as a parallel envelope array: the per-row adapter is the only conversion
+  // this view makes per render.
+  const handlePress = useCallback(
+    (song: Child) => {
+      if (onSongPress) {
+        onSongPress(song);
+        return;
+      }
+      void playTrack(song, items.map(toSong));
+    },
+    [onSongPress, items, toSong],
+  );
+
   const renderListItem = useCallback(
-    ({ item }: { item: Child }) => (
-      <TrackRow
-        track={item}
-        colors={colors}
-        songs={songs}
-        onPress={onSongPress ? () => onSongPress(item) : undefined}
-        showCoverArt
-        showAlbumName
-      />
+    ({ item }: { item: T }) => (
+      <SongListItem item={item} toSong={toSong} colors={colors} onPress={handlePress} />
     ),
-    [colors, songs, onSongPress]
+    [colors, toSong, handlePress]
   );
 
   const renderGridItem = useCallback(
-    ({ item, index }: { item: Child; index: number }) => {
-      const { paddingLeft, paddingRight } = getGridItemPadding(index, gridColumns, GRID_GAP);
-      return (
-        <View
-          style={{
-            flex: 1,
-            paddingLeft,
-            paddingRight,
-            marginBottom: GRID_GAP,
-          }}
-        >
-          <SongCard
-            song={item}
-            songs={songs}
-            onPress={onSongPress ? () => onSongPress(item) : undefined}
-          />
-        </View>
-      );
-    },
-    [songs, onSongPress, gridColumns]
+    ({ item, index }: { item: T; index: number }) => (
+      <SongGridItem
+        item={item}
+        toSong={toSong}
+        onPress={handlePress}
+        index={index}
+        columns={gridColumns}
+      />
+    ),
+    [toSong, handlePress, gridColumns]
   );
 
   /* ---- Alphabet scroller support ---- */
-  const scrollerVisible = showAlphabetScroller && songs.length > 0;
-  const songSortOrder = layoutPreferencesStore((s) => s.songSortOrder);
-  const ignoredArticles = serverInfoStore((s) => s.ignoredArticles);
+  const scrollerVisible = showAlphabetScroller && items.length > 0;
 
-  /** Compute the scroller letter for a song, mirroring the article-stripped sort
-   *  key stored in the DB (`sort_title` / `sort_artist`) so the section letter is
-   *  coherent with where the song actually sorts. */
-  const getLetter = useCallback(
-    (s: Child): string =>
-      songSortOrder === 'artist'
-        ? getSortFirstLetter(s.artist ?? s.title ?? '', undefined, ignoredArticles ?? undefined)
-        : getSortFirstLetter(s.title ?? '', s.sortName, ignoredArticles ?? undefined),
-    [songSortOrder, ignoredArticles],
+  /** The scroller letter for an item — the first character of the SAME key the list is
+   *  ordered by, and nothing else. `null` when the consumer supplies no key, which is
+   *  every list that has no alphabetical order to file rows under. */
+  const getLetter = useMemo(
+    () => (sortKeyOf ? (item: T): string => letterOfSortKey(sortKeyOf(item)) : null),
+    [sortKeyOf],
   );
 
+  // In keyset mode the window can't reveal every letter, so the screen supplies the full
+  // active set — and this whole-array pass would be discarded, so it is skipped.
   const computedLetters = useMemo(() => {
-    if (!scrollerVisible) return new Set<string>();
-    return new Set(songs.map(getLetter));
-  }, [songs, scrollerVisible, getLetter]);
-  // In keyset mode the window can't reveal every letter, so the screen supplies the
-  // full active set; otherwise compute it from the (whole) array.
+    if (activeLettersProp || !scrollerVisible || !getLetter) return new Set<string>();
+    return new Set(items.map(getLetter));
+  }, [activeLettersProp, items, scrollerVisible, getLetter]);
   const activeLetters = activeLettersProp ?? computedLetters;
 
   const handleLetterChange = useCallback(
@@ -182,15 +238,16 @@ export function SongListView({
         onSeekLetter(letter);
         return;
       }
-      const idx = songs.findIndex((s) => getLetter(s) === letter);
+      if (!getLetter) return;
+      const idx = items.findIndex((item) => getLetter(item) === letter);
       if (idx >= 0) {
         listRef.current?.scrollToIndex({ index: idx, animated: false });
       }
     },
-    [songs, getLetter, onSeekLetter],
+    [items, getLetter, onSeekLetter],
   );
 
-  const keyExtractor = useCallback((item: Child) => item.id, []);
+  const keyExtractor = useCallback((item: T) => item.id, []);
 
   const EmptyComponent = useMemo(
     () => (
@@ -203,7 +260,7 @@ export function SongListView({
     [emptyIcon, resolvedEmptyMessage, resolvedEmptySubtitle]
   );
 
-  if (loading && songs.length === 0) {
+  if (loading && items.length === 0) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator size="large" color={colors.primary} />
@@ -211,7 +268,7 @@ export function SongListView({
     );
   }
 
-  if (error && songs.length === 0) {
+  if (error && items.length === 0) {
     return (
       <View style={styles.centered}>
         <Text style={[styles.errorText, { color: colors.textSecondary }]}>
@@ -228,7 +285,7 @@ export function SongListView({
       <FlashList
         ref={listRef}
         key={listKey}
-        data={songs}
+        data={items}
         renderItem={isGrid ? renderGridItem : renderListItem}
         keyExtractor={keyExtractor}
         onScrollBeginDrag={closeOpenRow}
@@ -237,7 +294,7 @@ export function SongListView({
           styles.listContent,
           isGrid && styles.listContentGrid,
           scrollerVisible && styles.listContentWithScroller,
-          songs.length === 0 && styles.emptyListContent,
+          items.length === 0 && styles.emptyListContent,
         ]}
         onScroll={contentInsetTop > 0 && Platform.OS === 'ios' ? handleScroll : undefined}
         scrollEventThrottle={contentInsetTop > 0 && Platform.OS === 'ios' ? 16 : undefined}

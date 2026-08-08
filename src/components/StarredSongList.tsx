@@ -3,12 +3,12 @@ import { useCallback, useEffect, useRef, type ReactNode } from 'react';
 import { getDb } from '../store/persistence/db';
 import { favoritesStore } from '../store/favoritesStore';
 import { musicCacheStore } from '../store/musicCacheStore';
-import { listAllStarredSongs, starredSongsPage } from '../db/repository/favorites';
+import { listAllStarredSongs, starredItemOf, starredSongsPage } from '../db/repository/favorites';
 import { useKeysetList } from '../hooks/useKeysetList';
 import { playTrack } from '../services/playerService';
 import type { Cursor } from '../db/repository/core';
 import type { Child } from '../services/subsonicService';
-import { SongListView, type SongLayout } from './SongListView';
+import { SongListView, songIdentity, type SongLayout } from './SongListView';
 
 const PAGE = 120;
 
@@ -87,7 +87,9 @@ export function StarredSongList({
     (song: Child) => {
       void (async () => {
         const db = getDb();
-        const list = db ? await listAllStarredSongs(db, { downloadedOnly, includePartial }) : [];
+        const list = db
+          ? (await listAllStarredSongs(db, { downloadedOnly, includePartial })).map(starredItemOf)
+          : [];
         const i = list.findIndex((s) => s.id === song.id);
         if (i < 0) {
           void playTrack(song, [song]);
@@ -101,7 +103,8 @@ export function StarredSongList({
 
   return (
     <SongListView
-      songs={rows}
+      items={rows}
+      toSong={songIdentity}
       layout={layout}
       loading={initialLoading || loading}
       error={error}

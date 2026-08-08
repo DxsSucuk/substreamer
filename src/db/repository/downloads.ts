@@ -112,6 +112,20 @@ const albumOrderBy = (sortOrder?: AlbumSortOrder): string =>
     ? 'ca."sort_artist", ca."sort_title", ca."item_id"'
     : 'ca."sort_title", ca."item_id"';
 
+/**
+ * The key a returned row was ORDERED BY — the leading column of the tuple above, read
+ * back off the row. The A–Z scroller derives its letter from this and nothing else, so
+ * it lives beside the `ORDER BY` it has to agree with rather than at the consumer.
+ */
+export const downloadedAlbumSortKey = (
+  r: { sort_title: string | null; sort_artist: string | null },
+  sortOrder?: AlbumSortOrder,
+): string => (sortOrder === 'artist' ? r.sort_artist : r.sort_title) ?? '';
+
+/** The playlist counterpart — `listDownloadedPlaylists` has one order, on `sort_title`. */
+export const downloadedPlaylistSortKey = (r: { sort_title: string | null }): string =>
+  r.sort_title ?? '';
+
 /* ------------------------------------------------------------------ */
 /*  Reads                                                              */
 /* ------------------------------------------------------------------ */
@@ -177,7 +191,7 @@ export async function listDownloadedAlbumIds(
 }
 
 /**
- * A downloaded song, at the projection the Songs tab's downloaded filter renders — seven
+ * A downloaded song, at the projection the Songs tab's downloaded filter renders — nine
  * columns of the ~58 `cached_songs` holds. Widening it changes what those rows render, so
  * it needs its own verification pass.
  */
@@ -185,9 +199,14 @@ export interface DownloadedSongRow {
   id: string;
   title: string;
   artist: string | null;
-  /** Projected for the alphabet scroller alone: it recomputes the sort key in JS, and
-   *  without `sortName` it disagrees with the `sort_title` the list was ordered by. */
+  /** Part of the `Child` these rows rebuild: the library's `songListRowToChild` carries
+   *  `sortName`, and a downloaded song's envelope must not differ from it. */
   sort_name: string | null;
+  /** The keys this list is ORDERED BY. Projected, not discarded, because the A–Z
+   *  scroller's letter is derived from the key the row actually sorted on — recomputing
+   *  it from the title is the second derivation this projection used to force. */
+  sort_title: string | null;
+  sort_artist: string | null;
   /**
    * The SERVER's album — `src_album_id`, NOT `cached_songs.album_id`.
    *
@@ -218,6 +237,10 @@ const songOrderBy = (sortOrder?: SongSortOrder): string =>
     ? '"sort_artist", "sort_title", "song_id"'
     : '"sort_title", "song_id"';
 
+/** The key a returned row was ORDERED BY — see {@link downloadedAlbumSortKey}. */
+export const downloadedSongSortKey = (r: DownloadedSongRow, sortOrder?: SongSortOrder): string =>
+  (sortOrder === 'artist' ? r.sort_artist : r.sort_title) ?? '';
+
 /**
  * The DOWNLOADED songs. Bounded by what is on disk, so this is a whole-set read by design;
  * there is no cursor. `song_id` is the primary key, so ids are unique structurally.
@@ -227,7 +250,7 @@ export async function listDownloadedSongs(
   f: DownloadedSongFilter = {},
 ): Promise<DownloadedSongRow[]> {
   return db.getAllAsync<DownloadedSongRow>(
-    'SELECT "song_id" AS "id", "title", "artist", "sort_name", ' +
+    'SELECT "song_id" AS "id", "title", "artist", "sort_name", "sort_title", "sort_artist", ' +
       'COALESCE("src_album_id", "album_id") AS "album_id", "duration", "cover_art" ' +
       `FROM cached_songs ORDER BY ${songOrderBy(f.sortOrder)}`,
   );

@@ -63,13 +63,13 @@ describe('useAllSongsByTitle', () => {
   it('returns nothing when the downloaded filter is off, and never reads the table', async () => {
     seedCachedSong('s1', 'Alpha');
     const { result } = renderHook(() => useAllSongsByTitle());
-    expect(result.current.songs).toEqual([]);
+    expect(result.current.rows).toEqual([]);
     expect(result.current.totalCount).toBe(0);
     // The short-circuit is the point: the unfiltered Songs tab pages `songs` and must not
     // pay for a whole-set read of the download table.
     expect(result.current.loading).toBe(false);
     await act(async () => {});
-    expect(result.current.songs).toEqual([]);
+    expect(result.current.rows).toEqual([]);
   });
 
   it('never touches the database while the filter is off', async () => {
@@ -90,8 +90,8 @@ describe('useAllSongsByTitle', () => {
     seedCachedSong('s1', 'Zulu');
     seedCachedSong('s2', 'Alpha');
     const { result } = renderHook(() => useAllSongsByTitle({ downloadedOnly: true }));
-    await waitFor(() => expect(result.current.songs).toHaveLength(2));
-    expect(result.current.songs.map((s) => s.title)).toEqual(['Alpha', 'Zulu']);
+    await waitFor(() => expect(result.current.rows).toHaveLength(2));
+    expect(result.current.rows.map((r) => r.title)).toEqual(['Alpha', 'Zulu']);
     expect(result.current.totalCount).toBe(2);
   });
 
@@ -100,26 +100,26 @@ describe('useAllSongsByTitle', () => {
     seedCachedSong('s1', 'Alpha', { artist: 'Zebra' });
     seedCachedSong('s2', 'Zulu', { artist: 'Alpaca' });
     const { result } = renderHook(() => useAllSongsByTitle({ downloadedOnly: true }));
-    await waitFor(() => expect(result.current.songs).toHaveLength(2));
-    expect(result.current.songs.map((s) => s.id)).toEqual(['s2', 's1']);
+    await waitFor(() => expect(result.current.rows).toHaveLength(2));
+    expect(result.current.rows.map((r) => r.id)).toEqual(['s2', 's1']);
   });
 
   it('RE-READS when the preference changes — the ORDER BY is the DB\'s now', async () => {
     seedCachedSong('s1', 'Zulu', { artist: 'Alpaca' });
     seedCachedSong('s2', 'Alpha', { artist: 'Zebra' });
     const { result } = renderHook(() => useAllSongsByTitle({ downloadedOnly: true }));
-    await waitFor(() => expect(result.current.songs.map((s) => s.id)).toEqual(['s2', 's1']));
+    await waitFor(() => expect(result.current.rows.map((r) => r.id)).toEqual(['s2', 's1']));
 
     await act(async () => {
       layoutPreferencesStore.setState({ songSortOrder: 'artist' });
     });
-    await waitFor(() => expect(result.current.songs.map((s) => s.id)).toEqual(['s1', 's2']));
+    await waitFor(() => expect(result.current.rows.map((r) => r.id)).toEqual(['s1', 's2']));
   });
 
-  it('projects the seven fields the song rows render', async () => {
-    // Near-parity with the map walk this read replaced: `cached_songs` holds ~58 columns
-    // and enriching these rows is a separate, user-visible change. `sortName` is the one
-    // addition, and it exists so the alphabet scroller agrees with the ORDER BY.
+  it('returns the ROWS, keys included, not a parallel array of envelopes', async () => {
+    // The rows go straight to `SongListView`, which converts one per RENDERED row and
+    // letters the scroller off `sort_title`/`sort_artist`. A hook that mapped here would
+    // re-map the whole array on every read AND throw away the key it just ordered by.
     seedCachedSong('s1', 'Alpha', {
       artist: 'Artist A',
       albumId: 'dir-1',
@@ -128,25 +128,18 @@ describe('useAllSongsByTitle', () => {
       sortName: 'Alpha Sorted',
     });
     const { result } = renderHook(() => useAllSongsByTitle({ downloadedOnly: true }));
-    await waitFor(() => expect(result.current.songs).toHaveLength(1));
-    expect(result.current.songs[0]).toEqual({
+    await waitFor(() => expect(result.current.rows).toHaveLength(1));
+    expect(result.current.rows[0]).toEqual({
       id: 's1',
       title: 'Alpha',
       artist: 'Artist A',
-      albumId: 'dir-1',
+      album_id: 'dir-1',
       duration: 42,
-      coverArt: 'cov-1',
-      sortName: 'Alpha Sorted',
-      isDir: false,
+      cover_art: 'cov-1',
+      sort_name: 'Alpha Sorted',
+      sort_title: 'alpha sorted',
+      sort_artist: 'artist a',
     });
-  });
-
-  it('leaves the nullable columns undefined rather than null', async () => {
-    seedCachedSong('s1', 'Alpha');
-    const { result } = renderHook(() => useAllSongsByTitle({ downloadedOnly: true }));
-    await waitFor(() => expect(result.current.songs).toHaveLength(1));
-    expect(result.current.songs[0].artist).toBeUndefined();
-    expect(result.current.songs[0].coverArt).toBeUndefined();
   });
 
   it('exposes a no-op refresh (the source is the local table, not a fetch)', async () => {
@@ -162,14 +155,14 @@ describe('useAllSongsByTitle — the loading flag is real now', () => {
     const { result } = renderHook(() => useAllSongsByTitle({ downloadedOnly: true }));
     // The read runs in an effect. Without this frame reporting loading, the list view
     // renders an empty, non-loading frame and flashes "No songs found".
-    expect(result.current).toMatchObject({ songs: [], loading: true });
+    expect(result.current).toMatchObject({ rows: [], loading: true });
   });
 
   it('clears loading once the read lands, even when the set is empty', async () => {
     const { result } = renderHook(() => useAllSongsByTitle({ downloadedOnly: true }));
     expect(result.current.loading).toBe(true);
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.songs).toEqual([]);
+    expect(result.current.rows).toEqual([]);
   });
 
   it('never reports loading while the filter is off', async () => {
@@ -188,26 +181,26 @@ describe('useAllSongsByTitle — reactivity on musicCacheStore.revision', () => 
   it('re-reads when a download completes', async () => {
     const { result } = renderHook(() => useAllSongsByTitle({ downloadedOnly: true }));
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.songs).toEqual([]);
+    expect(result.current.rows).toEqual([]);
 
     seedCachedSong('s1', 'Alpha');
     // SQL has no Zustand subscription; `revision` is the only signal this read gets.
     await act(async () => {
       musicCacheStore.setState({ revision: 1 } as never);
     });
-    await waitFor(() => expect(result.current.songs.map((s) => s.id)).toEqual(['s1']));
+    await waitFor(() => expect(result.current.rows.map((r) => r.id)).toEqual(['s1']));
   });
 
   it('re-reads when a download is deleted', async () => {
     seedCachedSong('s1', 'Alpha');
     const { result } = renderHook(() => useAllSongsByTitle({ downloadedOnly: true }));
-    await waitFor(() => expect(result.current.songs).toHaveLength(1));
+    await waitFor(() => expect(result.current.rows).toHaveLength(1));
 
     db().runSync('DELETE FROM cached_songs');
     await act(async () => {
       musicCacheStore.setState({ revision: 1 } as never);
     });
-    await waitFor(() => expect(result.current.songs).toEqual([]));
+    await waitFor(() => expect(result.current.rows).toEqual([]));
   });
 
   it('keeps the previous rows on screen while the re-read is in flight', async () => {
@@ -217,17 +210,17 @@ describe('useAllSongsByTitle — reactivity on musicCacheStore.revision', () => 
     const frames: { count: number; loading: boolean }[] = [];
     const { result } = renderHook(() => {
       const r = useAllSongsByTitle({ downloadedOnly: true });
-      frames.push({ count: r.songs.length, loading: r.loading });
+      frames.push({ count: r.rows.length, loading: r.loading });
       return r;
     });
-    await waitFor(() => expect(result.current.songs).toHaveLength(1));
+    await waitFor(() => expect(result.current.rows).toHaveLength(1));
 
     seedCachedSong('s2', 'Bravo');
     frames.length = 0;
     await act(async () => {
       musicCacheStore.setState({ revision: 1 } as never);
     });
-    await waitFor(() => expect(result.current.songs).toHaveLength(2));
+    await waitFor(() => expect(result.current.rows).toHaveLength(2));
     expect(frames.filter((f) => f.count === 0)).toEqual([]);
   });
 });

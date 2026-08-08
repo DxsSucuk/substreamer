@@ -17,9 +17,7 @@ import { useTheme } from '../hooks/useTheme';
 import { EmptyState } from './EmptyState';
 import { type IoniconsName } from '../utils/iconNames';
 import type { AlbumID3 } from '../services/subsonicService';
-import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
-import { getSortFirstLetter } from '../utils/sortHelpers';
-import { serverInfoStore } from '../store/serverInfoStore';
+import { letterOfSortKey } from '../utils/sortHelpers';
 import { AlbumCard } from './AlbumCard';
 import { AlbumRow } from './AlbumRow';
 import { closeOpenRow } from './SwipeableRow';
@@ -76,6 +74,12 @@ export interface AlbumListViewProps<T extends { id: string }> {
   /** Adapts one item to the `AlbumID3` the row and card components take. Must be
    *  stable across renders (module-level, or memoised at the consumer). */
   toAlbum: (item: T) => AlbumID3;
+  /** The key this list is ORDERED BY, read off the item. The A-Z scroller's letter is
+   *  derived from it (`letterOfSortKey`) rather than recomputed from the envelope, so
+   *  the letter a row files under is by construction the one it sorts at.
+   *  Required only when the scroller computes its own letters — the keyset lists supply
+   *  `activeLetters` and seek in SQL, and the home lists have no A-Z order at all. */
+  sortKeyOf?: (item: T) => string;
   /** Display layout: row list or grid of cards */
   layout?: AlbumLayout;
   /** Whether data is currently loading */
@@ -115,6 +119,7 @@ export interface AlbumListViewProps<T extends { id: string }> {
 export function AlbumListView<T extends { id: string }>({
   items,
   toAlbum,
+  sortKeyOf,
   layout = 'list',
   loading = false,
   error = null,
@@ -176,32 +181,19 @@ export function AlbumListView<T extends { id: string }>({
 
   /* ---- Alphabet scroller support ---- */
   const scrollerVisible = showAlphabetScroller && items.length > 0;
-  const albumSortOrder = layoutPreferencesStore((s) => s.albumSortOrder);
-  const ignoredArticles = serverInfoStore((s) => s.ignoredArticles);
 
-  /** The alphabet-scroller letter for an item — the first character of the SAME key the
-   *  list is ordered by (`albums.sort_title` / `sort_artist`, see `db/sortKeys`). The
-   *  artist branch must read `displayArtist` FIRST: `sort_artist` does, so on a server
-   *  that sends both fields with different values, `artist ?? name` files the row under
-   *  a letter it does not sort at. */
-  const getLetter = useCallback(
-    (item: T): string => {
-      const a = toAlbum(item);
-      return albumSortOrder === 'title'
-        ? getSortFirstLetter(a.name ?? '', a.sortName, ignoredArticles ?? undefined)
-        : getSortFirstLetter(
-            a.displayArtist ?? a.artist ?? a.name ?? '',
-            undefined,
-            ignoredArticles ?? undefined,
-          );
-    },
-    [albumSortOrder, ignoredArticles, toAlbum],
+  /** The scroller letter for an item — the first character of the SAME key the list is
+   *  ordered by, and nothing else. `null` when the consumer supplies no key, which is
+   *  every list that has no alphabetical order to file rows under. */
+  const getLetter = useMemo(
+    () => (sortKeyOf ? (item: T): string => letterOfSortKey(sortKeyOf(item)) : null),
+    [sortKeyOf],
   );
 
   // In keyset mode the window can't reveal every letter, so the screen supplies the full
   // active set — and this whole-array pass would be discarded, so it is skipped.
   const computedLetters = useMemo(() => {
-    if (activeLettersProp || !scrollerVisible) return new Set<string>();
+    if (activeLettersProp || !scrollerVisible || !getLetter) return new Set<string>();
     return new Set(items.map((item) => getLetter(item)));
   }, [activeLettersProp, items, scrollerVisible, getLetter]);
   const activeLetters = activeLettersProp ?? computedLetters;
@@ -214,10 +206,8 @@ export function AlbumListView<T extends { id: string }>({
         onSeekLetter(letter);
         return;
       }
-      const idx = items.findIndex((item) => {
-        const first = getLetter(item);
-        return letter === '#' ? first === '#' : first === letter;
-      });
+      if (!getLetter) return;
+      const idx = items.findIndex((item) => getLetter(item) === letter);
       if (idx >= 0) {
         listRef.current?.scrollToIndex({ index: idx, animated: false });
       }

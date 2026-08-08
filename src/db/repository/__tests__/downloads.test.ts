@@ -4,7 +4,7 @@ import {
   upsertCachedSong,
   type CachedSongRow,
 } from '../../../store/persistence/musicCacheTables';
-import { getSortFirstLetter } from '../../../utils/sortHelpers';
+import { getSortKey, letterOfSortKey } from '../../../utils/sortHelpers';
 import { ensureNormalizedSchema } from '../../createNormalizedTables';
 import { albumListRowToAlbumID3, listAlbums, upsertAlbums } from '../albums';
 import { listAllStarredAlbums, markStarredAlbums } from '../favorites';
@@ -16,7 +16,10 @@ import {
   listDownloadedPlaylistIds,
   listDownloadedPlaylists,
   listDownloadedSongs,
+  downloadedAlbumSortKey,
+  downloadedPlaylistSortKey,
   downloadedSongRowToChild,
+  downloadedSongSortKey,
   partialGate,
 } from '../downloads';
 import { playlistListRowToPlaylist } from '../playlists';
@@ -268,6 +271,9 @@ describe('listDownloadedPlaylists', () => {
     const rows = await listDownloadedPlaylists(db());
     expect(rows.map((r) => r.id)).toEqual(['p-a', 'p-c']);
     expect(rows.map((r) => r.sort_title)).toEqual(['alpha', 'charlie']);
+    // The key the screen hands the scroller IS the column the ORDER BY led with.
+    expect(rows.map(downloadedPlaylistSortKey)).toEqual(['alpha', 'charlie']);
+    expect(rows.map((r) => letterOfSortKey(downloadedPlaylistSortKey(r)))).toEqual(['A', 'C']);
   });
 });
 
@@ -401,7 +407,7 @@ describe('the downloaded list and the browse list are the SAME order', () => {
     await seedBoth();
     const rows = await listDownloadedAlbums(db(), { sortOrder: 'title' });
     // `"Heroes"` under H, `(How to Live)` under H, `'74 Jailbreak` in `#`.
-    expect(rows.map((r) => getSortFirstLetter(r.name ?? ''))).toEqual([
+    expect(rows.map((r) => letterOfSortKey(downloadedAlbumSortKey(r, 'title')))).toEqual([
       '#', // '74 Jailbreak
       'A', // Abbey Road
       'E', // Élise
@@ -410,10 +416,13 @@ describe('the downloaded list and the browse list are the SAME order', () => {
       'W', // The Wall
     ]);
     // Each row's letter is `charAt(0)` of the very key it was ordered by — that is what
-    // makes an A–Z tap land on the row it points at.
+    // makes an A–Z tap land on the row it points at. The key accessor is what the screen
+    // hands the scroller, so this asserts the exact chain the list uses.
     for (const r of rows) {
-      const ch = (r.sort_title ?? '').charAt(0).toUpperCase();
-      expect(getSortFirstLetter(r.name ?? '')).toBe(/[A-Z]/.test(ch) ? ch : '#');
+      expect(downloadedAlbumSortKey(r, 'title')).toBe(r.sort_title ?? '');
+      expect(letterOfSortKey(downloadedAlbumSortKey(r, 'title'))).toBe(
+        letterOfSortKey(getSortKey(r.name ?? '')),
+      );
     }
   });
 });
@@ -440,7 +449,10 @@ describe('listDownloadedSongs', () => {
     expect(rows).toHaveLength(1);
     // Exact shape: widening this is a deliberate follow-up, not a drive-by.
     expect(Object.keys(rows[0]).sort()).toEqual(
-      ['album_id', 'artist', 'cover_art', 'duration', 'id', 'sort_name', 'title'].sort(),
+      [
+        'album_id', 'artist', 'cover_art', 'duration', 'id', 'sort_artist', 'sort_name',
+        'sort_title', 'title',
+      ].sort(),
     );
   });
 
@@ -543,32 +555,30 @@ describe('listDownloadedSongs — the sort order', () => {
     await seedSong('s-h', '"Heroes"');
     await seedSong('s-g', 'Ghosts');
     await seedSong('s-i', 'Ivy');
-    expect((await listDownloadedSongs(db())).map((r) => r.id)).toEqual(['s-g', 's-h', 's-i']);
-    expect(getSortFirstLetter('"Heroes"')).toBe('H');
+    const rows = await listDownloadedSongs(db());
+    expect(rows.map((r) => r.id)).toEqual(['s-g', 's-h', 's-i']);
+    expect(rows.map((r) => letterOfSortKey(downloadedSongSortKey(r)))).toEqual(['G', 'H', 'I']);
   });
 
-  it('projects sort_name, so the scroller letter agrees with the ORDER BY', async () => {
-    // `getSortKey` prefers a server-stripped `sortName`. Without it on the projection the
-    // scroller would recompute from the raw title and file the row under a letter the
-    // list does not put it at.
+  it('carries the key it ORDERED BY, so the scroller letter cannot disagree', async () => {
+    // The 3c defect: `getSortKey` prefers a server-stripped `sortName`, and a projection
+    // that dropped it left the scroller recomputing from the raw title — filing the row
+    // under A while the list sorts it at H. The key is projected now, so the letter is
+    // read off the same column the ORDER BY used.
     await seedSong('s-h', 'A Horse With No Name', { sortName: 'Horse With No Name' });
     await seedSong('s-g', 'Ghosts');
     await seedSong('s-i', 'Ivy');
     const rows = await listDownloadedSongs(db());
     expect(rows.map((r) => r.id)).toEqual(['s-g', 's-h', 's-i']);
-    for (const r of rows) {
-      const child = downloadedSongRowToChild(r);
-      expect(getSortFirstLetter(child.title ?? '', child.sortName)).toBe(
-        (
-          db().getFirstSync<{ sort_title: string }>(
-            'SELECT sort_title FROM cached_songs WHERE song_id = ?',
-            [r.id],
-          )?.sort_title ?? ''
-        )
-          .charAt(0)
-          .toUpperCase(),
-      );
-    }
+    expect(rows.map((r) => letterOfSortKey(downloadedSongSortKey(r)))).toEqual(['G', 'H', 'I']);
+  });
+
+  it('hands the ARTIST key under artist order, the title key otherwise', async () => {
+    await seedSong('s1', 'Zulu', { artist: 'Alpaca' });
+    const [r] = await listDownloadedSongs(db());
+    expect(downloadedSongSortKey(r, 'artist')).toBe('alpaca');
+    expect(downloadedSongSortKey(r, 'title')).toBe('zulu');
+    expect(downloadedSongSortKey(r)).toBe('zulu');
   });
 
   it('breaks a title tie on the id, so the order is total', async () => {

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
-import { ArtistListView, artistIdentity, type ArtistLayout } from '../components/ArtistListView';
+import { ArtistListView, type ArtistLayout } from '../components/ArtistListView';
 import { useFetchOnHydrated } from '../hooks/useFetchOnHydrated';
 import { onPullToRefresh } from '../services/dataSyncService';
 import {
@@ -14,7 +14,12 @@ import {
   type ArtistListRow,
 } from '../db/repository/artists';
 import { type Cursor } from '../db/repository/core';
-import { listAllStarredArtists } from '../db/repository/favorites';
+import {
+  listAllStarredArtists,
+  starredItemOf,
+  starredSortKeyOf,
+  type StarredItem,
+} from '../db/repository/favorites';
 import { getDb } from '../store/persistence/db';
 import { refreshArtistLibrary } from '../services/normalizedLibrarySync';
 import { syncStatusStore } from '../store/syncStatusStore';
@@ -203,7 +208,7 @@ function FilteredArtistList({
   const { t } = useTranslation();
   const version = favoritesStore((s) => s.version);
 
-  const [starredArtists, setStarredArtists] = useState<ArtistID3[]>([]);
+  const [starredArtists, setStarredArtists] = useState<StarredItem<ArtistID3>[]>([]);
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
   const starredKey = `${version}`;
   // DERIVED, not seeded — see the note in `album-library-list.tsx`. A mount-time seed
@@ -238,7 +243,8 @@ function FilteredArtistList({
   return (
     <ArtistListView
       items={starredArtists}
-      toArtist={artistIdentity}
+      toArtist={starredItemOf}
+      sortKeyOf={starredSortKeyOf}
       layout={layout}
       loading={starredLoading}
       onRefresh={handleRefresh}

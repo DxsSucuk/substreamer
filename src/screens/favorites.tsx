@@ -20,7 +20,7 @@ import {
   enqueueStarredSongsDownload,
   deleteStarredSongsDownload,
 } from '../services/musicCacheService';
-import { listAllStarredSongs, starredSongTotals } from '../db/repository/favorites';
+import { listAllStarredSongs, starredItemOf, starredSongTotals } from '../db/repository/favorites';
 import { isItemDownloaded } from '../db/repository/downloads';
 import { getDb } from '../store/persistence/db';
 import { filterBarStore } from '../store/filterBarStore';
@@ -238,10 +238,12 @@ export function FavoritesScreen() {
       void (async () => {
         const db = getDb();
         if (!db) return;
-        const list = await listAllStarredSongs(db, {
-          downloadedOnly: songsDownloadedOnly,
-          includePartial,
-        });
+        const list = (
+          await listAllStarredSongs(db, {
+            downloadedOnly: songsDownloadedOnly,
+            includePartial,
+          })
+        ).map(starredItemOf);
         if (list.length === 0) return;
         const queue = shuffle ? shuffleArray(list) : list;
         void playTrack(queue[0], queue);

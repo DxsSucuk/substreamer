@@ -1,6 +1,6 @@
 import type { AlbumID3, ArtistID3, Child } from 'subsonic-api';
 
-import { getSortFirstLetter } from '../../../utils/sortHelpers';
+import { getSortKey, letterOfSortKey } from '../../../utils/sortHelpers';
 import { getDb } from '../../../store/persistence/db';
 import { ensureNormalizedSchema } from '../../createNormalizedTables';
 import { setSortArticles } from '../../sortArticles';
@@ -30,6 +30,7 @@ import {
   starredArtistsPage,
   starredSongTotals,
   starredSongsPage,
+  starredSortKeyOf,
 } from '../favorites';
 
 const db = () => getDb()!;
@@ -151,7 +152,7 @@ describe('the remainder tables', () => {
       db().getFirstSync<{ starred: number }>('SELECT starred FROM favorite_songs')?.starred,
     ).toBe(0);
     const [entry] = await listAllStarredSongs(db());
-    expect(entry.starred).toBeUndefined();
+    expect(entry.item.starred).toBeUndefined();
   });
 
   it('replaces wholesale — a rebuild drops the previous contents', async () => {
@@ -575,12 +576,11 @@ describe('the whole-set reads take a sort order', () => {
       { id: 'lib-i', starredAt: 2 },
     ]);
     await replaceFavoriteAlbums(db(), [album('rem-h', { name: '"Heroes"', starred: new Date(3) })]);
-    expect((await listAllStarredAlbums(db(), { sortOrder: 'title' })).map((a) => a.id)).toEqual([
-      'lib-g',
-      'rem-h',
-      'lib-i',
-    ]);
-    expect(getSortFirstLetter('"Heroes"')).toBe('H');
+    const items = await listAllStarredAlbums(db(), { sortOrder: 'title' });
+    expect(items.map((a) => a.id)).toEqual(['lib-g', 'rem-h', 'lib-i']);
+    // The letter the scroller files each row under is `charAt(0)` of the key SQL ordered
+    // it by, so `"Heroes"` lands between G and I under H rather than in `#`.
+    expect(items.map((e) => letterOfSortKey(starredSortKeyOf(e)))).toEqual(['G', 'H', 'I']);
   });
 });
 
@@ -716,12 +716,9 @@ describe('the whole-set SONG read takes a sort order', () => {
       { id: 'lib-i', starredAt: 2 },
     ]);
     await replaceFavoriteSongs(db(), [song('rem-h', { title: '"Heroes"', starred: new Date(3) })]);
-    expect((await listAllStarredSongs(db(), { sortOrder: 'title' })).map((s) => s.id)).toEqual([
-      'lib-g',
-      'rem-h',
-      'lib-i',
-    ]);
-    expect(getSortFirstLetter('"Heroes"')).toBe('H');
+    const items = await listAllStarredSongs(db(), { sortOrder: 'title' });
+    expect(items.map((s) => s.id)).toEqual(['lib-g', 'rem-h', 'lib-i']);
+    expect(items.map((e) => letterOfSortKey(starredSortKeyOf(e)))).toEqual(['G', 'H', 'I']);
   });
 
   it('strips the leading article, so `A Horse With No Name` files under H', async () => {
@@ -738,12 +735,10 @@ describe('the whole-set SONG read takes a sort order', () => {
       await replaceFavoriteSongs(db(), [
         song('rem-h', { title: 'A Horse With No Name', starred: new Date(3) }),
       ]);
-      expect((await listAllStarredSongs(db(), { sortOrder: 'title' })).map((s) => s.id)).toEqual([
-        'lib-g',
-        'rem-h',
-        'lib-i',
-      ]);
-      expect(getSortFirstLetter('A Horse With No Name', undefined, ['the', 'a'])).toBe('H');
+      const items = await listAllStarredSongs(db(), { sortOrder: 'title' });
+      expect(items.map((s) => s.id)).toEqual(['lib-g', 'rem-h', 'lib-i']);
+      expect(items.map((e) => letterOfSortKey(starredSortKeyOf(e)))).toEqual(['G', 'H', 'I']);
+      expect(letterOfSortKey(getSortKey('A Horse With No Name', undefined, ['the', 'a']))).toBe('H');
     } finally {
       setSortArticles(undefined);
     }
@@ -765,12 +760,9 @@ describe('the whole-set SONG read takes a sort order', () => {
         starred: new Date(3),
       }),
     ]);
-    expect((await listAllStarredSongs(db(), { sortOrder: 'title' })).map((s) => s.id)).toEqual([
-      'lib-g',
-      'rem-h',
-      'lib-i',
-    ]);
-    expect(getSortFirstLetter('A Horse With No Name', 'Horse With No Name')).toBe('H');
+    const items = await listAllStarredSongs(db(), { sortOrder: 'title' });
+    expect(items.map((s) => s.id)).toEqual(['lib-g', 'rem-h', 'lib-i']);
+    expect(items.map((e) => letterOfSortKey(starredSortKeyOf(e)))).toEqual(['G', 'H', 'I']);
   });
 });
 

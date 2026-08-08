@@ -8,18 +8,28 @@ jest.mock('../../services/playerService', () => ({ playTrack: jest.fn() }));
  *  regression is a single frame, so the render history — not the final state — is
  *  the assertion. */
 interface SongRender {
-  songs: { id: string }[];
+  items: { id: string }[];
   loading?: boolean;
   emptyMessage?: string;
   emptySubtitle?: string;
 }
 const mockRenders: SongRender[] = [];
-jest.mock('../../components/SongListView', () => ({
-  SongListView: (p: SongRender) => {
-    mockRenders.push(p);
-    return null;
-  },
-}));
+/** Mounts, not renders: the filtered screen picks its adapter per branch, so it renders
+ *  two different `SongListView` calls. They must reconcile as one instance — a remount
+ *  would drop the list's scroll position on every filter toggle. */
+const mockMounts: string[] = [];
+jest.mock('../../components/SongListView', () => {
+  const React = require('react');
+  return {
+    SongListView: (p: SongRender) => {
+      mockRenders.push(p);
+      React.useEffect(() => {
+        mockMounts.push('mount');
+      }, []);
+      return null;
+    },
+  };
+});
 
 import React from 'react';
 import { act, render, waitFor } from '@testing-library/react-native';
@@ -61,6 +71,7 @@ beforeAll(() => ensureNormalizedSchema(db()));
 
 beforeEach(() => {
   mockRenders.length = 0;
+  mockMounts.length = 0;
   for (const t of ['songs', 'favorite_songs', 'cached_songs']) db().runSync(`DELETE FROM ${t}`);
   favoritesStore.setState({ version: 0 });
   layoutPreferencesStore.setState({ songSortOrder: 'title' });
@@ -77,21 +88,21 @@ describe('SongLibraryListScreen — favourites filter never flashes the empty st
     render(<SongLibraryListScreen favoritesOnly />);
     // The read runs in an effect, i.e. after this frame is on screen. Loading has to be
     // seeded true or the list falls through to "No songs found" with zero rows.
-    expect(mockRenders[0]).toMatchObject({ songs: [], loading: true });
+    expect(mockRenders[0]).toMatchObject({ items: [], loading: true });
   });
 
   it('is never handed an empty, non-loading list while the read is in flight', async () => {
     render(<SongLibraryListScreen favoritesOnly />);
-    await waitFor(() => expect(latest().songs).toHaveLength(1));
+    await waitFor(() => expect(latest().items).toHaveLength(1));
     // Every frame either has rows or says it is loading — the exact invariant that
     // keeps SongListView off its `ListEmptyComponent` branch.
-    expect(mockRenders.filter((r) => r.songs.length === 0 && !r.loading)).toEqual([]);
+    expect(mockRenders.filter((r) => r.items.length === 0 && !r.loading)).toEqual([]);
   });
 
   it('clears loading and renders the starred rows once the read resolves', async () => {
     render(<SongLibraryListScreen favoritesOnly />);
-    await waitFor(() => expect(latest().songs).toHaveLength(1));
-    expect(latest().songs.map((s) => s.id)).toEqual(['star-a']);
+    await waitFor(() => expect(latest().items).toHaveLength(1));
+    expect(latest().items.map((s) => s.id)).toEqual(['star-a']);
     expect(latest().loading).toBe(false);
   });
 
@@ -101,7 +112,7 @@ describe('SongLibraryListScreen — favourites filter never flashes the empty st
     expect(mockRenders[0].loading).toBe(true);
     // The placeholder is correct here — it just must not appear before the answer is known.
     await waitFor(() => expect(latest().loading).toBe(false));
-    expect(latest().songs).toEqual([]);
+    expect(latest().items).toEqual([]);
   });
 });
 
@@ -111,7 +122,7 @@ describe('SongLibraryListScreen — downloaded filter', () => {
     // this would render nothing.
     markDownloadedInDb('dl1');
     render(<SongLibraryListScreen downloadedOnly />);
-    await waitFor(() => expect(latest().songs.map((s) => s.id)).toEqual(['dl1']));
+    await waitFor(() => expect(latest().items.map((s) => s.id)).toEqual(['dl1']));
     expect(latest().loading).toBe(false);
   });
 
@@ -121,21 +132,21 @@ describe('SongLibraryListScreen — downloaded filter', () => {
     // The downloaded read is asynchronous now, so it needs the same derived flag the
     // favourites branch has — otherwise this frame is empty-and-not-loading and
     // SongListView flashes "No songs found".
-    expect(mockRenders[0]).toMatchObject({ songs: [], loading: true });
+    expect(mockRenders[0]).toMatchObject({ items: [], loading: true });
   });
 
   it('is never handed an empty, non-loading list while the read is in flight', async () => {
     markDownloadedInDb('dl1');
     render(<SongLibraryListScreen downloadedOnly />);
-    await waitFor(() => expect(latest().songs).toHaveLength(1));
-    expect(mockRenders.filter((r) => r.songs.length === 0 && !r.loading)).toEqual([]);
+    await waitFor(() => expect(latest().items).toHaveLength(1));
+    expect(mockRenders.filter((r) => r.items.length === 0 && !r.loading)).toEqual([]);
   });
 
   it('reports a genuinely empty downloaded set only AFTER the read completes', async () => {
     render(<SongLibraryListScreen downloadedOnly />);
     expect(mockRenders[0].loading).toBe(true);
     await waitFor(() => expect(latest().loading).toBe(false));
-    expect(latest().songs).toEqual([]);
+    expect(latest().items).toEqual([]);
   });
 });
 
@@ -151,15 +162,15 @@ describe('SongLibraryListScreen — toggling Favourites on an already-mounted li
 
   it('is loading from the very first frame after Favourites goes on', async () => {
     const r = render(<SongLibraryListScreen downloadedOnly />);
-    await waitFor(() => expect(latest().songs).toHaveLength(1));
+    await waitFor(() => expect(latest().items).toHaveLength(1));
     mockRenders.length = 0;
 
     r.rerender(<SongLibraryListScreen downloadedOnly favoritesOnly />);
-    // Before the derived flag this frame was `{ songs: [], loading: false }` — one frame
+    // Before the derived flag this frame was `{ items: [], loading: false }` — one frame
     // of "No songs found" between the downloaded rows and the favourites rows.
-    expect(mockRenders[0]).toMatchObject({ songs: [], loading: true });
-    await waitFor(() => expect(latest().songs.map((s) => s.id)).toEqual(['star-a']));
-    expect(mockRenders.filter((m) => m.songs.length === 0 && !m.loading)).toEqual([]);
+    expect(mockRenders[0]).toMatchObject({ items: [], loading: true });
+    await waitFor(() => expect(latest().items.map((s) => s.id)).toEqual(['star-a']));
+    expect(mockRenders.filter((m) => m.items.length === 0 && !m.loading)).toEqual([]);
   });
 
   it('is loading from the very first frame after Favourites goes back OFF too', async () => {
@@ -172,9 +183,24 @@ describe('SongLibraryListScreen — toggling Favourites on an already-mounted li
     // synchronously, so a spinner here meant a stale favourites flag. It is a SQL read
     // now, so the same mounted component drops the favourites rows and waits — and the
     // frame in between has to say loading, exactly as the toggle-ON direction does.
-    expect(mockRenders[0]).toMatchObject({ songs: [], loading: true });
-    await waitFor(() => expect(latest().songs.map((s) => s.id)).toEqual(['star-a']));
-    expect(mockRenders.filter((m) => m.songs.length === 0 && !m.loading)).toEqual([]);
+    expect(mockRenders[0]).toMatchObject({ items: [], loading: true });
+    await waitFor(() => expect(latest().items.map((s) => s.id)).toEqual(['star-a']));
+    expect(mockRenders.filter((m) => m.items.length === 0 && !m.loading)).toEqual([]);
+  });
+
+  it('reuses the same list instance across the toggle in both directions', async () => {
+    const r = render(<SongLibraryListScreen downloadedOnly />);
+    await waitFor(() => expect(latest().items).toHaveLength(1));
+
+    r.rerender(<SongLibraryListScreen downloadedOnly favoritesOnly />);
+    await waitFor(() => expect(latest().loading).toBe(false));
+    r.rerender(<SongLibraryListScreen downloadedOnly />);
+    await waitFor(() => expect(latest().loading).toBe(false));
+
+    // The two branches hand the view different item shapes, different adapters and
+    // different key accessors, but they are the same component in the same slot, so React
+    // updates rather than remounts — which is what the derived loading flags depend on.
+    expect(mockMounts).toHaveLength(1);
   });
 });
 
@@ -204,8 +230,8 @@ describe('SongLibraryListScreen — the filters follow the song sort order', () 
     layoutPreferencesStore.setState({ songSortOrder: 'artist' });
     await seedFavourites();
     render(<SongLibraryListScreen favoritesOnly />);
-    await waitFor(() => expect(latest().songs).toHaveLength(3));
-    expect(latest().songs.map((s) => s.id)).toEqual(['z-lib', 'm-rem', 'a-lib']);
+    await waitFor(() => expect(latest().items).toHaveLength(3));
+    expect(latest().items.map((s) => s.id)).toEqual(['z-lib', 'm-rem', 'a-lib']);
   });
 
   it('orders the DOWNLOADED filter by artist when that is the preference', async () => {
@@ -213,14 +239,14 @@ describe('SongLibraryListScreen — the filters follow the song sort order', () 
     markDownloadedInDb('a-dl', 'Alpha', 'Zebra');
     markDownloadedInDb('z-dl', 'Zulu', 'Alpaca');
     render(<SongLibraryListScreen downloadedOnly />);
-    await waitFor(() => expect(latest().songs).toHaveLength(2));
-    expect(latest().songs.map((s) => s.id)).toEqual(['z-dl', 'a-dl']);
+    await waitFor(() => expect(latest().items).toHaveLength(2));
+    expect(latest().items.map((s) => s.id)).toEqual(['z-dl', 'a-dl']);
   });
 
   it('RE-READS the favourites half when the preference changes', async () => {
     await seedFavourites();
     render(<SongLibraryListScreen favoritesOnly />);
-    await waitFor(() => expect(latest().songs.map((s) => s.id)).toEqual(['a-lib', 'm-rem', 'z-lib']));
+    await waitFor(() => expect(latest().items.map((s) => s.id)).toEqual(['a-lib', 'm-rem', 'z-lib']));
     mockRenders.length = 0;
 
     act(() => layoutPreferencesStore.setState({ songSortOrder: 'artist' }));
@@ -228,21 +254,21 @@ describe('SongLibraryListScreen — the filters follow the song sort order', () 
     // longer the rows this sort order asks for. The view keeps drawing them (it only
     // spins with zero rows), so this never flashes.
     expect(mockRenders[0].loading).toBe(true);
-    await waitFor(() => expect(latest().songs.map((s) => s.id)).toEqual(['z-lib', 'm-rem', 'a-lib']));
-    expect(mockRenders.filter((m) => m.songs.length === 0)).toEqual([]);
+    await waitFor(() => expect(latest().items.map((s) => s.id)).toEqual(['z-lib', 'm-rem', 'a-lib']));
+    expect(mockRenders.filter((m) => m.items.length === 0)).toEqual([]);
   });
 
   it('RE-READS the downloaded half when the preference changes', async () => {
     markDownloadedInDb('a-dl', 'Alpha', 'Zebra');
     markDownloadedInDb('z-dl', 'Zulu', 'Alpaca');
     render(<SongLibraryListScreen downloadedOnly />);
-    await waitFor(() => expect(latest().songs.map((s) => s.id)).toEqual(['a-dl', 'z-dl']));
+    await waitFor(() => expect(latest().items.map((s) => s.id)).toEqual(['a-dl', 'z-dl']));
     mockRenders.length = 0;
 
     act(() => layoutPreferencesStore.setState({ songSortOrder: 'artist' }));
     expect(mockRenders[0].loading).toBe(true);
-    await waitFor(() => expect(latest().songs.map((s) => s.id)).toEqual(['z-dl', 'a-dl']));
-    expect(mockRenders.filter((m) => m.songs.length === 0)).toEqual([]);
+    await waitFor(() => expect(latest().items.map((s) => s.id)).toEqual(['z-dl', 'a-dl']));
+    expect(mockRenders.filter((m) => m.items.length === 0)).toEqual([]);
   });
 
   it('files a punctuation-leading title under H in EVERY filter combination', async () => {
@@ -268,13 +294,13 @@ describe('SongLibraryListScreen — the filters follow the song sort order', () 
 
     const expected = ['s-g', 's-h', 's-i'];
     const r = render(<SongLibraryListScreen favoritesOnly />);
-    await waitFor(() => expect(latest().songs.map((s) => s.id)).toEqual(expected));
+    await waitFor(() => expect(latest().items.map((s) => s.id)).toEqual(expected));
 
     r.rerender(<SongLibraryListScreen favoritesOnly downloadedOnly />);
-    await waitFor(() => expect(latest().songs.map((s) => s.id)).toEqual(expected));
+    await waitFor(() => expect(latest().items.map((s) => s.id)).toEqual(expected));
 
     r.rerender(<SongLibraryListScreen downloadedOnly />);
-    await waitFor(() => expect(latest().songs.map((s) => s.id)).toEqual(expected));
+    await waitFor(() => expect(latest().items.map((s) => s.id)).toEqual(expected));
   });
 
   it('does not reorder the list when a filter is toggled', async () => {
@@ -295,12 +321,12 @@ describe('SongLibraryListScreen — the filters follow the song sort order', () 
     layoutPreferencesStore.setState({ songSortOrder: 'artist' });
 
     const r = render(<SongLibraryListScreen favoritesOnly />);
-    await waitFor(() => expect(latest().songs).toHaveLength(3));
-    const underFavourites = latest().songs.map((s) => s.id);
+    await waitFor(() => expect(latest().items).toHaveLength(3));
+    const underFavourites = latest().items.map((s) => s.id);
 
     r.rerender(<SongLibraryListScreen downloadedOnly />);
-    await waitFor(() => expect(latest().songs).toHaveLength(3));
-    expect(latest().songs.map((s) => s.id)).toEqual(underFavourites);
+    await waitFor(() => expect(latest().items).toHaveLength(3));
+    expect(latest().items.map((s) => s.id)).toEqual(underFavourites);
     expect(underFavourites).toEqual(['z-lib', 'm-lib', 'a-lib']);
   });
 });
@@ -315,7 +341,7 @@ describe('SongLibraryListScreen — empty-state copy', () => {
     render(<SongLibraryListScreen favoritesOnly />);
     await waitFor(() => expect(latest().loading).toBe(false));
     expect(latest()).toMatchObject({
-      songs: [],
+      items: [],
       emptyMessage: 'Nothing matches your filters',
       emptySubtitle: 'Try adjusting your filters, or pull to refresh',
     });
@@ -325,7 +351,7 @@ describe('SongLibraryListScreen — empty-state copy', () => {
     render(<SongLibraryListScreen downloadedOnly />);
     await waitFor(() => expect(latest().loading).toBe(false));
     expect(latest()).toMatchObject({
-      songs: [],
+      items: [],
       emptyMessage: 'Nothing matches your filters',
       emptySubtitle: 'Try adjusting your filters, or pull to refresh',
     });

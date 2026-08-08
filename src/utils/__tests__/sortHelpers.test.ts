@@ -1,10 +1,16 @@
 import {
   DEFAULT_IGNORED_ARTICLES,
-  getSortFirstLetter,
   getSortKey,
+  letterOfSortKey,
   stripArticle,
   stripLeadingPunctuation,
 } from '../sortHelpers';
+
+/** The composition the list views make: SQL stores `getSortKey(...)`, the scroller
+ *  letters that stored key. Asserted here as one step so these cases keep covering the
+ *  whole chain, which is what they were written against. */
+const letterOf = (name: string, sortName?: string | null, articles?: readonly string[]): string =>
+  letterOfSortKey(getSortKey(name, sortName, articles));
 
 describe('stripLeadingPunctuation', () => {
   it('drops every leading non-alphanumeric character', () => {
@@ -165,55 +171,65 @@ describe('getSortKey', () => {
   });
 });
 
-describe('getSortFirstLetter', () => {
+describe('letterOfSortKey, over a key from getSortKey', () => {
   it('returns the first A–Z letter of the sort key', () => {
-    expect(getSortFirstLetter('The Beatles')).toBe('B');
-    expect(getSortFirstLetter('Pearl Jam')).toBe('P');
+    expect(letterOf('The Beatles')).toBe('B');
+    expect(letterOf('Pearl Jam')).toBe('P');
   });
 
   it('returns "#" for a leading DIGIT', () => {
-    expect(getSortFirstLetter('12 Stones')).toBe('#');
-    expect(getSortFirstLetter("'74 Jailbreak")).toBe('#');
+    expect(letterOf('12 Stones')).toBe('#');
+    expect(letterOf("'74 Jailbreak")).toBe('#');
   });
 
   /** The scroller reads `charAt(0)` of the key, so the punctuation strip reaches it for
    *  free — which is exactly what keeps the letter and the row's position coherent. */
   it('files a punctuation-leading name under its first LETTER', () => {
-    expect(getSortFirstLetter('!Action')).toBe('A');
-    expect(getSortFirstLetter('"Heroes"')).toBe('H');
-    expect(getSortFirstLetter('(How to Live) As Ghosts')).toBe('H');
+    expect(letterOf('!Action')).toBe('A');
+    expect(letterOf('"Heroes"')).toBe('H');
+    expect(letterOf('(How to Live) As Ghosts')).toBe('H');
   });
 
   it('still returns "#" when there is no letter or digit at all', () => {
-    expect(getSortFirstLetter('???')).toBe('#');
+    expect(letterOf('???')).toBe('#');
   });
 
   it('returns the accent-folded letter — "Élise" → E', () => {
-    expect(getSortFirstLetter('Élise')).toBe('E');
-    expect(getSortFirstLetter('Über alles')).toBe('U');
-    expect(getSortFirstLetter('Ñoño')).toBe('N');
+    expect(letterOf('Élise')).toBe('E');
+    expect(letterOf('Über alles')).toBe('U');
+    expect(letterOf('Ñoño')).toBe('N');
   });
 
   it('returns the band-letter when an indefinite article is in front (a/an stay)', () => {
-    expect(getSortFirstLetter('A Tribe Called Quest')).toBe('A');
-    expect(getSortFirstLetter('An American In Paris')).toBe('A');
+    expect(letterOf('A Tribe Called Quest')).toBe('A');
+    expect(letterOf('An American In Paris')).toBe('A');
   });
 
   it('honours server-supplied article list', () => {
     const articles = ['the', 'die'];
-    expect(getSortFirstLetter('Die Toten Hosen', undefined, articles)).toBe('T');
+    expect(letterOf('Die Toten Hosen', undefined, articles)).toBe('T');
   });
 
   it('returns "T" for "The The" (single-iteration strip)', () => {
-    expect(getSortFirstLetter('The The')).toBe('T');
+    expect(letterOf('The The')).toBe('T');
   });
 
   it('uses sortName when present and meaningful', () => {
-    expect(getSortFirstLetter('The Beatles', 'Beatles')).toBe('B');
-    expect(getSortFirstLetter('U2', 'You Two')).toBe('Y');
+    expect(letterOf('The Beatles', 'Beatles')).toBe('B');
+    expect(letterOf('U2', 'You Two')).toBe('Y');
   });
 
   it('falls back to client-strip on comma-suffix sortName', () => {
-    expect(getSortFirstLetter('The Beatles', 'Beatles, The')).toBe('B');
+    expect(letterOf('The Beatles', 'Beatles, The')).toBe('B');
+  });
+
+  /** The helper takes an ALREADY-derived key and never re-derives one. These are the
+   *  raw-key cases the views hand it: a stored `sort_*` column, or `''` for a row the
+   *  key rebuild has not reached. */
+  it('reads the key it is given verbatim, deriving nothing', () => {
+    expect(letterOfSortKey('the beatles')).toBe('T');
+    expect(letterOfSortKey('"heroes"')).toBe('#');
+    expect(letterOfSortKey('')).toBe('#');
+    expect(letterOfSortKey('élise')).toBe('#');
   });
 });

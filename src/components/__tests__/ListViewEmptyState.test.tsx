@@ -34,7 +34,7 @@ import { render } from '@testing-library/react-native';
 
 import { AlbumListView, albumIdentity } from '../AlbumListView';
 import { ArtistListView, artistIdentity } from '../ArtistListView';
-import { SongListView } from '../SongListView';
+import { SongListView, songIdentity } from '../SongListView';
 
 /**
  * The other half of the "favourites filter must not flash an empty state" contract:
@@ -59,7 +59,9 @@ const views = [
   },
   {
     name: 'SongListView',
-    render: (loading: boolean) => <SongListView songs={[]} loading={loading} />,
+    render: (loading: boolean) => (
+      <SongListView items={[]} toSong={songIdentity} loading={loading} />
+    ),
     empty: 'No songs found',
   },
 ];

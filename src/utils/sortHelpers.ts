@@ -8,11 +8,11 @@
  *     Prefers a server-supplied `sortName` when present and meaningfully
  *     different from `name`; falls back to client-side article stripping.
  *     Leading punctuation is dropped, so `"Heroes"` files under H.
- *   - `getSortFirstLetter(name, sortName?, articles?)` — returns the
- *     A–Z letter for the alphabet scroller, or `'#'` for non-alpha
- *     leading characters. Mirrors `getSortKey`'s normalisation so the
- *     scroller's section letter always matches where the entry actually
- *     sorts in the list.
+ *   - `letterOfSortKey(key)` — returns the A–Z letter for the alphabet
+ *     scroller, or `'#'`, for a key that has ALREADY been derived. It
+ *     never re-derives one: the list is ordered in SQL on a stored
+ *     `sort_*` key, and the letter has to come from that same key or a
+ *     row files under a letter it does not sort at.
  *
  * Article-list source — two-tier:
  *
@@ -157,17 +157,16 @@ export function getSortKey(
 }
 
 /**
- * Derive the alphabet-scroller letter (`A`–`Z` or `'#'`) for a list
- * entry. Mirrors `getSortKey`'s normalisation — accent-folded and
- * article-stripped — so the scroller's section letter is always
- * coherent with where the entry sorts in the list.
+ * The alphabet-scroller letter for an already-derived sort key: `A`–`Z`,
+ * or `'#'` for anything else. This is the ONLY place that rule lives.
+ *
+ * Takes the key rather than the entry it came from, deliberately. The
+ * lists order in SQL on a stored `sort_*` column; deriving the letter
+ * from anything but that column is a second derivation of the same
+ * thing, and every time the two have drifted apart a row has ended up
+ * filed under a letter the scroller cannot reach it from.
  */
-export function getSortFirstLetter(
-  name: string,
-  sortName?: string | null,
-  articles?: readonly string[],
-): string {
-  const key = getSortKey(name, sortName, articles);
+export function letterOfSortKey(key: string): string {
   const ch = key.charAt(0).toUpperCase();
   return /[A-Z]/.test(ch) ? ch : '#';
 }

@@ -54,16 +54,32 @@ jest.mock('../ArtistRow', () => ({ ArtistRow: () => null }));
 jest.mock('../ArtistCard', () => ({ ArtistCard: () => null }));
 jest.mock('../PlaylistRow', () => ({ PlaylistRow: () => null }));
 jest.mock('../PlaylistCard', () => ({ PlaylistCard: () => null }));
+/** Capture each row's tap handler — the default queue is built by pressing, not by
+ *  rendering, and that is the behaviour under test below. */
+const rowPresses: (() => void)[] = [];
+jest.mock('../TrackRow', () => ({
+  TrackRow: ({ onPress }: { onPress: () => void }) => {
+    rowPresses.push(onPress);
+    return null;
+  },
+}));
+
+const mockPlayTrack = jest.fn();
+jest.mock('../../services/playerService', () => ({
+  playTrack: (...a: unknown[]) => mockPlayTrack(...a),
+}));
+jest.mock('../SongCard', () => ({ SongCard: () => null }));
 jest.mock('../AlphabetScroller', () => ({ AlphabetScroller: () => null }));
 
 import React from 'react';
 import { render } from '@testing-library/react-native';
 
-import type { AlbumID3, ArtistID3, Playlist } from 'subsonic-api';
+import type { AlbumID3, ArtistID3, Child, Playlist } from 'subsonic-api';
 
 import { AlbumListView } from '../AlbumListView';
 import { ArtistListView } from '../ArtistListView';
 import { PlaylistListView } from '../PlaylistListView';
+import { SongListView } from '../SongListView';
 
 /** Stands in for a SQL browse row: object identity is stable across pages, which is
  *  what the per-row memo keys on. */
@@ -78,6 +94,12 @@ const page = (from: number, to: number): Row[] =>
 const asAlbum = (r: Row): AlbumID3 => ({ id: r.id, name: r.name, songCount: 0, duration: 0 });
 const asArtist = (r: Row): ArtistID3 => ({ id: r.id, name: r.name, albumCount: 0 });
 const asPlaylist = (r: Row): Playlist => ({ id: r.id, name: r.name, songCount: 0, duration: 0 });
+const asSong = (r: Row): Child => ({ id: r.id, title: r.name, isDir: false });
+
+/** The scroller letter comes from the key the list was ordered by, so the letter pass
+ *  calls THIS, not the row adapter. Every letter is distinct, so the set it builds is
+ *  the whole array — the widest version of the pass. */
+const sortKeyOf = (r: Row): string => r.name.toLowerCase();
 
 interface ViewCase {
   name: string;
@@ -90,6 +112,7 @@ interface ViewCase {
       layout?: 'list' | 'grid';
       showAlphabetScroller?: boolean;
       activeLetters?: Set<string>;
+      sortKeyOf?: (item: Row) => string;
     },
   ) => React.ReactElement;
 }
@@ -116,7 +139,22 @@ const views: ViewCase[] = [
       <PlaylistListView items={items} toPlaylist={convert} {...extra} />
     ),
   },
+  {
+    name: 'SongListView',
+    newSpy: () => jest.fn(asSong),
+    render: (items, convert, extra) => (
+      <SongListView items={items} toSong={convert} onSongPress={noopPress} {...extra} />
+    ),
+  },
 ];
+
+/** Module-level, so the row adapters' `onPress` is not what churns in these tests. */
+function noopPress(): void {}
+
+beforeEach(() => {
+  rowPresses.length = 0;
+  mockPlayTrack.mockClear();
+});
 
 /**
  * The point of the whole design: the conversion is per ROW, not per array identity.
@@ -225,15 +263,59 @@ describe.each(views)('$name — the A-Z letter pass', ({ newSpy, render: r }) =>
 
   it('skips the whole-array pass when the screen supplies activeLetters', () => {
     const convert = newSpy();
-    render(r(page(0, 4), convert, { showAlphabetScroller: true, activeLetters: ALL_LETTERS }));
-    // One conversion per rendered row and nothing else.
+    const keyOf = jest.fn(sortKeyOf);
+    render(
+      r(page(0, 4), convert, {
+        showAlphabetScroller: true,
+        activeLetters: ALL_LETTERS,
+        sortKeyOf: keyOf,
+      }),
+    );
+    // One conversion per rendered row and nothing else — no letter pass at all.
     expect(convert).toHaveBeenCalledTimes(4);
+    expect(keyOf).not.toHaveBeenCalled();
   });
 
-  it('still computes the letters from the array when the screen supplies none', () => {
+  it('runs the letter pass over the KEY, never over the row adapter', () => {
     const convert = newSpy();
-    render(r(page(0, 4), convert, { showAlphabetScroller: true }));
-    // Four rendered rows plus the letter pass over all four.
-    expect(convert).toHaveBeenCalledTimes(8);
+    const keyOf = jest.fn(sortKeyOf);
+    render(r(page(0, 4), convert, { showAlphabetScroller: true, sortKeyOf: keyOf }));
+    // The pass happens (four keys read) and it costs zero conversions: the letter comes
+    // from the stored key, not from the envelope the adapter builds.
+    expect(keyOf).toHaveBeenCalledTimes(4);
+    expect(convert).toHaveBeenCalledTimes(4);
+  });
+});
+
+/**
+ * `SongListView`'s default tap queues the WHOLE list, which needs a `Child[]` the view
+ * does not hold. Building it per render would be the parallel envelope array this design
+ * exists to delete, so it is built at press time instead — the one place it is needed.
+ */
+describe('SongListView — the default tap queues the whole list, built at press time', () => {
+  it('converts once per rendered row and NOT again until a row is pressed', () => {
+    const convert = jest.fn(asSong);
+    render(<SongListView items={page(0, 4)} toSong={convert} />);
+    // Four rows rendered, four conversions. No queue array was built.
+    expect(convert).toHaveBeenCalledTimes(4);
+    expect(mockPlayTrack).not.toHaveBeenCalled();
+  });
+
+  it('plays the tapped song against the whole list', () => {
+    const rows = page(0, 4);
+    render(<SongListView items={rows} toSong={asSong} />);
+    rowPresses[2]();
+    expect(mockPlayTrack).toHaveBeenCalledTimes(1);
+    const [track, queue] = mockPlayTrack.mock.calls[0] as [Child, Child[]];
+    expect(track.id).toBe('2');
+    expect(queue.map((s) => s.id)).toEqual(['0', '1', '2', '3']);
+  });
+
+  it('hands the tap to onSongPress instead when the screen supplies one', () => {
+    const onSongPress = jest.fn();
+    render(<SongListView items={page(0, 2)} toSong={asSong} onSongPress={onSongPress} />);
+    rowPresses[1]();
+    expect(onSongPress).toHaveBeenCalledWith(expect.objectContaining({ id: '1' }));
+    expect(mockPlayTrack).not.toHaveBeenCalled();
   });
 });

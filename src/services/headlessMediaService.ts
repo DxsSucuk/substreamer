@@ -48,7 +48,7 @@ import {
   albumBrowseRowToAlbumID3,
   albumListRowToAlbumID3,
 } from '../db/repository/albums';
-import { listAllStarredSongs, listStarredArtistNames } from '../db/repository/favorites';
+import { listAllStarredSongs, listStarredArtistNames, starredItemOf } from '../db/repository/favorites';
 import { listAllPlaylists, playlistBrowseRowToPlaylist } from '../db/repository/playlists';
 import {
   listDownloadedAlbumIds,
@@ -126,7 +126,7 @@ async function albumSet(): Promise<AlbumID3[]> {
 async function favoriteSongs(): Promise<Child[]> {
   const db = getDb();
   if (!db) return [];
-  return listAllStarredSongs(db, { downloadedOnly: isOffline() });
+  return (await listAllStarredSongs(db, { downloadedOnly: isOffline() })).map(starredItemOf);
 }
 
 /** Playlists, filtered to downloaded when offline. MEMBERSHIP, exactly like `albumSet`:

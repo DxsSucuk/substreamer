@@ -14,7 +14,7 @@ import {
   type PlaylistListRow,
 } from '../db/repository/playlists';
 import { type Cursor } from '../db/repository/core';
-import { listDownloadedPlaylists } from '../db/repository/downloads';
+import { downloadedPlaylistSortKey, listDownloadedPlaylists } from '../db/repository/downloads';
 import { getDb } from '../store/persistence/db';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { offlineModeStore } from '../store/offlineModeStore';
@@ -243,6 +243,7 @@ function FilteredPlaylistList({
     <PlaylistListView
       items={rows}
       toPlaylist={playlistListRowToPlaylist}
+      sortKeyOf={downloadedPlaylistSortKey}
       layout={layout}
       loading={loading}
       onRefresh={handleRefresh}

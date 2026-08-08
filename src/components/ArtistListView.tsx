@@ -17,8 +17,7 @@ import { useTheme } from '../hooks/useTheme';
 import { EmptyState } from './EmptyState';
 import { type IoniconsName } from '../utils/iconNames';
 import type { ArtistID3 } from '../services/subsonicService';
-import { getSortFirstLetter } from '../utils/sortHelpers';
-import { serverInfoStore } from '../store/serverInfoStore';
+import { letterOfSortKey } from '../utils/sortHelpers';
 import { ArtistCard } from './ArtistCard';
 import { ArtistRow } from './ArtistRow';
 import { closeOpenRow } from './SwipeableRow';
@@ -75,6 +74,8 @@ export interface ArtistListViewProps<T extends { id: string }> {
   /** Adapts one item to the `ArtistID3` the row and card components take. Must be
    *  stable across renders (module-level, or memoised at the consumer). */
   toArtist: (item: T) => ArtistID3;
+  /** The key this list is ORDERED BY, read off the item — see `AlbumListView`. */
+  sortKeyOf?: (item: T) => string;
   /** Display layout: row list or grid of cards */
   layout?: ArtistLayout;
   /** Whether data is currently loading */
@@ -113,6 +114,7 @@ export interface ArtistListViewProps<T extends { id: string }> {
 export function ArtistListView<T extends { id: string }>({
   items,
   toArtist,
+  sortKeyOf,
   layout = 'list',
   loading = false,
   error = null,
@@ -174,20 +176,19 @@ export function ArtistListView<T extends { id: string }>({
 
   /* ---- Alphabet scroller support ---- */
   const scrollerVisible = showAlphabetScroller && items.length > 0;
-  const ignoredArticles = serverInfoStore((s) => s.ignoredArticles);
 
-  const getLetter = useCallback(
-    (item: T): string => {
-      const a = toArtist(item);
-      return getSortFirstLetter(a.name, a.sortName, ignoredArticles ?? undefined);
-    },
-    [ignoredArticles, toArtist],
+  /** The scroller letter for an item — the first character of the SAME key the list is
+   *  ordered by, and nothing else. `null` when the consumer supplies no key, which is
+   *  every list that has no alphabetical order to file rows under. */
+  const getLetter = useMemo(
+    () => (sortKeyOf ? (item: T): string => letterOfSortKey(sortKeyOf(item)) : null),
+    [sortKeyOf],
   );
 
   // In keyset mode the window can't reveal every letter, so the screen supplies the full
   // active set — and this whole-array pass would be discarded, so it is skipped.
   const computedLetters = useMemo(() => {
-    if (activeLettersProp || !scrollerVisible) return new Set<string>();
+    if (activeLettersProp || !scrollerVisible || !getLetter) return new Set<string>();
     return new Set(items.map((item) => getLetter(item)));
   }, [activeLettersProp, items, scrollerVisible, getLetter]);
   const activeLetters = activeLettersProp ?? computedLetters;
@@ -200,11 +201,8 @@ export function ArtistListView<T extends { id: string }>({
         onSeekLetter(letter);
         return;
       }
-      const idx = items.findIndex((item) => {
-        const first = getLetter(item);
-        if (letter === '#') return first === '#';
-        return first === letter;
-      });
+      if (!getLetter) return;
+      const idx = items.findIndex((item) => getLetter(item) === letter);
       if (idx >= 0) {
         listRef.current?.scrollToIndex({ index: idx, animated: false });
       }

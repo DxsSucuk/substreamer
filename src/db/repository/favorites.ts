@@ -49,6 +49,25 @@ import {
 
 export type { StarredEntry } from '@/utils/mergeStarredDesc';
 
+/**
+ * A whole-set read's result: the item, plus the key SQL ordered it by.
+ *
+ * The key is carried rather than re-derived because the A–Z scroller's letter comes from
+ * it — recomputing one from the envelope is a second derivation of the same thing, and it
+ * has silently disagreed with the stored key three times. `AlbumID3`/`ArtistID3`/`Child`
+ * are Subsonic API types and stay clean; the wrapper holds the key.
+ *
+ * `sortKey` is `''` in the default newest-favourite order, which has no A–Z scroller.
+ */
+export interface StarredItem<T> extends StarredEntry<T> {
+  sortKey: string;
+}
+
+/** `toAlbum`/`toArtist`/`toSong` and `sortKeyOf` for a list handed `StarredItem`s.
+ *  Module-level so their identity is stable across renders. */
+export const starredItemOf = <T,>(e: StarredItem<T>): T => e.item;
+export const starredSortKeyOf = (e: StarredItem<unknown>): string => e.sortKey;
+
 /** The three library tables that carry a `starred` mark. */
 type Entity = 'songs' | 'albums' | 'artists';
 
@@ -337,15 +356,17 @@ const tupleAtOrBefore = <T>(x: Keyed<T>, y: Keyed<T>): boolean => {
 
 type Keyed<T> = StarredEntry<T> & { keys: readonly string[] };
 
-/** Merge the two halves under `cols` when given, else newest-favourite-first. */
+/** Merge the two halves under `cols` when given, else newest-favourite-first. The
+ *  emitted `sortKey` is the LEADING column of the tuple, which is the one the scroller
+ *  letters on — empty in newest-favourite order, which has no A–Z scroller. */
 function mergeHalves<T>(
   lib: readonly StarredEntry<T>[],
   rem: readonly StarredEntry<T>[],
   libRows: readonly object[],
   remRows: readonly object[],
   cols: readonly string[] | null,
-): T[] {
-  if (!cols) return mergeStarredDesc(lib, rem).map((e) => e.item);
+): StarredItem<T>[] {
+  if (!cols) return mergeStarredDesc(lib, rem).map((e) => ({ ...e, sortKey: '' }));
   const key = (e: StarredEntry<T>, i: number, rows: readonly object[]): Keyed<T> => ({
     ...e,
     keys: keyTupleOf(rows[i], cols),
@@ -354,7 +375,7 @@ function mergeHalves<T>(
     lib.map((e, i) => key(e, i, libRows)),
     rem.map((e, i) => key(e, i, remRows)),
     tupleAtOrBefore,
-  ).map((e) => e.item);
+  ).map(({ id, starred, item, keys }) => ({ id, starred, item, sortKey: keys[0] }));
 }
 
 async function allRemainder<T extends { created?: Date; starred?: Date }>(
@@ -380,11 +401,14 @@ async function allRemainder<T extends { created?: Date; starred?: Date }>(
  * `sortOrder` ABSENT is newest favourite first, which every play/download caller wants.
  * Set, it is the Songs tab's favourites filter, ordered in SQL by the same stored keys
  * the browse list uses — so toggling the filter cannot reorder the rows.
+ *
+ * Returns {@link StarredItem}s: the envelope plus the key it was ordered by. Callers that
+ * only want the songs map with {@link starredItemOf}.
  */
 export async function listAllStarredSongs(
   db: InternalDb,
   f: StarredSongListOpts = {},
-): Promise<Child[]> {
+): Promise<StarredItem<Child>[]> {
   const cols = f.sortOrder ? NAME_ORDER[f.sortOrder] : null;
   const order = cols ? orderBySql(cols) : STARRED_DESC;
   const rows = await db.getAllAsync<SongListRow>(
@@ -402,12 +426,12 @@ export async function listAllStarredSongs(
  * `sortOrder` ABSENT is newest favourite first, which is what the Favourites TAB shows
  * and what every play/download caller wants. Set, it is the Library tab's A–Z filter,
  * ordered in SQL by the same stored keys the browse list uses — so toggling the filter
- * cannot reorder the rows.
+ * cannot reorder the rows. Returns {@link StarredItem}s — see `listAllStarredSongs`.
  */
 export async function listAllStarredAlbums(
   db: InternalDb,
   f: StarredAlbumListOpts = {},
-): Promise<AlbumID3[]> {
+): Promise<StarredItem<AlbumID3>[]> {
   const cols = f.sortOrder ? NAME_ORDER[f.sortOrder] : null;
   const order = cols ? orderBySql(cols) : STARRED_DESC;
   const rows = await db.getAllAsync<AlbumListRow>(
@@ -425,11 +449,12 @@ export async function listAllStarredAlbums(
 
 /** The whole starred artist set. `sortOrder: 'name'` is the Library tab's A–Z filter;
  *  absent is newest favourite first (the Favourites tab). O(favourites) — see above.
- *  Takes no download filter: artists are not downloadable (see {@link DownloadableEntity}). */
+ *  Returns {@link StarredItem}s — see `listAllStarredSongs`. Takes no download filter:
+ *  artists are not downloadable (see {@link DownloadableEntity}). */
 export async function listAllStarredArtists(
   db: InternalDb,
   opts: StarredArtistListOpts = {},
-): Promise<ArtistID3[]> {
+): Promise<StarredItem<ArtistID3>[]> {
   const cols = opts.sortOrder === 'name' ? ARTIST_NAME_ORDER : null;
   const order = cols ? orderBySql(cols) : STARRED_DESC;
   const rows = await db.getAllAsync<ArtistListRow>(

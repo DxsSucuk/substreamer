@@ -60,7 +60,7 @@ import { resolveEffectiveFormat } from '../utils/effectiveFormat';
 import { getDb } from '../store/persistence/db';
 import { getAlbumDetail, getPlaylistDetail } from '../db/repository/details';
 import { albumIdsWithSongs } from '../db/repository/songs';
-import { countStarredSongs, listAllStarredSongs } from '../db/repository/favorites';
+import { countStarredSongs, listAllStarredSongs, starredItemOf } from '../db/repository/favorites';
 import {
   ensureCoverArtAuth,
   getDownloadStreamUrl,
@@ -2200,7 +2200,7 @@ export async function enqueueStarredSongsDownload(): Promise<void> {
   if (state.downloadQueue.some((q) => q.itemId === STARRED_SONGS_ITEM_ID)) return;
 
   const db = getDb();
-  const songs = db ? await listAllStarredSongs(db) : [];
+  const songs = db ? (await listAllStarredSongs(db)).map(starredItemOf) : [];
   if (songs.length === 0) return;
 
   await ensureCoverArtAuth();
@@ -2257,7 +2257,7 @@ async function syncStarredSongsDownload(): Promise<void> {
     deleteCachedItem(STARRED_SONGS_ITEM_ID);
     return;
   }
-  syncCachedItemTracks(STARRED_SONGS_ITEM_ID, await listAllStarredSongs(db));
+  syncCachedItemTracks(STARRED_SONGS_ITEM_ID, (await listAllStarredSongs(db)).map(starredItemOf));
 }
 
 /* ------------------------------------------------------------------ */
