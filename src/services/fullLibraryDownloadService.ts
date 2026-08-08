@@ -60,7 +60,9 @@ export async function enqueueFullLibraryDownload(): Promise<void> {
     // flight at a time (avoids hundreds of concurrent getAlbum calls) and yield
     // to keep the UI responsive. The queue starts draining after the first item.
     // A single failed item is tolerated and counted; we report the tally at the
-    // end so a partial outage doesn't silently drop part of the library.
+    // end so a partial outage doesn't silently drop part of the library. A CANCEL
+    // returns past that report deliberately: the user asked it to stop, and the
+    // tally reads against `total` — the whole library, most of it never attempted.
     fullLibraryDownloadStore.getState().setPhase('queueing');
 
     // `awaitCover: false` — don't serialize this loop on each item's cover

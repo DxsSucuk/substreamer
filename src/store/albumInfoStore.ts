@@ -54,10 +54,6 @@ interface AlbumInfoState {
   hydrateAlbumInfo: (albumId: string) => Promise<AlbumInfoEntry | null>;
 }
 
-/** The KV blob this data lived in before the `album_info` table. Read once by the
- *  data-model migration in `db/migrateNormalized.ts`; never written. */
-const ALBUM_INFO_KV_KEY = 'substreamer-album-info';
-
 const entryToRow = (e: AlbumInfoEntry): AlbumInfoRow => ({
   notes: e.albumInfo.notes ?? null,
   lastFmUrl: e.albumInfo.lastFmUrl ?? null,

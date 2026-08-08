@@ -59,6 +59,7 @@ import { musicCacheStore } from '../store/musicCacheStore';
 import {
   moreOptionsStore,
   type MoreOptionsEntity,
+  type MoreOptionsSource,
 } from '../store/moreOptionsStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { playerStore } from '../store/playerStore';
@@ -74,6 +75,10 @@ import { setRatingStore } from '../store/setRatingStore';
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
+
+/** Annotated, not inlined: renaming the union member has to break the build rather
+ *  than silently re-enable the option this source hides. */
+const PLAYLIST_DETAIL_SOURCE: MoreOptionsSource = 'playlist-detail';
 
 function getTitle(entity: MoreOptionsEntity, t: (key: string, options?: Record<string, unknown>) => string): string {
   switch (entity.type) {
@@ -662,7 +667,7 @@ export function MoreOptionsSheet() {
   // a no-op that leaves the badge in place.
   const showRemoveSongDownload =
     entity?.type === 'song' &&
-    source !== 'playlist-detail' &&
+    source !== PLAYLIST_DETAIL_SOURCE &&
     (hasSongItem || albumContainsSong);
   const showDownloadSong =
     entity?.type === 'song' &&

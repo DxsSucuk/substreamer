@@ -28,7 +28,7 @@ import {
   upsertPlaylists,
   type PlaylistDetailStateRow,
 } from '@/db/repository/playlists';
-import { getProtectedIds } from '@/db/protectedIds';
+import { getProtectedPlaylistIds } from '@/db/protectedIds';
 import {
   countSongs,
   deleteAlbumSongsNotIn,
@@ -288,14 +288,14 @@ export async function syncPlaylistsNormalized(
   // throw) when there is no usable API, and pruning against that empties the table.
   // This is also the offline guard for the fan-out below (`getApi()` is null offline).
   if (getApi() === null) return;
-  const protectedIds = await getProtectedIds(db);
-  await deletePlaylistsNotIn(db, playlists.map((p) => p.id), [...protectedIds.playlistIds]);
+  const protectedIds = await getProtectedPlaylistIds(db);
+  await deletePlaylistsNotIn(db, playlists.map((p) => p.id), [...protectedIds]);
   syncStatusStore.getState().bumpLibraryUpdated();
   // Fire-and-forget: awaiting would block the Add-to-Playlist sheet's spinner, delay the
   // list repaint (`playlistLibraryLastFetchedAt`), and gate change-detect + the song kick
   // behind playlist fetches, since this is the last step of `doNormalizedSync`.
   fireAndForget(
-    reconcilePlaylistDetails(db, playlists, markers, protectedIds.playlistIds),
+    reconcilePlaylistDetails(db, playlists, markers, protectedIds),
     'sync.playlistDetailReconcile',
   );
 }

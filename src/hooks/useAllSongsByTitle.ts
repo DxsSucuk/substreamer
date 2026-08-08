@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import { listDownloadedSongs, type DownloadedSongRow } from '../db/repository/downloads';
 import { getDb } from '../store/persistence/db';
@@ -13,6 +13,8 @@ interface UseAllSongsByTitleResult {
   rows: DownloadedSongRow[];
   totalCount: number;
   loading: boolean;
+  /** Force a re-read. Every write to the download tables already bumps `revision`, so
+   *  this only matters for the pull-to-refresh gesture, which must not be a no-op. */
   refresh: () => void;
 }
 
@@ -38,13 +40,14 @@ export function useAllSongsByTitle(opts: UseAllSongsByTitleOpts = {}): UseAllSon
 
   const [rows, setRows] = useState<DownloadedSongRow[]>(EMPTY);
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  const [manualReads, setManualReads] = useState(0);
   // DERIVED, not seeded — the read runs in an effect, i.e. after the first frame is on
   // screen, and `SongListView` falls through to "No songs found" on any empty frame that
   // does not say it is loading. `sortOrder` is part of the key because the ORDER BY is
   // the DB's: changing the preference has to re-read, not re-sort what we hold.
   // The rows themselves stay on screen across a re-read: the view only draws its spinner
   // when the list is empty, so a completing download never blanks a populated list.
-  const wantedKey = `${revision}:${sortOrder}`;
+  const wantedKey = `${revision}:${sortOrder}:${manualReads}`;
   const loading = downloadedOnly && loadedKey !== wantedKey;
 
   useEffect(() => {
@@ -64,12 +67,12 @@ export function useAllSongsByTitle(opts: UseAllSongsByTitleOpts = {}): UseAllSon
     };
   }, [downloadedOnly, revision, sortOrder, wantedKey]);
 
-  // Nothing to re-fetch: the source is the local download tables, and every write to them
-  // bumps `revision`, which re-runs the effect above.
+  const refresh = useCallback(() => setManualReads((n) => n + 1), []);
+
   return {
     rows: downloadedOnly ? rows : EMPTY,
     totalCount: downloadedOnly ? rows.length : 0,
     loading,
-    refresh: () => {},
+    refresh,
   };
 }

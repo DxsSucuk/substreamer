@@ -2,7 +2,7 @@
 import type { ArtistID3, ArtistInfo2 } from 'subsonic-api';
 
 import type { BatchCommand, InternalDb } from '../client';
-import { artistInfoRow, artistRoleRows, artistRow, artistSimilarRows } from './mappers';
+import { artistRoleRows, artistRow, artistSimilarRows } from './mappers';
 import {
   bulkUpsert,
   colsOf,

@@ -6,7 +6,7 @@
  * `*_year/_month/_day`. Dates are accepted as live `Date` OR ISO string (the
  * migration reads them back from JSON blobs where Dates are serialized to strings).
  */
-import type { AlbumID3, AlbumInfo, ArtistID3, ArtistInfo2, Child, Playlist } from 'subsonic-api';
+import type { AlbumID3, ArtistID3, ArtistInfo2, Child, Playlist } from 'subsonic-api';
 
 import { metaphoneKeyFromNormalized, normalize, normalizeArtist } from '@/services/searchMatch';
 
@@ -213,18 +213,6 @@ export function artistRow(a: ArtistID3, articles?: readonly string[]): Row {
 export const artistRoleRows = (a: ArtistID3, id: string): Row[] =>
   (a.roles ?? []).map((role, pos) => ({ artist_id: id, pos, role }));
 
-/** Bio/image columns from getArtistInfo2 — a PARTIAL row (id + info fields only)
- *  so upserting it never clears the base ArtistID3 columns. */
-export function artistInfoRow(id: string, info: ArtistInfo2): Row {
-  return {
-    id,
-    biography: str(info.biography),
-    last_fm_url: str(info.lastFmUrl),
-    image_url_small: str(info.smallImageUrl),
-    image_url_medium: str(info.mediumImageUrl),
-    image_url_large: str(info.largeImageUrl),
-  };
-}
 export const artistSimilarRows = (info: ArtistInfo2, id: string): Row[] =>
   (info.similarArtist ?? []).map((s, pos) => ({
     artist_id: id,

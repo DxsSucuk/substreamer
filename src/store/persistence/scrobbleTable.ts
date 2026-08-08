@@ -224,17 +224,6 @@ export async function replaceAllScrobbles(scrobbles: readonly CompletedScrobble[
   }
 }
 
-/**
- * Backfill the structured analytics columns for rows that predate them.
- *
- * DDL is deliberately not done here: `scrobble_events` is declared in `src/db/schema.ts`,
- * so `ensureNormalizedSchema` adds any missing column and only then creates the indexes
- * — which is what stops an `hour` index being created before the `hour` column exists.
- */
-export async function ensureScrobbleColumnsAsync(): Promise<void> {
-  await backfillScrobbleColumnsAsync();
-}
-
 /** Rows-per-chunk for the one-time backfill of derived columns on existing rows. */
 const BACKFILL_CHUNK = 500;
 
@@ -242,6 +231,10 @@ const BACKFILL_CHUNK = 500;
  * Populate the derived columns for rows that predate them (song_id IS NULL).
  * Chunked to keep the JS thread responsive on a large upgrade history. Parses
  * each row's `song_json` and derives the same columns the write path stores.
+ *
+ * No DDL here: `scrobble_events` is declared in `src/db/schema.ts`, so
+ * `ensureNormalizedSchema` adds any missing column and only then creates the indexes —
+ * which is what stops an `hour` index being created before the `hour` column exists.
  */
 export async function backfillScrobbleColumnsAsync(): Promise<void> {
   const db = getDb();

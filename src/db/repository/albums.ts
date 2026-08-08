@@ -537,6 +537,10 @@ export const listAllAlbums = (db: InternalDb): Promise<AlbumBrowseRow[]> =>
  * server set AND NOT protected (downloaded/favorited detail we must never reap). A full
  * sync reconciles rather than dropping the tables so offline content survives. Children
  * cascade via FK. Both id sets pass as JSON via `json_each`.
+ *
+ * `NOT IN`, not the `NOT EXISTS` favourites insists on: the ids arrive as a JS array, so
+ * the ephemeral b-tree SQLite builds IS that list — there is no indexed table to probe —
+ * and this runs once per full sync, not once per page read.
  */
 export const reconcileAlbums = (
   db: InternalDb,

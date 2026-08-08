@@ -142,11 +142,6 @@ describe('useAllSongsByTitle', () => {
     });
   });
 
-  it('exposes a no-op refresh (the source is the local table, not a fetch)', async () => {
-    const { result } = renderHook(() => useAllSongsByTitle({ downloadedOnly: true }));
-    await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(() => result.current.refresh()).not.toThrow();
-  });
 });
 
 describe('useAllSongsByTitle — the loading flag is real now', () => {
@@ -222,5 +217,18 @@ describe('useAllSongsByTitle — reactivity on musicCacheStore.revision', () => 
     });
     await waitFor(() => expect(result.current.rows).toHaveLength(2));
     expect(frames.filter((f) => f.count === 0)).toEqual([]);
+  });
+
+  it('refresh() re-reads without a revision bump', async () => {
+    const { result } = renderHook(() => useAllSongsByTitle({ downloadedOnly: true }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.rows).toEqual([]);
+
+    // Pull-to-refresh is wired to this; a no-op stub would leave the list stale.
+    seedCachedSong('s1', 'Alpha');
+    await act(async () => {
+      result.current.refresh();
+    });
+    await waitFor(() => expect(result.current.rows.map((r) => r.id)).toEqual(['s1']));
   });
 });

@@ -152,7 +152,7 @@ function AlbumSection({
 
   const onRefresh = useCallback(() => {
     config.refresh();
-  }, [listType]);
+  }, [config]);
   const onSeeMore = useCallback(() => {
     router.push({ pathname: '/album-list', params: { type: listType } });
   }, [listType, router]);

@@ -102,7 +102,8 @@ export const deletePlaylist = (db: InternalDb, id: string): Promise<unknown> =>
 
 /**
  * Prune playlists no longer on the server after a full fetch. Id sets pass as JSON
- * arrays via `json_each` to dodge the SQLite bound-variable limit.
+ * arrays via `json_each` to dodge the SQLite bound-variable limit — `NOT IN`, not the
+ * `NOT EXISTS` favourites insists on, for the reason given at `reconcileAlbums`.
  *
  * An empty `keepIds` is REFUSED, not honoured: `getAllPlaylists` returns `[]` rather
  * than throwing whenever the API is unavailable (offline, mid-logout, before auth

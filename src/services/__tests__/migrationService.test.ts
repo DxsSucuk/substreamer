@@ -45,7 +45,7 @@ jest.mock('../../store/persistence/scrobbleTable', () => ({
   insertScrobble: jest.fn(),
   clearScrobbles: jest.fn(),
   hydrateScrobbles: jest.fn(() => []),
-  ensureScrobbleColumnsAsync: jest.fn(async () => {}),
+  backfillScrobbleColumnsAsync: jest.fn(async () => {}),
 }));
 
 // Task #15 mirrors task 13 for pending scrobbles. Mock the helper module so
@@ -161,7 +161,7 @@ import { musicCacheStore } from '../../store/musicCacheStore';
 import { playbackSettingsStore } from '../../store/playbackSettingsStore';
 import { bulkReplace } from '../../store/persistence/musicCacheTables';
 import { replaceAllPendingScrobbles } from '../../store/persistence/pendingScrobbleTable';
-import { ensureScrobbleColumnsAsync, replaceAllScrobbles } from '../../store/persistence/scrobbleTable';
+import { backfillScrobbleColumnsAsync, replaceAllScrobbles } from '../../store/persistence/scrobbleTable';
 import { kvStorage } from '../../store/persistence';
 
 const mockReplaceAllScrobbles = replaceAllScrobbles as jest.Mock;
@@ -1830,7 +1830,7 @@ describe('Task 24 – Backfill primary server URL for failover schema', () => {
 describe('runMigrations resilience', () => {
   it('breaks loop and persists partial progress when a task throws', async () => {
     // Force Task 3 (Build analytics aggregates) to throw via its backfill call.
-    (ensureScrobbleColumnsAsync as jest.Mock).mockRejectedValueOnce(new Error('simulated task failure'));
+    (backfillScrobbleColumnsAsync as jest.Mock).mockRejectedValueOnce(new Error('simulated task failure'));
     const finalVersion = await runMigrations(2);
     // Task 3 threw → final version should stay at 2 (last successful).
     expect(finalVersion).toBe(2);

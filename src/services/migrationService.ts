@@ -41,7 +41,7 @@ import {
   type DownloadQueueRow,
 } from '../store/persistence/musicCacheTables';
 import { replaceAllPendingScrobbles } from '../store/persistence/pendingScrobbleTable';
-import { ensureScrobbleColumnsAsync, replaceAllScrobbles } from '../store/persistence/scrobbleTable';
+import { backfillScrobbleColumnsAsync, replaceAllScrobbles } from '../store/persistence/scrobbleTable';
 import {
   bulkInsertCachedImages,
   countCachedImages as countCachedImagesRow,
@@ -1202,7 +1202,7 @@ const MIGRATION_TASKS: MigrationTask[] = [
       // Analytics are now SQL GROUP BY aggregates over structured columns.
       // Backfill those columns for any legacy rows, then refresh the store's
       // cached all-time stats/aggregates from SQL.
-      await ensureScrobbleColumnsAsync();
+      await backfillScrobbleColumnsAsync();
       await completedScrobbleStore.getState().refreshFromDb();
       const total = completedScrobbleStore.getState().stats.totalPlays;
       log(total > 0 ? `Backfilled + refreshed analytics for ${total} scrobbles.` : 'No scrobbles.');
