@@ -92,7 +92,7 @@ export function runDataModelUpgradeIfNeeded(): Promise<void> {
       if ((await kvStorage.getItem(MIGRATION_DONE_KEY)) === MIGRATION_VERSION) return;
 
       syncStatusStore.getState().setNormalizedMigration('migrating', 0, 0);
-      const result = await migrateBlobsToNormalized(db, undefined, undefined, (done, total) =>
+      const result = await migrateBlobsToNormalized(db, undefined, (done, total) =>
         syncStatusStore.getState().setNormalizedMigration('migrating', done, total),
       );
       await kvStorage.setItem(MIGRATION_DONE_KEY, MIGRATION_VERSION);

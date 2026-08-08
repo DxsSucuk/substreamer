@@ -230,7 +230,7 @@ src/
     schema.ts     normalized schema (source of truth; DDL generated from it)
     repository/   per-entity SQL: albums, artists, songs, playlists, favorites, search…
     migrations/   versioned data migrations
-    testing/      dev-only on-device spikes (delete with the rebuild)
+    testing/      the op-SQLite ⇄ better-sqlite3 Jest seam (see `__mocks__/`)
   store/        Zustand stores (one per domain) + store/persistence (KV + row tables)
   constants/    theme definitions
   i18n/         singleton + locale JSON
@@ -373,7 +373,7 @@ Prefer Symdex MCP server (when available) over Glob/Grep for symbol lookup, file
 
 ### Testing reality
 
-- **Jest cannot reproduce the SQLite pool.** The test seam runs `executeBatch` synchronously — no pool, no FIFO, no interleaving window. A green suite proves logic, never concurrency. Concurrency claims need an on-device spike (Settings → DB Spikes; `src/db/testing/dbSpikes.ts`), and Spike K is the worked example.
+- **Jest cannot reproduce the SQLite pool.** The test seam (`src/db/testing/opSqliteBetterSqlite3.ts`) runs `executeBatch` synchronously — no pool, no FIFO, no interleaving window. A green suite proves logic, never concurrency. Any concurrency claim needs a throwaway on-device spike; that is how the open-savepoint window (§ "The write path") was found, and nothing in the suite would have shown it. The rebuild's spike screens were deleted on 2026-08-08 — recover one from git history rather than reasoning from the suite.
 - Where a hazard is device-only, say so in the plan rather than implying the suite covers it.
 
 ---

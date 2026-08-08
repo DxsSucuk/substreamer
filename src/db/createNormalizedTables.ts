@@ -98,7 +98,7 @@ export function ensureNormalizedSchema(db: InternalDb): void {
 }
 
 /**
- * The normalized LIBRARY model — the only tables logout (or a dev spike) may drop.
+ * The normalized LIBRARY model — the only tables logout (or a full resync) may drop.
  *
  * An explicit allowlist, not "everything in the DDL minus the kept ones": schema.ts also
  * defines the permanent tables (auth/settings KV, downloads, scrobble history, image
@@ -143,7 +143,7 @@ export const MODEL_TABLES: readonly string[] = [
 
 /**
  * Permanent user data that lives in schema.ts for ordered schema management but must
- * NEVER be dropped by logout or the dev spikes. Losing any of these means losing the
+ * NEVER be dropped by logout or a full resync. Losing any of these means losing the
  * login, the downloads (leaving orphaned files on disk), the listening history or the
  * image cache.
  */
@@ -185,8 +185,8 @@ export function normalizedTableNames(): string[] {
 /**
  * Drop every normalized table then recreate the schema — a clean COLD reset. This is
  * the ONLY place that drops normalized data, and it's used ONLY by an explicit full
- * library resync (`forceFullResync` → the normalized sync) and the dev spikes, where
- * the wipe is intended and immediately followed by a full repopulate. Boot must NEVER
+ * library resync (`forceFullResync` → the normalized sync), where the wipe is
+ * intended and immediately followed by a full repopulate. Boot must NEVER
  * call this. DROP+CREATE is metadata-only (fast) but runs synchronously.
  */
 export function resetNormalizedSchema(db: InternalDb): void {

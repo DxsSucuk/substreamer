@@ -508,8 +508,8 @@ async function doNormalizedSync(
       await clearPlaylistDetailMarkers(db);
     }
 
-    // Transport: forced (dev fast/slow timing spikes) → use as-is; else the persisted
-    // resume strategy; else probe once and persist.
+    // Transport: forced by the caller → use as-is; else the persisted resume
+    // strategy; else probe once and persist.
     let strat = forceStrategy ?? syncStatusStore.getState().syncStrategy;
     if (strat == null) {
       strat = (await probeEmptySearch3()) ? 'search3' : 'basic';

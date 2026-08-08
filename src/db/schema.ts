@@ -633,8 +633,8 @@ export const playlistAllowedUsers = sqliteTable(
 // unordered block can create an index before the column it references and take DB init
 // down.
 //
-// They are classified as KEPT_TABLES in `createNormalizedTables.ts` so a resync,
-// logout or dev spike can never drop them.
+// They are classified as KEPT_TABLES in `createNormalizedTables.ts` so a resync or
+// logout can never drop them.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Generic key/value blob store — Zustand `persist` targets this. */

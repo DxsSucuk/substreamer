@@ -12,7 +12,7 @@
  * between pages.
  *
  * Idempotent (upsert ON CONFLICT), so it is safe to re-run. Driven at boot by
- * `services/dataModelUpgradeService`, and by the dev spike for validation.
+ * `services/dataModelUpgradeService`.
  */
 import type {
   AlbumID3,
@@ -46,24 +46,12 @@ export interface MigrationResult {
 
 type Log = (message: string) => void;
 
-/** Optional timing accumulator for the dev spike — source read (SQL) vs JSON parse.
- *  The derive/write split is captured separately via the repository chunk profiler. */
-export interface MigrationProfile {
-  readMs: number;
-  parseMs: number;
-}
-const nowMs = (): number => {
-  const p = (globalThis as { performance?: { now?: () => number } }).performance;
-  return p && typeof p.now === 'function' ? p.now() : Date.now();
-};
-
 async function migrateBlobTable<T extends { id: string }>(
   db: InternalDb,
   sourceTable: string,
   jsonCol: string,
   upsert: (db: InternalDb, items: T[]) => Promise<number>,
   log?: Log,
-  profile?: MigrationProfile,
   bump?: (rowsProcessed: number) => void,
 ): Promise<TableMigration> {
   const source =
@@ -74,7 +62,6 @@ async function migrateBlobTable<T extends { id: string }>(
   const PAGE = 1000;
 
   for (;;) {
-    const rd0 = nowMs();
     // Async read: keep the source-blob paging OFF the JS thread. Reading raw_json
     // blobs synchronously blocks the UI for seconds on Android, and nothing in a
     // background sync/migration may block the UI.
@@ -83,10 +70,8 @@ async function migrateBlobTable<T extends { id: string }>(
       `SELECT id, ${jsonCol} AS j FROM ${sourceTable} WHERE id > ? ORDER BY id LIMIT ?`,
       [cursor, PAGE],
     );
-    if (profile) profile.readMs += nowMs() - rd0;
     if (rows.length === 0) break;
 
-    const ps0 = nowMs();
     const items: T[] = [];
     for (const r of rows) {
       if (!r.j) {
@@ -99,7 +84,6 @@ async function migrateBlobTable<T extends { id: string }>(
         skipped++;
       }
     }
-    if (profile) profile.parseMs += nowMs() - ps0;
     migrated += await upsert(db, items);
     cursor = rows[rows.length - 1].id;
     bump?.(rows.length);
@@ -449,11 +433,10 @@ async function migrateAlbumDetailsKv(
 }
 
 /** Migrate the album + song blob caches AND the artist/playlist KV blobs into the
- *  normalized tables. Pass `profile` (dev spike only) to accumulate read/parse time. */
+ *  normalized tables. */
 export async function migrateBlobsToNormalized(
   db: InternalDb,
   log?: Log,
-  profile?: MigrationProfile,
   onProgress?: (done: number, total: number) => void,
 ): Promise<MigrationResult> {
   const start = Date.now();
@@ -496,7 +479,6 @@ export async function migrateBlobsToNormalized(
         'raw_json',
         (d, items) => upsertAlbums(d, items, undefined, articles),
         log,
-        profile,
         bump,
       )
     : EMPTY;
@@ -521,7 +503,6 @@ export async function migrateBlobsToNormalized(
         'raw_json',
         (d, items) => upsertSongs(d, items, undefined, articles),
         log,
-        profile,
         bump,
       )
     : EMPTY;
@@ -563,7 +544,7 @@ export async function migrateBlobsToNormalized(
  * thread. Run AFTER a bulk migration/sync completes, in the BACKGROUND — a large
  * bulk write leaves a big WAL that slows later reads until checkpointed, but the
  * checkpoint itself takes seconds, so it must never block completion. Awaiting is
- * optional (fire-and-forget is fine). Returns the ms it took (for the dev spike).
+ * optional (fire-and-forget is fine). Returns the ms it took.
  */
 export async function checkpointWalAsync(db: InternalDb, log?: Log): Promise<number> {
   const t0 = Date.now();

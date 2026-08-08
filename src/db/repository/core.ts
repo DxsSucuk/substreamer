@@ -37,26 +37,6 @@ export type Complete<T, K extends keyof T> = Omit<T, K> & {
 export const colsOf = <C extends string>(fields: readonly C[], alias?: string): string =>
   fields.map((f) => (alias ? `${alias}."${f}"` : `"${f}"`)).join(', ');
 
-const nowMs = (): number => {
-  const p = (globalThis as { performance?: { now?: () => number } }).performance;
-  return p && typeof p.now === 'function' ? p.now() : Date.now();
-};
-
-/** Per-chunk timing split, for the dev spikes to see where a bulk write spends its
- *  time: `deriveMs` = JS-thread work building rows (mappers, incl. norm/dmeta);
- *  `writeMs` = the off-thread `executeBatch`. */
-export interface ChunkTiming {
-  deriveMs: number;
-  writeMs: number;
-  rows: number;
-}
-let chunkProfiler: ((t: ChunkTiming) => void) | null = null;
-/** Dev/spike-only: observe per-chunk derive-vs-write timing during a bulk upsert.
- *  Pass null to clear. Zero cost in production (a single null check per chunk). */
-export const setChunkProfiler = (fn: ((t: ChunkTiming) => void) | null): void => {
-  chunkProfiler = fn;
-};
-
 /** A child-table spec: how to derive a parent's child rows from the source object. */
 export interface ChildSpec<T> {
   table: string;
@@ -176,7 +156,6 @@ export async function bulkUpsert<T>(
     const chunk = sorted.slice(i, i + chunkSize);
     // Derive: build every statement for the chunk (JS-thread work). This overlaps
     // the previous chunk's write, which is still running on the native thread.
-    const d0 = nowMs();
     const commands: BatchCommand[] = [];
     for (const item of chunk) {
       const id = idOf(item);
@@ -192,13 +171,10 @@ export async function bulkUpsert<T>(
         for (const cr of childRows) commands.push(buildInsertChild(spec.table, cr));
       }
     }
-    const deriveMs = nowMs() - d0;
     // Drain the previous write (usually already finished, hidden under the derive
-    // above) — `writeMs` is the EXPOSED tail past that overlap — then kick off this
-    // chunk's write WITHOUT awaiting so the next derive can overlap it.
-    const w0 = nowMs();
+    // above), then kick off this chunk's write WITHOUT awaiting so the next derive
+    // can overlap it.
     await prevWrite;
-    const writeMs = nowMs() - w0;
     prevWrite = db.runAtomicBatchAsync(commands);
     // Mark it handled NOW. Nothing observes this promise until the next iteration's
     // drain (or the final await below), and the macrotask yield in between is long
@@ -207,7 +183,6 @@ export async function bulkUpsert<T>(
     // `prevWrite` rejecting.
     prevWrite.catch(() => undefined);
     done += chunk.length;
-    chunkProfiler?.({ deriveMs, writeMs, rows: chunk.length });
     onProgress?.(done, sorted.length);
     // Yield a macrotask so the UI can paint; the write keeps running meanwhile.
     await new Promise((resolve) => setTimeout(resolve, 0));
