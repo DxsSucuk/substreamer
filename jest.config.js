@@ -39,6 +39,7 @@ module.exports = {
         '<rootDir>/src/test-utils/i18nSetup.ts',
         '<rootDir>/src/test-utils/keyboardControllerSetup.ts',
       ],
+      setupFilesAfterEnv: ['<rootDir>/src/test-utils/asyncTimeouts.ts'],
       transformIgnorePatterns,
     },
     {
@@ -62,6 +63,7 @@ module.exports = {
         '<rootDir>/src/test-utils/i18nSetup.ts',
         '<rootDir>/src/test-utils/keyboardControllerSetup.ts',
       ],
+      setupFilesAfterEnv: ['<rootDir>/src/test-utils/asyncTimeouts.ts'],
       transformIgnorePatterns,
     },
   ],
