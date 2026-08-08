@@ -6,13 +6,19 @@
  * Writes become silent no-ops when `getDb()` returns null (DB init failed)
  * — callers don't need to handle exceptions.
  */
-import { getDb, type BatchCommand } from './db';
-import { childSnapshotArrayCommands } from '../../db/childSnapshot';
+import { getDb, type BatchCommand, type InternalDb } from './db';
+import {
+  childFromSnapshotRow,
+  childSnapshotArrayCommands,
+  type ChildSnapshotArrays,
+  type ChildSnapshotRow,
+} from '../../db/childSnapshot';
 import { type CompletedScrobble } from '../completedScrobbleStore';
 import {
   deriveScrobbleColumns,
   scrobbleColumnValues,
   SCROBBLE_COLUMN_NAMES,
+  type ScrobbleColumns,
 } from './scrobbleColumns';
 
 /** Full INSERT with the structured analytics columns (see scrobbleColumns.ts). */
@@ -41,51 +47,205 @@ function insertCommands(scrobbles: readonly CompletedScrobble[]): BatchCommand[]
 }
 
 /* ------------------------------------------------------------------ */
+/*  Row → CompletedScrobble                                            */
+/* ------------------------------------------------------------------ */
+
+/** `scrobble_events` column → the `ChildSnapshotRow` key it restores. Aliasing in
+ *  SQL means a selected row IS the shape `childFromSnapshotRow` takes, so there is
+ *  no second column-name mapping to drift. `hour`/`day_key` are derived from `time`
+ *  and belong to no `Child` field, so they are absent. */
+const SNAPSHOT_COLUMNS = {
+  song_id: 'id',
+  title: 'title',
+  artist: 'artist',
+  album: 'album',
+  cover_art: 'coverArt',
+  duration: 'duration',
+  album_id: 'albumId',
+  artist_id: 'artistId',
+  display_artist: 'displayArtist',
+  display_composer: 'displayComposer',
+  track: 'track',
+  disc_number: 'discNumber',
+  year: 'year',
+  genre: 'genre',
+  suffix: 'suffix',
+  bit_rate: 'bitRate',
+  size: 'size',
+  content_type: 'contentType',
+  bpm: 'bpm',
+  path: 'path',
+  parent: 'parent',
+  sort_name: 'sortName',
+  music_brainz_id: 'musicBrainzId',
+  explicit_status: 'explicitStatus',
+  user_rating: 'userRating',
+  average_rating: 'averageRating',
+  play_count: 'playCount',
+  created: 'created',
+  starred: 'starred',
+  played: 'played',
+  rg_track_gain: 'rgTrackGain',
+  rg_track_peak: 'rgTrackPeak',
+  // `satisfies`, not an annotation: both sides are checked, so a column that is not
+  // in `ScrobbleColumns` or a key that is not on `ChildSnapshotRow` fails to compile.
+} as const satisfies Partial<Record<keyof ScrobbleColumns, keyof ChildSnapshotRow>>;
+
+/** The reader SELECT list: the event's own id + time, then every snapshot column
+ *  under its `ChildSnapshotRow` key. */
+export const SCROBBLE_SELECT = [
+  'id AS scrobbleId',
+  'time',
+  ...Object.entries(SNAPSHOT_COLUMNS).map(([col, key]) => (col === key ? col : `${col} AS ${key}`)),
+].join(', ');
+
+/** A `scrobble_events` row as {@link SCROBBLE_SELECT} returns it. `id`/`title` are
+ *  nullable in SQL — a row the backfill could not decode carries `''` — so the
+ *  readers filter before reconstructing. */
+export interface ScrobbleSnapshotRow extends Partial<ChildSnapshotRow> {
+  scrobbleId: string;
+  time: number;
+}
+
+const NO_ARRAYS: ChildSnapshotArrays = {};
+
+/**
+ * The ONE reconstruction, shared by every reader: a selected row plus its child-table
+ * arrays back into a `CompletedScrobble`. Callers filter for validity first — every
+ * consumer needs `song_id`, and the readers whose rows are rendered and played need
+ * `title` as well. Omit `arrays` where the consumer reads none of the five.
+ */
+export function rowToScrobble(
+  row: ScrobbleSnapshotRow,
+  arrays: ChildSnapshotArrays = NO_ARRAYS,
+): CompletedScrobble {
+  return {
+    id: row.scrobbleId,
+    song: childFromSnapshotRow({ ...row, id: row.id ?? '', title: row.title ?? '' }, arrays),
+    time: row.time,
+  };
+}
+
+/** Mutable twin of `ChildSnapshotArrays`, built by pushing the grouped rows. */
+interface MutableArrays {
+  genres?: string[];
+  artists?: { artistId: string | null; artistName: string | null }[];
+  albumArtists?: { artistId: string | null; artistName: string | null }[];
+  contributors?: {
+    role: string;
+    subRole: string | null;
+    artistId: string | null;
+    artistName: string | null;
+  }[];
+  moods?: string[];
+}
+
+interface CreditRow {
+  scrobble_id: string;
+  artist_id: string | null;
+  artist_name: string | null;
+}
+
+/**
+ * The five `scrobble_*` child tables for a page of scrobble ids: ONE query per table,
+ * grouped in JS. A per-row query would be 5×N round trips on a read `addCompleted`
+ * triggers after every completed play. The id list binds as JSON through `json_each`
+ * rather than an N-wide `IN (…)`, the pattern `existingScrobbleIds` already uses.
+ */
+async function loadScrobbleArrays(
+  db: InternalDb,
+  ids: readonly string[],
+): Promise<Map<string, ChildSnapshotArrays>> {
+  const out = new Map<string, MutableArrays>();
+  if (ids.length === 0) return out;
+  const params = [JSON.stringify([...ids])];
+  const select = (table: string, cols: string): string =>
+    `SELECT scrobble_id, ${cols} FROM scrobble_${table} ` +
+    'WHERE scrobble_id IN (SELECT value FROM json_each(?)) ORDER BY scrobble_id, pos;';
+  const [genres, artists, albumArtists, contributors, moods] = await Promise.all([
+    db.getAllAsync<{ scrobble_id: string; name: string }>(select('genres', 'name'), params),
+    db.getAllAsync<CreditRow>(select('artists', 'artist_id, artist_name'), params),
+    db.getAllAsync<CreditRow>(select('album_artists', 'artist_id, artist_name'), params),
+    db.getAllAsync<CreditRow & { role: string; sub_role: string | null }>(
+      select('contributors', 'role, sub_role, artist_id, artist_name'),
+      params,
+    ),
+    db.getAllAsync<{ scrobble_id: string; mood: string }>(select('moods', 'mood'), params),
+  ]);
+  const bucket = (id: string): MutableArrays => {
+    const existing = out.get(id);
+    if (existing !== undefined) return existing;
+    const fresh: MutableArrays = {};
+    out.set(id, fresh);
+    return fresh;
+  };
+  const credit = (r: CreditRow): { artistId: string | null; artistName: string | null } => ({
+    artistId: r.artist_id,
+    artistName: r.artist_name,
+  });
+  for (const r of genres) (bucket(r.scrobble_id).genres ??= []).push(r.name);
+  for (const r of artists) (bucket(r.scrobble_id).artists ??= []).push(credit(r));
+  for (const r of albumArtists) (bucket(r.scrobble_id).albumArtists ??= []).push(credit(r));
+  for (const r of contributors) {
+    (bucket(r.scrobble_id).contributors ??= []).push({
+      role: r.role,
+      subRole: r.sub_role,
+      ...credit(r),
+    });
+  }
+  for (const r of moods) (bucket(r.scrobble_id).moods ??= []).push(r.mood);
+  return out;
+}
+
+/**
+ * Rows → scrobbles for the three readers whose output is rendered and played: drops
+ * rows missing `song_id`/`title`, then hydrates the five arrays in one query per
+ * table for the whole page.
+ */
+export async function scrobblesWithArrays(
+  db: InternalDb,
+  rows: readonly ScrobbleSnapshotRow[],
+): Promise<CompletedScrobble[]> {
+  const valid = rows.filter((r) => !!r.id && !!r.title);
+  if (valid.length === 0) return [];
+  const arrays = await loadScrobbleArrays(
+    db,
+    valid.map((r) => r.scrobbleId),
+  );
+  return valid.map((r) => rowToScrobble(r, arrays.get(r.scrobbleId) ?? NO_ARRAYS));
+}
+
+/* ------------------------------------------------------------------ */
 /*  Reads                                                              */
 /* ------------------------------------------------------------------ */
 
-/** Scrobble rows parsed per macrotask yield during async hydration. */
-const SCROBBLE_PARSE_CHUNK = 1000;
+/** Rows reconstructed per macrotask yield during async hydration. */
+const SCROBBLE_HYDRATE_CHUNK = 1000;
 
 /**
- * Read every scrobble row in time order, skipping unparseable rows and rows
- * whose decoded song is invalid (missing id / title). The read runs on
- * expo-sqlite's background thread (`getAllAsync`) and the per-row
- * `JSON.parse(song_json)` is chunked with `setTimeout(0)` yields so a large
- * scrobble history doesn't freeze the JS thread at boot. setTimeout, not
- * rAF — rAF can stall on RN 0.85/Fabric.
+ * Read every scrobble row in time order, skipping rows missing the `song_id` /
+ * `title` a restored row needs to render. Rows are reconstructed from the typed
+ * columns and the five `scrobble_*` child tables — one child query per table per
+ * chunk, so a full history costs a bounded number of round trips, not one per row.
+ * Chunked with `setTimeout(0)` yields so a large history can't freeze the JS thread
+ * at boot; setTimeout, not rAF — rAF can stall on RN 0.85/Fabric.
  */
 export async function hydrateScrobblesAsync(): Promise<CompletedScrobble[]> {
   const db = getDb();
   if (db === null) return [];
   try {
-    const rows = await db.getAllAsync<{ id: string; song_json: string; time: number }>(
-      'SELECT id, song_json, time FROM scrobble_events ORDER BY time ASC;',
+    const rows = await db.getAllAsync<ScrobbleSnapshotRow>(
+      `SELECT ${SCROBBLE_SELECT} FROM scrobble_events ORDER BY time ASC;`,
     );
     const out: CompletedScrobble[] = [];
-    const seen = new Set<string>();
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      if (i > 0 && i % SCROBBLE_PARSE_CHUNK === 0) {
+    for (let i = 0; i < rows.length; i += SCROBBLE_HYDRATE_CHUNK) {
+      if (i > 0) {
+        // eslint-disable-next-line no-await-in-loop
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
       }
-      if (!row.id || seen.has(row.id)) continue;
-      let song: unknown;
-      try {
-        song = JSON.parse(row.song_json);
-      } catch {
-        continue;
-      }
-      if (
-        !song ||
-        typeof song !== 'object' ||
-        !(song as { id?: unknown }).id ||
-        !(song as { title?: unknown }).title
-      ) {
-        continue;
-      }
-      seen.add(row.id);
-      out.push({ id: row.id, song: song as CompletedScrobble['song'], time: row.time });
+      // eslint-disable-next-line no-await-in-loop
+      const chunk = await scrobblesWithArrays(db, rows.slice(i, i + SCROBBLE_HYDRATE_CHUNK));
+      for (const s of chunk) out.push(s);
     }
     return out;
   } catch {

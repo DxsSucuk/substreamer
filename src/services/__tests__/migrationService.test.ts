@@ -38,9 +38,13 @@ jest.mock('../../store/persistence/db', () => {
   return { ...actual, isDbHealthy: jest.fn(() => true) };
 });
 
-// Task #13 delegates bulk-insert to the scrobble table helper. Mock it so we
-// can assert wiring without needing a real SQLite handle.
+// Task #13 delegates bulk-insert to the scrobble table helper. Mock the write
+// functions so the test can assert wiring without needing a real SQLite handle. The
+// rest of the module stays REAL: `scrobbleAggregates` reconstructs its rows through
+// this module's `SCROBBLE_SELECT` / `scrobblesWithArrays`, and stubbing those to
+// `undefined` breaks every analytics query.
 jest.mock('../../store/persistence/scrobbleTable', () => ({
+  ...jest.requireActual('../../store/persistence/scrobbleTable'),
   replaceAllScrobbles: jest.fn(),
   insertScrobble: jest.fn(),
   clearScrobbles: jest.fn(),

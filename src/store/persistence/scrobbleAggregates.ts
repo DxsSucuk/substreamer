@@ -10,7 +10,12 @@
  * (7d/30d/90d); `0` = all time.
  */
 import { getDb } from './db';
-import { type Child } from '../../services/subsonicService';
+import {
+  rowToScrobble,
+  SCROBBLE_SELECT,
+  scrobblesWithArrays,
+  type ScrobbleSnapshotRow,
+} from './scrobbleTable';
 import {
   type AnalyticsAggregates,
   type CompletedScrobble,
@@ -69,10 +74,20 @@ export async function computeScrobbleAnalytics(sinceMs = 0): Promise<ScrobbleAna
             `FROM scrobble_events ${whereOf('album IS NOT NULL')} GROUP BY album, artist`,
           p,
         ),
-        db.getAllAsync<{ song_id: string; c: number; song_json: string }>(
-          `SELECT song_id, COUNT(*) AS c, MAX(song_json) AS song_json FROM scrobble_events ${whereOf(
-            'song_id IS NOT NULL',
-          )} GROUP BY song_id`,
+        // One row per song: the play count plus the MOST RECENT play's snapshot,
+        // taken whole. A `GROUP BY` with `MAX(col)` takes each scalar from an
+        // arbitrary row of the group, so the child rows keyed by that row's scrobble
+        // id would belong to a different play — one play's genres against another
+        // play's metadata in the details modal.
+        db.getAllAsync<ScrobbleSnapshotRow & { c: number }>(
+          `SELECT * FROM (
+             SELECT ${SCROBBLE_SELECT},
+                    COUNT(*) OVER (PARTITION BY song_id) AS c,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY song_id ORDER BY time DESC, scrobble_events.id DESC
+                    ) AS rn
+               FROM scrobble_events ${whereOf('song_id IS NOT NULL')}
+           ) WHERE rn = 1`,
           p,
         ),
         db.getAllAsync<{ genre: string; c: number }>(
@@ -111,14 +126,9 @@ export async function computeScrobbleAnalytics(sinceMs = 0): Promise<ScrobbleAna
     }
 
     const songCounts: AnalyticsAggregates['songCounts'] = {};
-    for (const r of songRows) {
-      let song: Child | null = null;
-      try {
-        song = JSON.parse(r.song_json) as Child;
-      } catch {
-        song = null;
-      }
-      if (song && song.id) songCounts[r.song_id] = { song, count: r.c };
+    const playCounts = new Map(songRows.map((r) => [r.scrobbleId, r.c]));
+    for (const s of await scrobblesWithArrays(db, songRows)) {
+      songCounts[s.song.id] = { song: s.song, count: playCounts.get(s.id) ?? 0 };
     }
 
     const genreCounts: Record<string, number> = {};
@@ -149,52 +159,42 @@ export async function loadRecentScrobbles(limit: number): Promise<CompletedScrob
   const db = getDb();
   if (db === null) return [];
   try {
-    const rows = await db.getAllAsync<{ id: string; song_json: string; time: number }>(
-      'SELECT id, song_json, time FROM scrobble_events ORDER BY time DESC LIMIT ?;',
+    const rows = await db.getAllAsync<ScrobbleSnapshotRow>(
+      `SELECT ${SCROBBLE_SELECT} FROM scrobble_events ORDER BY time DESC LIMIT ?;`,
       [limit],
     );
-    const out: CompletedScrobble[] = [];
-    for (const row of rows) {
-      let song: unknown;
-      try {
-        song = JSON.parse(row.song_json);
-      } catch {
-        continue;
-      }
-      if (song && typeof song === 'object' && (song as { id?: unknown }).id) {
-        out.push({ id: row.id, song: song as CompletedScrobble['song'], time: row.time });
-      }
-    }
-    return out;
+    return await scrobblesWithArrays(db, rows);
   } catch {
     return [];
   }
 }
 
-/** Scrobbles since `sinceMs` (newest first) — a BOUNDED recent slice for Tuned
- *  In's time-window mixes (Heavy Rotation 7d, time-of-day), so it never loads the
- *  whole history. Parses `song_json` per row; bounded by the window's play count. */
+/**
+ * Scrobbles since `sinceMs` (newest first) — a BOUNDED recent slice for Tuned In's
+ * time-window mixes (Heavy Rotation 7d, time-of-day), so it never loads the whole
+ * history. Bounded by the window's play count, not by a LIMIT.
+ *
+ * The one reader that does not require a `title`, and the one that skips the child
+ * tables. Its consumer reads `genre`/`artist`/`artistId` (`tunedInService.generateMixes`),
+ * and `tuned-in.tsx` calls this directly rather than through the store — so it bypasses
+ * the boot ordering that awaits the column backfill. Requiring `title` would silently
+ * narrow the mix window on the first launch after an upgrade while a large history is
+ * still backfilling.
+ *
+ * A NULL title is therefore fine, but `''` is not: that is the backfill's stamp for a
+ * row it can never decode, and it writes the SCROBBLE's id into `song_id` as the second
+ * marker. Admitting it would put a fake, untitled song into Heavy Rotation, whose only
+ * guard is a truthy `song.id`.
+ */
 export async function loadScrobblesSince(sinceMs: number): Promise<CompletedScrobble[]> {
   const db = getDb();
   if (db === null) return [];
   try {
-    const rows = await db.getAllAsync<{ id: string; song_json: string; time: number }>(
-      'SELECT id, song_json, time FROM scrobble_events WHERE time >= ? ORDER BY time DESC;',
+    const rows = await db.getAllAsync<ScrobbleSnapshotRow>(
+      `SELECT ${SCROBBLE_SELECT} FROM scrobble_events WHERE time >= ? ORDER BY time DESC;`,
       [sinceMs],
     );
-    const out: CompletedScrobble[] = [];
-    for (const row of rows) {
-      let song: unknown;
-      try {
-        song = JSON.parse(row.song_json);
-      } catch {
-        continue;
-      }
-      if (song && typeof song === 'object' && (song as { id?: unknown }).id) {
-        out.push({ id: row.id, song: song as CompletedScrobble['song'], time: row.time });
-      }
-    }
-    return out;
+    return rows.filter((r) => !!r.id && r.title !== '').map((r) => rowToScrobble(r));
   } catch {
     return [];
   }
