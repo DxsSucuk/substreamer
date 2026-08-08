@@ -26,14 +26,27 @@ const INSERT_SQL =
   `INSERT OR IGNORE INTO scrobble_events (id, song_json, time, ${SCROBBLE_COLUMN_NAMES.join(', ')}) ` +
   `VALUES (${new Array(3 + SCROBBLE_COLUMN_NAMES.length).fill('?').join(', ')});`;
 
+/** `song_json` is written EMPTY. The typed columns plus the five `scrobble_*` child
+ *  tables are the record now and every reader reconstructs from them; the column
+ *  stays NOT NULL only until a shadow-table rebuild can drop it. */
 const insertParams = (s: CompletedScrobble): (string | number | null)[] => [
   s.id,
-  JSON.stringify(s.song),
+  '',
   s.time,
   ...scrobbleColumnValues(deriveScrobbleColumns(s.song, s.time)),
 ];
 
-/** INSERT tuples for a bulk write, skipping invalid records and duplicate ids. */
+/**
+ * INSERT tuples for a bulk write, skipping invalid records and duplicate ids. Each
+ * parent row is followed by its five `scrobble_*` child writes — parent FIRST, or
+ * the FK rejects the children under `PRAGMA foreign_keys = ON`. (The backfill's
+ * order is the opposite, and for a different reason: there the parent already
+ * exists and the scalar UPDATE is what clears the re-select marker.)
+ *
+ * The child commands delete-then-insert, which is what makes an `INSERT OR IGNORE`
+ * over an id that already exists safe: without the DELETEs the child INSERT would
+ * hit the `(scrobble_id, pos)` PK and abort the batch.
+ */
 function insertCommands(scrobbles: readonly CompletedScrobble[]): BatchCommand[] {
   const seen = new Set<string>();
   const commands: BatchCommand[] = [];
@@ -41,7 +54,15 @@ function insertCommands(scrobbles: readonly CompletedScrobble[]): BatchCommand[]
     if (!s?.id || !s.song?.id || !s.song.title) continue;
     if (seen.has(s.id)) continue;
     seen.add(s.id);
-    commands.push([INSERT_SQL, insertParams(s)]);
+    commands.push(
+      [INSERT_SQL, insertParams(s)],
+      ...childSnapshotArrayCommands({
+        tablePrefix: 'scrobble',
+        keyColumn: 'scrobble_id',
+        keyValue: s.id,
+        child: s.song,
+      }),
+    );
   }
   return commands;
 }
@@ -288,16 +309,19 @@ export async function countScrobbles(): Promise<number> {
 /* ------------------------------------------------------------------ */
 
 /**
- * Insert one scrobble. Uses INSERT OR IGNORE so re-inserting the same id is a
- * silent no-op (the store already dedupes in memory but this protects against
- * concurrent-call edge cases without throwing).
+ * Insert one scrobble and its five `scrobble_*` child rows as ONE atomic batch —
+ * the children FK to the parent, so the pair can never half-apply. Uses INSERT OR
+ * IGNORE so re-inserting the same id is a silent no-op (the store already dedupes
+ * in memory but this protects against concurrent-call edge cases without throwing).
+ * An invalid record produces no commands and is dropped by `insertCommands`.
  */
 export async function insertScrobble(scrobble: CompletedScrobble): Promise<void> {
   const db = getDb();
   if (db === null) return;
-  if (!scrobble.id || !scrobble.song?.id || !scrobble.song.title) return;
+  const commands = insertCommands([scrobble]);
+  if (commands.length === 0) return;
   try {
-    await db.runAsync(INSERT_SQL, insertParams(scrobble));
+    await db.runAtomicBatchAsync(commands);
   } catch {
     /* dropped */
   }

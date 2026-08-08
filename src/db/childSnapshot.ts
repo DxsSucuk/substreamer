@@ -106,6 +106,14 @@ function toEpoch(v: Date | string | number | null | undefined): number | undefin
   return Number.isNaN(t) ? undefined : t;
 }
 
+/** The child tables declare `name` / `mood` / `role` NOT NULL, and an array element
+ *  can be null whatever the declared type says. Entries failing these guards are
+ *  dropped rather than inserted, because one bad value aborts the whole batch. */
+const isNonEmptyString = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
+
+const presentEntries = <T>(list: readonly T[] | undefined): T[] =>
+  (list ?? []).filter((e) => e !== null && e !== undefined);
+
 /** Subsonic `genres` is declared `string[]` but real OpenSubsonic servers return
  *  `{name}[]`. Accept either, and drop empties so a blank name never indexes. */
 export function childGenreNames(child: Child): string[] {
@@ -172,6 +180,10 @@ export function childSnapshotFields(child: Child): ChildSnapshotFields {
  * `tablePrefix` names all five (`cached_song` → `cached_song_genres`,
  * `cached_song_artists`, `cached_song_album_artists`, `cached_song_contributors`,
  * `cached_song_moods`) and `keyColumn`/`keyValue` are the owning row's key.
+ *
+ * Entries a NOT NULL column would reject are skipped and `pos` numbers the
+ * survivors, so a `moods: [null]` or a role-less contributor costs that entry
+ * rather than the whole batch, and the stored array stays contiguous.
  */
 export function childSnapshotArrayCommands(spec: {
   tablePrefix: string;
@@ -193,32 +205,36 @@ export function childSnapshotArrayCommands(spec: {
       [keyValue, pos, name],
     ]);
   });
-  (child.artists ?? []).forEach((a, pos) => {
+  presentEntries(child.artists).forEach((a, pos) => {
     statements.push([
       `INSERT INTO ${tablePrefix}_artists (${keyColumn}, pos, artist_id, artist_name) VALUES (?, ?, ?, ?);`,
       [keyValue, pos, a.id ?? null, a.name ?? null],
     ]);
   });
-  (child.albumArtists ?? []).forEach((a, pos) => {
+  presentEntries(child.albumArtists).forEach((a, pos) => {
     statements.push([
       `INSERT INTO ${tablePrefix}_album_artists (${keyColumn}, pos, artist_id, artist_name) VALUES (?, ?, ?, ?);`,
       [keyValue, pos, a.id ?? null, a.name ?? null],
     ]);
   });
-  (child.contributors ?? []).forEach((c, pos) => {
-    statements.push([
-      `INSERT INTO ${tablePrefix}_contributors
+  presentEntries(child.contributors)
+    .filter((c) => isNonEmptyString(c.role))
+    .forEach((c, pos) => {
+      statements.push([
+        `INSERT INTO ${tablePrefix}_contributors
          (${keyColumn}, pos, role, sub_role, artist_id, artist_name)
          VALUES (?, ?, ?, ?, ?, ?);`,
-      [keyValue, pos, c.role, c.subRole ?? null, c.artist?.id ?? null, c.artist?.name ?? null],
-    ]);
-  });
-  (child.moods ?? []).forEach((mood, pos) => {
-    statements.push([
-      `INSERT INTO ${tablePrefix}_moods (${keyColumn}, pos, mood) VALUES (?, ?, ?);`,
-      [keyValue, pos, mood],
-    ]);
-  });
+        [keyValue, pos, c.role, c.subRole ?? null, c.artist?.id ?? null, c.artist?.name ?? null],
+      ]);
+    });
+  presentEntries(child.moods)
+    .filter(isNonEmptyString)
+    .forEach((mood, pos) => {
+      statements.push([
+        `INSERT INTO ${tablePrefix}_moods (${keyColumn}, pos, mood) VALUES (?, ?, ?);`,
+        [keyValue, pos, mood],
+      ]);
+    });
   return statements;
 }
 
