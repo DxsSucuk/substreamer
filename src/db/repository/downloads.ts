@@ -27,6 +27,7 @@ import type { InternalDb } from '../client';
 import { type AlbumListRow, type AlbumSortOrder } from './albums';
 import { colsOf } from './core';
 import { type PlaylistListRow } from './playlists';
+import { type SongSortOrder } from './songs';
 
 /** The three library tables that carry a `starred` mark, minus the ones that cannot be
  *  downloaded. Artists are excluded by construction — see `favorites.ts`. */
@@ -176,14 +177,17 @@ export async function listDownloadedAlbumIds(
 }
 
 /**
- * A downloaded song, at the projection the Songs tab's downloaded filter renders — six
- * columns of the ~55 `cached_songs` holds. Widening it changes what those rows render, so
+ * A downloaded song, at the projection the Songs tab's downloaded filter renders — seven
+ * columns of the ~58 `cached_songs` holds. Widening it changes what those rows render, so
  * it needs its own verification pass.
  */
 export interface DownloadedSongRow {
   id: string;
   title: string;
   artist: string | null;
+  /** Projected for the alphabet scroller alone: it recomputes the sort key in JS, and
+   *  without `sortName` it disagrees with the `sort_title` the list was ordered by. */
+  sort_name: string | null;
   /**
    * The SERVER's album — `src_album_id`, NOT `cached_songs.album_id`.
    *
@@ -199,17 +203,33 @@ export interface DownloadedSongRow {
   cover_art: string | null;
 }
 
+export interface DownloadedSongFilter {
+  /** The user's song-list preference. Defaults to title order, as `listSongs` does. */
+  sortOrder?: SongSortOrder;
+}
+
+/**
+ * The ORDER BY for a downloaded song list — the same tuples `songSortCols` gives the
+ * browse keyset, on the same stored keys, so the Downloaded filter cannot reorder the
+ * list. `song_id` last makes the order total.
+ */
+const songOrderBy = (sortOrder?: SongSortOrder): string =>
+  sortOrder === 'artist'
+    ? '"sort_artist", "sort_title", "song_id"'
+    : '"sort_title", "song_id"';
+
 /**
  * The DOWNLOADED songs. Bounded by what is on disk, so this is a whole-set read by design;
  * there is no cursor. `song_id` is the primary key, so ids are unique structurally.
- * Unsorted — the caller sorts in JS via `byTitle`, which goes through `defaultCollator`
- * (SQL knows nothing about it).
  */
-export async function listDownloadedSongs(db: InternalDb): Promise<DownloadedSongRow[]> {
+export async function listDownloadedSongs(
+  db: InternalDb,
+  f: DownloadedSongFilter = {},
+): Promise<DownloadedSongRow[]> {
   return db.getAllAsync<DownloadedSongRow>(
-    'SELECT "song_id" AS "id", "title", "artist", ' +
+    'SELECT "song_id" AS "id", "title", "artist", "sort_name", ' +
       'COALESCE("src_album_id", "album_id") AS "album_id", "duration", "cover_art" ' +
-      'FROM cached_songs',
+      `FROM cached_songs ORDER BY ${songOrderBy(f.sortOrder)}`,
   );
 }
 
@@ -222,6 +242,7 @@ export function downloadedSongRowToChild(r: DownloadedSongRow): Child {
     albumId: r.album_id,
     duration: r.duration,
     coverArt: r.cover_art ?? undefined,
+    sortName: r.sort_name ?? undefined,
     isDir: false,
   };
 }

@@ -388,6 +388,11 @@ describe('convertLegacyMetadataAsync — cached_songs', () => {
     expect(row.bpm).toBe(96);
     expect(row.comment).toBe('Alternate take');
     expect(row.sort_name).toBe('Blackbird');
+    // The A–Z keys land in the SAME statement as `sort_name`, which is one of their
+    // inputs — a conversion that skipped them would leave the row filed where it was
+    // before its sort name arrived.
+    expect(row.sort_title).toBe('blackbird');
+    expect(row.sort_artist).toBe('beatles');
     expect(row.music_brainz_id).toBe('mbid-track-1');
     expect(row.explicit_status).toBe('clean');
     expect(row.bookmark_position).toBe(42);
@@ -442,6 +447,31 @@ describe('convertLegacyMetadataAsync — cached_songs', () => {
 
     // The work set is empty, so a re-entry has nothing to do.
     expect(workSetCount('cached_songs')).toBe(0);
+  });
+
+  it('recomputes the A–Z keys from the sort name the SAME statement lands', async () => {
+    // A pre-column row: the keys are NULL and `sort_name` is not on the row yet. The
+    // conversion supplies both, and `getSortKey` prefers a server-stripped `sortName`,
+    // so the key must come out of the envelope's sort name rather than the raw title.
+    insertLegacySong({
+      songId: 's-sorted',
+      title: 'A Horse With No Name',
+      artist: 'America',
+      rawJson: JSON.stringify({
+        ...sourceChild(),
+        id: 's-sorted',
+        title: 'A Horse With No Name',
+        artist: 'America',
+        sortName: 'Horse With No Name',
+      }),
+    });
+
+    await runConversion();
+
+    const row = songRow('s-sorted')!;
+    expect(row.sort_name).toBe('Horse With No Name');
+    expect(row.sort_title).toBe('horse with no name');
+    expect(row.sort_artist).toBe('america');
   });
 
   it('leaves raw_json INTACT — m18/m19 backfill WHERE raw_json IS NULL, and a v8.0.91 rollback still renders', async () => {

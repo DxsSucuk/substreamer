@@ -7,12 +7,16 @@ import type { AlbumID3, ArtistID3, Child, Playlist } from 'subsonic-api';
 import { ensureNormalizedSchema } from '../../db/createNormalizedTables';
 import { upsertAlbums } from '../../db/repository/albums';
 import { upsertArtists } from '../../db/repository/artists';
-import { replaceFavoriteAlbums, replaceFavoriteArtists } from '../../db/repository/favorites';
+import {
+  replaceFavoriteAlbums,
+  replaceFavoriteArtists,
+  replaceFavoriteSongs,
+} from '../../db/repository/favorites';
 import { upsertPlaylists } from '../../db/repository/playlists';
 import { upsertSongs } from '../../db/repository/songs';
 import { clearKvStorage, kvStorage } from '../../store/persistence';
 import { __setDbForTests, getDb } from '../../store/persistence/db';
-import { upsertCachedItem } from '../../store/persistence/musicCacheTables';
+import { upsertCachedItem, upsertCachedSong } from '../../store/persistence/musicCacheTables';
 import {
   __resetSortKeyRebuildForTests,
   runSortKeyRebuildIfNeeded,
@@ -20,6 +24,9 @@ import {
 
 const db = () => getDb()!;
 const STATE_KEY = 'substreamer-sort-key-rebuild';
+/** Mirrors `REBUILD_VERSION`. A cursor stamped with anything else is discarded rather
+ *  than resumed into, so the resume cases below have to name the current one. */
+const VERSION = 3;
 
 const TABLES = [
   'cached_item_songs',
@@ -33,6 +40,7 @@ const TABLES = [
   'playlists',
   'favorite_albums',
   'favorite_artists',
+  'favorite_songs',
 ];
 
 const album = (id: string, name: string, artist?: string): AlbumID3 =>
@@ -86,6 +94,18 @@ describe('runSortKeyRebuildIfNeeded', () => {
     await upsertPlaylists(db(), [playlist('p1', '"List"')]);
     await replaceFavoriteAlbums(db(), [album('fa1', '"Fav"', '"Who"')]);
     await replaceFavoriteArtists(db(), [artistOf('far1', '"FavArtist"')]);
+    await replaceFavoriteSongs(db(), [song('fs1', '"FavSong"', '"FavBand"')]);
+    await upsertCachedSong({
+      id: 'cs1',
+      title: '"CachedSong"',
+      artist: '"CachedBand"',
+      albumId: 'dir',
+      bytes: 1,
+      duration: 1,
+      suffix: 'mp3',
+      formatCapturedAt: 0,
+      downloadedAt: 0,
+    });
     await upsertCachedItem({
       itemId: 'ci1',
       type: 'album',
@@ -112,6 +132,8 @@ describe('runSortKeyRebuildIfNeeded', () => {
     setKey('playlists', 'id', 'p1', { sort_title: null });
     setKey('favorite_albums', 'id', 'fa1', { sort_title: null, sort_artist: null });
     setKey('favorite_artists', 'id', 'far1', { sort_title: null });
+    setKey('favorite_songs', 'id', 'fs1', { sort_title: null, sort_artist: null });
+    setKey('cached_songs', 'song_id', 'cs1', { sort_title: null, sort_artist: null });
     setKey('cached_albums', 'item_id', 'ci1', { sort_title: null, sort_artist: null });
     setKey('cached_playlists', 'item_id', 'cp1', { sort_title: null });
 
@@ -135,6 +157,12 @@ describe('runSortKeyRebuildIfNeeded', () => {
     expect(await readKey('SELECT sort_title FROM favorite_artists WHERE id = ?', ['far1'])).toEqual(
       { sort_title: 'favartist"' },
     );
+    expect(
+      await readKey('SELECT sort_title, sort_artist FROM favorite_songs WHERE id = ?', ['fs1']),
+    ).toEqual({ sort_title: 'favsong"', sort_artist: 'favband"' });
+    expect(
+      await readKey('SELECT sort_title, sort_artist FROM cached_songs WHERE song_id = ?', ['cs1']),
+    ).toEqual({ sort_title: 'cachedsong"', sort_artist: 'cachedband"' });
     expect(
       await readKey('SELECT sort_title, sort_artist FROM cached_albums WHERE item_id = ?', ['ci1']),
     ).toEqual({ sort_title: 'cached"', sort_artist: 'cachedartist"' });
@@ -164,7 +192,7 @@ describe('runSortKeyRebuildIfNeeded', () => {
     const first = await db().getAllAsync('SELECT id, sort_title, sort_artist FROM albums ORDER BY id');
 
     __resetSortKeyRebuildForTests();
-    await kvStorage.setItem(STATE_KEY, JSON.stringify({ version: 2 })); // re-arm
+    await kvStorage.setItem(STATE_KEY, JSON.stringify({ version: VERSION })); // re-arm
     __resetSortKeyRebuildForTests();
     await runSortKeyRebuildIfNeeded();
     expect(await db().getAllAsync('SELECT id, sort_title, sort_artist FROM albums ORDER BY id')).toEqual(
@@ -197,7 +225,7 @@ describe('runSortKeyRebuildIfNeeded', () => {
     // Interrupted mid-`albums`, having committed through `a1`.
     await kvStorage.setItem(
       STATE_KEY,
-      JSON.stringify({ version: 2, tableIndex: 0, lastId: 'a1' }),
+      JSON.stringify({ version: VERSION, tableIndex: 0, lastId: 'a1' }),
     );
     await runSortKeyRebuildIfNeeded();
 
@@ -219,7 +247,7 @@ describe('runSortKeyRebuildIfNeeded', () => {
     setKey('albums', 'id', 'a1', { sort_title: 'STALE' });
     // A previous format's cursor: same table, past this row. Resuming into it would skip
     // `a1` forever, so it must be discarded.
-    await kvStorage.setItem(STATE_KEY, JSON.stringify({ version: 1, tableIndex: 7, lastId: 'zz' }));
+    await kvStorage.setItem(STATE_KEY, JSON.stringify({ version: 1, tableIndex: 9, lastId: 'zz' }));
 
     await runSortKeyRebuildIfNeeded();
     expect(await readKey('SELECT sort_title FROM albums WHERE id = ?', ['a1'])).toEqual({
@@ -292,7 +320,7 @@ describe('runSortKeyRebuildIfNeeded', () => {
       await runSortKeyRebuildIfNeeded();
       const state = JSON.parse((await kvStorage.getItem(STATE_KEY)) as string);
       expect(state.complete).toBeUndefined();
-      expect(state).toMatchObject({ version: 2, tableIndex: 0, lastId: 'b0499' });
+      expect(state).toMatchObject({ version: VERSION, tableIndex: 0, lastId: 'b0499' });
       expect(warn).toHaveBeenCalled();
       // The committed chunk kept its work; the failed one did not half-apply.
       const filled = await db().getFirstAsync<{ n: number }>(

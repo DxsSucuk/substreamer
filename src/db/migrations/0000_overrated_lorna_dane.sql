@@ -361,6 +361,8 @@ CREATE TABLE `cached_songs` (
 	`bpm` integer,
 	`comment` text,
 	`sort_name` text,
+	`sort_title` text,
+	`sort_artist` text,
 	`music_brainz_id` text,
 	`explicit_status` text,
 	`bookmark_position` integer,
@@ -419,6 +421,8 @@ CREATE TABLE `favorite_songs` (
 	`id` text PRIMARY KEY NOT NULL,
 	`starred` integer NOT NULL,
 	`duration` integer,
+	`sort_title` text,
+	`sort_artist` text,
 	`json` text NOT NULL
 );
 --> statement-breakpoint

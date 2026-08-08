@@ -22,15 +22,17 @@ jest.mock('../../components/SongListView', () => ({
 }));
 
 import React from 'react';
-import { render, waitFor } from '@testing-library/react-native';
+import { act, render, waitFor } from '@testing-library/react-native';
 
 import type { Child } from 'subsonic-api';
 
 import { ensureNormalizedSchema } from '../../db/createNormalizedTables';
+import { songSortKeys } from '../../db/sortKeys';
 import { upsertSongs } from '../../db/repository/songs';
-import { markStarredSongs } from '../../db/repository/favorites';
+import { markStarredSongs, replaceFavoriteSongs } from '../../db/repository/favorites';
 import { getDb } from '../../store/persistence/db';
 import { favoritesStore } from '../../store/favoritesStore';
+import { layoutPreferencesStore } from '../../store/layoutPreferencesStore';
 import { musicCacheStore } from '../../store/musicCacheStore';
 import { SongLibraryListScreen } from '../song-library-list';
 
@@ -39,12 +41,16 @@ const song = (id: string, extra: Partial<Child> = {}): Child =>
   ({ id, title: `Song ${id}`, isDir: false, duration: 10, ...extra }) as Child;
 
 /** A downloaded song. BOTH filters read this from SQL now — the favourites read applies
- *  `downloadedOnly` in the query, and the downloaded filter is a whole-set read of it. */
-const markDownloadedInDb = (id: string): void => {
+ *  `downloadedOnly` in the query, and the downloaded filter is a whole-set read of it.
+ *  The `sort_*` keys come from the same derivation the download writer uses, because the
+ *  downloaded read ORDERs BY them. */
+const markDownloadedInDb = (id: string, title = `Song ${id}`, artist?: string): void => {
+  const keys = songSortKeys({ title, artist });
   db().runSync(
     'INSERT INTO cached_songs (song_id, album_id, suffix, bytes, format_captured_at, ' +
-      'downloaded_at, title, duration) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, 'al1', 'mp3', 1, 0, 0, `Song ${id}`, 10],
+      'downloaded_at, title, artist, duration, sort_title, sort_artist) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, 'al1', 'mp3', 1, 0, 0, title, artist ?? null, 10, keys.sort_title, keys.sort_artist],
   );
 };
 
@@ -57,6 +63,7 @@ beforeEach(() => {
   mockRenders.length = 0;
   for (const t of ['songs', 'favorite_songs', 'cached_songs']) db().runSync(`DELETE FROM ${t}`);
   favoritesStore.setState({ version: 0 });
+  layoutPreferencesStore.setState({ songSortOrder: 'title' });
   musicCacheStore.setState({ cachedItems: {}, cachedSongs: {}, revision: 0 });
 });
 
@@ -168,6 +175,133 @@ describe('SongLibraryListScreen — toggling Favourites on an already-mounted li
     expect(mockRenders[0]).toMatchObject({ songs: [], loading: true });
     await waitFor(() => expect(latest().songs.map((s) => s.id)).toEqual(['star-a']));
     expect(mockRenders.filter((m) => m.songs.length === 0 && !m.loading)).toEqual([]);
+  });
+});
+
+/**
+ * The defect this step fixes: with the sort order set to Artist the browse list ordered
+ * by artist and both filtered lists silently fell back to raw-title order. Every case
+ * below asserts a filtered list against an order the JS comparator could not produce.
+ */
+describe('SongLibraryListScreen — the filters follow the song sort order', () => {
+  /** Titles and artists disagree, and the ids run with the TITLES — so an artist-ordered
+   *  result cannot be reached by the id tiebreak either. */
+  const seedFavourites = async (): Promise<void> => {
+    await upsertSongs(db(), [
+      song('a-lib', { title: 'Alpha', artist: 'Zebra' }),
+      song('z-lib', { title: 'Zulu', artist: 'Alpaca' }),
+    ]);
+    await markStarredSongs(db(), [
+      { id: 'a-lib', starredAt: 100 },
+      { id: 'z-lib', starredAt: 400 },
+    ]);
+    await replaceFavoriteSongs(db(), [
+      song('m-rem', { title: 'Mike', artist: 'Mongoose', starred: new Date(300) }),
+    ]);
+  };
+
+  it('orders the FAVOURITES filter by artist when that is the preference', async () => {
+    layoutPreferencesStore.setState({ songSortOrder: 'artist' });
+    await seedFavourites();
+    render(<SongLibraryListScreen favoritesOnly />);
+    await waitFor(() => expect(latest().songs).toHaveLength(3));
+    expect(latest().songs.map((s) => s.id)).toEqual(['z-lib', 'm-rem', 'a-lib']);
+  });
+
+  it('orders the DOWNLOADED filter by artist when that is the preference', async () => {
+    layoutPreferencesStore.setState({ songSortOrder: 'artist' });
+    markDownloadedInDb('a-dl', 'Alpha', 'Zebra');
+    markDownloadedInDb('z-dl', 'Zulu', 'Alpaca');
+    render(<SongLibraryListScreen downloadedOnly />);
+    await waitFor(() => expect(latest().songs).toHaveLength(2));
+    expect(latest().songs.map((s) => s.id)).toEqual(['z-dl', 'a-dl']);
+  });
+
+  it('RE-READS the favourites half when the preference changes', async () => {
+    await seedFavourites();
+    render(<SongLibraryListScreen favoritesOnly />);
+    await waitFor(() => expect(latest().songs.map((s) => s.id)).toEqual(['a-lib', 'm-rem', 'z-lib']));
+    mockRenders.length = 0;
+
+    act(() => layoutPreferencesStore.setState({ songSortOrder: 'artist' }));
+    // The derived flag says so the moment the request changes: the rows we hold are no
+    // longer the rows this sort order asks for. The view keeps drawing them (it only
+    // spins with zero rows), so this never flashes.
+    expect(mockRenders[0].loading).toBe(true);
+    await waitFor(() => expect(latest().songs.map((s) => s.id)).toEqual(['z-lib', 'm-rem', 'a-lib']));
+    expect(mockRenders.filter((m) => m.songs.length === 0)).toEqual([]);
+  });
+
+  it('RE-READS the downloaded half when the preference changes', async () => {
+    markDownloadedInDb('a-dl', 'Alpha', 'Zebra');
+    markDownloadedInDb('z-dl', 'Zulu', 'Alpaca');
+    render(<SongLibraryListScreen downloadedOnly />);
+    await waitFor(() => expect(latest().songs.map((s) => s.id)).toEqual(['a-dl', 'z-dl']));
+    mockRenders.length = 0;
+
+    act(() => layoutPreferencesStore.setState({ songSortOrder: 'artist' }));
+    expect(mockRenders[0].loading).toBe(true);
+    await waitFor(() => expect(latest().songs.map((s) => s.id)).toEqual(['z-dl', 'a-dl']));
+    expect(mockRenders.filter((m) => m.songs.length === 0)).toEqual([]);
+  });
+
+  it('files a punctuation-leading title under H in EVERY filter combination', async () => {
+    // The reported symptom: `"Heroes"` jumped back to `#` the moment a filter went on,
+    // because the JS comparator compared the RAW title.
+    await upsertSongs(db(), [
+      song('s-h', { title: '"Heroes"' }),
+      song('s-g', { title: 'Ghosts' }),
+      song('s-i', { title: 'Ivy' }),
+    ]);
+    await markStarredSongs(db(), [
+      { id: 's-h', starredAt: 3 },
+      { id: 's-g', starredAt: 2 },
+      { id: 's-i', starredAt: 1 },
+    ]);
+    for (const [id, title] of [
+      ['s-h', '"Heroes"'],
+      ['s-g', 'Ghosts'],
+      ['s-i', 'Ivy'],
+    ] as const) {
+      markDownloadedInDb(id, title);
+    }
+
+    const expected = ['s-g', 's-h', 's-i'];
+    const r = render(<SongLibraryListScreen favoritesOnly />);
+    await waitFor(() => expect(latest().songs.map((s) => s.id)).toEqual(expected));
+
+    r.rerender(<SongLibraryListScreen favoritesOnly downloadedOnly />);
+    await waitFor(() => expect(latest().songs.map((s) => s.id)).toEqual(expected));
+
+    r.rerender(<SongLibraryListScreen downloadedOnly />);
+    await waitFor(() => expect(latest().songs.map((s) => s.id)).toEqual(expected));
+  });
+
+  it('does not reorder the list when a filter is toggled', async () => {
+    // Same three rows reachable through both filters; the orders must be identical.
+    await upsertSongs(db(), [
+      song('a-lib', { title: 'Alpha', artist: 'Zebra' }),
+      song('m-lib', { title: 'Mike', artist: 'Mongoose' }),
+      song('z-lib', { title: 'Zulu', artist: 'Alpaca' }),
+    ]);
+    await markStarredSongs(db(), [
+      { id: 'a-lib', starredAt: 1 },
+      { id: 'm-lib', starredAt: 2 },
+      { id: 'z-lib', starredAt: 3 },
+    ]);
+    markDownloadedInDb('a-lib', 'Alpha', 'Zebra');
+    markDownloadedInDb('m-lib', 'Mike', 'Mongoose');
+    markDownloadedInDb('z-lib', 'Zulu', 'Alpaca');
+    layoutPreferencesStore.setState({ songSortOrder: 'artist' });
+
+    const r = render(<SongLibraryListScreen favoritesOnly />);
+    await waitFor(() => expect(latest().songs).toHaveLength(3));
+    const underFavourites = latest().songs.map((s) => s.id);
+
+    r.rerender(<SongLibraryListScreen downloadedOnly />);
+    await waitFor(() => expect(latest().songs).toHaveLength(3));
+    expect(latest().songs.map((s) => s.id)).toEqual(underFavourites);
+    expect(underFavourites).toEqual(['z-lib', 'm-lib', 'a-lib']);
   });
 });
 

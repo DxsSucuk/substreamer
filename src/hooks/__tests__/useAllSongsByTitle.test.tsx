@@ -5,21 +5,33 @@ jest.mock('../../store/persistence/kvStorage', () =>
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 
 import { ensureNormalizedSchema } from '../../db/createNormalizedTables';
+import { songSortKeys } from '../../db/sortKeys';
 import { getDb } from '../../store/persistence/db';
+import { layoutPreferencesStore } from '../../store/layoutPreferencesStore';
 import { musicCacheStore } from '../../store/musicCacheStore';
 import { useAllSongsByTitle } from '../useAllSongsByTitle';
 
 const db = () => getDb()!;
 
+/** Writes the `sort_*` keys through the same derivation the download writer uses — the
+ *  read ORDERs BY them now, so a seed without them would order on NULLs and pass on the
+ *  `song_id` tiebreak alone. */
 const seedCachedSong = (
   id: string,
   title: string,
-  extra: { artist?: string; albumId?: string; coverArt?: string; duration?: number } = {},
+  extra: {
+    artist?: string;
+    albumId?: string;
+    coverArt?: string;
+    duration?: number;
+    sortName?: string;
+  } = {},
 ): void => {
+  const keys = songSortKeys({ title, artist: extra.artist, sortName: extra.sortName });
   db().runSync(
     'INSERT INTO cached_songs (song_id, album_id, suffix, bytes, format_captured_at, ' +
-      'downloaded_at, title, duration, artist, cover_art) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'downloaded_at, title, duration, artist, cover_art, sort_name, sort_title, sort_artist) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     [
       id,
       extra.albumId ?? 'al1',
@@ -31,6 +43,9 @@ const seedCachedSong = (
       extra.duration ?? 1,
       extra.artist ?? null,
       extra.coverArt ?? null,
+      extra.sortName ?? null,
+      keys.sort_title,
+      keys.sort_artist,
     ],
   );
 };
@@ -41,6 +56,7 @@ beforeEach(() => {
   db().runSync('DELETE FROM cached_item_songs');
   db().runSync('DELETE FROM cached_songs');
   musicCacheStore.setState({ revision: 0 } as never);
+  layoutPreferencesStore.setState({ songSortOrder: 'title' });
 });
 
 describe('useAllSongsByTitle', () => {
@@ -68,23 +84,48 @@ describe('useAllSongsByTitle', () => {
     spy.mockRestore();
   });
 
-  it('returns the downloaded set title-sorted', async () => {
-    seedCachedSong('s2', 'Zulu');
-    seedCachedSong('s1', 'Alpha');
+  it('returns the downloaded set in title order', async () => {
+    // Ids run OPPOSITE to the titles, so the `song_id` tiebreak alone gives the other
+    // answer — this fails if the ORDER BY is dropped.
+    seedCachedSong('s1', 'Zulu');
+    seedCachedSong('s2', 'Alpha');
     const { result } = renderHook(() => useAllSongsByTitle({ downloadedOnly: true }));
     await waitFor(() => expect(result.current.songs).toHaveLength(2));
     expect(result.current.songs.map((s) => s.title)).toEqual(['Alpha', 'Zulu']);
     expect(result.current.totalCount).toBe(2);
   });
 
-  it('projects the same six fields the map walk did', async () => {
-    // Parity, deliberately: `cached_songs` holds ~55 columns and enriching these rows is a
-    // separate, user-visible change. A wider projection here would be that change.
+  it('follows the song sort preference into the query', async () => {
+    layoutPreferencesStore.setState({ songSortOrder: 'artist' });
+    seedCachedSong('s1', 'Alpha', { artist: 'Zebra' });
+    seedCachedSong('s2', 'Zulu', { artist: 'Alpaca' });
+    const { result } = renderHook(() => useAllSongsByTitle({ downloadedOnly: true }));
+    await waitFor(() => expect(result.current.songs).toHaveLength(2));
+    expect(result.current.songs.map((s) => s.id)).toEqual(['s2', 's1']);
+  });
+
+  it('RE-READS when the preference changes — the ORDER BY is the DB\'s now', async () => {
+    seedCachedSong('s1', 'Zulu', { artist: 'Alpaca' });
+    seedCachedSong('s2', 'Alpha', { artist: 'Zebra' });
+    const { result } = renderHook(() => useAllSongsByTitle({ downloadedOnly: true }));
+    await waitFor(() => expect(result.current.songs.map((s) => s.id)).toEqual(['s2', 's1']));
+
+    await act(async () => {
+      layoutPreferencesStore.setState({ songSortOrder: 'artist' });
+    });
+    await waitFor(() => expect(result.current.songs.map((s) => s.id)).toEqual(['s1', 's2']));
+  });
+
+  it('projects the seven fields the song rows render', async () => {
+    // Near-parity with the map walk this read replaced: `cached_songs` holds ~58 columns
+    // and enriching these rows is a separate, user-visible change. `sortName` is the one
+    // addition, and it exists so the alphabet scroller agrees with the ORDER BY.
     seedCachedSong('s1', 'Alpha', {
       artist: 'Artist A',
       albumId: 'dir-1',
       coverArt: 'cov-1',
       duration: 42,
+      sortName: 'Alpha Sorted',
     });
     const { result } = renderHook(() => useAllSongsByTitle({ downloadedOnly: true }));
     await waitFor(() => expect(result.current.songs).toHaveLength(1));
@@ -95,6 +136,7 @@ describe('useAllSongsByTitle', () => {
       albumId: 'dir-1',
       duration: 42,
       coverArt: 'cov-1',
+      sortName: 'Alpha Sorted',
       isDir: false,
     });
   });
@@ -137,7 +179,7 @@ describe('useAllSongsByTitle — the loading flag is real now', () => {
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
     rerender({ on: false });
-    // A stale `loadedRevision` must not leak a spinner into the unfiltered list.
+    // A stale `loadedKey` must not leak a spinner into the unfiltered list.
     expect(result.current.loading).toBe(false);
   });
 });

@@ -21,7 +21,7 @@
 import type { AlbumID3, Child, Playlist } from 'subsonic-api';
 
 import { getSortArticles } from '@/db/sortArticles';
-import { albumSortKeys, playlistSortTitle } from '@/db/sortKeys';
+import { albumSortKeys, playlistSortTitle, songSortKeys } from '@/db/sortKeys';
 
 import { getDb, type BatchCommand } from './db';
 
@@ -1186,8 +1186,9 @@ function cachedSongChildCommands(songId: string, child: Child): BatchCommand[] {
 const CACHED_SONG_UPSERT_SQL = `INSERT INTO cached_songs
    (song_id, title, artist, album, album_id, cover_art, bytes, duration,
     suffix, bit_rate, bit_depth, sampling_rate, format_captured_at,
-    downloaded_at, raw_json, ${columnNames(PROMOTED_SONG_COLUMNS)})
-   VALUES (${placeholders(15 + PROMOTED_SONG_COLUMNS.length)})
+    downloaded_at, raw_json, sort_title, sort_artist,
+    ${columnNames(PROMOTED_SONG_COLUMNS)})
+   VALUES (${placeholders(17 + PROMOTED_SONG_COLUMNS.length)})
    ON CONFLICT(song_id) DO UPDATE SET
      title = excluded.title,
      artist = excluded.artist,
@@ -1205,6 +1206,8 @@ const CACHED_SONG_UPSERT_SQL = `INSERT INTO cached_songs
      raw_json = COALESCE(excluded.raw_json, raw_json),
      meta_v = CASE WHEN excluded.raw_json IS NOT NULL AND excluded.raw_json IS NOT raw_json
                    THEN NULL ELSE meta_v END,
+     sort_title = excluded.sort_title,
+     sort_artist = excluded.sort_artist,
      ${coalesceAssignments(PROMOTED_SONG_COLUMNS)};`;
 
 /**
@@ -1226,6 +1229,12 @@ function cachedSongCommands(song: CachedSongRow, child?: Child): BatchCommand[] 
   // `meta_v` is never set here; it only re-arms to NULL when this write lands a
   // genuinely NEW envelope, so a migration's backfill gets converted while a
   // re-write of the same envelope can't re-promote it over fresher columns.
+  //
+  // The A–Z keys are DERIVED here from the same row that supplies `title`/`artist`,
+  // through the same `db/sortKeys` derivation the `songs` table uses, and written
+  // unconditionally alongside them — nothing in JS reads them back, only the
+  // Downloaded filter's `ORDER BY` does.
+  const keys = songSortKeys(song, getSortArticles());
   const commands: BatchCommand[] = [
     [
       CACHED_SONG_UPSERT_SQL,
@@ -1245,6 +1254,8 @@ function cachedSongCommands(song: CachedSongRow, child?: Child): BatchCommand[] 
         song.formatCapturedAt,
         song.downloadedAt,
         song.rawJson ?? null,
+        keys.sort_title,
+        keys.sort_artist,
         ...columnParams(PROMOTED_SONG_COLUMNS, song),
       ],
     ],
@@ -1808,8 +1819,12 @@ const META_V = 1;
 /** Rows converted per transaction, with a macrotask yield between chunks. */
 const CONVERT_CHUNK = 200;
 
+/** The A–Z keys are rewritten here too: this statement lands `sort_name`, which
+ *  `songSortKeys` reads, so a conversion that left them alone would leave a row filed
+ *  under the letter it had before its sort name arrived. */
 const CONVERT_SONG_UPDATE_SQL =
-  `UPDATE cached_songs SET ${setAssignments(PROMOTED_SONG_COLUMNS)}, meta_v = ? WHERE song_id = ?;`;
+  `UPDATE cached_songs SET ${setAssignments(PROMOTED_SONG_COLUMNS)}, ` +
+  'sort_title = ?, sort_artist = ?, meta_v = ? WHERE song_id = ?;';
 
 let conversionInFlight: Promise<void> | null = null;
 
@@ -1835,10 +1850,13 @@ async function runLegacyMetadataConversion(): Promise<void> {
         // EVERY row in the chunk is stamped, parseable or not: one left in
         // the work set would spin this LIMIT loop forever on the boot path.
         if (child) {
+          const keys = songSortKeys(child, getSortArticles());
           commands.push([
             CONVERT_SONG_UPDATE_SQL,
             [
               ...columnParams(PROMOTED_SONG_COLUMNS, promotedSongFieldsFromChild(child)),
+              keys.sort_title,
+              keys.sort_artist,
               META_V,
               row.song_id,
             ],

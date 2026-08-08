@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "b99e3840-b58b-4050-997c-6cbe5d59a091",
+  "id": "2c01bc9a-dd03-4e40-9830-349ccd92b98a",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "album_artists": {
@@ -2446,6 +2446,20 @@
           "notNull": false,
           "autoincrement": false
         },
+        "sort_title": {
+          "name": "sort_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "sort_artist": {
+          "name": "sort_artist",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "music_brainz_id": {
           "name": "music_brainz_id",
           "type": "text",
@@ -2810,6 +2824,20 @@
         "duration": {
           "name": "duration",
           "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "sort_title": {
+          "name": "sort_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "sort_artist": {
+          "name": "sort_artist",
+          "type": "text",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false

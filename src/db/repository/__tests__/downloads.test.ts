@@ -1,5 +1,9 @@
 import { getDb } from '../../../store/persistence/db';
-import { upsertCachedItem } from '../../../store/persistence/musicCacheTables';
+import {
+  upsertCachedItem,
+  upsertCachedSong,
+  type CachedSongRow,
+} from '../../../store/persistence/musicCacheTables';
 import { getSortFirstLetter } from '../../../utils/sortHelpers';
 import { ensureNormalizedSchema } from '../../createNormalizedTables';
 import { albumListRowToAlbumID3, listAlbums, upsertAlbums } from '../albums';
@@ -430,13 +434,13 @@ const seedSongWithAlbums = (
 };
 
 describe('listDownloadedSongs', () => {
-  it('projects exactly the six fields the song rows render', async () => {
+  it('projects exactly the seven fields the song rows render', async () => {
     seedSongWithAlbums('s1', 'dir-1', 'srv-1');
     const rows = await listDownloadedSongs(db());
     expect(rows).toHaveLength(1);
     // Exact shape: widening this is a deliberate follow-up, not a drive-by.
     expect(Object.keys(rows[0]).sort()).toEqual(
-      ['album_id', 'artist', 'cover_art', 'duration', 'id', 'title'].sort(),
+      ['album_id', 'artist', 'cover_art', 'duration', 'id', 'sort_name', 'title'].sort(),
     );
   });
 
@@ -469,5 +473,135 @@ describe('listDownloadedSongs', () => {
 
   it('is empty when nothing is downloaded', async () => {
     expect(await listDownloadedSongs(db())).toEqual([]);
+  });
+});
+
+/**
+ * The Downloaded filter orders in SQL on the keys the download WRITER stored, so these
+ * go through `upsertCachedSong` rather than seeding the columns by hand — the derivation
+ * and the `ORDER BY` are both under test.
+ */
+describe('listDownloadedSongs — the sort order', () => {
+  const seedSong = (id: string, title: string, extra: Partial<CachedSongRow> = {}): Promise<void> =>
+    upsertCachedSong({
+      id,
+      title,
+      albumId: 'dir',
+      bytes: 1,
+      duration: 1,
+      suffix: 'mp3',
+      formatCapturedAt: 0,
+      downloadedAt: 0,
+      ...extra,
+    });
+
+  it('defaults to title order', async () => {
+    await seedSong('s-z', 'Zulu', { artist: 'Alpaca' });
+    await seedSong('s-a', 'Alpha', { artist: 'Zebra' });
+    expect((await listDownloadedSongs(db())).map((r) => r.id)).toEqual(['s-a', 's-z']);
+  });
+
+  it('groups by artist then title when asked', async () => {
+    await seedSong('s-z', 'Zulu', { artist: 'Alpaca' });
+    await seedSong('s-a', 'Alpha', { artist: 'Zebra' });
+    expect((await listDownloadedSongs(db(), { sortOrder: 'artist' })).map((r) => r.id)).toEqual([
+      's-z',
+      's-a',
+    ]);
+  });
+
+  it('breaks an artist tie on the title key, exactly as the browse keyset does', async () => {
+    // Ids run OPPOSITE to the titles, so an order that fell through to `song_id` instead
+    // of `sort_title` gives the other answer.
+    await seedSong('aaa', 'Zulu', { artist: 'One Band' });
+    await seedSong('zzz', 'Alpha', { artist: 'One Band' });
+    expect((await listDownloadedSongs(db(), { sortOrder: 'artist' })).map((r) => r.id)).toEqual([
+      'zzz',
+      'aaa',
+    ]);
+  });
+
+  it('uses the SONG artist derivation — `artist ?? title`, not the album chain', async () => {
+    await seedSong('s-1', 'One', { artist: 'Zebra', displayArtist: 'Alpaca' });
+    await seedSong('s-2', 'Two', { artist: 'Alpaca', displayArtist: 'Zebra' });
+    expect((await listDownloadedSongs(db(), { sortOrder: 'artist' })).map((r) => r.id)).toEqual([
+      's-2',
+      's-1',
+    ]);
+  });
+
+  it('falls back to the title when the song has no artist at all', async () => {
+    await seedSong('s-z', 'Zulu');
+    await seedSong('s-a', 'Alpha');
+    expect((await listDownloadedSongs(db(), { sortOrder: 'artist' })).map((r) => r.id)).toEqual([
+      's-a',
+      's-z',
+    ]);
+  });
+
+  it('files a punctuation-leading title where the scroller says it is', async () => {
+    await seedSong('s-h', '"Heroes"');
+    await seedSong('s-g', 'Ghosts');
+    await seedSong('s-i', 'Ivy');
+    expect((await listDownloadedSongs(db())).map((r) => r.id)).toEqual(['s-g', 's-h', 's-i']);
+    expect(getSortFirstLetter('"Heroes"')).toBe('H');
+  });
+
+  it('projects sort_name, so the scroller letter agrees with the ORDER BY', async () => {
+    // `getSortKey` prefers a server-stripped `sortName`. Without it on the projection the
+    // scroller would recompute from the raw title and file the row under a letter the
+    // list does not put it at.
+    await seedSong('s-h', 'A Horse With No Name', { sortName: 'Horse With No Name' });
+    await seedSong('s-g', 'Ghosts');
+    await seedSong('s-i', 'Ivy');
+    const rows = await listDownloadedSongs(db());
+    expect(rows.map((r) => r.id)).toEqual(['s-g', 's-h', 's-i']);
+    for (const r of rows) {
+      const child = downloadedSongRowToChild(r);
+      expect(getSortFirstLetter(child.title ?? '', child.sortName)).toBe(
+        (
+          db().getFirstSync<{ sort_title: string }>(
+            'SELECT sort_title FROM cached_songs WHERE song_id = ?',
+            [r.id],
+          )?.sort_title ?? ''
+        )
+          .charAt(0)
+          .toUpperCase(),
+      );
+    }
+  });
+
+  it('breaks a title tie on the id, so the order is total', async () => {
+    // Inserted in the OPPOSITE order to their ids: with no `song_id` tiebreak the scan
+    // returns rowid order, and the list would shuffle whenever a row is rewritten.
+    await seedSong('z-dup', 'Same Title');
+    await seedSong('a-dup', 'Same Title');
+    expect((await listDownloadedSongs(db())).map((r) => r.id)).toEqual(['a-dup', 'z-dup']);
+  });
+
+  it('refreshes the keys when an existing row is re-written', async () => {
+    // A re-tag on the server followed by a metadata refresh or a re-download upserts the
+    // row with a new title/artist; the keys are written unconditionally alongside them,
+    // so the row moves. Left on the previous values it would sort where it used to.
+    await seedSong('s1', 'Zulu', { artist: 'Zebra' });
+    await seedSong('s2', 'Mike', { artist: 'Mongoose' });
+    await seedSong('s1', 'Alpha', { artist: 'Alpaca' });
+    expect(
+      db().getFirstSync<{ sort_title: string; sort_artist: string }>(
+        'SELECT sort_title, sort_artist FROM cached_songs WHERE song_id = ?',
+        ['s1'],
+      ),
+    ).toEqual({ sort_title: 'alpha', sort_artist: 'alpaca' });
+    expect((await listDownloadedSongs(db())).map((r) => r.id)).toEqual(['s1', 's2']);
+  });
+
+  it('writes the keys from the same row that supplies title and artist', async () => {
+    await seedSong('s1', 'The Wall', { artist: 'Pink Floyd' });
+    expect(
+      db().getFirstSync<{ sort_title: string; sort_artist: string }>(
+        'SELECT sort_title, sort_artist FROM cached_songs WHERE song_id = ?',
+        ['s1'],
+      ),
+    ).toEqual({ sort_title: 'wall', sort_artist: 'pink floyd' });
   });
 });

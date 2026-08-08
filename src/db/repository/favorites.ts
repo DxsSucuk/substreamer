@@ -25,7 +25,7 @@ import type { AlbumID3, ArtistID3, Child } from 'subsonic-api';
 import { mergeSorted, mergeStarredDesc, type StarredEntry } from '@/utils/mergeStarredDesc';
 
 import type { BatchCommand, InternalDb } from '../client';
-import { albumSortKeys, artistSortTitle } from '../sortKeys';
+import { albumSortKeys, artistSortTitle, songSortKeys } from '../sortKeys';
 import { getSortArticles } from '../sortArticles';
 import {
   ALBUM_LIST_COLS,
@@ -39,7 +39,13 @@ import { countRows, keysetPage, type Cursor } from './core';
 // The download predicates live in `downloads.ts` — ONE definition, so the library tab's
 // filter and the favourites filter cannot drift apart.
 import { downloadedClause, type DownloadableEntity } from './downloads';
-import { SONG_LIST_COLS, hydrateSongRows, songListRowToChild, type SongListRow } from './songs';
+import {
+  SONG_LIST_COLS,
+  hydrateSongRows,
+  songListRowToChild,
+  type SongListRow,
+  type SongSortOrder,
+} from './songs';
 
 export type { StarredEntry } from '@/utils/mergeStarredDesc';
 
@@ -68,6 +74,13 @@ export interface StarredFilter {
  *  newest-favourite-first; set, it is the Library tab's A–Z filter. */
 export interface StarredAlbumListOpts extends StarredFilter {
   sortOrder?: AlbumSortOrder;
+}
+
+/** Whole-set song read — `sortOrder` as on {@link StarredAlbumListOpts}. Absent is
+ *  newest-favourite-first, which is what Play All, Shuffle All, tap-to-play, the CarPlay
+ *  queue and the `__starred__` download all read. */
+export interface StarredSongListOpts extends StarredFilter {
+  sortOrder?: SongSortOrder;
 }
 
 /** Whole-set artist read — no download filter (artists are not downloadable). */
@@ -118,8 +131,8 @@ interface RemainderRow {
   id: string;
   starred: number;
   json: string;
-  /** Mirrors the library table's key of the same name — present on the album and
-   *  artist remainders, absent on songs (nothing orders those A–Z). */
+  /** Mirrors the library table's key of the same name — `sort_artist` is absent on the
+   *  artist remainder, where the name IS the title key. */
   sort_title?: string | null;
   sort_artist?: string | null;
 }
@@ -127,7 +140,7 @@ interface RemainderSongRow extends RemainderRow {
   duration: number | null;
 }
 
-const REMAINDER_SONG_COLS = '"id", "starred", "duration", "json"';
+const REMAINDER_SONG_COLS = '"id", "starred", "duration", "sort_title", "sort_artist", "json"';
 const REMAINDER_ALBUM_COLS = '"id", "starred", "sort_title", "sort_artist", "json"';
 const REMAINDER_ARTIST_COLS = '"id", "starred", "sort_title", "json"';
 
@@ -293,6 +306,9 @@ const STARRED_DESC = '"starred" DESC, "id" DESC';
  * The A–Z `ORDER BY` tuples, as column names. Both halves carry the same `sort_*`
  * columns, so ONE tuple drives both queries and the JS merge of their results.
  * `id` last makes the order total, so the merge below is deterministic.
+ *
+ * Shared by albums and songs: `AlbumSortOrder` and `SongSortOrder` are the same pair,
+ * and both entities key their browse list on the same two columns.
  */
 const NAME_ORDER: Record<AlbumSortOrder, readonly string[]> = {
   title: ['sort_title', 'id'],
@@ -356,19 +372,28 @@ async function allRemainder<T extends { created?: Date; starred?: Date }>(
 }
 
 /**
- * The WHOLE starred song set, newest favourite first. **O(favourites)** — the one
- * unbounded read this module has, bounded by a user-curated set rather than the
- * library. Its callers (Play All, Shuffle All, tap-to-play, the CarPlay queue, the
- * `__starred__` download, the library-tab favourites filter) each need the full list.
+ * The WHOLE starred song set. **O(favourites)** — the one unbounded read this module
+ * has, bounded by a user-curated set rather than the library. Its callers (Play All,
+ * Shuffle All, tap-to-play, the CarPlay queue, the `__starred__` download, the
+ * library-tab favourites filter) each need the full list.
+ *
+ * `sortOrder` ABSENT is newest favourite first, which every play/download caller wants.
+ * Set, it is the Songs tab's favourites filter, ordered in SQL by the same stored keys
+ * the browse list uses — so toggling the filter cannot reorder the rows.
  */
-export async function listAllStarredSongs(db: InternalDb, f: StarredFilter = {}): Promise<Child[]> {
+export async function listAllStarredSongs(
+  db: InternalDb,
+  f: StarredSongListOpts = {},
+): Promise<Child[]> {
+  const cols = f.sortOrder ? NAME_ORDER[f.sortOrder] : null;
+  const order = cols ? orderBySql(cols) : STARRED_DESC;
   const rows = await db.getAllAsync<SongListRow>(
-    `SELECT ${SONG_LIST_COLS} FROM songs WHERE ${libraryWhere('songs', f)} ORDER BY ${STARRED_DESC}`,
+    `SELECT ${SONG_LIST_COLS} FROM songs WHERE ${libraryWhere('songs', f)} ORDER BY ${order}`,
   );
   await hydrateSongRows(db, rows);
   const lib = rows.map((r) => ({ id: r.id, starred: r.starred ?? 0, item: songListRowToChild(r) as Child }));
-  const rem = await allRemainder<Child>(db, 'songs', REMAINDER_SONG_COLS, f);
-  return mergeStarredDesc(lib, rem.entries).map((e) => e.item);
+  const rem = await allRemainder<Child>(db, 'songs', REMAINDER_SONG_COLS, f, order);
+  return mergeHalves(lib, rem.entries, rows, rem.rows, cols);
 }
 
 /**
@@ -596,17 +621,30 @@ async function replaceRemainder(
 }
 
 /** Replace `favorite_songs` with the starred songs the library does not hold.
- *  `duration` and `json` are written from the SAME payload object in one statement, so
- *  the hot column can never disagree with the envelope. */
-export const replaceFavoriteSongs = (db: InternalDb, songs: readonly Child[]): Promise<void> =>
-  replaceRemainder(
+ *  `duration`, the sort keys and `json` are written from the SAME payload object in one
+ *  statement, so neither the hot column nor the keys can disagree with the envelope. */
+export const replaceFavoriteSongs = (db: InternalDb, songs: readonly Child[]): Promise<void> => {
+  const articles = getSortArticles();
+  return replaceRemainder(
     db,
     'songs',
-    songs.map((s): BatchCommand => [
-      'INSERT OR REPLACE INTO favorite_songs (id, starred, duration, json) VALUES (?, ?, ?, ?)',
-      [s.id, epochOf(s.starred), s.duration ?? null, JSON.stringify(s)],
-    ]),
+    songs.map((s): BatchCommand => {
+      const keys = songSortKeys(s, articles);
+      return [
+        'INSERT OR REPLACE INTO favorite_songs (id, starred, duration, sort_title, sort_artist, json) ' +
+          'VALUES (?, ?, ?, ?, ?, ?)',
+        [
+          s.id,
+          epochOf(s.starred),
+          s.duration ?? null,
+          keys.sort_title,
+          keys.sort_artist,
+          JSON.stringify(s),
+        ],
+      ];
+    }),
   );
+};
 
 /** The sort keys come from the SAME envelope in the same statement, through the same
  *  `db/sortKeys` derivation the `albums` table uses — nothing is parsed back out of

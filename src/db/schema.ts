@@ -253,6 +253,11 @@ export const favoriteSongs = sqliteTable(
     /** Hot column so the Favourites action-bar total is a SQL aggregate rather than a
      *  JSON parse of every row. Written from the same payload object as `json`. */
     duration: integer('duration'),
+    /** Mirror the `songs` columns of the same name, written from the same envelope
+     *  through `db/sortKeys`, so the Songs tab's favourites filter orders the union of
+     *  both halves in SQL. The Favourites TAB still reads this table `starred DESC`. */
+    sortTitle: text('sort_title'),
+    sortArtist: text('sort_artist'),
     /** The verbatim `getStarred2` `Child` envelope. */
     json: text('json').notNull(),
   },
@@ -740,6 +745,10 @@ export const cachedSongs = sqliteTable(
     bpm: integer('bpm'),
     comment: text('comment'),
     sortName: text('sort_name'),
+    // A–Z keys mirroring the `songs` columns of the same name, so the Downloaded filter
+    // orders on the same stored keys the browse list does.
+    sortTitle: text('sort_title'),
+    sortArtist: text('sort_artist'),
     musicBrainzId: text('music_brainz_id'),
     explicitStatus: text('explicit_status'),
     bookmarkPosition: integer('bookmark_position'),

@@ -30,8 +30,9 @@ import { errMessage } from '../utils/errorMessage';
 import { getDb, type BatchCommand, type InternalDb } from '../store/persistence/db';
 import { kvStorage } from '../store/persistence';
 
-/** Bump when `getSortKey` changes what it produces — every install then rebuilds once. */
-const REBUILD_VERSION = 2;
+/** Bump when `getSortKey` changes what it produces, or when a table joins the pass —
+ *  every install then rebuilds once. */
+const REBUILD_VERSION = 3;
 const STATE_KEY = 'substreamer-sort-key-rebuild';
 
 /** Matches `bulkUpsert`'s chunk size: 500 single-row UPDATEs in one atomic batch. */
@@ -141,6 +142,20 @@ const SPECS: readonly RebuildSpec[] = [
     },
   },
   {
+    table: 'favorite_songs',
+    idCol: 'id',
+    columns: ['json'],
+    keysOf: (r, articles): Record<string, string> => {
+      const c = parseEnvelope(r);
+      return c
+        ? songSortKeys(
+            { title: text(c.title), sortName: text(c.sortName), artist: text(c.artist) },
+            articles,
+          )
+        : {};
+    },
+  },
+  {
     table: 'cached_albums',
     idCol: 'item_id',
     columns: ALBUM_COLUMNS,
@@ -153,6 +168,16 @@ const SPECS: readonly RebuildSpec[] = [
     keysOf: (r, articles): Record<string, string> => ({
       sort_title: playlistSortTitle({ name: text(r.name) }, articles),
     }),
+  },
+  {
+    table: 'cached_songs',
+    idCol: 'song_id',
+    columns: ['title', 'sort_name', 'artist'],
+    keysOf: (r, articles) =>
+      songSortKeys(
+        { title: text(r.title), sortName: text(r.sort_name), artist: text(r.artist) },
+        articles,
+      ),
   },
   {
     table: 'songs',
