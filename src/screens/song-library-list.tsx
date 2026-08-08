@@ -3,7 +3,7 @@ import { StyleSheet, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
 import { SongListView, type SongLayout } from '../components/SongListView';
-import { useAllSongsByTitle } from '../hooks/useAllSongsByTitle';
+import { useDownloadedSongs } from '../hooks/useDownloadedSongs';
 import { onPullToRefresh } from '../services/dataSyncService';
 import { playTrack } from '../services/playerService';
 import {
@@ -187,7 +187,7 @@ function FilteredSongList({
   contentInsetTop: number;
 }) {
   const { t } = useTranslation();
-  const { rows: downloadedRows, refresh, loading } = useAllSongsByTitle({
+  const { rows: downloadedRows, loading } = useDownloadedSongs({
     downloadedOnly: downloadedOnly && !favoritesOnly,
   });
   const version = favoritesStore((s) => s.version);
@@ -217,14 +217,19 @@ function FilteredSongList({
   }, [favoritesOnly, downloadedOnly, version, sortOrder, starredKey]);
 
   const [refreshing, setRefreshing] = useState(false);
+  // Refreshes the SERVER source the branch on screen reads — `getStarred2` for a
+  // favourites view, whatever else is filtered on top of it, the song library otherwise.
+  // A filter narrows the view, never the source, so this matches the unfiltered list.
+  // `onPullToRefresh` holds offline mode's deliberate no-op and the spinner's min
+  // duration; each branch's own read re-fires off the store the refresh bumps.
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      refresh();
+      await onPullToRefresh(favoritesOnly ? 'favorites' : 'songs');
     } finally {
       setRefreshing(false);
     }
-  }, [refresh]);
+  }, [favoritesOnly]);
 
   // The key the DOWNLOADED read ordered by, so the scroller letters on it rather than
   // re-deriving one from the envelope. Memoised: a fresh arrow per render would recompute

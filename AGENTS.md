@@ -280,7 +280,7 @@ scripts/        build helpers + CI validators
 
 **Swipe rows:** primary action goes at the **outside edge** (last in the array). Full swipe triggers the outermost action — visual hierarchy matches gesture.
 
-**Pull-to-refresh:** wrap with `minDelay()` from `utils/stringHelpers.ts` so the spinner is visible long enough to perceive.
+**Pull-to-refresh:** go through `onPullToRefresh(scope)` in `services/dataSyncService`, which holds the `minDelay()` that keeps the spinner perceptible and the offline no-op (offline there is nothing to refresh — that is intended, not a gap). It refreshes the **server source of whatever the view shows**, so pick the scope from the source, never from the filters: a favourites view refreshes `favorites` (`getStarred2`) whatever else is filtered on top, and a Downloaded filter still refreshes the library it filters. A filter narrows a VIEW; it never changes the source. A filtered branch whose refresh differs from its unfiltered one is a bug.
 
 **Navigation transitions:** detail screens defer heavy rendering with `useTransitionComplete()` to avoid janky push animations.
 

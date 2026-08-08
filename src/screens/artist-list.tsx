@@ -231,10 +231,12 @@ function FilteredArtistList({
   }, [favoritesOnly, version, starredKey]);
 
   const [refreshing, setRefreshing] = useState(false);
+  // Only ever a favourites view, so the source is `getStarred2` — refreshing the artist
+  // library would leave the starred set on screen untouched.
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      await onPullToRefresh('artists');
+      await onPullToRefresh('favorites');
     } finally {
       setRefreshing(false);
     }

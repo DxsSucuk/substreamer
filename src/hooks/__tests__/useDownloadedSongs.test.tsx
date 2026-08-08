@@ -9,7 +9,7 @@ import { songSortKeys } from '../../db/sortKeys';
 import { getDb } from '../../store/persistence/db';
 import { layoutPreferencesStore } from '../../store/layoutPreferencesStore';
 import { musicCacheStore } from '../../store/musicCacheStore';
-import { useAllSongsByTitle } from '../useAllSongsByTitle';
+import { useDownloadedSongs } from '../useDownloadedSongs';
 
 const db = () => getDb()!;
 
@@ -59,10 +59,10 @@ beforeEach(() => {
   layoutPreferencesStore.setState({ songSortOrder: 'title' });
 });
 
-describe('useAllSongsByTitle', () => {
+describe('useDownloadedSongs', () => {
   it('returns nothing when the downloaded filter is off, and never reads the table', async () => {
     seedCachedSong('s1', 'Alpha');
-    const { result } = renderHook(() => useAllSongsByTitle());
+    const { result } = renderHook(() => useDownloadedSongs());
     expect(result.current.rows).toEqual([]);
     expect(result.current.totalCount).toBe(0);
     // The short-circuit is the point: the unfiltered Songs tab pages `songs` and must not
@@ -78,7 +78,7 @@ describe('useAllSongsByTitle', () => {
     // read of the download table it will not use.
     seedCachedSong('s1', 'Alpha');
     const spy = jest.spyOn(db(), 'getAllAsync');
-    renderHook(() => useAllSongsByTitle());
+    renderHook(() => useDownloadedSongs());
     await act(async () => {});
     expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
@@ -89,7 +89,7 @@ describe('useAllSongsByTitle', () => {
     // answer — this fails if the ORDER BY is dropped.
     seedCachedSong('s1', 'Zulu');
     seedCachedSong('s2', 'Alpha');
-    const { result } = renderHook(() => useAllSongsByTitle({ downloadedOnly: true }));
+    const { result } = renderHook(() => useDownloadedSongs({ downloadedOnly: true }));
     await waitFor(() => expect(result.current.rows).toHaveLength(2));
     expect(result.current.rows.map((r) => r.title)).toEqual(['Alpha', 'Zulu']);
     expect(result.current.totalCount).toBe(2);
@@ -99,7 +99,7 @@ describe('useAllSongsByTitle', () => {
     layoutPreferencesStore.setState({ songSortOrder: 'artist' });
     seedCachedSong('s1', 'Alpha', { artist: 'Zebra' });
     seedCachedSong('s2', 'Zulu', { artist: 'Alpaca' });
-    const { result } = renderHook(() => useAllSongsByTitle({ downloadedOnly: true }));
+    const { result } = renderHook(() => useDownloadedSongs({ downloadedOnly: true }));
     await waitFor(() => expect(result.current.rows).toHaveLength(2));
     expect(result.current.rows.map((r) => r.id)).toEqual(['s2', 's1']);
   });
@@ -107,7 +107,7 @@ describe('useAllSongsByTitle', () => {
   it('RE-READS when the preference changes — the ORDER BY is the DB\'s now', async () => {
     seedCachedSong('s1', 'Zulu', { artist: 'Alpaca' });
     seedCachedSong('s2', 'Alpha', { artist: 'Zebra' });
-    const { result } = renderHook(() => useAllSongsByTitle({ downloadedOnly: true }));
+    const { result } = renderHook(() => useDownloadedSongs({ downloadedOnly: true }));
     await waitFor(() => expect(result.current.rows.map((r) => r.id)).toEqual(['s2', 's1']));
 
     await act(async () => {
@@ -127,7 +127,7 @@ describe('useAllSongsByTitle', () => {
       duration: 42,
       sortName: 'Alpha Sorted',
     });
-    const { result } = renderHook(() => useAllSongsByTitle({ downloadedOnly: true }));
+    const { result } = renderHook(() => useDownloadedSongs({ downloadedOnly: true }));
     await waitFor(() => expect(result.current.rows).toHaveLength(1));
     expect(result.current.rows[0]).toEqual({
       id: 's1',
@@ -144,17 +144,17 @@ describe('useAllSongsByTitle', () => {
 
 });
 
-describe('useAllSongsByTitle — the loading flag is real now', () => {
+describe('useDownloadedSongs — the loading flag is real now', () => {
   it('is loading on the FIRST render, before the SQL read resolves', () => {
     seedCachedSong('s1', 'Alpha');
-    const { result } = renderHook(() => useAllSongsByTitle({ downloadedOnly: true }));
+    const { result } = renderHook(() => useDownloadedSongs({ downloadedOnly: true }));
     // The read runs in an effect. Without this frame reporting loading, the list view
     // renders an empty, non-loading frame and flashes "No songs found".
     expect(result.current).toMatchObject({ rows: [], loading: true });
   });
 
   it('clears loading once the read lands, even when the set is empty', async () => {
-    const { result } = renderHook(() => useAllSongsByTitle({ downloadedOnly: true }));
+    const { result } = renderHook(() => useDownloadedSongs({ downloadedOnly: true }));
     expect(result.current.loading).toBe(true);
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.rows).toEqual([]);
@@ -162,7 +162,7 @@ describe('useAllSongsByTitle — the loading flag is real now', () => {
 
   it('never reports loading while the filter is off', async () => {
     const { result, rerender } = renderHook(
-      ({ on }: { on: boolean }) => useAllSongsByTitle({ downloadedOnly: on }),
+      ({ on }: { on: boolean }) => useDownloadedSongs({ downloadedOnly: on }),
       { initialProps: { on: true } },
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -172,9 +172,9 @@ describe('useAllSongsByTitle — the loading flag is real now', () => {
   });
 });
 
-describe('useAllSongsByTitle — reactivity on musicCacheStore.revision', () => {
+describe('useDownloadedSongs — reactivity on musicCacheStore.revision', () => {
   it('re-reads when a download completes', async () => {
-    const { result } = renderHook(() => useAllSongsByTitle({ downloadedOnly: true }));
+    const { result } = renderHook(() => useDownloadedSongs({ downloadedOnly: true }));
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.rows).toEqual([]);
 
@@ -188,7 +188,7 @@ describe('useAllSongsByTitle — reactivity on musicCacheStore.revision', () => 
 
   it('re-reads when a download is deleted', async () => {
     seedCachedSong('s1', 'Alpha');
-    const { result } = renderHook(() => useAllSongsByTitle({ downloadedOnly: true }));
+    const { result } = renderHook(() => useDownloadedSongs({ downloadedOnly: true }));
     await waitFor(() => expect(result.current.rows).toHaveLength(1));
 
     db().runSync('DELETE FROM cached_songs');
@@ -204,7 +204,7 @@ describe('useAllSongsByTitle — reactivity on musicCacheStore.revision', () => 
     seedCachedSong('s1', 'Alpha');
     const frames: { count: number; loading: boolean }[] = [];
     const { result } = renderHook(() => {
-      const r = useAllSongsByTitle({ downloadedOnly: true });
+      const r = useDownloadedSongs({ downloadedOnly: true });
       frames.push({ count: r.rows.length, loading: r.loading });
       return r;
     });
@@ -217,18 +217,5 @@ describe('useAllSongsByTitle — reactivity on musicCacheStore.revision', () => 
     });
     await waitFor(() => expect(result.current.rows).toHaveLength(2));
     expect(frames.filter((f) => f.count === 0)).toEqual([]);
-  });
-
-  it('refresh() re-reads without a revision bump', async () => {
-    const { result } = renderHook(() => useAllSongsByTitle({ downloadedOnly: true }));
-    await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.rows).toEqual([]);
-
-    // Pull-to-refresh is wired to this; a no-op stub would leave the list stale.
-    seedCachedSong('s1', 'Alpha');
-    await act(async () => {
-      result.current.refresh();
-    });
-    await waitFor(() => expect(result.current.rows.map((r) => r.id)).toEqual(['s1']));
   });
 });

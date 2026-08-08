@@ -4,6 +4,12 @@ jest.mock('../../store/persistence/kvStorage', () =>
 
 jest.mock('../../services/playerService', () => ({ playTrack: jest.fn() }));
 
+const mockPullToRefresh = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../services/dataSyncService', () => ({
+  ...jest.requireActual('../../services/dataSyncService'),
+  onPullToRefresh: (scope: string) => mockPullToRefresh(scope),
+}));
+
 /** The list view has its own suite; record what it is handed on EVERY render. The
  *  regression is a single frame, so the render history — not the final state — is
  *  the assertion. */
@@ -12,6 +18,7 @@ interface SongRender {
   loading?: boolean;
   emptyMessage?: string;
   emptySubtitle?: string;
+  onRefresh?: () => void | Promise<void>;
 }
 const mockRenders: SongRender[] = [];
 /** Mounts, not renders: the filtered screen picks its adapter per branch, so it renders
@@ -72,6 +79,7 @@ beforeAll(() => ensureNormalizedSchema(db()));
 beforeEach(() => {
   mockRenders.length = 0;
   mockMounts.length = 0;
+  mockPullToRefresh.mockClear();
   for (const t of ['songs', 'favorite_songs', 'cached_songs']) db().runSync(`DELETE FROM ${t}`);
   favoritesStore.setState({ version: 0 });
   layoutPreferencesStore.setState({ songSortOrder: 'title' });
@@ -364,5 +372,38 @@ describe('SongLibraryListScreen — empty-state copy', () => {
     await waitFor(() => expect(latest().loading).toBe(false));
     expect(mockRenders.every((r) => r.emptyMessage === undefined)).toBe(true);
     expect(mockRenders.every((r) => r.emptySubtitle === undefined)).toBe(true);
+  });
+});
+
+/** Pull-to-refresh refreshes the SERVER source of what the view shows. A filter narrows
+ *  the view, not the source, so the scope must not vary with the Downloaded filter — but
+ *  a favourites view reads starred data, which only `getStarred2` refreshes. */
+describe('SongLibraryListScreen — pull-to-refresh scope follows the source, not the filter', () => {
+  const pull = async (): Promise<void> => {
+    const onRefresh = mockRenders[mockRenders.length - 1].onRefresh!;
+    await act(async () => {
+      await onRefresh();
+    });
+  };
+
+  it('refreshes the song library under the downloaded filter', async () => {
+    render(<SongLibraryListScreen downloadedOnly />);
+    await waitFor(() => expect(mockRenders.length).toBeGreaterThan(0));
+    await pull();
+    expect(mockPullToRefresh).toHaveBeenCalledWith('songs');
+  });
+
+  it('refreshes starred data under the favourites filter', async () => {
+    render(<SongLibraryListScreen favoritesOnly />);
+    await waitFor(() => expect(mockRenders.length).toBeGreaterThan(0));
+    await pull();
+    expect(mockPullToRefresh).toHaveBeenCalledWith('favorites');
+  });
+
+  it('still refreshes starred data when Downloaded is stacked on Favourites', async () => {
+    render(<SongLibraryListScreen downloadedOnly favoritesOnly />);
+    await waitFor(() => expect(mockRenders.length).toBeGreaterThan(0));
+    await pull();
+    expect(mockPullToRefresh).toHaveBeenCalledWith('favorites');
   });
 });

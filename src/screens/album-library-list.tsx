@@ -231,14 +231,16 @@ function FilteredAlbumList({
   }, [favoritesOnly, includePartial, revision, sortOrder, downloadedKey]);
 
   const [refreshing, setRefreshing] = useState(false);
+  // The source the branch on screen reads: starred albums come from `getStarred2`
+  // (whatever else is filtered on top), downloaded ones from the album library.
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      await onPullToRefresh('albums');
+      await onPullToRefresh(favoritesOnly ? 'favorites' : 'albums');
     } finally {
       setRefreshing(false);
     }
-  }, []);
+  }, [favoritesOnly]);
 
   // The key the DOWNLOADED read ordered by, so the scroller letters on it rather than
   // re-deriving one from the envelope. Memoised: a fresh arrow per render would recompute
