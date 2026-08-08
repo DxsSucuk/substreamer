@@ -149,6 +149,7 @@ function AlbumSection({
     () => albums.filter((a) => a.id).slice(0, LIST_LENGTH_DISPLAY_CAP),
     [albums],
   );
+
   const onRefresh = useCallback(() => {
     config.refresh();
   }, [listType]);
@@ -225,6 +226,12 @@ function AlbumSection({
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.horizontalList}
           ItemSeparatorComponent={CardSeparator}
+          // These carousels have their data REPLACED wholesale — a filter toggle, a
+          // section refresh, a sync. FlashList v2 enables maintainVisibleContentPosition
+          // by default, which anchors the viewport to a previously-visible item; when the
+          // replacement data puts that item at a different index the list ends up parked
+          // where there is nothing to draw, and only a manual scroll recovers it.
+          maintainVisibleContentPosition={{ disabled: true }}
           drawDistance={HORIZONTAL_DRAW_DISTANCE}
         />
       )}
@@ -270,6 +277,12 @@ function DownloadedAlbumSection({
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.horizontalList}
           ItemSeparatorComponent={CardSeparator}
+          // These carousels have their data REPLACED wholesale — a filter toggle, a
+          // section refresh, a sync. FlashList v2 enables maintainVisibleContentPosition
+          // by default, which anchors the viewport to a previously-visible item; when the
+          // replacement data puts that item at a different index the list ends up parked
+          // where there is nothing to draw, and only a manual scroll recovers it.
+          maintainVisibleContentPosition={{ disabled: true }}
           drawDistance={HORIZONTAL_DRAW_DISTANCE}
         />
       )}
@@ -314,6 +327,12 @@ function PlaylistSection({
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.horizontalList}
           ItemSeparatorComponent={CardSeparator}
+          // These carousels have their data REPLACED wholesale — a filter toggle, a
+          // section refresh, a sync. FlashList v2 enables maintainVisibleContentPosition
+          // by default, which anchors the viewport to a previously-visible item; when the
+          // replacement data puts that item at a different index the list ends up parked
+          // where there is nothing to draw, and only a manual scroll recovers it.
+          maintainVisibleContentPosition={{ disabled: true }}
           drawDistance={HORIZONTAL_DRAW_DISTANCE}
         />
       )}

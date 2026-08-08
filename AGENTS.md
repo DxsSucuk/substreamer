@@ -272,6 +272,8 @@ scripts/        build helpers + CI validators
 
 **FlashList v2:** `keyExtractor`, memoised `renderItem`, `drawDistance` to control off-screen rendering. **Don't pass** `estimatedItemSize`, `windowSize`, `maxToRenderPerBatch`, `initialNumToRender`, `getItemLayout`, `removeClippedSubviews` — all FlatList-only and unsupported. Grid: `numColumns={N}`; handle gaps via per-item padding (no `columnWrapperStyle`). Ref type `useRef<FlashListRef<T>>(null)`. Exception: drag-reorder uses `react-native-reorderable-list`; bounded horizontal carousels (≤20 items) may use RN `FlatList`.
 
+**`maintainVisibleContentPosition` is ON by default in v2 — pass `{{ disabled: true }}` on any list whose data is REPLACED rather than appended.** It anchors the viewport to a previously-visible item; when the replacement data puts that item at a different index the list parks where nothing is drawn, and only a manual scroll recovers it. The home carousels hit this on every filter toggle, section refresh and sync — cards rendered at full size with a correct list layout, and still nothing painted. Keep it enabled where the user's scroll position is worth preserving across an append, i.e. the keyset browse lists loading a backward page.
+
 **Animations:** `react-native-reanimated` everywhere — `useSharedValue`, `useAnimatedStyle`, `withTiming`/`withSpring`/etc. Do not import `Animated`/`Easing` from `react-native` **except** for slow linear translations (e.g. `MarqueeText`'s scroll), where `Animated` + `useNativeDriver: true` produces uniform display-synced motion that worklets can't match at low speeds.
 
 **Modals / sheets:** RN `Modal` with transparent backdrop. Bottom padding via `useSafeAreaInsets()` → `Math.max(insets.bottom, 16)`.
