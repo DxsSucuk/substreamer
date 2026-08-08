@@ -7,6 +7,7 @@
  * — callers don't need to handle exceptions.
  */
 import { getDb, type BatchCommand } from './db';
+import { childSnapshotArrayCommands } from '../../db/childSnapshot';
 import { type CompletedScrobble } from '../completedScrobbleStore';
 import {
   deriveScrobbleColumns,
@@ -189,9 +190,20 @@ export async function replaceAllScrobbles(scrobbles: readonly CompletedScrobble[
 const BACKFILL_CHUNK = 500;
 
 /**
- * Populate the derived columns for rows that predate them (song_id IS NULL).
- * Chunked to keep the JS thread responsive on a large upgrade history. Parses
- * each row's `song_json` and derives the same columns the write path stores.
+ * Populate the derived columns and the five `scrobble_*` child tables for rows
+ * that predate them. Chunked to keep the JS thread responsive on a large upgrade
+ * history. Parses each row's `song_json` and derives the same columns the write
+ * path stores.
+ *
+ * The predicate is `song_id IS NULL OR title IS NULL`: `song_id` alone would skip
+ * every row an earlier app version already backfilled under the narrower column
+ * set. `title` is the marker for "carries the current set" — which is why every
+ * path below must leave it non-NULL, or the row is selected forever.
+ *
+ * `runBatchAsync` is NOT atomic, so a chunk can half-apply. Each row's child rows
+ * are written before its scalar UPDATE, and the child commands delete-then-insert:
+ * an abort leaves `title` NULL, the row is re-selected next pass, and the DELETEs
+ * clear whatever partial rows landed. No duplicates, no stale tail.
  *
  * No DDL here: `scrobble_events` is declared in `src/db/schema.ts`, so
  * `ensureNormalizedSchema` adds any missing column and only then creates the indexes —
@@ -205,11 +217,11 @@ export async function backfillScrobbleColumnsAsync(): Promise<void> {
     // eslint-disable-next-line no-constant-condition
     while (true) {
       const rows = await db.getAllAsync<{ id: string; song_json: string; time: number }>(
-        'SELECT id, song_json, time FROM scrobble_events WHERE song_id IS NULL LIMIT ?;',
+        'SELECT id, song_json, time FROM scrobble_events WHERE song_id IS NULL OR title IS NULL LIMIT ?;',
         [BACKFILL_CHUNK],
       );
       if (rows.length === 0) break;
-      const updates: Array<[string, (string | number | null)[]]> = [];
+      const updates: BatchCommand[] = [];
       for (const row of rows) {
         let song: unknown;
         try {
@@ -217,12 +229,31 @@ export async function backfillScrobbleColumnsAsync(): Promise<void> {
         } catch {
           song = null;
         }
-        if (!song || typeof song !== 'object' || !(song as { id?: unknown }).id) {
-          // Unparseable/invalid — stamp song_id so we don't reconsider it forever.
-          updates.push(['UPDATE scrobble_events SET song_id = ? WHERE id = ?;', [row.id, row.id]]);
+        if (
+          !song ||
+          typeof song !== 'object' ||
+          !(song as { id?: unknown }).id ||
+          !(song as { title?: unknown }).title
+        ) {
+          // Unparseable, or missing the id/title every reader requires. Stamp BOTH
+          // markers — a `song_id` alone still matches `title IS NULL` — with a ''
+          // title, which no reader accepts, so the row stays invisible.
+          updates.push([
+            "UPDATE scrobble_events SET song_id = ?, title = '' WHERE id = ?;",
+            [row.id, row.id],
+          ]);
           continue;
         }
-        const cols = deriveScrobbleColumns(song as CompletedScrobble['song'], row.time);
+        const child = song as CompletedScrobble['song'];
+        updates.push(
+          ...childSnapshotArrayCommands({
+            tablePrefix: 'scrobble',
+            keyColumn: 'scrobble_id',
+            keyValue: row.id,
+            child,
+          }),
+        );
+        const cols = deriveScrobbleColumns(child, row.time);
         updates.push([
           `UPDATE scrobble_events SET ${SCROBBLE_COLUMN_NAMES.map((c) => `${c} = ?`).join(', ')} WHERE id = ?;`,
           [...scrobbleColumnValues(cols), row.id],
