@@ -454,7 +454,7 @@ export async function refreshPlaylistLibrary(): Promise<void> {
  * — `forceFullResync` bumps the generation immediately before asking for the full run.
  */
 export function runNormalizedLibrarySync(
-  opts: { full?: boolean; forceStrategy?: 'search3' | 'basic'; reason?: string } = {},
+  opts: { full?: boolean; reason?: string } = {},
 ): Promise<void> {
   const gen = syncStatusStore.getState().generation;
   const canJoin = inFlight !== null && gen === inFlightGen && (!opts.full || inFlightFull);
@@ -478,11 +478,10 @@ export function runNormalizedLibrarySync(
 async function doNormalizedSync(
   {
     full = false,
-    forceStrategy,
     // Diagnostic only: which call site asked for this run. Logged with the stats so an
     // unexplained sync (and the banner it drives) can be traced to its trigger.
     reason = 'unknown',
-  }: { full?: boolean; forceStrategy?: 'search3' | 'basic'; reason?: string },
+  }: { full?: boolean; reason?: string },
 ): Promise<void> {
   const db = getDb();
   if (!db) return;
@@ -508,9 +507,8 @@ async function doNormalizedSync(
       await clearPlaylistDetailMarkers(db);
     }
 
-    // Transport: forced by the caller → use as-is; else the persisted resume
-    // strategy; else probe once and persist.
-    let strat = forceStrategy ?? syncStatusStore.getState().syncStrategy;
+    // Transport: the persisted resume strategy; else probe once and persist.
+    let strat = syncStatusStore.getState().syncStrategy;
     if (strat == null) {
       strat = (await probeEmptySearch3()) ? 'search3' : 'basic';
       if (genChanged()) return;
@@ -592,8 +590,8 @@ async function doNormalizedSync(
     // the server has already said it has nothing for.
     let walkedGaps = false;
     if (strat === 'basic') {
-      // Basic (non-search3) server, or a forced slow-path run: songs don't carry albumId,
-      // so walk each album's getAlbum song list instead of paging search3.
+      // Basic (non-search3) server: songs don't carry albumId, so walk each album's
+      // getAlbum song list instead of paging search3.
       if ((await doBasicSongWalk(db, articles, capturedGen)) === 'bailed') return;
       if (genChanged() || isOffline()) return;
       walkedGaps = true;

@@ -321,8 +321,16 @@ describe('the per-album walk', () => {
       return Promise.resolve({ ...album, song } as unknown);
     });
 
-    await runNormalizedLibrarySync({ full: true, forceStrategy: 'basic' });
+    // The persisted strategy is what routes the run; on a basic server the probe has
+    // already stored 'basic' and the sync resumes on the walk.
+    syncStatusStore.setState({ syncStrategy: 'basic' });
 
+    await runNormalizedLibrarySync({ full: true });
+
+    // The walk, not the search3 pager — the assertions below only mean anything on the
+    // slow path, and the mocked pager would otherwise serve every song and hide it.
+    expect(syncStatusStore.getState().songSyncStrategy).toBe('basic');
+    expect(mockSearchSongsPage).not.toHaveBeenCalled();
     // al0, al1, al2 were walked. al3 answered empty and al4 failed — neither counts,
     // or the progress bar reads 100% over a library that still has holes in it.
     expect(syncStatusStore.getState().detailSyncCompleted).toBe(3);
