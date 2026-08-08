@@ -150,6 +150,11 @@ export const MODEL_TABLES: readonly string[] = [
 export const KEPT_TABLES: readonly string[] = [
   'storage',
   'scrobble_events',
+  'scrobble_genres',
+  'scrobble_artists',
+  'scrobble_album_artists',
+  'scrobble_contributors',
+  'scrobble_moods',
   'pending_scrobble_events',
   'cached_songs',
   'cached_song_genres',

@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "2c01bc9a-dd03-4e40-9830-349ccd92b98a",
+  "id": "32a4e44b-e4aa-412c-a713-71aca18d8b9b",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "album_artists": {
@@ -3225,6 +3225,200 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
+    "scrobble_album_artists": {
+      "name": "scrobble_album_artists",
+      "columns": {
+        "scrobble_id": {
+          "name": "scrobble_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "pos": {
+          "name": "pos",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "artist_id": {
+          "name": "artist_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "artist_name": {
+          "name": "artist_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "scrobble_album_artists_scrobble_id_scrobble_events_id_fk": {
+          "name": "scrobble_album_artists_scrobble_id_scrobble_events_id_fk",
+          "tableFrom": "scrobble_album_artists",
+          "tableTo": "scrobble_events",
+          "columnsFrom": [
+            "scrobble_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "scrobble_album_artists_scrobble_id_pos_pk": {
+          "columns": [
+            "scrobble_id",
+            "pos"
+          ],
+          "name": "scrobble_album_artists_scrobble_id_pos_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "scrobble_artists": {
+      "name": "scrobble_artists",
+      "columns": {
+        "scrobble_id": {
+          "name": "scrobble_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "pos": {
+          "name": "pos",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "artist_id": {
+          "name": "artist_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "artist_name": {
+          "name": "artist_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "scrobble_artists_scrobble_id_scrobble_events_id_fk": {
+          "name": "scrobble_artists_scrobble_id_scrobble_events_id_fk",
+          "tableFrom": "scrobble_artists",
+          "tableTo": "scrobble_events",
+          "columnsFrom": [
+            "scrobble_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "scrobble_artists_scrobble_id_pos_pk": {
+          "columns": [
+            "scrobble_id",
+            "pos"
+          ],
+          "name": "scrobble_artists_scrobble_id_pos_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "scrobble_contributors": {
+      "name": "scrobble_contributors",
+      "columns": {
+        "scrobble_id": {
+          "name": "scrobble_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "pos": {
+          "name": "pos",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sub_role": {
+          "name": "sub_role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "artist_id": {
+          "name": "artist_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "artist_name": {
+          "name": "artist_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "scrobble_contributors_scrobble_id_scrobble_events_id_fk": {
+          "name": "scrobble_contributors_scrobble_id_scrobble_events_id_fk",
+          "tableFrom": "scrobble_contributors",
+          "tableTo": "scrobble_events",
+          "columnsFrom": [
+            "scrobble_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "scrobble_contributors_scrobble_id_pos_pk": {
+          "columns": [
+            "scrobble_id",
+            "pos"
+          ],
+          "name": "scrobble_contributors_scrobble_id_pos_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
     "scrobble_events": {
       "name": "scrobble_events",
       "columns": {
@@ -3325,6 +3519,167 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "display_artist": {
+          "name": "display_artist",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "display_composer": {
+          "name": "display_composer",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "track": {
+          "name": "track",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "disc_number": {
+          "name": "disc_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "suffix": {
+          "name": "suffix",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "bit_rate": {
+          "name": "bit_rate",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "size": {
+          "name": "size",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "content_type": {
+          "name": "content_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "bpm": {
+          "name": "bpm",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "path": {
+          "name": "path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "parent": {
+          "name": "parent",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "sort_name": {
+          "name": "sort_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "music_brainz_id": {
+          "name": "music_brainz_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "explicit_status": {
+          "name": "explicit_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "user_rating": {
+          "name": "user_rating",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "average_rating": {
+          "name": "average_rating",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "play_count": {
+          "name": "play_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created": {
+          "name": "created",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "starred": {
+          "name": "starred",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "played": {
+          "name": "played",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "rg_track_gain": {
+          "name": "rg_track_gain",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "rg_track_peak": {
+          "name": "rg_track_peak",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
         }
       },
       "indexes": {
@@ -3345,6 +3700,112 @@
       },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "scrobble_genres": {
+      "name": "scrobble_genres",
+      "columns": {
+        "scrobble_id": {
+          "name": "scrobble_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "pos": {
+          "name": "pos",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "scrobble_genres_scrobble_id_scrobble_events_id_fk": {
+          "name": "scrobble_genres_scrobble_id_scrobble_events_id_fk",
+          "tableFrom": "scrobble_genres",
+          "tableTo": "scrobble_events",
+          "columnsFrom": [
+            "scrobble_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "scrobble_genres_scrobble_id_pos_pk": {
+          "columns": [
+            "scrobble_id",
+            "pos"
+          ],
+          "name": "scrobble_genres_scrobble_id_pos_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "scrobble_moods": {
+      "name": "scrobble_moods",
+      "columns": {
+        "scrobble_id": {
+          "name": "scrobble_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "pos": {
+          "name": "pos",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "mood": {
+          "name": "mood",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "scrobble_moods_scrobble_id_scrobble_events_id_fk": {
+          "name": "scrobble_moods_scrobble_id_scrobble_events_id_fk",
+          "tableFrom": "scrobble_moods",
+          "tableTo": "scrobble_events",
+          "columnsFrom": [
+            "scrobble_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "scrobble_moods_scrobble_id_pos_pk": {
+          "columns": [
+            "scrobble_id",
+            "pos"
+          ],
+          "name": "scrobble_moods_scrobble_id_pos_pk"
+        }
+      },
       "uniqueConstraints": {},
       "checkConstraints": {}
     },

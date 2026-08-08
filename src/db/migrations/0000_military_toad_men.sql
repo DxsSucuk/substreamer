@@ -483,6 +483,35 @@ CREATE TABLE `playlists` (
 --> statement-breakpoint
 CREATE INDEX `idx_playlists_sort_title` ON `playlists` (`sort_title`,`id`);--> statement-breakpoint
 CREATE INDEX `idx_playlists_norm_name` ON `playlists` (`norm_name`);--> statement-breakpoint
+CREATE TABLE `scrobble_album_artists` (
+	`scrobble_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`artist_id` text,
+	`artist_name` text,
+	PRIMARY KEY(`scrobble_id`, `pos`),
+	FOREIGN KEY (`scrobble_id`) REFERENCES `scrobble_events`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `scrobble_artists` (
+	`scrobble_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`artist_id` text,
+	`artist_name` text,
+	PRIMARY KEY(`scrobble_id`, `pos`),
+	FOREIGN KEY (`scrobble_id`) REFERENCES `scrobble_events`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `scrobble_contributors` (
+	`scrobble_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`role` text NOT NULL,
+	`sub_role` text,
+	`artist_id` text,
+	`artist_name` text,
+	PRIMARY KEY(`scrobble_id`, `pos`),
+	FOREIGN KEY (`scrobble_id`) REFERENCES `scrobble_events`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
 CREATE TABLE `scrobble_events` (
 	`id` text PRIMARY KEY NOT NULL,
 	`song_json` text NOT NULL,
@@ -497,11 +526,50 @@ CREATE TABLE `scrobble_events` (
 	`year` integer,
 	`duration` integer,
 	`hour` integer,
-	`day_key` text
+	`day_key` text,
+	`title` text,
+	`display_artist` text,
+	`display_composer` text,
+	`track` integer,
+	`disc_number` integer,
+	`suffix` text,
+	`bit_rate` integer,
+	`size` integer,
+	`content_type` text,
+	`bpm` integer,
+	`path` text,
+	`parent` text,
+	`sort_name` text,
+	`music_brainz_id` text,
+	`explicit_status` text,
+	`user_rating` integer,
+	`average_rating` real,
+	`play_count` integer,
+	`created` integer,
+	`starred` integer,
+	`played` text,
+	`rg_track_gain` real,
+	`rg_track_peak` real
 );
 --> statement-breakpoint
 CREATE INDEX `idx_scrobble_events_time` ON `scrobble_events` (`time`);--> statement-breakpoint
 CREATE INDEX `idx_scrobble_events_hour` ON `scrobble_events` (`hour`);--> statement-breakpoint
+CREATE TABLE `scrobble_genres` (
+	`scrobble_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`name` text NOT NULL,
+	PRIMARY KEY(`scrobble_id`, `pos`),
+	FOREIGN KEY (`scrobble_id`) REFERENCES `scrobble_events`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `scrobble_moods` (
+	`scrobble_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`mood` text NOT NULL,
+	PRIMARY KEY(`scrobble_id`, `pos`),
+	FOREIGN KEY (`scrobble_id`) REFERENCES `scrobble_events`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
 CREATE TABLE `song_album_artists` (
 	`song_id` text NOT NULL,
 	`pos` integer NOT NULL,

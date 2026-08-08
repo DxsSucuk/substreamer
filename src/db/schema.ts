@@ -643,8 +643,16 @@ export const storage = sqliteTable('storage', {
   value: text('value').notNull(),
 });
 
-/** Completed scrobbles. The structured columns back the SQL analytics aggregates;
- *  `hour`/`day_key` are device-local buckets computed at write time. */
+/**
+ * Completed scrobbles. The structured columns back the SQL analytics aggregates;
+ * `hour`/`day_key` are device-local buckets computed at write time.
+ *
+ * A scrobble is an immutable historical record, so it snapshots the whole `Child`
+ * rather than dereferencing `songs` — the song may leave the library, the server may
+ * change, and the play already happened. Column names/types mirror `cached_songs` and
+ * the shared mapping in `./childSnapshot.ts`; every snapshot column is nullable
+ * because `ensureNormalizedSchema` can only ADD COLUMN without a DEFAULT.
+ */
 export const scrobbleEvents = sqliteTable(
   'scrobble_events',
   {
@@ -662,11 +670,103 @@ export const scrobbleEvents = sqliteTable(
     duration: integer('duration'),
     hour: integer('hour'),
     dayKey: text('day_key'),
+    title: text('title'),
+    displayArtist: text('display_artist'),
+    displayComposer: text('display_composer'),
+    track: integer('track'),
+    discNumber: integer('disc_number'),
+    suffix: text('suffix'),
+    bitRate: integer('bit_rate'),
+    size: integer('size'),
+    contentType: text('content_type'),
+    bpm: integer('bpm'),
+    path: text('path'),
+    parent: text('parent'),
+    sortName: text('sort_name'),
+    musicBrainzId: text('music_brainz_id'),
+    explicitStatus: text('explicit_status'),
+    userRating: integer('user_rating'),
+    averageRating: real('average_rating'),
+    playCount: integer('play_count'),
+    created: integer('created'),
+    starred: integer('starred'),
+    played: text('played'),
+    rgTrackGain: real('rg_track_gain'),
+    rgTrackPeak: real('rg_track_peak'),
   },
   (t) => ({
     timeIdx: index('idx_scrobble_events_time').on(t.time),
     hourIdx: index('idx_scrobble_events_hour').on(t.hour),
   }),
+);
+
+// The scrobbled Child's multi-valued fields, mirroring `cached_song_*`. Positional,
+// so a rewrite deletes then re-inserts; the `(scrobble_id, pos)` PK is also the
+// scrobble_id lookup index.
+
+export const scrobbleGenres = sqliteTable(
+  'scrobble_genres',
+  {
+    scrobbleId: text('scrobble_id')
+      .notNull()
+      .references(() => scrobbleEvents.id, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    name: text('name').notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.scrobbleId, t.pos] }) }),
+);
+
+export const scrobbleArtists = sqliteTable(
+  'scrobble_artists',
+  {
+    scrobbleId: text('scrobble_id')
+      .notNull()
+      .references(() => scrobbleEvents.id, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    artistId: text('artist_id'),
+    artistName: text('artist_name'),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.scrobbleId, t.pos] }) }),
+);
+
+export const scrobbleAlbumArtists = sqliteTable(
+  'scrobble_album_artists',
+  {
+    scrobbleId: text('scrobble_id')
+      .notNull()
+      .references(() => scrobbleEvents.id, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    artistId: text('artist_id'),
+    artistName: text('artist_name'),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.scrobbleId, t.pos] }) }),
+);
+
+export const scrobbleContributors = sqliteTable(
+  'scrobble_contributors',
+  {
+    scrobbleId: text('scrobble_id')
+      .notNull()
+      .references(() => scrobbleEvents.id, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    role: text('role').notNull(),
+    subRole: text('sub_role'),
+    artistId: text('artist_id'),
+    artistName: text('artist_name'),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.scrobbleId, t.pos] }) }),
+);
+
+export const scrobbleMoods = sqliteTable(
+  'scrobble_moods',
+  {
+    scrobbleId: text('scrobble_id')
+      .notNull()
+      .references(() => scrobbleEvents.id, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    mood: text('mood').notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.scrobbleId, t.pos] }) }),
 );
 
 /** Offline transmit queue. Same row shape as `scrobble_events` but a separate table so
