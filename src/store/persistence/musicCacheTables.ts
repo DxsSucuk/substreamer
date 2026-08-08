@@ -20,10 +20,19 @@
  */
 import type { AlbumID3, Child, Playlist } from 'subsonic-api';
 
+import {
+  childGenreNames,
+  childSnapshotArrayCommands,
+  childSnapshotFields,
+} from '@/db/childSnapshot';
 import { getSortArticles } from '@/db/sortArticles';
 import { albumSortKeys, playlistSortTitle, songSortKeys } from '@/db/sortKeys';
 
 import { getDb, type BatchCommand } from './db';
+
+// The `Child` ⇄ columns mapping is shared with the other snapshot tables; re-exported
+// so the download-side consumers keep one import.
+export { childGenreNames };
 
 export interface CachedSongRow {
   id: string;
@@ -391,62 +400,24 @@ function toEpoch(v: Date | string | number | null | undefined): number | undefin
   return Number.isNaN(t) ? undefined : t;
 }
 
-/** Subsonic `genres` is declared `string[]` but real OpenSubsonic servers return
- *  `{name}[]`. Accept either, and drop empties so a blank name never indexes. */
-export function childGenreNames(child: Child): string[] {
-  return ((child.genres ?? []) as unknown[])
-    .map((g) => (typeof g === 'string' ? g : String((g as { name?: unknown } | null)?.name ?? '')))
-    .filter((name) => name.length > 0);
-}
-
-/** The promoted `cached_songs` fields for a real `Child` — spread into a
- *  `CachedSongRow` literal by the download paths, and used by the conversion. */
+/**
+ * The promoted `cached_songs` fields for a real `Child` — spread into a
+ * `CachedSongRow` literal by the download paths, and used by the conversion.
+ *
+ * The five renamed here are the collision this table alone has: their natural names
+ * belong to its file-on-disk columns, which `resolveSongFile` reads. Renaming at the
+ * boundary is what keeps a server value off them — the shared mapping carries them
+ * under the `Child` names, as every other snapshot table wants them.
+ */
 export function promotedSongFieldsFromChild(child: Child): Partial<CachedSongRow> {
-  const rg = child.replayGain;
+  const { albumId, suffix, bitRate, bitDepth, samplingRate, ...rest } = childSnapshotFields(child);
   return {
-    srcAlbumId: child.albumId,
-    srcSuffix: child.suffix,
-    srcBitRate: child.bitRate,
-    srcBitDepth: child.bitDepth,
-    srcSamplingRate: child.samplingRate,
-    artistId: child.artistId,
-    displayArtist: child.displayArtist,
-    displayAlbumArtist: child.displayAlbumArtist,
-    displayComposer: child.displayComposer,
-    track: child.track,
-    discNumber: child.discNumber,
-    year: child.year,
-    genre: child.genre,
-    size: child.size,
-    contentType: child.contentType,
-    transcodedContentType: child.transcodedContentType,
-    transcodedSuffix: child.transcodedSuffix,
-    channelCount: child.channelCount,
-    path: child.path,
-    userRating: child.userRating,
-    averageRating: child.averageRating,
-    playCount: child.playCount,
-    created: toEpoch(child.created),
-    starred: toEpoch(child.starred),
-    played: child.played,
-    type: child.type,
-    bpm: child.bpm,
-    comment: child.comment,
-    sortName: child.sortName,
-    musicBrainzId: child.musicBrainzId,
-    explicitStatus: child.explicitStatus,
-    bookmarkPosition: child.bookmarkPosition,
-    isVideo: child.isVideo,
-    isDir: child.isDir,
-    parent: child.parent,
-    originalWidth: child.originalWidth,
-    originalHeight: child.originalHeight,
-    rgTrackGain: rg?.trackGain,
-    rgAlbumGain: rg?.albumGain,
-    rgTrackPeak: rg?.trackPeak,
-    rgAlbumPeak: rg?.albumPeak,
-    rgBaseGain: rg?.baseGain,
-    rgFallbackGain: rg?.fallbackGain,
+    srcAlbumId: albumId,
+    srcSuffix: suffix,
+    srcBitRate: bitRate,
+    srcBitDepth: bitDepth,
+    srcSamplingRate: samplingRate,
+    ...rest,
     genres: childGenreNames(child),
   };
 }
@@ -1138,50 +1109,14 @@ export async function orphanSongIfUnreferencedAsync(
 // re-enters a public function: composing at the command level keeps each write to
 // ONE batch, which is what makes it atomic.
 
-/**
- * Rebuild the five `cached_song_*` mirrors from a real `Child`. Delete-then-
- * insert because the arrays are positional: a shrunk array must not leave stale
- * tail rows behind.
- */
-function cachedSongChildCommands(songId: string, child: Child): BatchCommand[] {
-  const statements: BatchCommand[] = CACHED_SONG_CHILD_TABLES.map((table) => [
-    `DELETE FROM ${table} WHERE song_id = ?;`,
-    [songId],
-  ]);
-  childGenreNames(child).forEach((name, pos) => {
-    statements.push([
-      'INSERT INTO cached_song_genres (song_id, pos, name) VALUES (?, ?, ?);',
-      [songId, pos, name],
-    ]);
+/** Rebuild the five `cached_song_*` mirrors from a real `Child`. */
+const cachedSongChildCommands = (songId: string, child: Child): BatchCommand[] =>
+  childSnapshotArrayCommands({
+    tablePrefix: 'cached_song',
+    keyColumn: 'song_id',
+    keyValue: songId,
+    child,
   });
-  (child.artists ?? []).forEach((a, pos) => {
-    statements.push([
-      'INSERT INTO cached_song_artists (song_id, pos, artist_id, artist_name) VALUES (?, ?, ?, ?);',
-      [songId, pos, a.id ?? null, a.name ?? null],
-    ]);
-  });
-  (child.albumArtists ?? []).forEach((a, pos) => {
-    statements.push([
-      'INSERT INTO cached_song_album_artists (song_id, pos, artist_id, artist_name) VALUES (?, ?, ?, ?);',
-      [songId, pos, a.id ?? null, a.name ?? null],
-    ]);
-  });
-  (child.contributors ?? []).forEach((c, pos) => {
-    statements.push([
-      `INSERT INTO cached_song_contributors
-         (song_id, pos, role, sub_role, artist_id, artist_name)
-         VALUES (?, ?, ?, ?, ?, ?);`,
-      [songId, pos, c.role, c.subRole ?? null, c.artist?.id ?? null, c.artist?.name ?? null],
-    ]);
-  });
-  (child.moods ?? []).forEach((mood, pos) => {
-    statements.push([
-      'INSERT INTO cached_song_moods (song_id, pos, mood) VALUES (?, ?, ?);',
-      [songId, pos, mood],
-    ]);
-  });
-  return statements;
-}
 
 const CACHED_SONG_UPSERT_SQL = `INSERT INTO cached_songs
    (song_id, title, artist, album, album_id, cover_art, bytes, duration,
