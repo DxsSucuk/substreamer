@@ -44,7 +44,6 @@ jest.mock('../../store/persistence/scrobbleTable', () => ({
   replaceAllScrobbles: jest.fn(),
   insertScrobble: jest.fn(),
   clearScrobbles: jest.fn(),
-  hydrateScrobbles: jest.fn(() => []),
   backfillScrobbleColumnsAsync: jest.fn(async () => {}),
 }));
 

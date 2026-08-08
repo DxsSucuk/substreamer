@@ -37,7 +37,6 @@ jest.mock('../persistence/scrobbleTable', () => ({
   clearScrobbles: jest.fn(),
   insertScrobble: jest.fn(),
   replaceAllScrobbles: jest.fn(),
-  hydrateScrobbles: jest.fn(() => []),
 }));
 jest.mock('../persistence/pendingScrobbleTable', () => ({
   clearPendingScrobbles: jest.fn(),

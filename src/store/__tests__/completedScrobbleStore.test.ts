@@ -80,7 +80,6 @@ jest.mock('../persistence/scrobbleTable', () => ({
   clearScrobbles: jest.fn(async () => {
     mockDb = [];
   }),
-  hydrateScrobbles: jest.fn(() => []),
   hydrateScrobblesAsync: jest.fn(async () => mockDb),
   backfillScrobbleColumnsAsync: jest.fn(async () => {}),
 }));

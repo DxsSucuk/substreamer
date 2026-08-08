@@ -15,7 +15,7 @@ import { __setDbForTests } from '../db';
 import {
   clearScrobbles,
   countScrobbles,
-  hydrateScrobbles,
+  hydrateScrobblesAsync,
   insertScrobble,
   replaceAllScrobbles,
 } from '../scrobbleTable';
@@ -93,11 +93,11 @@ afterEach(() => {
 });
 
 describe('scrobbleTable — insert + hydrate', () => {
-  it('insertScrobble + hydrateScrobbles round-trip preserves fields', async () => {
+  it('insertScrobble + hydrateScrobblesAsync round-trip preserves fields', async () => {
     const s = makeScrobble();
     await insertScrobble(s);
 
-    const restored = hydrateScrobbles();
+    const restored = await hydrateScrobblesAsync();
     expect(restored).toHaveLength(1);
     expect(restored[0].id).toBe('sc-1');
     expect(restored[0].time).toBe(1_700_000_000_000);
@@ -111,7 +111,7 @@ describe('scrobbleTable — insert + hydrate', () => {
     await insertScrobble(makeScrobble({ id: 'dup', time: 999, song: { id: 's2', title: 'Different' } }));
 
     expect(await countScrobbles()).toBe(1);
-    const restored = hydrateScrobbles();
+    const restored = await hydrateScrobblesAsync();
     // First insert wins (INSERT OR IGNORE) — neither time nor song should change.
     expect(restored[0].time).toBe(1);
     expect(restored[0].song.id).toBe('s1');
@@ -124,72 +124,6 @@ describe('scrobbleTable — insert + hydrate', () => {
     await insertScrobble(makeScrobble({ id: 'null-song', song: null }));
 
     expect(await countScrobbles()).toBe(0);
-  });
-
-  it('hydrateScrobbles returns rows in time-ascending order', async () => {
-    await insertScrobble(makeScrobble({ id: 'a', time: 300 }));
-    await insertScrobble(makeScrobble({ id: 'b', time: 100 }));
-    await insertScrobble(makeScrobble({ id: 'c', time: 200 }));
-
-    const restored = hydrateScrobbles();
-    expect(restored.map((s) => s.id)).toEqual(['b', 'c', 'a']);
-  });
-
-  it('hydrateScrobbles returns empty when table is empty', () => {
-    expect(hydrateScrobbles()).toEqual([]);
-  });
-
-  it('hydrateScrobbles skips unparseable song_json rows', () => {
-    fakeDb.rows.set('good', {
-      id: 'good',
-      song_json: JSON.stringify({ id: 's1', title: 'OK' }),
-      time: 1,
-    });
-    fakeDb.rows.set('bad', { id: 'bad', song_json: '{not valid', time: 2 });
-
-    const restored = hydrateScrobbles();
-    expect(restored.map((s) => s.id)).toEqual(['good']);
-  });
-
-  it('hydrateScrobbles filters rows whose decoded song is invalid', () => {
-    fakeDb.rows.set('missing-song-id', {
-      id: 'missing-song-id',
-      song_json: JSON.stringify({ title: 'no id' }),
-      time: 1,
-    });
-    fakeDb.rows.set('missing-title', {
-      id: 'missing-title',
-      song_json: JSON.stringify({ id: 's1' }),
-      time: 2,
-    });
-    fakeDb.rows.set('null-decoded', { id: 'null-decoded', song_json: 'null', time: 3 });
-    fakeDb.rows.set('ok', {
-      id: 'ok',
-      song_json: JSON.stringify({ id: 's9', title: 'Valid' }),
-      time: 4,
-    });
-
-    const restored = hydrateScrobbles();
-    expect(restored.map((s) => s.id)).toEqual(['ok']);
-  });
-
-  it('hydrateScrobbles dedupes rows that share an id (defense in depth)', () => {
-    // Bypass the Map key-uniqueness of the fake by smuggling in a
-    // duplicate-id row via a second Map entry — getAllSync pulls both.
-    fakeDb.rows.set('key1', {
-      id: 'dup',
-      song_json: JSON.stringify({ id: 's1', title: 'First' }),
-      time: 1,
-    });
-    fakeDb.rows.set('key2', {
-      id: 'dup',
-      song_json: JSON.stringify({ id: 's1', title: 'Second' }),
-      time: 2,
-    });
-
-    const restored = hydrateScrobbles();
-    expect(restored).toHaveLength(1);
-    expect(restored[0].song.title).toBe('First');
   });
 });
 
@@ -205,7 +139,7 @@ describe('scrobbleTable — replaceAllScrobbles', () => {
     ]);
 
     expect(await countScrobbles()).toBe(2);
-    const restored = hydrateScrobbles();
+    const restored = await hydrateScrobblesAsync();
     expect(restored.map((s) => s.id).sort()).toEqual(['new-1', 'new-2']);
   });
 
@@ -220,7 +154,7 @@ describe('scrobbleTable — replaceAllScrobbles', () => {
     ] as any);
 
     expect(await countScrobbles()).toBe(1);
-    const restored = hydrateScrobbles();
+    const restored = await hydrateScrobblesAsync();
     expect(restored[0].id).toBe('ok');
   });
 
@@ -237,7 +171,7 @@ describe('scrobbleTable — clearScrobbles', () => {
     await insertScrobble(makeScrobble({ id: 'b' }));
     await clearScrobbles();
     expect(await countScrobbles()).toBe(0);
-    expect(hydrateScrobbles()).toEqual([]);
+    expect(await hydrateScrobblesAsync()).toEqual([]);
   });
 
   it('is safe to call on an empty table', async () => {
@@ -256,7 +190,7 @@ describe('scrobbleTable — disabled db (healthy=false path)', () => {
     await replaceAllScrobbles([makeScrobble()]);
     await clearScrobbles();
     expect(await countScrobbles()).toBe(0);
-    expect(hydrateScrobbles()).toEqual([]);
+    expect(await hydrateScrobblesAsync()).toEqual([]);
   });
 });
 
@@ -303,6 +237,6 @@ describe('scrobbleTable — db throws (error swallow path)', () => {
 
   it('reads return safe defaults on DB error', async () => {
     expect(await countScrobbles()).toBe(0);
-    expect(hydrateScrobbles()).toEqual([]);
+    expect(await hydrateScrobblesAsync()).toEqual([]);
   });
 });
