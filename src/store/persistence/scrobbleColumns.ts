@@ -133,7 +133,21 @@ export const SCROBBLE_COLUMN_NAMES: readonly (keyof ScrobbleColumns)[] = [
   'rg_track_peak',
 ];
 
-/** The derived column values in `SCROBBLE_COLUMN_NAMES` order, for parameter binding. */
-export function scrobbleColumnValues(cols: ScrobbleColumns): (string | number | null)[] {
-  return SCROBBLE_COLUMN_NAMES.map((k) => cols[k]);
+/**
+ * The same set minus `hour`/`day_key`, for `pending_scrobble_events`. Those two are
+ * device-local calendar buckets derived from `time` when the play COMPLETES
+ * (`completedScrobbleStore.addCompleted`), so a queued row has no use for them.
+ * Filtered from the list above rather than written out again, so a new snapshot
+ * column reaches both tables.
+ */
+export const PENDING_SCROBBLE_COLUMN_NAMES: readonly (keyof ScrobbleColumns)[] =
+  SCROBBLE_COLUMN_NAMES.filter((c) => c !== 'hour' && c !== 'day_key');
+
+/** The derived column values in the given order, for parameter binding. Defaults to
+ *  the completed table's full set. */
+export function scrobbleColumnValues(
+  cols: ScrobbleColumns,
+  names: readonly (keyof ScrobbleColumns)[] = SCROBBLE_COLUMN_NAMES,
+): (string | number | null)[] {
+  return names.map((k) => cols[k]);
 }

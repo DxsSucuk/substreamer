@@ -19,11 +19,8 @@ import {
   loadScrobblesSince,
 } from '../scrobbleAggregates';
 import { SCROBBLE_COLUMN_NAMES } from '../scrobbleColumns';
-import {
-  backfillScrobbleColumnsAsync,
-  hydrateScrobblesAsync,
-  SCROBBLE_SELECT,
-} from '../scrobbleTable';
+import { SCROBBLE_SELECT } from '../scrobbleSnapshot';
+import { backfillScrobbleColumnsAsync, hydrateScrobblesAsync } from '../scrobbleTable';
 
 const handle = getDb();
 if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');

@@ -15,7 +15,7 @@ import {
   SCROBBLE_SELECT,
   scrobblesWithArrays,
   type ScrobbleSnapshotRow,
-} from './scrobbleTable';
+} from './scrobbleSnapshot';
 import {
   type AnalyticsAggregates,
   type CompletedScrobble,
@@ -127,7 +127,7 @@ export async function computeScrobbleAnalytics(sinceMs = 0): Promise<ScrobbleAna
 
     const songCounts: AnalyticsAggregates['songCounts'] = {};
     const playCounts = new Map(songRows.map((r) => [r.scrobbleId, r.c]));
-    for (const s of await scrobblesWithArrays(db, songRows)) {
+    for (const s of await scrobblesWithArrays(db, 'scrobble', songRows)) {
       songCounts[s.song.id] = { song: s.song, count: playCounts.get(s.id) ?? 0 };
     }
 
@@ -163,7 +163,7 @@ export async function loadRecentScrobbles(limit: number): Promise<CompletedScrob
       `SELECT ${SCROBBLE_SELECT} FROM scrobble_events ORDER BY time DESC LIMIT ?;`,
       [limit],
     );
-    return await scrobblesWithArrays(db, rows);
+    return await scrobblesWithArrays(db, 'scrobble', rows);
   } catch {
     return [];
   }

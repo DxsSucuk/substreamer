@@ -769,16 +769,124 @@ export const scrobbleMoods = sqliteTable(
   (t) => ({ pk: primaryKey({ columns: [t.scrobbleId, t.pos] }) }),
 );
 
-/** Offline transmit queue. Same row shape as `scrobble_events` but a separate table so
- *  a completed row and its still-pending sibling can legitimately share an id. */
+/**
+ * Offline transmit queue. Same row shape as `scrobble_events` but a separate table so
+ * a completed row and its still-pending sibling can legitimately share an id.
+ *
+ * It carries the same snapshot columns MINUS `hour`/`day_key`: those are device-local
+ * calendar buckets `addCompleted` derives from `time` when the play completes, so a
+ * pending row has no use for them. Everything else must be here — `processScrobbles`
+ * hands the reconstructed `Child` straight to `addCompleted`, so whatever pending
+ * drops, the completed row it becomes drops too.
+ */
 export const pendingScrobbleEvents = sqliteTable(
   'pending_scrobble_events',
   {
     id: text('id').primaryKey(),
     songJson: text('song_json').notNull(),
     time: integer('time').notNull(),
+    songId: text('song_id'),
+    artist: text('artist'),
+    artistId: text('artist_id'),
+    album: text('album'),
+    albumId: text('album_id'),
+    coverArt: text('cover_art'),
+    genre: text('genre'),
+    year: integer('year'),
+    duration: integer('duration'),
+    title: text('title'),
+    displayArtist: text('display_artist'),
+    displayComposer: text('display_composer'),
+    track: integer('track'),
+    discNumber: integer('disc_number'),
+    suffix: text('suffix'),
+    bitRate: integer('bit_rate'),
+    size: integer('size'),
+    contentType: text('content_type'),
+    bpm: integer('bpm'),
+    path: text('path'),
+    parent: text('parent'),
+    sortName: text('sort_name'),
+    musicBrainzId: text('music_brainz_id'),
+    explicitStatus: text('explicit_status'),
+    userRating: integer('user_rating'),
+    averageRating: real('average_rating'),
+    playCount: integer('play_count'),
+    created: integer('created'),
+    starred: integer('starred'),
+    played: text('played'),
+    rgTrackGain: real('rg_track_gain'),
+    rgTrackPeak: real('rg_track_peak'),
   },
   (t) => ({ timeIdx: index('idx_pending_scrobble_events_time').on(t.time) }),
+);
+
+// The pending Child's multi-valued fields — the `scrobble_*` shape again, keyed to
+// `pending_scrobble_events` so a submitted row's children cascade away with it.
+
+export const pendingScrobbleGenres = sqliteTable(
+  'pending_scrobble_genres',
+  {
+    scrobbleId: text('scrobble_id')
+      .notNull()
+      .references(() => pendingScrobbleEvents.id, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    name: text('name').notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.scrobbleId, t.pos] }) }),
+);
+
+export const pendingScrobbleArtists = sqliteTable(
+  'pending_scrobble_artists',
+  {
+    scrobbleId: text('scrobble_id')
+      .notNull()
+      .references(() => pendingScrobbleEvents.id, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    artistId: text('artist_id'),
+    artistName: text('artist_name'),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.scrobbleId, t.pos] }) }),
+);
+
+export const pendingScrobbleAlbumArtists = sqliteTable(
+  'pending_scrobble_album_artists',
+  {
+    scrobbleId: text('scrobble_id')
+      .notNull()
+      .references(() => pendingScrobbleEvents.id, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    artistId: text('artist_id'),
+    artistName: text('artist_name'),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.scrobbleId, t.pos] }) }),
+);
+
+export const pendingScrobbleContributors = sqliteTable(
+  'pending_scrobble_contributors',
+  {
+    scrobbleId: text('scrobble_id')
+      .notNull()
+      .references(() => pendingScrobbleEvents.id, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    role: text('role').notNull(),
+    subRole: text('sub_role'),
+    artistId: text('artist_id'),
+    artistName: text('artist_name'),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.scrobbleId, t.pos] }) }),
+);
+
+export const pendingScrobbleMoods = sqliteTable(
+  'pending_scrobble_moods',
+  {
+    scrobbleId: text('scrobble_id')
+      .notNull()
+      .references(() => pendingScrobbleEvents.id, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    mood: text('mood').notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.scrobbleId, t.pos] }) }),
 );
 
 /**

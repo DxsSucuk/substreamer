@@ -439,13 +439,90 @@ CREATE TABLE `image_download_queue` (
 --> statement-breakpoint
 CREATE INDEX `idx_image_download_queue_status` ON `image_download_queue` (`status`,`added_at`);--> statement-breakpoint
 CREATE INDEX `idx_image_download_queue_cycle` ON `image_download_queue` (`cycle_id`);--> statement-breakpoint
+CREATE TABLE `pending_scrobble_album_artists` (
+	`scrobble_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`artist_id` text,
+	`artist_name` text,
+	PRIMARY KEY(`scrobble_id`, `pos`),
+	FOREIGN KEY (`scrobble_id`) REFERENCES `pending_scrobble_events`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `pending_scrobble_artists` (
+	`scrobble_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`artist_id` text,
+	`artist_name` text,
+	PRIMARY KEY(`scrobble_id`, `pos`),
+	FOREIGN KEY (`scrobble_id`) REFERENCES `pending_scrobble_events`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `pending_scrobble_contributors` (
+	`scrobble_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`role` text NOT NULL,
+	`sub_role` text,
+	`artist_id` text,
+	`artist_name` text,
+	PRIMARY KEY(`scrobble_id`, `pos`),
+	FOREIGN KEY (`scrobble_id`) REFERENCES `pending_scrobble_events`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
 CREATE TABLE `pending_scrobble_events` (
 	`id` text PRIMARY KEY NOT NULL,
 	`song_json` text NOT NULL,
-	`time` integer NOT NULL
+	`time` integer NOT NULL,
+	`song_id` text,
+	`artist` text,
+	`artist_id` text,
+	`album` text,
+	`album_id` text,
+	`cover_art` text,
+	`genre` text,
+	`year` integer,
+	`duration` integer,
+	`title` text,
+	`display_artist` text,
+	`display_composer` text,
+	`track` integer,
+	`disc_number` integer,
+	`suffix` text,
+	`bit_rate` integer,
+	`size` integer,
+	`content_type` text,
+	`bpm` integer,
+	`path` text,
+	`parent` text,
+	`sort_name` text,
+	`music_brainz_id` text,
+	`explicit_status` text,
+	`user_rating` integer,
+	`average_rating` real,
+	`play_count` integer,
+	`created` integer,
+	`starred` integer,
+	`played` text,
+	`rg_track_gain` real,
+	`rg_track_peak` real
 );
 --> statement-breakpoint
 CREATE INDEX `idx_pending_scrobble_events_time` ON `pending_scrobble_events` (`time`);--> statement-breakpoint
+CREATE TABLE `pending_scrobble_genres` (
+	`scrobble_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`name` text NOT NULL,
+	PRIMARY KEY(`scrobble_id`, `pos`),
+	FOREIGN KEY (`scrobble_id`) REFERENCES `pending_scrobble_events`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `pending_scrobble_moods` (
+	`scrobble_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`mood` text NOT NULL,
+	PRIMARY KEY(`scrobble_id`, `pos`),
+	FOREIGN KEY (`scrobble_id`) REFERENCES `pending_scrobble_events`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
 CREATE TABLE `playlist_allowed_users` (
 	`playlist_id` text NOT NULL,
 	`pos` integer NOT NULL,
