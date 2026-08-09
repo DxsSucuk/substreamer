@@ -10,7 +10,7 @@ import { genreStore } from '../genreStore';
 
 beforeEach(() => {
   mockGetGenres.mockReset();
-  genreStore.setState({ genres: [] });
+  genreStore.setState({ genres: [], sqlAuthoritative: false });
 });
 
 describe('genreStore', () => {
@@ -51,9 +51,26 @@ describe('genreStore', () => {
     expect(genreStore.getState().genres).toEqual(newGenres);
   });
 
-  it('partialize keeps genres but not fetchGenres', () => {
-    const state = genreStore.getState();
-    expect(typeof state.fetchGenres).toBe('function');
-    expect(state).toHaveProperty('genres');
+  describe('partialize', () => {
+    const partialize = (): Record<string, unknown> =>
+      (genreStore as any).persist.getOptions().partialize(genreStore.getState());
+
+    it('persists the genres blob while the rows are unproven, never the action', () => {
+      genreStore.setState({
+        genres: [{ value: 'Rock', songCount: 10, albumCount: 1 }],
+        sqlAuthoritative: false,
+      });
+      const partialized = partialize();
+      expect(partialized).toHaveProperty('genres');
+      expect(partialized).not.toHaveProperty('fetchGenres');
+    });
+
+    it('drops the genres blob once the rows are authoritative', () => {
+      genreStore.setState({
+        genres: [{ value: 'Rock', songCount: 10, albumCount: 1 }],
+        sqlAuthoritative: true,
+      });
+      expect(partialize()).toEqual({});
+    });
   });
 });

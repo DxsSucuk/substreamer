@@ -25,6 +25,8 @@ import {
   performOnlineSearch,
   performOfflineSearch,
   getOfflineSongsByGenre,
+  getOfflineGenresPresent,
+  getOfflineSongsAll,
   searchLibrary,
   findAlbum,
   findArtistSongs,
@@ -371,6 +373,92 @@ describe('getOfflineSongsByGenre', () => {
     });
 
     expect(getOfflineSongsByGenre('Rock')).toHaveLength(0);
+  });
+});
+
+/** The ONE pass the Tuned-In builder replaced N per-genre walks with. */
+describe('getOfflineGenresPresent', () => {
+  it('collects every genre in the offline library, lowercased', () => {
+    seedCache({
+      a1: {
+        name: 'Album',
+        tracks: [
+          { id: 't1', title: 'Song', artist: 'A', duration: 200, genre: 'Rock' },
+          {
+            id: 't2',
+            title: 'Other',
+            artist: 'B',
+            duration: 180,
+            genres: [{ name: 'Electronic' }, { name: 'Ambient' }],
+          },
+        ],
+      },
+    });
+
+    expect([...getOfflineGenresPresent()].sort()).toEqual(['ambient', 'electronic', 'rock']);
+  });
+
+  it('visits a song held by two items once', () => {
+    seedCache({
+      a1: { name: 'Album', tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200, genre: 'Rock' }] },
+      p1: { name: 'Playlist', tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200, genre: 'Rock' }] },
+    });
+
+    expect([...getOfflineGenresPresent()]).toEqual(['rock']);
+  });
+
+  it('skips an edge whose song row is gone, and a song with no envelope', () => {
+    seedCache({
+      a1: { name: 'Album', tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200, genre: 'Rock' }] },
+    });
+    const state = musicCacheStore.getState();
+    musicCacheStore.setState({
+      ...state,
+      cachedItems: {
+        ...state.cachedItems,
+        // `t99` has no `cachedSongs` row; `t-bare` has one with no envelope at all.
+        a1: { ...state.cachedItems.a1, songIds: ['t1', 't99', 't-bare'] },
+      },
+      cachedSongs: {
+        ...state.cachedSongs,
+        't-bare': { id: 't-bare', title: 'Bare', albumId: 'a1', duration: 1 },
+      },
+    } as any);
+
+    expect([...getOfflineGenresPresent()]).toEqual(['rock']);
+  });
+
+  it('is empty when nothing is downloaded', () => {
+    expect(getOfflineGenresPresent().size).toBe(0);
+  });
+
+  it('is empty when the downloaded songs carry no genre', () => {
+    seedCache({
+      a1: { name: 'Album', tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200 }] },
+    });
+
+    expect(getOfflineGenresPresent().size).toBe(0);
+  });
+});
+
+describe('getOfflineSongsAll', () => {
+  it('returns every downloaded song, genre or not, deduplicated across items', () => {
+    seedCache({
+      a1: {
+        name: 'Album',
+        tracks: [
+          { id: 't1', title: 'Song', artist: 'A', duration: 200, genre: 'Rock' },
+          { id: 't2', title: 'Other', artist: 'B', duration: 180 },
+        ],
+      },
+      p1: { name: 'Playlist', tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200 }] },
+    });
+
+    expect(getOfflineSongsAll().map((s) => s.id).sort()).toEqual(['t1', 't2']);
+  });
+
+  it('is empty when nothing is downloaded', () => {
+    expect(getOfflineSongsAll()).toEqual([]);
   });
 });
 

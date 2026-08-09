@@ -1,15 +1,3 @@
-// `persistence/db.ts` imports `expo-sqlite` at module load; stub it so the
-// import doesn't hit the native bridge during tests.
-jest.mock('expo-sqlite', () => ({
-  openDatabaseSync: () => ({
-    getFirstSync: () => undefined,
-    getAllSync: () => [],
-    runSync: () => {},
-    execSync: () => {},
-    withTransactionSync: (fn: () => void) => fn(),
-  }),
-}));
-
 /**
  * musicCacheService v2 tests. Mocks the SQL persistence layer so the real
  * store logic can exercise without a real DB.

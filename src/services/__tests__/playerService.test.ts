@@ -1,14 +1,3 @@
-// `persistence/db.ts` imports `expo-sqlite` at module load; stub it.
-jest.mock('expo-sqlite', () => ({
-  openDatabaseSync: () => ({
-    getFirstSync: () => undefined,
-    getAllSync: () => [],
-    runSync: () => {},
-    execSync: () => {},
-    withTransactionSync: (fn: () => void) => fn(),
-  }),
-}));
-
 jest.mock('react-native', () => ({
   AppState: {
     addEventListener: jest.fn(() => ({ remove: jest.fn() })),
@@ -109,8 +98,6 @@ jest.mock('../queuePersistenceService', () => ({
   clearPersistedQueue: () => mockClearPersistedQueue(),
   getPersistedQueue: () => mockGetPersistedQueue(),
   getPersistedPosition: () => mockGetPersistedPosition(),
-  resetPersistTimer: jest.fn(),
-  PERSIST_INTERVAL_MS: 10_000,
 }));
 
 import { playbackSettingsStore } from '../../store/playbackSettingsStore';

@@ -5,11 +5,6 @@ import { render, act } from '@testing-library/react-native';
 // albumDetailStore now transitively imports for cover-art prefetching. These
 // don't touch the splash's own logic — the splash just needs the hydration
 // calls to be no-ops during the test.
-jest.mock('expo-sqlite', () => ({
-  openDatabaseSync: () => {
-    throw new Error('mocked — detailTables fallback path used in tests');
-  },
-}));
 jest.mock('../../services/imageCacheService', () => ({
   ensureCached: jest.fn(),
   prefetchCoverArt: jest.fn(),

@@ -38,14 +38,6 @@ jest.mock('../../store/deviceIdentityStore', () => ({
   getDeviceShortId: () => 'mock1234',
 }));
 
-// Silence the real module's expo-sqlite init so it doesn't try to open a
-// native handle during module load.
-jest.mock('expo-sqlite', () => ({
-  openDatabaseSync: () => {
-    throw new Error('mocked — fake db injected per test');
-  },
-}));
-
 jest.mock('expo-file-system', () => {
   class File {
     write = jest.fn();

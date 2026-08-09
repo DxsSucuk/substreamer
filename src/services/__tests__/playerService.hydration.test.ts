@@ -7,16 +7,6 @@
  * bailing when nothing is playable, and the public-API hydration guard.
  */
 
-jest.mock('expo-sqlite', () => ({
-  openDatabaseSync: () => ({
-    getFirstSync: () => undefined,
-    getAllSync: () => [],
-    runSync: () => {},
-    execSync: () => {},
-    withTransactionSync: (fn: () => void) => fn(),
-  }),
-}));
-
 jest.mock('react-native', () => ({
   AppState: { addEventListener: jest.fn(() => ({ remove: jest.fn() })) },
   Platform: { OS: 'android' },
@@ -130,8 +120,6 @@ jest.mock('../queuePersistenceService', () => ({
   clearPersistedQueue: jest.fn(),
   getPersistedQueue: () => mockGetPersistedQueue(),
   getPersistedPosition: () => mockGetPersistedPosition(),
-  resetPersistTimer: jest.fn(),
-  PERSIST_INTERVAL_MS: 10_000,
 }));
 
 import type { Child } from '../subsonicService';

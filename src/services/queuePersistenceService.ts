@@ -19,7 +19,8 @@ import {
 } from '../store/persistence/queueSnapshotTable';
 import { type Child } from './subsonicService';
 
-export const PERSIST_INTERVAL_MS = 10_000;
+/** Throttle window for resume-position writes. */
+const PERSIST_INTERVAL_MS = 10_000;
 
 /**
  * Debounce window for queue-CHANGE writes. A queue change rewrites every song row,
@@ -219,8 +220,4 @@ export function getPersistedPosition(): PersistedPosition | null {
   ensureLoaded();
   if (livePositionTrackId === null) return null;
   return { position: livePosition, trackId: livePositionTrackId };
-}
-
-export function resetPersistTimer(): void {
-  lastPositionPersistTime = 0;
 }

@@ -20,14 +20,6 @@ jest.mock('../imageCacheService', () => ({
   clearImageCache: jest.fn(async () => 0),
 }));
 
-// detailTables imports expo-sqlite directly; stub it so the migration test
-// doesn't drag the real native handle through expo-asset + expo-constants.
-jest.mock('expo-sqlite', () => ({
-  openDatabaseSync: () => {
-    throw new Error('mocked — detailTables fallback path used in tests');
-  },
-}));
-
 // The runner REFUSES to run when the DB is unavailable: a version misread as 0 must
 // NOT re-run every migration on an already-loaded app (that repeated the destructive
 // image-cache re-key wipes m25/m29 in prod and deleted the on-disk cache). The test DB

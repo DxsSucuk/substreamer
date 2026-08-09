@@ -4,18 +4,6 @@
 (globalThis as { requestIdleCallback?: (cb: () => void) => void }).requestIdleCallback =
   (cb: () => void) => { cb(); };
 
-// `persistence/db.ts` imports `expo-sqlite` at module load; stub it so the
-// import doesn't hit the native bridge during tests.
-jest.mock('expo-sqlite', () => ({
-  openDatabaseSync: () => ({
-    getFirstSync: () => undefined,
-    getAllSync: () => [],
-    runSync: () => {},
-    execSync: () => {},
-    withTransactionSync: (fn: () => void) => fn(),
-  }),
-}));
-
 const mockListDirectoryAsync = jest.fn();
 const mockGetDirectorySizeAsync = jest.fn();
 // Tracks every deleteFileAsync() invocation (by internal `_name`, i.e. with

@@ -24,8 +24,6 @@ import {
   persistCurrentIndex,
   persistPositionIfDue,
   persistQueue,
-  resetPersistTimer,
-  PERSIST_INTERVAL_MS,
 } from '../queuePersistenceService';
 
 const handle = getDb();
@@ -33,6 +31,7 @@ if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam
 const realDb: InternalDb = handle;
 
 const QUEUE_DEBOUNCE_MS = 1500;
+const PERSIST_INTERVAL_MS = 10_000;
 
 /* ------------------------------------------------------------------ */
 /*  Fixtures + helpers                                                 */
@@ -487,14 +486,6 @@ describe('persistPositionIfDue', () => {
     await drain();
 
     expect(liveRow()?.position_sec).toBe(500);
-  });
-
-  it('resetPersistTimer allows an immediate write again', () => {
-    persistPositionIfDue(10, 's-00');
-    expect(persistPositionIfDue(20, 's-00')).toBe(false);
-
-    resetPersistTimer();
-    expect(persistPositionIfDue(30, 's-00')).toBe(true);
   });
 });
 

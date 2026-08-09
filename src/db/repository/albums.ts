@@ -366,16 +366,6 @@ export const listAlbumListRows = (
     [listType],
   );
 
-/** Synchronous counterpart — for the headless/CarPlay read at cold start, which has no
- *  UI to defer to and must answer before the browse tree is built. */
-export const listAlbumListRowsSync = (db: InternalDb, listType: AlbumListType): AlbumListRow[] =>
-  db.getAllSync<AlbumListRow>(
-    `SELECT ${colsOf(ALBUM_LIST_FIELDS, 'a')} FROM album_list_entries e
-       JOIN albums a ON a.id = e.album_id
-      WHERE e.list_type = ? ORDER BY e.pos`,
-    [listType],
-  );
-
 /** Drop every cached album-info row (settings "clear metadata"). */
 export const clearAlbumInfo = (db: InternalDb): Promise<unknown> =>
   db.runAsync('DELETE FROM album_info');

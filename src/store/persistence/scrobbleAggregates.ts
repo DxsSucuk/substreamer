@@ -199,22 +199,3 @@ export async function loadScrobblesSince(sinceMs: number): Promise<CompletedScro
     return [];
   }
 }
-
-/** Genre play-counts across the given clock hours (0-23) — Tuned In's
- *  time-of-day "Right Now" mix uses a window around the current hour. */
-export async function genreCountsForHours(hours: readonly number[]): Promise<Record<string, number>> {
-  const db = getDb();
-  if (db === null || hours.length === 0) return {};
-  try {
-    const placeholders = hours.map(() => '?').join(', ');
-    const rows = await db.getAllAsync<{ genre: string; c: number }>(
-      `SELECT genre, COUNT(*) AS c FROM scrobble_events WHERE hour IN (${placeholders}) AND genre IS NOT NULL GROUP BY genre`,
-      [...hours],
-    );
-    const out: Record<string, number> = {};
-    for (const r of rows) out[r.genre] = r.c;
-    return out;
-  } catch {
-    return {};
-  }
-}

@@ -7,18 +7,6 @@
 
 jest.mock('../persistence/kvStorage', () => require('../persistence/__mocks__/kvStorage'));
 
-// `persistence/db.ts` imports `expo-sqlite` at module load; stub it so the
-// import doesn't hit the native bridge during tests.
-jest.mock('expo-sqlite', () => ({
-  openDatabaseSync: () => ({
-    getFirstSync: () => undefined,
-    getAllSync: () => [],
-    runSync: () => {},
-    execSync: () => {},
-    withTransactionSync: (fn: () => void) => fn(),
-  }),
-}));
-
 beforeEach(() => {
   jest.resetModules();
 });

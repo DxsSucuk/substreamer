@@ -46,21 +46,15 @@ export interface ChildSpec<T> {
 
 const ident = (name: string): string => `"${name.replace(/"/g, '""')}"`;
 
-/** Records `table.column` for any value that had to be coerced from a non-scalar —
- *  a subsonic-api type↔reality mismatch worth fixing at the mapper. */
-const coercedColumns = new Set<string>();
-export const getCoercedColumns = (): string[] => [...coercedColumns].sort();
-
 /** Ensure a value is bindable by op-SQLite (string | number | null). Booleans →
- *  0/1, bigint → number, and any stray object/array → JSON text (recorded above)
- *  so a bulk write never crashes on an unexpected server shape. */
-function coerceBind(table: string, col: string, value: unknown): Value {
+ *  0/1, bigint → number, and any stray object/array → JSON text, so a bulk write
+ *  never crashes on an unexpected server shape. */
+function coerceBind(value: unknown): Value {
   if (value === null || value === undefined) return null;
   const t = typeof value;
   if (t === 'string' || t === 'number') return value as Value;
   if (t === 'boolean') return value ? 1 : 0;
   if (t === 'bigint') return Number(value);
-  coercedColumns.add(`${table}.${col}`);
   return JSON.stringify(value);
 }
 
@@ -97,7 +91,7 @@ function buildUpsertRow(table: string, row: Row, pk = 'id', merge = false): Batc
   const sql =
     `INSERT INTO ${ident(table)} (${cols.map(ident).join(', ')}) VALUES (${placeholders}) ` +
     `ON CONFLICT(${ident(pk)}) DO UPDATE SET ${updates}`;
-  return [sql, cols.map((c) => coerceBind(table, c, row[c]))];
+  return [sql, cols.map((c) => coerceBind(row[c]))];
 }
 
 /**
@@ -120,7 +114,7 @@ function buildInsertChild(table: string, row: Row): BatchCommand {
   const placeholders = cols.map(() => '?').join(', ');
   return [
     `INSERT INTO ${ident(table)} (${cols.map(ident).join(', ')}) VALUES (${placeholders})`,
-    cols.map((c) => coerceBind(table, c, row[c])),
+    cols.map((c) => coerceBind(row[c])),
   ];
 }
 

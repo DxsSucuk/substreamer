@@ -1,11 +1,5 @@
 import { act, render } from '@testing-library/react-native';
 
-jest.mock('expo-sqlite', () => ({
-  openDatabaseSync: () => {
-    throw new Error('per-row persistence disabled in test');
-  },
-}));
-
 jest.mock('../../store/persistence/kvStorage', () => require('../../store/persistence/__mocks__/kvStorage'));
 
 jest.mock('expo-router', () => ({

@@ -22,11 +22,6 @@ export function isPartialAlbum(item: CachedItemRow): boolean {
   return item.songIds.length < item.expectedSongCount;
 }
 
-/** Convenience inverse of `isPartialAlbum` for albums. */
-export function isCompleteAlbum(item: CachedItemRow): boolean {
-  return item.type === 'album' && !isPartialAlbum(item);
-}
-
 /**
  * The reader precedence for promoted metadata, stated once so every reader
  * states it identically: `metaV == null && rawJson != null` ⇒ read the legacy

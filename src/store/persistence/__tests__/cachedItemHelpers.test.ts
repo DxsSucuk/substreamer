@@ -1,6 +1,5 @@
 import {
   computeQueueItemProgress,
-  isCompleteAlbum,
   isPartialAlbum,
 } from '../cachedItemHelpers';
 import type {
@@ -66,17 +65,6 @@ describe('isPartialAlbum', () => {
 
   it('defensive: expectedSongCount 0 with 0 songs is NOT partial (empty album edge case)', () => {
     expect(isPartialAlbum(makeItem({ songIds: [], expectedSongCount: 0 }))).toBe(false);
-  });
-});
-
-describe('isCompleteAlbum', () => {
-  it('true only for albums that are not partial', () => {
-    expect(isCompleteAlbum(makeItem({
-      songIds: Array.from({ length: 10 }, (_, i) => `s${i}`),
-      expectedSongCount: 10,
-    }))).toBe(true);
-    expect(isCompleteAlbum(makeItem({ songIds: ['s1'], expectedSongCount: 10 }))).toBe(false);
-    expect(isCompleteAlbum(makeItem({ type: 'playlist' }))).toBe(false);
   });
 });
 

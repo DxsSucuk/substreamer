@@ -8,12 +8,6 @@ jest.mock('expo-keep-awake', () => ({
   deactivateKeepAwake: (...a: unknown[]) => (mockDeactivate as any)(...a),
 }));
 
-jest.mock('expo-sqlite', () => ({
-  openDatabaseSync: () => {
-    throw new Error('per-row persistence disabled in test');
-  },
-}));
-
 jest.mock('../../store/persistence/kvStorage', () => require('../../store/persistence/__mocks__/kvStorage'));
 
 import { syncStatusStore } from '../../store/syncStatusStore';

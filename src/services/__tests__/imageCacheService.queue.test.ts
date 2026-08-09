@@ -9,16 +9,6 @@
  * state transitions our new code performs.
  */
 
-jest.mock('expo-sqlite', () => ({
-  openDatabaseSync: () => ({
-    getFirstSync: () => undefined,
-    getAllSync: () => [],
-    runSync: () => ({ changes: 0, lastInsertRowId: 0 }),
-    execSync: () => {},
-    withTransactionSync: (fn: () => void) => fn(),
-  }),
-}));
-
 jest.mock('expo-file-system', () => ({
   File: class {},
   Directory: class {

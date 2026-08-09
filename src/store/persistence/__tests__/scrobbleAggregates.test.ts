@@ -8,7 +8,6 @@ import type { Child } from 'subsonic-api';
 import { getDb } from '../db';
 import {
   computeScrobbleAnalytics,
-  genreCountsForHours,
   loadRecentScrobbles,
 } from '../scrobbleAggregates';
 import { backfillScrobbleColumnsAsync } from '../scrobbleTable';
@@ -80,16 +79,6 @@ it('backfills derived columns for rows written before the columns existed', asyn
   expect(stats.totalPlays).toBe(1);
   expect(aggregates.artistCounts.Zed.count).toBe(1);
   expect(aggregates.genreCounts.Folk).toBe(1);
-});
-
-it('genreCountsForHours groups by clock hour', async () => {
-  // Two plays land in hour H, one in a different hour — assert the H window.
-  const t = NOW; // whatever local hour NOW maps to
-  const h = new Date(t).getHours();
-  insert('h1', song('s1', { artist: 'A', genres: [{ name: 'Rock' }] as any }), t);
-  insert('h2', song('s2', { artist: 'B', genres: [{ name: 'Rock' }] as any }), t + 60_000);
-  const counts = await genreCountsForHours([h]);
-  expect(counts.Rock).toBe(2);
 });
 
 it('loadRecentScrobbles returns newest first, bounded', async () => {

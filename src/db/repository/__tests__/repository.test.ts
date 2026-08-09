@@ -33,12 +33,14 @@ import {
   PLAYLIST_LIST_COLS,
   clearPlaylistDetailMarkers,
   countPlaylists,
+  getPlaylist,
   listAllPlaylists,
+  listPlaylistIds,
+  playlistIdsWithSongs,
   listPlaylistDetailState,
   stampPlaylistDetailSynced,
   deletePlaylist,
   deletePlaylistsNotIn,
-  listPlaylistSongIds,
   listPlaylists,
   listPlaylistsBefore,
   playlistCursorOf,
@@ -58,11 +60,20 @@ import {
   type SongListRow,
   hasAlbumWithoutSongs,
 } from '../songs';
-import { keysetPageBefore } from '../core';
+import { bulkUpsert, keysetPageBefore } from '../core';
 import { getAlbumDetail } from '../details';
 import { searchAlbums, searchArtists, searchSongs } from '../search';
 
 const db = () => getDb()!;
+
+/** Ordered playlist membership, straight from the junction table. */
+const playlistSongIds = async (playlistId: string): Promise<string[]> =>
+  (
+    await db().getAllAsync<{ song_id: string }>(
+      'SELECT song_id FROM playlist_songs WHERE playlist_id = ? ORDER BY position',
+      [playlistId],
+    )
+  ).map((r) => r.song_id);
 
 const album = (id: string, name: string, extra: Partial<AlbumID3> = {}): AlbumID3 => ({
   id,
@@ -632,9 +643,67 @@ describe('playlists repository', () => {
   it('sets + reads ordered song membership (replace preserves order)', async () => {
     await upsertPlaylists(db(), [playlist('p1', 'Mix')]);
     await setPlaylistSongs(db(), 'p1', ['s3', 's1', 's2']);
-    expect(await listPlaylistSongIds(db(), 'p1')).toEqual(['s3', 's1', 's2']);
+    expect(await playlistSongIds('p1')).toEqual(['s3', 's1', 's2']);
     await setPlaylistSongs(db(), 'p1', ['s2', 's3']);
-    expect(await listPlaylistSongIds(db(), 'p1')).toEqual(['s2', 's3']);
+    expect(await playlistSongIds('p1')).toEqual(['s2', 's3']);
+  });
+
+  it('listPlaylistIds enumerates every id for the full-library download', async () => {
+    await upsertPlaylists(db(), [playlist('p1', 'Alpha'), playlist('p2', 'Bravo')]);
+    expect((await listPlaylistIds(db())).sort()).toEqual(['p1', 'p2']);
+    await deletePlaylist(db(), 'p2');
+    expect(await listPlaylistIds(db())).toEqual(['p1']);
+  });
+
+  it('getPlaylist returns the whole row, or null for an id that is not there', async () => {
+    await upsertPlaylists(db(), [playlist('p1', 'Alpha')]);
+    expect((await getPlaylist(db(), 'p1'))?.name).toBe('Alpha');
+    expect(await getPlaylist(db(), 'p-nope')).toBeNull();
+  });
+
+  describe('playlistIdsWithSongs', () => {
+    it('reports only the ids whose membership is cached', async () => {
+      await upsertPlaylists(db(), [playlist('p1', 'Alpha'), playlist('p2', 'Bravo')]);
+      await setPlaylistSongs(db(), 'p1', ['s1']);
+      // `p2` exists but has no rows — "detail not cached", the whole point of the check.
+      expect(await playlistIdsWithSongs(db(), ['p1', 'p2', 'p-nope'])).toEqual(new Set(['p1']));
+    });
+
+    it('answers an empty id list without touching the DB', async () => {
+      await upsertPlaylists(db(), [playlist('p1', 'Alpha')]);
+      await setPlaylistSongs(db(), 'p1', ['s1']);
+      expect(await playlistIdsWithSongs(db(), [])).toEqual(new Set());
+    });
+  });
+});
+
+/**
+ * The bind coercion under `bulkUpsert`. `subsonic-api`'s types are not a promise about
+ * what a server sends, and op-SQLite binds only string | number | null — so a value the
+ * mapper's type said was scalar must not take the whole library sync down.
+ */
+describe('non-scalar bind coercion', () => {
+  const upsertRaw = (rows: Array<Record<string, unknown>>): Promise<number> =>
+    bulkUpsert(
+      db(),
+      {
+        table: 'playlists',
+        idOf: (r: Record<string, unknown>) => String(r.id),
+        rowOf: (r) => r as never,
+      },
+      rows,
+    );
+
+  it('stores a boolean as 0/1 and a bigint as a number', async () => {
+    await upsertRaw([{ id: 'p1', name: 'Alpha', public: true, song_count: BigInt(7) }]);
+    const row = (await getPlaylist(db(), 'p1'))!;
+    expect(row.public).toBe(1);
+    expect(row.song_count).toBe(7);
+  });
+
+  it('stores a stray object as JSON text instead of throwing', async () => {
+    await upsertRaw([{ id: 'p2', name: { unexpected: 'shape' } }]);
+    expect((await getPlaylist(db(), 'p2'))?.name).toBe('{"unexpected":"shape"}');
   });
 });
 

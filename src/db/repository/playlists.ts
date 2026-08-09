@@ -261,15 +261,6 @@ export const setPlaylistSongs = (
     ),
   ]);
 
-/** Ordered song ids for a playlist (junction rows, in position order). */
-export const listPlaylistSongIds = (db: InternalDb, playlistId: string): Promise<string[]> =>
-  db
-    .getAllAsync<{ song_id: string }>(
-      'SELECT song_id FROM playlist_songs WHERE playlist_id = ? ORDER BY position',
-      [playlistId],
-    )
-    .then((rows) => rows.map((r) => r.song_id));
-
 /** Which of the given playlist ids already have their membership (≥1 track) in the
  *  normalized model — the "has detail cached" presence check for the downloaded-metadata
  *  refresh. Ids pass as a JSON array via `json_each` to dodge the bound-variable limit. */

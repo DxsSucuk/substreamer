@@ -1,16 +1,3 @@
-// Mock expo-sqlite with a minimal no-op DB so `persistence/db.ts`'s
-// module-scope init succeeds on import. Individual tests override the
-// shared handle via `db.__setDbForTests` with a richer fake.
-jest.mock('expo-sqlite', () => ({
-  openDatabaseSync: () => ({
-    getFirstSync: () => undefined,
-    getAllSync: () => [],
-    runSync: () => ({ changes: 0 }),
-    execSync: () => {},
-    withTransactionSync: (fn: () => void) => fn(),
-  }),
-}));
-
 import { __setDbForTests } from '../db';
 import {
   clearImageQueueByCycle,

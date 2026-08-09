@@ -6,11 +6,20 @@ import { ensureNormalizedSchema } from '../createNormalizedTables';
 import { migrateBlobsToNormalized } from '../migrateNormalized';
 import { countAlbums, listAlbums } from '../repository/albums';
 import { countArtists } from '../repository/artists';
-import { countPlaylists, listPlaylistSongIds } from '../repository/playlists';
+import { countPlaylists } from '../repository/playlists';
 import { countSongs } from '../repository/songs';
 import { getArtistBioRow, getArtistTopSongsRow, getPlaylistDetail } from '../repository/details';
 
 const db = () => getDb()!;
+
+/** Ordered playlist membership, straight from the junction table. */
+const playlistSongIds = async (playlistId: string): Promise<string[]> =>
+  (
+    await db().getAllAsync<{ song_id: string }>(
+      'SELECT song_id FROM playlist_songs WHERE playlist_id = ? ORDER BY position',
+      [playlistId],
+    )
+  ).map((r) => r.song_id);
 
 const seedAlbum = (id: string, a: Partial<AlbumID3>) =>
   db().runSync('INSERT OR REPLACE INTO library_albums (id, sortKey, raw_json) VALUES (?, ?, ?)', [
@@ -102,6 +111,34 @@ describe('migrateBlobsToNormalized', () => {
     expect(await countSongs(db())).toBe(1);
   });
 
+  it('skips a row whose blob will not parse, and migrates the rest of the page', async () => {
+    // Truncated JSON is what a killed write leaves behind. The ETL counts it as
+    // skipped rather than throwing, or one bad row costs the whole library.
+    seedAlbum('a1', { name: 'Alpha' });
+    db().runSync('INSERT INTO library_albums (id, sortKey, raw_json) VALUES (?, ?, ?)', [
+      'a2',
+      'bravo',
+      '{"id":"a2",',
+    ]);
+
+    const result = await migrateBlobsToNormalized(db());
+
+    expect(result.albums).toEqual({ source: 2, migrated: 1, skipped: 1 });
+    expect(await countAlbums(db())).toBe(1);
+  });
+
+  it('treats a KV value that will not parse as an absent store', async () => {
+    db().runSync('INSERT OR REPLACE INTO storage (key, value) VALUES (?, ?)', [
+      'substreamer-artist-library',
+      'not json at all',
+    ]);
+
+    const result = await migrateBlobsToNormalized(db());
+
+    expect(result.artists).toEqual({ source: 0, migrated: 0, skipped: 0 });
+    expect(await countArtists(db())).toBe(0);
+  });
+
   it('migrates artists + playlists (rows + song membership) from the persisted KV blobs', async () => {
     putKv('substreamer-artist-library', {
       artists: [
@@ -122,7 +159,7 @@ describe('migrateBlobsToNormalized', () => {
     expect(result.playlists.migrated).toBe(1);
     expect(await countArtists(db())).toBe(2);
     expect(await countPlaylists(db())).toBe(1);
-    expect(await listPlaylistSongIds(db(), 'pl1')).toEqual(['s1', 's2']);
+    expect(await playlistSongIds('pl1')).toEqual(['s1', 's2']);
   });
 
   it('handles absent artist/playlist KV gracefully (0 migrated, no throw)', async () => {
