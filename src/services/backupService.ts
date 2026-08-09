@@ -280,8 +280,8 @@ export async function createBackup(): Promise<void> {
   }
 
   // The store, not the repository: it holds the complete set whichever source it
-  // hydrates from, and `readBookmarkSnapshots` cannot tell "none" from "DB
-  // unavailable" — exporting an empty file over a real set is not recoverable.
+  // hydrates from — including the case where migration 36 has not moved the KV blob
+  // into rows yet. Exporting an empty file over a real set is not recoverable.
   const bookmarks = bookmarksStore.getState().bookmarks;
   const bookmarkCount = Object.keys(bookmarks).length;
   if (bookmarkCount > 0) {

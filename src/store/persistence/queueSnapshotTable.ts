@@ -499,6 +499,39 @@ export function readSnapshotSync(snapshotId: string): QueueSnapshot | null {
   }
 }
 
+/** One snapshot's parent row, nothing else. Null when it does not exist — which is
+ *  how a caller asks "is there a live queue already?" without rebuilding its `Child`s. */
+export async function readSnapshotMeta(snapshotId: string): Promise<QueueSnapshotMeta | null> {
+  const db = getDb();
+  if (db === null) return null;
+  try {
+    const row = await db.getFirstAsync<SnapshotRow>(`SELECT ${META_SELECT} WHERE id = ?;`, [
+      snapshotId,
+    ]);
+    return row === undefined || row === null ? null : metaFromRow(row);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The REAL song-row count per snapshot — the whole table grouped, one query. Read
+ * back after a write to prove the songs landed, rather than trusting the denormalized
+ * `track_count`. Null (not an empty map) when the rows could not be read at all.
+ */
+export async function readSnapshotSongCounts(): Promise<Map<string, number> | null> {
+  const db = getDb();
+  if (db === null) return null;
+  try {
+    const rows = await db.getAllAsync<{ snapshot_id: string; c: number }>(
+      'SELECT snapshot_id, COUNT(*) AS c FROM queue_snapshot_songs GROUP BY snapshot_id;',
+    );
+    return new Map(rows.map((r) => [r.snapshot_id, r.c]));
+  } catch {
+    return null;
+  }
+}
+
 /** Every saved bookmark's parent row, newest first. The songs are not read — the
  *  list renders from `name`/`created_at`/`track_count` alone. */
 export async function listBookmarks(): Promise<QueueSnapshotMeta[]> {
@@ -523,10 +556,14 @@ const BOOKMARK_SNAPSHOTS = "snapshot_id IN (SELECT id FROM queue_snapshots WHERE
  * hydrates its in-memory map from. ASYNC and bulk: 7 queries for the whole set, not
  * 7 per bookmark, and off the JS thread because nothing paints from it before boot
  * completes (the live queue is the one that must read synchronously).
+ *
+ * **Null means "could not read", `[]` means "no bookmarks".** The caller replaces its
+ * whole map from this, and a failed DB open answering `[]` would blank a set that is
+ * not re-derivable.
  */
-export async function readBookmarkSnapshots(): Promise<QueueSnapshot[]> {
+export async function readBookmarkSnapshots(): Promise<QueueSnapshot[] | null> {
   const db = getDb();
-  if (db === null) return [];
+  if (db === null) return null;
   try {
     const metas = await listBookmarks();
     if (metas.length === 0) return [];
@@ -555,6 +592,6 @@ export async function readBookmarkSnapshots(): Promise<QueueSnapshot[]> {
     }
     return metas.map((meta) => ({ ...meta, tracks: tracks.get(meta.id) ?? [] }));
   } catch {
-    return [];
+    return null;
   }
 }

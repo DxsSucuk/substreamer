@@ -1,13 +1,12 @@
 /**
- * The saved play queues. Every mutation writes through to `queue_snapshots`
- * (`kind = 'bookmark'`) — the same table pair the live queue uses — AND to the KV
- * blob, which is still the source the store hydrates from.
+ * The saved play queues, stored as `queue_snapshots` rows (`kind = 'bookmark'`) — the
+ * same table pair the live queue uses. Every mutation writes through, and
+ * {@link BookmarksState.hydrateFromDbAsync} reads the map back from those rows in
+ * `rehydrateAllStores`.
  *
- * Reads flip to SQL in D1.4, once the migration has moved the existing blob into
- * rows: until then the table holds only what was saved after the upgrade, so
- * {@link BookmarksState.hydrateFromDbAsync} is deliberately not wired into
- * `rehydrateAllStores` yet. It replaces the map wholesale, and the persist
- * middleware writes whatever it produces straight back over the blob.
+ * The KV blob is the PREVIOUS home and still the fallback until migration 36 has moved
+ * it into rows, which is what {@link BookmarksState.sqlAuthoritative} tracks. `persist`
+ * stays for `autoName`/`sortOrder`, which have no table of their own.
  *
  * Bookmarks are never capped, evicted or pruned: they are user-created and there is
  * nothing to re-derive them from.
@@ -57,6 +56,12 @@ interface BookmarksState {
   autoName: boolean;
   /** Persisted sort order for the bookmarks list. */
   sortOrder: BookmarkSort;
+  /**
+   * True once the rows have been observed to hold everything memory holds — set by
+   * {@link BookmarksState.hydrateFromDbAsync}, never persisted. While it is false the
+   * KV blob is still the complete copy and `partialize` keeps writing it.
+   */
+  sqlAuthoritative: boolean;
 
   addBookmark: (bookmark: PlayQueueBookmark) => void;
   removeBookmark: (id: string) => void;
@@ -79,9 +84,9 @@ interface BookmarksState {
    */
   replaceBookmarks: (incoming: Record<string, PlayQueueBookmark>) => number;
   /**
-   * Replace the in-memory map from `queue_snapshots`. NOT wired into
-   * `rehydrateAllStores` yet — D1.4 does that, after its migration has made the
-   * table the complete set (see the module docblock).
+   * Replace the in-memory map from `queue_snapshots`, once the rows are known to be
+   * the complete set. Called from `rehydrateAllStores`; a no-op whenever it cannot
+   * prove that, which leaves the KV-hydrated map alone.
    */
   hydrateFromDbAsync: () => Promise<void>;
 }
@@ -118,12 +123,37 @@ const snapshotInput = (bookmark: PlayQueueBookmark): BookmarkSnapshotInput => ({
 const isValidBookmark = (value: PlayQueueBookmark): boolean =>
   !!value && typeof value === 'object' && !!value.id && Array.isArray(value.queue);
 
+/** What the repository actually stores: entries with no id are dropped on the way in
+ *  (`song_id` is NOT NULL), so a stored-vs-held comparison has to drop them too. */
+const storableTracks = (bookmark: PlayQueueBookmark): number =>
+  bookmark.queue.filter((c) => !!c?.id).length;
+
+/**
+ * Resolve once `persist` has finished reading the KV blob. Zustand's hydration REPLACES
+ * the state it lands on, so hydrating from SQL first would simply be undone by a
+ * late-resolving `getItem` — `bookmarksStore` is not in `STARTUP_KV_STORES`, and the
+ * splash fires `rehydrateAllStores()` without awaiting it. Same shape as
+ * `awaitKvHydration`.
+ */
+const kvHydrated = (): Promise<void> =>
+  new Promise<void>((resolve) => {
+    if (bookmarksStore.persist.hasHydrated()) {
+      resolve();
+      return;
+    }
+    const unsubscribe = bookmarksStore.persist.onFinishHydration(() => {
+      unsubscribe();
+      resolve();
+    });
+  });
+
 export const bookmarksStore = create<BookmarksState>()(
   persist(
     (set, get) => ({
       bookmarks: {},
       autoName: true,
       sortOrder: 'newest',
+      sqlAuthoritative: false,
 
       addBookmark: (bookmark) => {
         set((state) => ({
@@ -185,7 +215,11 @@ export const bookmarksStore = create<BookmarksState>()(
       },
 
       hydrateFromDbAsync: async () => {
+        await kvHydrated();
         const snapshots = await readBookmarkSnapshots();
+        // Null is "could not read", not "none". Replacing the map from a failed DB open
+        // would blank a set with nothing to restore it from — and persist it.
+        if (snapshots === null) return;
         const bookmarks: Record<string, PlayQueueBookmark> = {};
         for (const snapshot of snapshots) {
           bookmarks[snapshot.id] = {
@@ -197,16 +231,29 @@ export const bookmarksStore = create<BookmarksState>()(
             positionSec: snapshot.positionSec ?? 0,
           };
         }
-        set({ bookmarks });
+        // The rows are only authoritative once they hold everything the KV-hydrated map
+        // holds. A non-empty table is NOT the gate: one bookmark saved after the upgrade
+        // makes the table non-empty while the pre-upgrade blob is still the only copy of
+        // the rest, and this read REPLACES the map. The track count is part of it because
+        // a rename inserts a parent row on its own — id present, queue empty.
+        const held = Object.values(get().bookmarks);
+        const complete = held.every(
+          (b) => (bookmarks[b.id]?.queue.length ?? -1) >= storableTracks(b),
+        );
+        if (!complete) return;
+        set({ bookmarks, sqlAuthoritative: true });
       },
     }),
     {
       name: PERSIST_KEY,
       storage: createJSONStorage(() => kvStorage),
+      // `bookmarks` leaves the blob the moment the rows are proven to hold them — that
+      // is the retirement of the KV copy. Until then it stays, because every `set` here
+      // rewrites the blob and dropping it early would erase the only complete copy.
       partialize: (state) => ({
-        bookmarks: state.bookmarks,
         autoName: state.autoName,
         sortOrder: state.sortOrder,
+        ...(state.sqlAuthoritative ? {} : { bookmarks: state.bookmarks }),
       }),
     },
   ),

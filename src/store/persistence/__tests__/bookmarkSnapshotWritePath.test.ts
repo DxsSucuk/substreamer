@@ -115,7 +115,12 @@ beforeEach(() => {
   __setDbForTests(realDb);
   // ON DELETE CASCADE clears the songs and their five array tables with it.
   realDb.runSync('DELETE FROM queue_snapshots;');
-  bookmarksStore.setState({ bookmarks: {}, autoName: true, sortOrder: 'newest' });
+  bookmarksStore.setState({
+    bookmarks: {},
+    autoName: true,
+    sortOrder: 'newest',
+    sqlAuthoritative: false,
+  });
 });
 
 /* ------------------------------------------------------------------ */
@@ -361,26 +366,116 @@ describe('many bookmarks', () => {
 /* ------------------------------------------------------------------ */
 
 describe('hydrateFromDbAsync', () => {
-  // The read is authoritative — it REPLACES the map, it does not merge. That is why it
-  // stays unwired until D1.4's migration has made the table the complete set: run it
-  // against a partly-filled table and the bookmarks missing from it are gone, and the
-  // persist middleware writes that loss through to the KV blob.
-  it('replaces the map wholesale, dropping anything the table does not hold', async () => {
-    bookmarksStore.setState({ bookmarks: { 'not-in-sql': bookmark('not-in-sql') } });
+  // The read REPLACES the map, so it only runs once the rows hold everything memory
+  // holds. Against a partly-filled table the bookmarks missing from it would be gone,
+  // and the persist middleware would write that loss straight through to the KV blob.
+  it('leaves the map alone when the table is missing one of its bookmarks', async () => {
+    bookmarksStore.setState({ bookmarks: { 'kv-only': bookmark('kv-only') } });
     bookmarksStore.getState().addBookmark(bookmark('bm-1'));
     await settle();
 
     await bookmarksStore.getState().hydrateFromDbAsync();
 
-    expect(Object.keys(bookmarksStore.getState().bookmarks)).toEqual(['bm-1']);
+    expect(Object.keys(bookmarksStore.getState().bookmarks).sort()).toEqual([
+      'bm-1',
+      'kv-only',
+    ]);
+    expect(bookmarksStore.getState().sqlAuthoritative).toBe(false);
   });
 
-  it('yields an empty map when the table holds no bookmarks', async () => {
-    bookmarksStore.setState({ bookmarks: { kv: bookmark('kv') } });
+  // The legacy-rename case: a parent row with no songs. Its id is in the table, so an
+  // id-only gate would open and hydrate that bookmark with an EMPTY queue.
+  it('leaves the map alone when the table holds the bookmark without its songs', async () => {
+    bookmarksStore.setState({ bookmarks: { 'kv-only': bookmark('kv-only') } });
+    await upsertSnapshot({
+      id: 'kv-only',
+      kind: 'bookmark',
+      name: 'Renamed in KV',
+      createdAt: 1_700_000_000_000,
+      currentIndex: 0,
+      positionSec: 0,
+    });
 
     await bookmarksStore.getState().hydrateFromDbAsync();
 
+    expect(bookmarksStore.getState().bookmarks['kv-only'].queue).toHaveLength(4);
+    expect(bookmarksStore.getState().sqlAuthoritative).toBe(false);
+  });
+
+  it('replaces the map once the rows hold everything memory holds', async () => {
+    bookmarksStore.getState().addBookmark(bookmark('bm-1'));
+    await settle();
+    // A row the map has not seen yet — a restore on another launch, say.
+    bookmarksStore.setState({ bookmarks: {} });
+
+    await bookmarksStore.getState().hydrateFromDbAsync();
+
+    expect(Object.keys(bookmarksStore.getState().bookmarks)).toEqual(['bm-1']);
+    expect(bookmarksStore.getState().sqlAuthoritative).toBe(true);
+  });
+
+  it('yields an empty map when neither the map nor the table holds anything', async () => {
+    await bookmarksStore.getState().hydrateFromDbAsync();
+
     expect(bookmarksStore.getState().bookmarks).toEqual({});
+    expect(bookmarksStore.getState().sqlAuthoritative).toBe(true);
+  });
+
+  it('stops persisting bookmarks to the blob once the rows are authoritative', async () => {
+    bookmarksStore.getState().addBookmark(bookmark('bm-1'));
+    await settle();
+    bookmarksStore.setState({ bookmarks: {} });
+    await bookmarksStore.getState().hydrateFromDbAsync();
+
+    const persisted = (
+      bookmarksStore as unknown as {
+        persist: { getOptions: () => { partialize: (s: unknown) => object } };
+      }
+    ).persist
+      .getOptions()
+      .partialize(bookmarksStore.getState());
+
+    expect(persisted).not.toHaveProperty('bookmarks');
+    expect(persisted).toMatchObject({ autoName: true, sortOrder: 'newest' });
+  });
+
+  // Zustand's persist hydration REPLACES the state it lands on, and `bookmarksStore` is
+  // not in STARTUP_KV_STORES while the splash fires `rehydrateAllStores()` without
+  // awaiting it. Read SQL first and a late-resolving `getItem` simply undoes it.
+  it('applies the SQL map after a late-resolving KV read, not before', async () => {
+    bookmarksStore.getState().addBookmark(bookmark('bm-1'));
+    await settle();
+    bookmarksStore.setState({ bookmarks: {} });
+
+    const original = (bookmarksStore.persist.getOptions() as { storage?: unknown }).storage;
+    let release = (): void => {};
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    bookmarksStore.persist.setOptions({
+      storage: {
+        getItem: async () => {
+          await blocked;
+          return { state: { bookmarks: {}, autoName: true, sortOrder: 'newest' }, version: 0 };
+        },
+        setItem: async () => {},
+        removeItem: async () => {},
+      },
+    });
+    try {
+      void bookmarksStore.persist.rehydrate();
+      expect(bookmarksStore.persist.hasHydrated()).toBe(false);
+
+      const hydrating = bookmarksStore.getState().hydrateFromDbAsync();
+      // Still nothing: the SQL read is waiting on the blob.
+      expect(bookmarksStore.getState().bookmarks).toEqual({});
+      release();
+      await hydrating;
+    } finally {
+      bookmarksStore.persist.setOptions({ storage: original as never });
+    }
+
+    expect(Object.keys(bookmarksStore.getState().bookmarks)).toEqual(['bm-1']);
   });
 
   it('writes degrade to no-ops with no DB handle, leaving memory authoritative', async () => {
@@ -396,8 +491,10 @@ describe('hydrateFromDbAsync', () => {
     // Memory still updated; nothing threw.
     expect(Object.keys(bookmarksStore.getState().bookmarks)).toEqual(['bm-2']);
     expect(bookmarksStore.getState().bookmarks['bm-2'].name).toBe('X');
-    // A read with no handle resolves empty rather than throwing — which is precisely
-    // why D1.4 must gate the wiring on the migration, not just on row count.
+    // "Could not read" must not read as "no bookmarks": the map survives and the blob
+    // stays the authoritative copy.
     await expect(bookmarksStore.getState().hydrateFromDbAsync()).resolves.toBeUndefined();
+    expect(Object.keys(bookmarksStore.getState().bookmarks)).toEqual(['bm-2']);
+    expect(bookmarksStore.getState().sqlAuthoritative).toBe(false);
   });
 });

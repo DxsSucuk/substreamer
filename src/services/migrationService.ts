@@ -46,6 +46,7 @@ import {
   bulkInsertCachedImages,
   countCachedImages as countCachedImagesRow,
 } from '../store/persistence/imageCacheTable';
+import { migrateQueueSnapshotsFromKv } from '../store/persistence/queueSnapshotMigration';
 import { kvStorage } from '../store/persistence';
 
 /* ------------------------------------------------------------------ */
@@ -2114,6 +2115,20 @@ const MIGRATION_TASKS: MigrationTask[] = [
     },
   },
 
+  {
+    id: 36,
+    name: 'Move saved queues into the snapshot tables',
+    run: async (log) => {
+      // Bookmarks and the live queue now live in `queue_snapshots`. Unlike the lyrics
+      // blob (m34) there is nothing to re-derive a bookmark from, so the migration
+      // reads the rows back and only then gives up the KV copy — and THROWS if it
+      // cannot, leaving the counter behind so the next launch retries with the blob
+      // still there. Migration 30 already deletes both queue keys, so finding them
+      // absent is the normal path, not a failure.
+      await migrateQueueSnapshotsFromKv(log);
+    },
+  },
+
   // -------------------------------------------------------------------
   // TEMPLATE – How to add a new migration task:
   //
@@ -2149,10 +2164,11 @@ const MIGRATION_TASKS: MigrationTask[] = [
   // be re-run or extended if a field was missed). When enabled, THIS task runs a final
   // catch-up migration and THEN drops the tables — migrate-BEFORE-drop is mandatory so a
   // very-old upgrader still recovers their data before it's gone. Held back JUST IN CASE
-  // until the final release is verified; uncomment to enable (it becomes id 35).
+  // until the final release is verified; uncomment to enable (it becomes id 37 — 35 was
+  // skipped and 36 has shipped, so anyone below it would never run a task numbered 35).
   //
   // {
-  //   id: 35,
+  //   id: 37,
   //   name: 'Migrate any remaining blob data, then drop the legacy blob tables',
   //   run: async (log) => {
   //     const { getDb } = require('../store/persistence/db') as { getDb: () => any };
