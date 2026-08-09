@@ -427,6 +427,13 @@ CREATE TABLE `favorite_songs` (
 );
 --> statement-breakpoint
 CREATE INDEX `idx_favorite_songs_starred_key` ON `favorite_songs` (`starred`,`id`);--> statement-breakpoint
+CREATE TABLE `genres` (
+	`name` text PRIMARY KEY NOT NULL,
+	`pos` integer NOT NULL,
+	`song_count` integer,
+	`album_count` integer
+);
+--> statement-breakpoint
 CREATE TABLE `image_download_queue` (
 	`cover_art_id` text PRIMARY KEY NOT NULL,
 	`scope` text NOT NULL,
@@ -780,6 +787,31 @@ CREATE TABLE `scrobble_moods` (
 	`mood` text NOT NULL,
 	PRIMARY KEY(`scrobble_id`, `pos`),
 	FOREIGN KEY (`scrobble_id`) REFERENCES `scrobble_events`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `share_entries` (
+	`share_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`song_id` text NOT NULL,
+	`title` text,
+	`artist` text,
+	`album` text,
+	`album_id` text,
+	`cover_art` text,
+	PRIMARY KEY(`share_id`, `pos`),
+	FOREIGN KEY (`share_id`) REFERENCES `shares`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `shares` (
+	`id` text PRIMARY KEY NOT NULL,
+	`pos` integer NOT NULL,
+	`url` text,
+	`description` text,
+	`created` integer,
+	`expires` integer,
+	`last_visited` integer,
+	`username` text,
+	`visit_count` integer
 );
 --> statement-breakpoint
 CREATE TABLE `song_album_artists` (

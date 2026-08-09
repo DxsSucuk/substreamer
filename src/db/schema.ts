@@ -851,6 +851,81 @@ export const queueSnapshotSongMoods = sqliteTable(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Genres — the server's genre list (getGenres)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One server genre with its counts, as `getGenres` returns it. The Subsonic field is
+ * `value`; the column is `name` to match `song_genres`/`album_genres`.
+ *
+ * `pos` holds the server's array position so a row-hydrated list is byte-equivalent to
+ * the one a fetch produces. Without it, hydration would have to invent an order and the
+ * two would differ — `useMixBuilder` filters this list by substring and takes
+ * `.slice(0, 8)` with no sort of its own, so the same search would silently yield a
+ * different eight before and after the first fetch.
+ */
+export const genres = sqliteTable('genres', {
+  name: text('name').primaryKey(),
+  pos: integer('pos').notNull(),
+  songCount: integer('song_count'),
+  albumCount: integer('album_count'),
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shares — the user's public links (getShares)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One share. The dates are epoch ms: SQLite has no date type and `Share` declares
+ *  them `Date`. Everything but the id and `pos` is nullable — a server that omits
+ *  `username` or `visitCount` must still store its share rather than fail the INSERT.
+ *
+ *  `pos` holds the server's array position, for the same reason `genres` does: the
+ *  share browser renders `shares.map(...)` unsorted, so a hydrated list must come back
+ *  in the order a fetch would have produced rather than one this table invented. */
+export const shares = sqliteTable('shares', {
+  id: text('id').primaryKey(),
+  pos: integer('pos').notNull(),
+  url: text('url'),
+  description: text('description'),
+  /** Epoch ms. */
+  created: integer('created'),
+  /** Epoch ms. */
+  expires: integer('expires'),
+  /** Epoch ms. */
+  lastVisited: integer('last_visited'),
+  username: text('username'),
+  visitCount: integer('visit_count'),
+});
+
+/**
+ * A share's shared songs, positional. Deliberately NOT a reference to `songs` — a
+ * shared song need not be in the library, and with `PRAGMA foreign_keys = ON` an FK
+ * there would make the INSERT fail outright (AGENTS.md §11; `artist_top_songs` is the
+ * model).
+ *
+ * A SNAPSHOT of the six fields the share list and the edit sheet render — title/album
+ * for the heading, artist for the subtitle and the share message, `cover_art`/`album_id`
+ * for the thumbnail. Not the full `Child` column set the queue snapshot carries: that
+ * one feeds the scrobble write path, whereas a share's entries are never played.
+ */
+export const shareEntries = sqliteTable(
+  'share_entries',
+  {
+    shareId: text('share_id')
+      .notNull()
+      .references(() => shares.id, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    songId: text('song_id').notNull(),
+    title: text('title'),
+    artist: text('artist'),
+    album: text('album'),
+    albumId: text('album_id'),
+    coverArt: text('cover_art'),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.shareId, t.pos] }) }),
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Kept tables — permanent user data, NOT part of the library model
 //
 // The KV blob store (auth, settings, theme), scrobble history, the download tables and

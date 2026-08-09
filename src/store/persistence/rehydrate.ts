@@ -13,6 +13,7 @@ import { pendingScrobbleStore } from '../pendingScrobbleStore';
 import { playbackSettingsStore } from '../playbackSettingsStore';
 import { scanStatusStore } from '../scanStatusStore';
 import { serverInfoStore } from '../serverInfoStore';
+import { sharesStore } from '../sharesStore';
 import { syncStatusStore } from '../syncStatusStore';
 
 export interface RehydrationResult {
@@ -63,6 +64,10 @@ export async function rehydrateAllStores(): Promise<RehydrationResult> {
     ['bookmarks', () => bookmarksStore.getState().hydrateFromDbAsync()],
     ['completedScrobble', () => completedScrobbleStore.getState().hydrateFromDbAsync()],
     ['favorites', () => favoritesStore.getState().hydrateFromDbAsync()],
+    // Both are `persist`-wrapped over the slice they DB-hydrate, like bookmarks above,
+    // so each waits on its own `persist.hasHydrated()` before replacing anything.
+    ['genres', () => genreStore.getState().hydrateFromDbAsync()],
+    ['shares', () => sharesStore.getState().hydrateFromDbAsync()],
     ['pendingScrobble', () => pendingScrobbleStore.getState().hydrateFromDbAsync()],
     ['musicCache', () => musicCacheStore.getState().hydrateFromDbAsync()],
     ['imageCache', () => imageCacheStore.getState().hydrateFromDbAsync()],

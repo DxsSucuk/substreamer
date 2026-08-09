@@ -97,8 +97,9 @@ export interface ChildSnapshotArrays {
 }
 
 /** Dates arrive as live `Date` from the API and as ISO strings out of a parsed
- *  envelope; both store as epoch ms. */
-function toEpoch(v: Date | string | number | null | undefined): number | undefined {
+ *  envelope; both store as epoch ms. Exported for the other snapshot tables whose
+ *  payload carries the same two shapes. */
+export function toEpoch(v: Date | string | number | null | undefined): number | undefined {
   if (v === null || v === undefined) return undefined;
   if (v instanceof Date) return v.getTime();
   if (typeof v === 'number') return v;

@@ -151,6 +151,13 @@ export const MODEL_TABLES: readonly string[] = [
   'queue_snapshot_song_album_artists',
   'queue_snapshot_song_contributors',
   'queue_snapshot_song_moods',
+  // The server's genre list, and the user's shares on that server. Both are
+  // server-scoped — a share id and its URL belong to one account, and the genre counts
+  // describe one library — so logout must drop them, exactly as `clearKvStorage` drops
+  // the two blobs they replace.
+  'genres',
+  'shares',
+  'share_entries',
   // Favourites are server-scoped, so logout must drop them: leaving them KEPT would
   // leak server A's favourites into server B.
   'favorite_songs',
