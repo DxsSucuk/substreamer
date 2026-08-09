@@ -18,6 +18,19 @@ interface LyricsRow {
   source: LyricsData['source'];
 }
 
+/** One row as the cached-lyrics browser lists it — names, not the lines. */
+export interface CachedLyricsEntry {
+  songId: string;
+  title: string | null;
+  artist: string | null;
+  synced: boolean;
+}
+
+export interface LyricsCounts {
+  synced: number;
+  unsynced: number;
+}
+
 /** Read one song's lyrics, or null when we have none stored. */
 export async function loadLyrics(songId: string): Promise<LyricsData | null> {
   const db = getDb();
@@ -52,19 +65,38 @@ export async function loadLyrics(songId: string): Promise<LyricsData | null> {
  * correct: `pos` is positional, so without it a shorter set leaves stale tail rows.
  * ON CONFLICT DO UPDATE, never INSERT OR REPLACE, which would cascade the lines away
  * mid-batch.
+ *
+ * `title`/`artist` COALESCE: a caller without names must not blank a label an earlier
+ * write captured — the browser needs it, and so does the classic artist+title refresh.
  */
-export async function saveLyrics(songId: string, data: LyricsData): Promise<void> {
+export async function saveLyrics(
+  songId: string,
+  data: LyricsData,
+  title?: string,
+  artist?: string,
+): Promise<void> {
   const db = getDb();
   if (db === null) return;
   const commands: BatchCommand[] = [
     [
-      `INSERT INTO lyrics (song_id, synced, lang, offset_ms, source) VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO lyrics (song_id, title, artist, synced, lang, offset_ms, source)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(song_id) DO UPDATE SET
+           title = COALESCE(excluded.title, title),
+           artist = COALESCE(excluded.artist, artist),
            synced = excluded.synced,
            lang = excluded.lang,
            offset_ms = excluded.offset_ms,
            source = excluded.source;`,
-      [songId, data.synced ? 1 : 0, data.lang ?? null, data.offsetMs, data.source],
+      [
+        songId,
+        title ?? null,
+        artist ?? null,
+        data.synced ? 1 : 0,
+        data.lang ?? null,
+        data.offsetMs,
+        data.source,
+      ],
     ],
     ['DELETE FROM lyric_lines WHERE song_id = ?;', [songId]],
   ];
@@ -78,6 +110,64 @@ export async function saveLyrics(songId: string, data: LyricsData): Promise<void
     await db.runAtomicBatchAsync(commands);
   } catch {
     /* dropped */
+  }
+}
+
+/** Remove one song's lyrics. The lines cascade with the parent row. */
+export async function deleteLyrics(songId: string): Promise<void> {
+  const db = getDb();
+  if (db === null) return;
+  try {
+    await db.runAsync('DELETE FROM lyrics WHERE song_id = ?;', [songId]);
+  } catch {
+    /* dropped */
+  }
+}
+
+/**
+ * Cached-lyrics totals, split synced vs unsynced. Aggregated in SQL — the browser
+ * card wants two numbers, not every row.
+ */
+export async function countLyricsBySynced(): Promise<LyricsCounts> {
+  const db = getDb();
+  const empty: LyricsCounts = { synced: 0, unsynced: 0 };
+  if (db === null) return empty;
+  try {
+    const rows = await db.getAllAsync<{ synced: number | null; c: number }>(
+      'SELECT synced, COUNT(*) AS c FROM lyrics GROUP BY synced;',
+    );
+    return rows.reduce<LyricsCounts>(
+      (acc, row) => {
+        if (row.synced === 1) acc.synced += row.c;
+        else acc.unsynced += row.c;
+        return acc;
+      },
+      { ...empty },
+    );
+  } catch {
+    return empty;
+  }
+}
+
+/** Every cached row, names only. Ordering is the caller's — it needs a collator. */
+export async function listCachedLyrics(): Promise<CachedLyricsEntry[]> {
+  const db = getDb();
+  if (db === null) return [];
+  try {
+    const rows = await db.getAllAsync<{
+      song_id: string;
+      title: string | null;
+      artist: string | null;
+      synced: number | null;
+    }>('SELECT song_id, title, artist, synced FROM lyrics;');
+    return rows.map((row) => ({
+      songId: row.song_id,
+      title: row.title,
+      artist: row.artist,
+      synced: row.synced === 1,
+    }));
+  } catch {
+    return [];
   }
 }
 

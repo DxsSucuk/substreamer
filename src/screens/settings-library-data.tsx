@@ -5,6 +5,7 @@ import { ScrollView } from 'react-native';
 import { BottomChrome } from '../components/BottomChrome';
 import { GradientBackground } from '../components/GradientBackground';
 import { BackupRestoreCard } from '../components/settings/BackupRestoreCard';
+import { CachedLyricsCard } from '../components/settings/CachedLyricsCard';
 import { LibrarySyncCard } from '../components/settings/LibrarySyncCard';
 import { ListeningHistoryCard } from '../components/settings/ListeningHistoryCard';
 import { MetadataCorrectionsCard } from '../components/settings/MetadataCorrectionsCard';
@@ -24,6 +25,7 @@ export function SettingsLibraryDataScreen() {
         <LibrarySyncCard />
         <ListeningHistoryCard />
         <MetadataCorrectionsCard />
+        <CachedLyricsCard />
         <BackupRestoreCard />
         <SharesCard />
       </ScrollView>

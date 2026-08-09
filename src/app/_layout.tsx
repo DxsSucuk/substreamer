@@ -764,6 +764,10 @@ export default function RootLayout() {
           options={{ ...blurHeaderOptions, title: i18n.t('mbidOverrides'), headerBackTitle: i18n.t('back') }}
         />
         <Stack.Screen
+          name="lyrics-browser"
+          options={{ ...blurHeaderOptions, title: i18n.t('cachedLyrics'), headerBackTitle: i18n.t('back') }}
+        />
+        <Stack.Screen
           name="scrobble-browser"
           options={{ ...blurHeaderOptions, title: i18n.t('scrobbles'), headerBackTitle: i18n.t('back') }}
         />

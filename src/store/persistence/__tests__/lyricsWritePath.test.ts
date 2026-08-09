@@ -15,7 +15,14 @@ jest.mock('../../../services/subsonicService', () => ({
 }));
 
 import { __setDbForTests, getDb, type InternalDb } from '../db';
-import { clearAllLyrics, loadLyrics, saveLyrics } from '../lyricsTable';
+import {
+  clearAllLyrics,
+  countLyricsBySynced,
+  deleteLyrics,
+  listCachedLyrics,
+  loadLyrics,
+  saveLyrics,
+} from '../lyricsTable';
 
 import { getLyricsForTrack, type LyricsData } from '../../../services/subsonicService';
 import { lyricsStore } from '../../lyricsStore';
@@ -152,6 +159,120 @@ describe('saveLyrics — rewriting a song', () => {
 });
 
 /* ------------------------------------------------------------------ */
+/*  Names: what the cached-lyrics browser labels its rows with         */
+/* ------------------------------------------------------------------ */
+
+describe('title / artist', () => {
+  const nameRow = (songId: string) =>
+    realDb.getFirstSync<{ title: string | null; artist: string | null }>(
+      'SELECT title, artist FROM lyrics WHERE song_id = ?;',
+      [songId],
+    );
+
+  it('stores the names passed at write time', async () => {
+    await saveLyrics('song-1', syncedLyrics(2), 'Paranoid Android', 'Radiohead');
+
+    expect(nameRow('song-1')).toEqual({ title: 'Paranoid Android', artist: 'Radiohead' });
+  });
+
+  it('leaves them null when the caller has none', async () => {
+    await saveLyrics('song-1', classicLyrics);
+
+    expect(nameRow('song-1')).toEqual({ title: null, artist: null });
+  });
+
+  it('keeps the captured names when a later write omits them', async () => {
+    await saveLyrics('song-1', syncedLyrics(2), 'Paranoid Android', 'Radiohead');
+    await saveLyrics('song-1', classicLyrics);
+
+    expect(nameRow('song-1')).toEqual({ title: 'Paranoid Android', artist: 'Radiohead' });
+  });
+
+  it('updates them when a later write supplies new ones', async () => {
+    await saveLyrics('song-1', syncedLyrics(2), 'Old', 'Nobody');
+    await saveLyrics('song-1', syncedLyrics(2), 'Paranoid Android', 'Radiohead');
+
+    expect(nameRow('song-1')).toEqual({ title: 'Paranoid Android', artist: 'Radiohead' });
+  });
+
+  it('round-trips through listCachedLyrics with the synced flag', async () => {
+    await saveLyrics('song-1', syncedLyrics(2), 'Synced One', 'Artist A');
+    await saveLyrics('song-2', classicLyrics, 'Plain One', 'Artist B');
+
+    const rows = await listCachedLyrics();
+    expect(rows).toHaveLength(2);
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        { songId: 'song-1', title: 'Synced One', artist: 'Artist A', synced: true },
+        { songId: 'song-2', title: 'Plain One', artist: 'Artist B', synced: false },
+      ]),
+    );
+  });
+
+  it('lists nothing when nothing is cached', async () => {
+    expect(await listCachedLyrics()).toEqual([]);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Counts: a SQL aggregate, not a row load                            */
+/* ------------------------------------------------------------------ */
+
+describe('countLyricsBySynced', () => {
+  it('splits synced from unsynced', async () => {
+    await saveLyrics('song-1', syncedLyrics(3));
+    await saveLyrics('song-2', syncedLyrics(3));
+    await saveLyrics('song-3', classicLyrics);
+
+    expect(await countLyricsBySynced()).toEqual({ synced: 2, unsynced: 1 });
+  });
+
+  it('returns zeros for an empty table', async () => {
+    expect(await countLyricsBySynced()).toEqual({ synced: 0, unsynced: 0 });
+  });
+
+  it('counts a null synced flag as unsynced', async () => {
+    realDb.runSync('INSERT INTO lyrics (song_id, synced) VALUES (?, NULL);', ['song-odd']);
+
+    expect(await countLyricsBySynced()).toEqual({ synced: 0, unsynced: 1 });
+  });
+
+  it('follows a rewrite that flips the flag', async () => {
+    await saveLyrics('song-1', syncedLyrics(3));
+    expect(await countLyricsBySynced()).toEqual({ synced: 1, unsynced: 0 });
+
+    await saveLyrics('song-1', classicLyrics);
+    expect(await countLyricsBySynced()).toEqual({ synced: 0, unsynced: 1 });
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Deleting one song                                                  */
+/* ------------------------------------------------------------------ */
+
+describe('deleteLyrics', () => {
+  it('removes the row and cascades its lines', async () => {
+    await saveLyrics('song-1', syncedLyrics(10));
+    await saveLyrics('song-2', classicLyrics);
+
+    await deleteLyrics('song-1');
+
+    expect(await loadLyrics('song-1')).toBeNull();
+    expect(lineRows('song-1')).toHaveLength(0);
+    expect(countOf('lyrics')).toBe(1);
+    expect(await loadLyrics('song-2')).toEqual(classicLyrics);
+  });
+
+  it('is a no-op for a song with nothing stored', async () => {
+    await saveLyrics('song-1', classicLyrics);
+
+    await deleteLyrics('never-fetched');
+
+    expect(countOf('lyrics')).toBe(1);
+  });
+});
+
+/* ------------------------------------------------------------------ */
 /*  Clearing                                                           */
 /* ------------------------------------------------------------------ */
 
@@ -191,7 +312,10 @@ describe('when the DB is unavailable', () => {
 
     expect(await loadLyrics('song-1')).toBeNull();
     await expect(saveLyrics('song-1', classicLyrics)).resolves.toBeUndefined();
+    await expect(deleteLyrics('song-1')).resolves.toBeUndefined();
     await expect(clearAllLyrics()).resolves.toBeUndefined();
+    expect(await countLyricsBySynced()).toEqual({ synced: 0, unsynced: 0 });
+    expect(await listCachedLyrics()).toEqual([]);
   });
 
   it('swallows a query that throws', async () => {
@@ -199,13 +323,17 @@ describe('when the DB is unavailable', () => {
     __setDbForTests({
       ...realDb,
       getFirstAsync: () => Promise.reject(failing),
+      getAllAsync: () => Promise.reject(failing),
       runAsync: () => Promise.reject(failing),
       runAtomicBatchAsync: () => Promise.reject(failing),
     } as InternalDb);
 
     expect(await loadLyrics('song-1')).toBeNull();
     await expect(saveLyrics('song-1', classicLyrics)).resolves.toBeUndefined();
+    await expect(deleteLyrics('song-1')).resolves.toBeUndefined();
     await expect(clearAllLyrics()).resolves.toBeUndefined();
+    expect(await countLyricsBySynced()).toEqual({ synced: 0, unsynced: 0 });
+    expect(await listCachedLyrics()).toEqual([]);
   });
 });
 

@@ -404,6 +404,11 @@ export const songMoods = sqliteTable(
  */
 export const lyrics = sqliteTable('lyrics', {
   songId: text('song_id').primaryKey(),
+  /** Captured at write time: the cached-lyrics browser names its rows from these, and the
+   *  classic `getLyrics` endpoint looks up by artist + title, so a refresh needs them.
+   *  Not joined from `songs` — a song with cached lyrics need not be in the library. */
+  title: text('title'),
+  artist: text('artist'),
   synced: integer('synced', { mode: 'boolean' }),
   lang: text('lang'),
   offsetMs: integer('offset_ms'),

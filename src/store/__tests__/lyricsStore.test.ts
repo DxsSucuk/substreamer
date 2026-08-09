@@ -7,6 +7,7 @@ jest.mock('../persistence/lyricsTable', () => ({
   __esModule: true,
   loadLyrics: jest.fn(),
   saveLyrics: jest.fn(),
+  deleteLyrics: jest.fn(),
   clearAllLyrics: jest.fn(),
 }));
 jest.mock('../../services/subsonicService', () => ({
@@ -15,12 +16,13 @@ jest.mock('../../services/subsonicService', () => ({
 }));
 
 import { getLyricsForTrack, type LyricsData } from '../../services/subsonicService';
-import { clearAllLyrics, loadLyrics, saveLyrics } from '../persistence/lyricsTable';
+import { clearAllLyrics, deleteLyrics, loadLyrics, saveLyrics } from '../persistence/lyricsTable';
 import { lyricsStore } from '../lyricsStore';
 
 const mockGetLyrics = getLyricsForTrack as jest.MockedFunction<typeof getLyricsForTrack>;
 const mockLoad = loadLyrics as jest.MockedFunction<typeof loadLyrics>;
 const mockSave = saveLyrics as jest.MockedFunction<typeof saveLyrics>;
+const mockDelete = deleteLyrics as jest.MockedFunction<typeof deleteLyrics>;
 const mockClearAll = clearAllLyrics as jest.MockedFunction<typeof clearAllLyrics>;
 
 const sample: LyricsData = {
@@ -45,10 +47,11 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockLoad.mockResolvedValue(null);
   mockSave.mockResolvedValue(undefined);
+  mockDelete.mockResolvedValue(undefined);
   mockClearAll.mockResolvedValue(undefined);
   // Reset the session cache directly — going through `clearLyrics` would count
   // against the `clearAllLyrics` assertions below.
-  lyricsStore.setState({ entries: {}, loading: {}, errors: {} });
+  lyricsStore.setState({ entries: {}, loading: {}, errors: {}, revision: 0 });
 });
 
 describe('lyricsStore.fetchLyrics', () => {
@@ -62,7 +65,9 @@ describe('lyricsStore.fetchLyrics', () => {
     expect(lyricsStore.getState().loading['t1']).toBeUndefined();
     expect(lyricsStore.getState().errors['t1']).toBeUndefined();
     expect(mockGetLyrics).toHaveBeenCalledWith('t1', 'A', 'B');
-    expect(mockSave).toHaveBeenCalledWith('t1', sample);
+    // The row captures the names so the browser can label it and replay the
+    // classic artist+title lookup on refresh.
+    expect(mockSave).toHaveBeenCalledWith('t1', sample, 'B', 'A');
   });
 
   it('returns the memory entry without touching SQL or the network', async () => {
@@ -174,8 +179,103 @@ describe('lyricsStore.fetchLyrics', () => {
 
     expect(lyricsStore.getState().entries['t1']).toBe(sample);
     expect(lyricsStore.getState().entries['t2']).toBe(other);
-    expect(mockSave).toHaveBeenNthCalledWith(1, 't1', sample);
-    expect(mockSave).toHaveBeenNthCalledWith(2, 't2', other);
+    expect(mockSave).toHaveBeenNthCalledWith(1, 't1', sample, 'B', 'A');
+    expect(mockSave).toHaveBeenNthCalledWith(2, 't2', other, 'B', 'A');
+  });
+});
+
+describe('lyricsStore.refreshLyrics', () => {
+  it('bypasses both caches, refetches and overwrites the row', async () => {
+    mockGetLyrics.mockResolvedValue(sample);
+    await lyricsStore.getState().fetchLyrics('t1', 'A', 'B');
+    jest.clearAllMocks();
+
+    const fresher: LyricsData = { ...sample, synced: false, source: 'classic' };
+    mockGetLyrics.mockResolvedValue(fresher);
+
+    const result = await lyricsStore.getState().refreshLyrics('t1', 'A', 'B');
+
+    expect(result).toBe(fresher);
+    // Neither the memory hit nor the stored row short-circuited it.
+    expect(mockLoad).not.toHaveBeenCalled();
+    expect(mockGetLyrics).toHaveBeenCalledWith('t1', 'A', 'B');
+    expect(mockSave).toHaveBeenCalledWith('t1', fresher, 'B', 'A');
+    expect(lyricsStore.getState().entries['t1']).toBe(fresher);
+    expect(lyricsStore.getState().loading['t1']).toBeUndefined();
+  });
+
+  it('leaves the stored row alone when the server now has no lyrics', async () => {
+    mockGetLyrics.mockResolvedValue(sample);
+    await lyricsStore.getState().fetchLyrics('t1', 'A', 'B');
+    jest.clearAllMocks();
+    mockGetLyrics.mockResolvedValue(null);
+
+    expect(await lyricsStore.getState().refreshLyrics('t1', 'A', 'B')).toBeNull();
+    expect(mockSave).not.toHaveBeenCalled();
+    expect(lyricsStore.getState().entries['t1']).toBe(sample);
+  });
+
+  it('sets error: "error" when the refetch throws', async () => {
+    mockGetLyrics.mockRejectedValue(new Error('boom'));
+
+    expect(await lyricsStore.getState().refreshLyrics('t1', 'A', 'B')).toBeNull();
+    expect(lyricsStore.getState().errors['t1']).toBe('error');
+    expect(lyricsStore.getState().loading['t1']).toBeUndefined();
+  });
+
+  it('sets error: "timeout" when the refetch outruns the budget', async () => {
+    jest.useFakeTimers();
+    mockGetLyrics.mockImplementation(() => new Promise(() => {}));
+
+    const pending = lyricsStore.getState().refreshLyrics('t1', 'A', 'B');
+    await flush();
+    jest.advanceTimersByTime(15_000);
+
+    expect(await pending).toBeNull();
+    expect(lyricsStore.getState().errors['t1']).toBe('timeout');
+    jest.useRealTimers();
+  });
+});
+
+describe('lyricsStore.removeLyrics', () => {
+  it('drops the memory entry and the row, leaving other tracks alone', async () => {
+    mockGetLyrics.mockResolvedValue(sample);
+    await lyricsStore.getState().fetchLyrics('t1', 'A', 'B');
+    await lyricsStore.getState().fetchLyrics('t2', 'A', 'B');
+
+    await lyricsStore.getState().removeLyrics('t1');
+
+    expect(mockDelete).toHaveBeenCalledWith('t1');
+    expect(lyricsStore.getState().entries['t1']).toBeUndefined();
+    expect(lyricsStore.getState().entries['t2']).toBe(sample);
+  });
+});
+
+describe('lyricsStore.revision', () => {
+  it('bumps on every table mutation so SQL-derived views re-read', async () => {
+    mockGetLyrics.mockResolvedValue(sample);
+    const start = lyricsStore.getState().revision;
+
+    await lyricsStore.getState().fetchLyrics('t1', 'A', 'B');
+    expect(lyricsStore.getState().revision).toBe(start + 1);
+
+    await lyricsStore.getState().refreshLyrics('t1', 'A', 'B');
+    expect(lyricsStore.getState().revision).toBe(start + 2);
+
+    await lyricsStore.getState().removeLyrics('t1');
+    expect(lyricsStore.getState().revision).toBe(start + 3);
+
+    await lyricsStore.getState().clearLyrics();
+    expect(lyricsStore.getState().revision).toBe(start + 4);
+  });
+
+  it('does not bump for a track the server has no lyrics for', async () => {
+    mockGetLyrics.mockResolvedValue(null);
+    const start = lyricsStore.getState().revision;
+
+    await lyricsStore.getState().fetchLyrics('t1', 'A', 'B');
+
+    expect(lyricsStore.getState().revision).toBe(start);
   });
 });
 

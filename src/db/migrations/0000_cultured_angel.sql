@@ -450,6 +450,8 @@ CREATE TABLE `lyric_lines` (
 --> statement-breakpoint
 CREATE TABLE `lyrics` (
 	`song_id` text PRIMARY KEY NOT NULL,
+	`title` text,
+	`artist` text,
 	`synced` integer,
 	`lang` text,
 	`offset_ms` integer,
