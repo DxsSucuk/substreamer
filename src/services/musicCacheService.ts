@@ -1136,12 +1136,10 @@ async function ensurePartialAlbumEdge(
 
   if (existing) {
     // Refresh expectedSongCount to the authoritative count when we have one. Also
-    // fill the component row when the existing one carries no metadata in either
-    // form — a raw-JSON envelope still counts; the conversion promotes it in place.
-    const metadata =
-      existing.albumMeta || existing.rawJson
-        ? {}
-        : await buildCachedItemMetadata(albumId, 'album');
+    // fill the component row when the existing one carries no metadata — the
+    // component row is the only form now, the conversion having promoted any
+    // envelope into it before the store published this row.
+    const metadata = existing.albumMeta ? {} : await buildCachedItemMetadata(albumId, 'album');
     if (
       (authoritativeCount !== undefined && authoritativeCount !== existing.expectedSongCount) ||
       metadata.albumMeta !== undefined

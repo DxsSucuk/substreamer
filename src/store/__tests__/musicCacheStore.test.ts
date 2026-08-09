@@ -1352,9 +1352,7 @@ describe('getSongEnvelope', () => {
     expect(getSongEnvelope('nope')).toBeNull();
   });
 
-  it('builds from the promoted columns when the row has neither envelope nor metaV', () => {
-    // A row written by THIS build: `rawJson` AND `metaV` both null. A bare
-    // `metaV == null` test would send it to a null envelope and drop it.
+  it('builds from the promoted columns', () => {
     musicCacheStore.setState({
       cachedSongs: {
         s1: makeSong('s1', {
@@ -1377,55 +1375,55 @@ describe('getSongEnvelope', () => {
     expect(c.artist).toBe('Unknown Artist');
   });
 
-  it('reads the columns, not the retained envelope, once metaV is stamped', () => {
+  // The envelope survives on disk for the future column drop, and the store still
+  // carries it — but no runtime reader may consult it. A row whose columns and
+  // whose retained envelope disagree must answer from the columns.
+  it('never reads the retained envelope, even alongside stale column data', () => {
     musicCacheStore.setState({
       cachedSongs: {
         s1: {
-          ...makeSong('s1', { track: 7 }),
-          metaV: 1,
-          rawJson: '{"id":"s1","isDir":false,"title":"Stale","track":99}',
+          ...makeSong('s1', { track: 7, genre: 'Jazz' }),
+          rawJson: '{"id":"s1","isDir":false,"title":"Stale","track":99,"genre":"Rock"}',
         },
       } as any,
     });
-    expect(getSongEnvelope('s1')?.track).toBe(7);
+    const c = getSongEnvelope('s1');
+    expect(c.track).toBe(7);
+    expect(c.genre).toBe('Jazz');
+    expect(c.title).not.toBe('Stale');
   });
 
-  it('parses and caches the Child envelope; repeated calls return the same object', () => {
+  // A malformed envelope used to make this return null, dropping the song from
+  // every genre mix. Columns are the only source now, so it is simply ignored.
+  it('still answers from the columns when the retained envelope is malformed', () => {
     musicCacheStore.setState({
       cachedSongs: {
-        s1: { ...makeSong('s1'), rawJson: '{"id":"s1","isDir":false,"title":"T","track":7,"genre":"Rock"}' },
+        s1: { ...makeSong('s1', { track: 4 }), rawJson: '{not-json' },
       } as any,
+    });
+    expect(getSongEnvelope('s1')?.track).toBe(4);
+  });
+
+  it('memoises per row object; repeated calls return the same Child', () => {
+    musicCacheStore.setState({
+      cachedSongs: { s1: makeSong('s1', { track: 7, genre: 'Rock' }) } as any,
     });
     const a = getSongEnvelope('s1');
     const b = getSongEnvelope('s1');
-    expect(a).toBeTruthy();
     expect(a).toBe(b); // memoised identity
     expect(a.track).toBe(7);
     expect(a.genre).toBe('Rock');
   });
 
-  it('returns null on malformed JSON', () => {
+  it('rebuilds after the row is replaced by an upsert (no stale memo)', () => {
     musicCacheStore.setState({
-      cachedSongs: {
-        s1: { ...makeSong('s1'), rawJson: '{not-json' },
-      } as any,
-    });
-    expect(getSongEnvelope('s1')).toBeNull();
-  });
-
-  it('re-parses after the row is replaced by an upsert (no stale memo)', () => {
-    musicCacheStore.setState({
-      cachedSongs: {
-        s1: { ...makeSong('s1'), rawJson: '{"id":"s1","isDir":false,"title":"Old"}' },
-      } as any,
+      cachedSongs: { s1: makeSong('s1', { title: 'Old' }) } as any,
     });
     expect(getSongEnvelope('s1')?.title).toBe('Old');
     // Replace the row object (an upsert) — the WeakMap is keyed on the row, so
-    // the new row misses the cache and re-parses.
+    // the new row misses the cache and rebuilds.
     musicCacheStore.setState({
-      cachedSongs: {
-        s1: { ...makeSong('s1'), rawJson: '{"id":"s1","isDir":false,"title":"New"}' },
-      } as any,
+      cachedSongs: { s1: makeSong('s1', { title: 'New' }) } as any,
     });
     expect(getSongEnvelope('s1')?.title).toBe('New');
   });

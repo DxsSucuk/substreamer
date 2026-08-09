@@ -42,7 +42,6 @@ import {
   type CachedSongRow,
   type DownloadQueueRow,
 } from './persistence/musicCacheTables';
-import { readsLegacyEnvelope } from './persistence/cachedItemHelpers';
 // Synchronous adapter: the settings blob (maxConcurrentDownloads) is read via
 // a synchronous helper; the bulk cache data hydrates via per-row tables.
 import { kvStorageSync as kvStorage } from './persistence';
@@ -322,8 +321,7 @@ function repackQueueMirror(
 /**
  * Mirror the disk write's metadata-preservation rules in memory: a write with no
  * metadata must not blank what the row already carries (on disk that's the
- * `raw_json` COALESCE plus "skip the component row"), and `metaV` is owned by
- * the conversion so no write path may drop it.
+ * `raw_json` COALESCE plus "skip the component row").
  */
 function preserveItemMetadata(
   item: Omit<CachedItemMeta, 'songIds'>,
@@ -333,7 +331,6 @@ function preserveItemMetadata(
   return {
     ...item,
     rawJson: item.rawJson ?? existing.rawJson,
-    metaV: item.metaV ?? existing.metaV,
     albumMeta: item.albumMeta ?? existing.albumMeta,
     playlistMeta: item.playlistMeta ?? existing.playlistMeta,
   };
@@ -703,6 +700,12 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
   hydrateFromDbAsync: () => {
     if (hydrateInFlight) return hydrateInFlight;
     const run = (async () => {
+      // AWAITED, and BEFORE the read. Nothing reads a `raw_json` envelope at
+      // runtime any more, so a row published ahead of its own conversion would
+      // serve empty metadata columns. Once the work set is empty — every launch
+      // after the upgrade — this costs two COUNT probes.
+      await convertLegacyMetadataAsync();
+
       // Idempotent re-read; the per-row tables are the source of truth. SQLite
       // reads run on a background thread; `readSettingsBlob` stays sync (small
       // kvStorage blob).
@@ -717,9 +720,9 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
       }
       const totalFiles = Object.keys(cachedSongs).length;
 
-      // Bumps too: the legacy-metadata conversion below rewrites rows on disk, and
-      // the NEXT hydrate is what publishes them. SQL-backed readers have to re-read
-      // when that lands or they hold the pre-conversion answer.
+      // Bumps too: the legacy-metadata conversion above rewrote rows on disk, and
+      // this is what publishes them. SQL-backed readers have to re-read when that
+      // lands or they hold the pre-conversion answer.
       set((prev) =>
         bumped(prev, {
           cachedSongs,
@@ -731,11 +734,6 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
           hasHydrated: true,
         }),
       );
-
-      // Detached ON PURPOSE: this function is the gate CarPlay browse, playback
-      // and voice all await, and the conversion is a chunked pass over the whole
-      // download set. It fills columns on disk; the next hydrate picks them up.
-      void convertLegacyMetadataAsync();
     })().finally(() => {
       hydrateInFlight = null;
     });
@@ -850,27 +848,18 @@ function childFromPromotedColumns(row: CachedSongMeta): Child {
  * both consumers (`searchService`, feeding Tuned-In's offline mixes) are sync,
  * so this reads the in-memory row and never touches the DB.
  *
- * Precedence per {@link readsLegacyEnvelope}: the legacy envelope for rows the
- * detached conversion hasn't reached, otherwise the promoted columns. `null`
- * when there is no row, or when the envelope it points at is malformed. The four
- * non-genre `Child` arrays live in `cached_song_*` but are deliberately not
- * hydrated, so they are absent here.
+ * Built from the promoted columns alone; `null` when there is no row. The legacy
+ * `raw_json` envelope is NOT read here — `hydrateFromDbAsync` awaits the
+ * conversion that promotes it, so every published row carries its metadata in
+ * columns. The four non-genre `Child` arrays live in `cached_song_*` but are
+ * deliberately not hydrated, so they are absent here.
  */
 export function getSongEnvelope(songId: string): Child | null {
   const row = musicCacheStore.getState().cachedSongs[songId];
   if (!row) return null;
   const cached = songEnvelopeCache.get(row);
   if (cached) return cached;
-  let child: Child;
-  if (readsLegacyEnvelope(row)) {
-    try {
-      child = JSON.parse(row.rawJson) as Child;
-    } catch {
-      return null;
-    }
-  } else {
-    child = childFromPromotedColumns(row);
-  }
+  const child = childFromPromotedColumns(row);
   songEnvelopeCache.set(row, child);
   return child;
 }

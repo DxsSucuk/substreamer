@@ -62,9 +62,9 @@ function resetStores() {
 
 /**
  * Seed `musicCacheStore` from a compact {itemId: {name, tracks: [...]}}
- * description. Each track may carry genre / genres which get serialised
- * into the rawJson envelope so the production path can read them via
- * `getSongEnvelope()` exactly as it does at runtime.
+ * description. Each track's genre / genres land in the PROMOTED COLUMNS —
+ * the post-conversion shape every hydrated row has — which is what
+ * `getSongEnvelope()` reads at runtime.
  */
 function seedCache(
   oldItems: Record<string, { name: string; tracks: any[] }>,
@@ -82,17 +82,10 @@ function seedCache(
           title: t.title,
           artist: t.artist,
           albumId: t.albumId ?? itemId,
+          srcAlbumId: t.albumId ?? itemId,
           duration: t.duration ?? 0,
-          rawJson: JSON.stringify({
-            id: t.id,
-            title: t.title,
-            artist: t.artist,
-            albumId: t.albumId ?? itemId,
-            duration: t.duration ?? 0,
-            isDir: false,
-            ...(t.genre ? { genre: t.genre } : {}),
-            ...(t.genres ? { genres: t.genres } : {}),
-          }),
+          ...(t.genre ? { genre: t.genre } : {}),
+          ...(t.genres ? { genres: t.genres } : {}),
         };
       }
     }
@@ -407,7 +400,7 @@ describe('getOfflineGenresPresent', () => {
     expect([...getOfflineGenresPresent()]).toEqual(['rock']);
   });
 
-  it('skips an edge whose song row is gone, and a song with no envelope', () => {
+  it('skips an edge whose song row is gone, and a song with no genre columns', () => {
     seedCache({
       a1: { name: 'Album', tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200, genre: 'Rock' }] },
     });
@@ -416,7 +409,7 @@ describe('getOfflineGenresPresent', () => {
       ...state,
       cachedItems: {
         ...state.cachedItems,
-        // `t99` has no `cachedSongs` row; `t-bare` has one with no envelope at all.
+        // `t99` has no `cachedSongs` row; `t-bare` has one with no genre columns.
         a1: { ...state.cachedItems.a1, songIds: ['t1', 't99', 't-bare'] },
       },
       cachedSongs: {

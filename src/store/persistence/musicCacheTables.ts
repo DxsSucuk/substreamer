@@ -28,7 +28,7 @@ import {
 import { getSortArticles } from '@/db/sortArticles';
 import { albumSortKeys, playlistSortTitle, songSortKeys } from '@/db/sortKeys';
 
-import { getDb, type BatchCommand } from './db';
+import { getDb, type BatchCommand, type InternalDb } from './db';
 
 // The `Child` ⇄ columns mapping is shared with the other snapshot tables; re-exported
 // so the download-side consumers keep one import.
@@ -54,17 +54,11 @@ export interface CachedSongRow {
   downloadedAt: number;
   /**
    * Serialised full Subsonic `Child` envelope. Legacy: written by builds up to
-   * v8.0.91 and by Migrations 18/20, retained for rows the one-time promotion
-   * has not reached yet and for rollback safety. Rows written by this build
-   * have it NULL and carry their metadata in the columns below.
+   * v8.0.91 and by Migrations 18/20, retained so the migration path can still
+   * read it and for rollback safety. NO runtime reader consults it — only
+   * `convertLegacyMetadataAsync` does, promoting it into the columns below.
    */
   rawJson?: string;
-  /**
-   * Promotion marker. NULL alongside a non-null `rawJson` means "columns not
-   * populated yet, read the envelope"; only `convertLegacyMetadataAsync` sets it.
-   * Carried in memory because `getSongEnvelope` is synchronous.
-   */
-  metaV?: number;
 
   /* --- the server's track (`Child`), promoted from the envelope --- */
   /** `Child.albumId` — the SERVER's album, unlike `albumId` above. */
@@ -185,8 +179,6 @@ export interface CachedItemRow {
    * `favorites` / `song` intents which have no natural envelope.
    */
   rawJson?: string;
-  /** Promotion marker — see `CachedSongRow.metaV`. */
-  metaV?: number;
   /**
    * Per-type metadata from the component tables: `cached_albums` for an `album`
    * item, `cached_playlists` for a `playlist` one. `favorites` / `song` intents
@@ -488,7 +480,6 @@ interface RawSongRow {
   format_captured_at: number;
   downloaded_at: number;
   raw_json: string | null;
-  meta_v?: number | null;
   /** `json_group_array` projection of `cached_song_genres`; `'[]'` when none. */
   genres?: string | null;
 }
@@ -504,7 +495,6 @@ interface RawItemRow {
   last_sync_at: number;
   downloaded_at: number;
   raw_json: string | null;
-  meta_v?: number | null;
   derived: number | null;
   /** Present only on the component-joined hydrate; `ca_`/`cp_` alias prefixes. */
   ca_item_id?: string | null;
@@ -545,7 +535,6 @@ function mapSongRow(row: RawSongRow): CachedSongRow {
   if (row.bit_depth !== null) out.bitDepth = row.bit_depth;
   if (row.sampling_rate !== null) out.samplingRate = row.sampling_rate;
   if (row.raw_json !== null) out.rawJson = row.raw_json;
-  if (row.meta_v !== null && row.meta_v !== undefined) out.metaV = row.meta_v;
   Object.assign(out, readColumns(PROMOTED_SONG_COLUMNS, row as unknown as Record<string, unknown>));
   // `'[]'` is the no-genres case — skip the parse rather than allocate an empty
   // array for every song on the boot path.
@@ -573,7 +562,6 @@ function mapItemRow(row: RawItemRow, songIds: string[]): CachedItemRow {
   if (row.cover_art_id !== null) out.coverArtId = row.cover_art_id;
   if (row.parent_album_id !== null) out.parentAlbumId = row.parent_album_id;
   if (row.raw_json !== null) out.rawJson = row.raw_json;
-  if (row.meta_v !== null && row.meta_v !== undefined) out.metaV = row.meta_v;
   // Component presence is the joined PK, never a data column — every metadata
   // column is legitimately NULL for a real row.
   const raw = row as unknown as Record<string, unknown>;
@@ -716,8 +704,8 @@ async function yieldEvery(i: number): Promise<void> {
 }
 
 /**
- * Song projection for the async hydrate: the file columns, the legacy envelope
- * + its promotion marker, every promoted `Child` column, and the genre array.
+ * Song projection for the async hydrate: the file columns, the legacy envelope,
+ * every promoted `Child` column, and the genre array.
  *
  * Genres come back as a scalar subquery over an inner `ORDER BY pos`, NOT
  * `GROUP_CONCAT` (real genre names contain commas — "Folk, World, & Country")
@@ -726,7 +714,7 @@ async function yieldEvery(i: number): Promise<void> {
  */
 const SONG_HYDRATE_SELECT = `SELECT song_id, title, artist, album, album_id, cover_art, bytes,
         duration, suffix, bit_rate, bit_depth, sampling_rate,
-        format_captured_at, downloaded_at, raw_json, meta_v,
+        format_captured_at, downloaded_at, raw_json,
         ${columnNames(PROMOTED_SONG_COLUMNS)},
         (SELECT json_group_array(name)
            FROM (SELECT name FROM cached_song_genres
@@ -739,7 +727,7 @@ const SONG_HYDRATE_SELECT = `SELECT song_id, title, artist, album, album_id, cov
  *  `created` and `duration` all exist on more than one of the three tables. */
 const ITEM_HYDRATE_SELECT = `SELECT i.item_id, i.type, i.name, i.artist, i.cover_art_id,
         i.expected_song_count, i.parent_album_id, i.last_sync_at, i.downloaded_at,
-        i.raw_json, i.meta_v, i.derived,
+        i.raw_json, i.derived,
         a.item_id AS ca_item_id, ${aliasedColumns(ALBUM_META_COLUMNS, 'a', 'ca_')},
         p.item_id AS cp_item_id, ${aliasedColumns(PLAYLIST_META_COLUMNS, 'p', 'cp_')}
    FROM cached_items i
@@ -751,8 +739,7 @@ const ITEM_HYDRATE_SELECT = `SELECT i.item_id, i.type, i.name, i.artist, i.cover
  * `Child` columns + the genre array so `getSongEnvelope` can stay synchronous.
  * The read runs on the DB's background thread (`getAllAsync`) and the
  * row→object mapping is chunked with `setTimeout(0)` yields, so a large
- * cached-songs table does not freeze the JS thread at boot. `raw_json` is
- * stored verbatim (parsed lazily), so no per-row envelope parse happens here.
+ * cached-songs table does not freeze the JS thread at boot.
  */
 export async function hydrateCachedSongsAsync(): Promise<Record<string, CachedSongRow>> {
   const db = getDb();
@@ -1138,8 +1125,6 @@ const CACHED_SONG_UPSERT_SQL = `INSERT INTO cached_songs
      format_captured_at = excluded.format_captured_at,
      downloaded_at = excluded.downloaded_at,
      raw_json = COALESCE(excluded.raw_json, raw_json),
-     meta_v = CASE WHEN excluded.raw_json IS NOT NULL AND excluded.raw_json IS NOT raw_json
-                   THEN NULL ELSE meta_v END,
      sort_title = excluded.sort_title,
      sort_artist = excluded.sort_artist,
      ${coalesceAssignments(PROMOTED_SONG_COLUMNS)};`;
@@ -1160,9 +1145,8 @@ function cachedSongCommands(song: CachedSongRow, child?: Child): BatchCommand[] 
   // promoted metadata columns are `COALESCE(excluded.x, x)` — the direct
   // replacement for the `raw_json` COALESCE, because the write-back paths
   // rebuild a row from memory and would otherwise null every one of them.
-  // `meta_v` is never set here; it only re-arms to NULL when this write lands a
-  // genuinely NEW envelope, so a migration's backfill gets converted while a
-  // re-write of the same envelope can't re-promote it over fresher columns.
+  // `meta_v` is never touched here: a new download writes its metadata straight
+  // into the columns, so there is nothing left to promote from an envelope.
   //
   // The A–Z keys are DERIVED here from the same row that supplies `title`/`artist`,
   // through the same `db/sortKeys` derivation the `songs` table uses, and written
@@ -1284,8 +1268,6 @@ function cachedItemCommands(item: Omit<CachedItemRow, 'songIds'>): BatchCommand[
          last_sync_at = excluded.last_sync_at,
          downloaded_at = excluded.downloaded_at,
          raw_json = COALESCE(excluded.raw_json, raw_json),
-         meta_v = CASE WHEN excluded.raw_json IS NOT NULL AND excluded.raw_json IS NOT raw_json
-                       THEN NULL ELSE meta_v END,
          derived = excluded.derived;`,
     [
       item.itemId,
@@ -1760,11 +1742,24 @@ const CONVERT_SONG_UPDATE_SQL =
   `UPDATE cached_songs SET ${setAssignments(PROMOTED_SONG_COLUMNS)}, ` +
   'sort_title = ?, sort_artist = ?, meta_v = ? WHERE song_id = ?;';
 
-let conversionInFlight: Promise<void> | null = null;
+/** The two tables the conversion promotes, in the order it walks them. */
+const CONVERTED_TABLES = ['cached_songs', 'cached_items'] as const;
 
-async function runLegacyMetadataConversion(): Promise<void> {
+/** Rows the conversion has not promoted. Zero on BOTH tables is the only proof
+ *  the typed columns carry everything the envelopes did — a count that cannot be
+ *  read at all reports -1 so it can never pass for empty. */
+async function unconvertedRows(db: InternalDb, table: string): Promise<number> {
+  const row = await db.getFirstAsync<{ c: number }>(
+    `SELECT COUNT(*) AS c FROM ${table} WHERE meta_v IS NULL AND raw_json IS NOT NULL;`,
+  );
+  return row?.c ?? -1;
+}
+
+let conversionInFlight: Promise<boolean> | null = null;
+
+async function runLegacyMetadataConversion(): Promise<boolean> {
   const db = getDb();
-  if (db === null) return;
+  if (db === null) return false;
   try {
     for (;;) {
       // eslint-disable-next-line no-await-in-loop
@@ -1844,8 +1839,16 @@ async function runLegacyMetadataConversion(): Promise<void> {
       await yieldMacrotask();
     }
   } catch {
-    /* dropped — the work set is unchanged, so the next hydrate retries */
+    // The work set is unchanged — every batch is atomic, so a row is either
+    // fully promoted or untouched. Report NOT complete and let the caller retry.
+    return false;
   }
+
+  for (const table of CONVERTED_TABLES) {
+    // eslint-disable-next-line no-await-in-loop
+    if ((await unconvertedRows(db, table)) !== 0) return false;
+  }
+  return true;
 }
 
 /**
@@ -1859,10 +1862,12 @@ async function runLegacyMetadataConversion(): Promise<void> {
  * previous release still renders every download. Rows with a NULL envelope are
  * outside the set by design — there is no library fallback.
  *
- * Kicked off from `hydrateFromDbAsync` but NOT awaited by it: that function is
- * the gate CarPlay browse, playback and voice all wait on.
+ * Resolves TRUE only when the work set is provably empty on BOTH tables. Nothing
+ * reads an envelope at runtime any more, so `hydrateFromDbAsync` AWAITS this
+ * before it publishes: a row published ahead of its own conversion would serve
+ * empty columns. A false verdict leaves every envelope intact for the next run.
  */
-export function convertLegacyMetadataAsync(): Promise<void> {
+export function convertLegacyMetadataAsync(): Promise<boolean> {
   if (conversionInFlight) return conversionInFlight;
   const run = runLegacyMetadataConversion().finally(() => {
     conversionInFlight = null;
