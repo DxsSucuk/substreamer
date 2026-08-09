@@ -2220,6 +2220,32 @@ const MIGRATION_TASKS: MigrationTask[] = [
  */
 export const LATEST_MIGRATION_ID = Math.max(...MIGRATION_TASKS.map((t) => t.id));
 
+/** `migrationStore`'s persisted KV row. Read directly rather than through the store,
+ *  which may not have rehydrated yet — the splash reads it the same way. */
+const MIGRATION_VERSION_KEY = 'substreamer-migration';
+
+/**
+ * Has the migration chain run to the end? `runMigrations` stops at the FIRST failure
+ * and persists the version of the last success, so a halted chain leaves legacy rows
+ * the later tasks never backfilled. Background one-shots that read those rows
+ * (`dataModelUpgradeService`, `legacyColumnDropService`) defer on a false; the next
+ * launch retries the chain.
+ *
+ * `>=`, not `==`: a downgrade leaves the counter above this build's latest id, and
+ * that chain is complete by definition. A fresh install passes — the runner
+ * fast-tracks the counter to the latest id.
+ */
+export async function migrationChainComplete(): Promise<boolean> {
+  try {
+    const raw = await kvStorage.getItem(MIGRATION_VERSION_KEY);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw) as { state?: { completedVersion?: number } };
+    return (parsed?.state?.completedVersion ?? 0) >= LATEST_MIGRATION_ID;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Returns tasks that still need to run.
  *

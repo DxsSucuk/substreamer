@@ -3,10 +3,10 @@
  * five `scrobble_*` child tables, against REAL SQL on the better-sqlite3-backed
  * op-SQLite seam.
  *
- * Rows are seeded as an upgrading install leaves them — envelope only — and
- * populated by `backfillScrobbleColumnsAsync`, because the live insert path does not
- * write the child tables yet (that is step 4.6). Reading back through the readers is
- * therefore a genuine round trip through the columns, not through the blob.
+ * Rows are seeded as an upgrading install leaves them — envelope only — and populated
+ * by `backfillScrobbleColumnsAsync`, so reading back through the readers is a genuine
+ * round trip through the columns, not through the blob. That shape needs the pre-drop
+ * table, which the generated schema no longer produces, so each case rebuilds it.
  *
  * Per AGENTS.md §11 the seam proves SQL semantics, never concurrency.
  */
@@ -21,6 +21,7 @@ import {
 import { SCROBBLE_COLUMN_NAMES } from '../scrobbleColumns';
 import { SCROBBLE_SELECT } from '../scrobbleSnapshot';
 import { backfillScrobbleColumnsAsync, hydrateScrobblesAsync } from '../scrobbleTable';
+import { createLegacyScrobbleTables } from '../../../test-utils/legacyScrobbleTables';
 
 const handle = getDb();
 if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
@@ -116,8 +117,9 @@ const countingDb = (): { db: InternalDb; queries: string[] } => {
 
 beforeEach(() => {
   __setDbForTests(realDb);
-  // ON DELETE CASCADE clears the five child tables with it.
-  realDb.runSync('DELETE FROM scrobble_events;');
+  // An install that has not run `legacyColumnDropService` yet. The rebuild also
+  // cascades the five child tables empty.
+  createLegacyScrobbleTables(realDb);
 });
 
 afterEach(() => {
@@ -185,7 +187,7 @@ describe('scrobble readers — full round trip through the columns', () => {
     seedLegacy('sc-full', fullSong);
     await backfillScrobbleColumnsAsync();
     // The envelope is irrelevant from here: blank it so anything still parsing it
-    // fails loudly instead of passing on the blob. (Step 4.6 does this for real.)
+    // fails loudly instead of passing on the blob.
     realDb.runSync("UPDATE scrobble_events SET song_json = '' WHERE id = ?;", ['sc-full']);
   });
 

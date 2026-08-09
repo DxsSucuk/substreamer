@@ -1,8 +1,9 @@
 /**
  * `pending_scrobble_events` against REAL SQL on the better-sqlite3-backed op-SQLite
- * seam: the offline queue now stores the same `Child` snapshot the completed table
- * does — typed columns plus five `pending_scrobble_*` child tables — and writes an
- * EMPTY `song_json`.
+ * seam: the offline queue stores the same `Child` snapshot the completed table does —
+ * typed columns plus five `pending_scrobble_*` child tables — and never depends on the
+ * `song_json` envelope. The backfill block below is the exception: it is written for
+ * the pre-drop table, so it rebuilds it.
  *
  * The hand-rolled fake this suite used before stored `(id, song_json, time)` and
  * matched statements by SQL prefix, so it could represent neither the columns nor the
@@ -24,6 +25,10 @@ import {
   replaceAllPendingScrobbles,
 } from '../pendingScrobbleTable';
 import { deriveScrobbleColumns, PENDING_SCROBBLE_COLUMN_NAMES } from '../scrobbleColumns';
+import {
+  createLegacyScrobbleTables,
+  createScrobbleTables,
+} from '../../../test-utils/legacyScrobbleTables';
 
 import type { PendingScrobble } from '../../pendingScrobbleStore';
 
@@ -151,6 +156,11 @@ const envelopeOf = (id: string): string | undefined =>
     [id],
   )?.song_json;
 
+const columnNames = (): string[] =>
+  realDb
+    .getAllSync<{ name: string }>('PRAGMA table_info(pending_scrobble_events);')
+    .map((c) => c.name);
+
 const scalarsOf = (id: string): Record<string, unknown> | undefined =>
   realDb.getFirstSync<Record<string, unknown>>(
     `SELECT ${PENDING_SCROBBLE_COLUMN_NAMES.join(', ')} FROM pending_scrobble_events WHERE id = ?;`,
@@ -205,8 +215,9 @@ const expectFullArrays = (song: Child): void => {
 
 beforeEach(() => {
   __setDbForTests(realDb);
-  // ON DELETE CASCADE clears the five child tables with it.
-  realDb.runSync('DELETE FROM pending_scrobble_events;');
+  // Rebuild rather than DELETE — the backfill block swaps in the pre-drop shape. The
+  // drop also cascades the five child tables empty.
+  createScrobbleTables(realDb);
 });
 
 afterEach(() => {
@@ -218,10 +229,10 @@ afterEach(() => {
 /* ------------------------------------------------------------------ */
 
 describe('pendingScrobbleTable — insert + hydrate', () => {
-  it('stores an empty song_json and still round-trips every scalar', async () => {
+  it('round-trips every scalar with no envelope column present', async () => {
     await insertPendingScrobble(pending('p-1'));
 
-    expect(envelopeOf('p-1')).toBe('');
+    expect(columnNames()).not.toContain('song_json');
     expect(scalarsOf('p-1')).toEqual(expectedScalars(fullSong));
 
     const [row] = await hydratePendingScrobblesAsync();
@@ -368,10 +379,17 @@ describe('pendingScrobbleTable — entries a NOT NULL child column rejects', () 
 /* ------------------------------------------------------------------ */
 
 describe('pendingScrobbleTable — backfill', () => {
-  it('hydrate backfills a pre-upgrade envelope row, child rows included', async () => {
+  // `legacyColumnDropService` owns this pass now; it only ever runs while the column
+  // it reads is still there.
+  beforeEach(() => createLegacyScrobbleTables(realDb));
+
+  it('backfills a pre-upgrade envelope row, child rows included', async () => {
     seedLegacy('legacy', fullSong);
     expect(scalarsOf('legacy')?.title).toBeNull();
+    // Hydrate skips it while the columns are still NULL — no reader can render it.
+    expect(await hydratePendingScrobblesAsync()).toEqual([]);
 
+    await backfillPendingScrobbleColumnsAsync();
     const [row] = await hydratePendingScrobblesAsync();
 
     expect(row.id).toBe('legacy');
@@ -402,6 +420,7 @@ describe('pendingScrobbleTable — backfill', () => {
     seedLegacy('bad', 'not json at all');
     seedLegacy('good', fullSong, TIME + 1);
 
+    await backfillPendingScrobbleColumnsAsync();
     const restored = await hydratePendingScrobblesAsync();
 
     const row = scalarsOf('bad');
@@ -466,6 +485,7 @@ describe('pendingScrobbleTable — backfill', () => {
     await backfillPendingScrobbleColumnsAsync();
 
     expect(envelopeOf('p-1')).toBe('');
+
     expect(scalarsOf('p-1')).toEqual(expectedScalars(fullSong));
     expect(childRows('genres', 'p-1')).toHaveLength(2);
   });
@@ -524,7 +544,6 @@ describe('pendingScrobbleTable — replaceAllPendingScrobbles', () => {
     expect(childRows('moods', 'old-1')).toEqual([]);
     expect(childRows('genres', 'new-1')).toHaveLength(2);
     expect(childRows('contributors', 'new-2')).toHaveLength(2);
-    expect(envelopeOf('new-1')).toBe('');
     const rows = await hydratePendingScrobblesAsync();
     expect(rows.map((r) => r.id)).toEqual(['new-1', 'new-2']);
     for (const r of rows) expectFullArrays(r.song);

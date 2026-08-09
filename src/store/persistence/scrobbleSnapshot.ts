@@ -208,6 +208,36 @@ export async function scrobblesWithArrays(
 }
 
 /* ------------------------------------------------------------------ */
+/*  The legacy `song_json` envelope column                             */
+/* ------------------------------------------------------------------ */
+
+/** Resolved once per table per session. */
+const envelopePresent = new Map<string, boolean>();
+
+/**
+ * Does `table` still carry the legacy `song_json` column? It is gone from
+ * `src/db/schema.ts`, so a fresh install never has it, and `legacyColumnDropService`
+ * drops it from an upgrading one at idle — which can land after playback has already
+ * started writing scrobbles. The writers therefore resolve the answer at runtime
+ * rather than baking a statement in at import: naming a dropped column fails, and
+ * omitting a present `NOT NULL` one fails just as hard.
+ */
+export async function envelopeColumnPresent(db: InternalDb, table: string): Promise<boolean> {
+  const cached = envelopePresent.get(table);
+  if (cached !== undefined) return cached;
+  const columns = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${table});`);
+  const present = columns.some((c) => c.name === 'song_json');
+  envelopePresent.set(table, present);
+  return present;
+}
+
+/** Forget the cached answers. Called by the drop service the moment the column goes,
+ *  so the next write builds the shorter statement instead of the stale one. */
+export function resetEnvelopeColumnCache(): void {
+  envelopePresent.clear();
+}
+
+/* ------------------------------------------------------------------ */
 /*  Backfill                                                           */
 /* ------------------------------------------------------------------ */
 
@@ -218,6 +248,11 @@ const BACKFILL_CHUNK = 500;
  * Populate the snapshot columns and the five child tables for rows that predate them.
  * Chunked to keep the JS thread responsive on a large upgrade history. Parses each
  * row's `song_json` and derives the same columns the write path stores.
+ *
+ * Reads `song_json`, so it is only ever valid while that column exists:
+ * `legacyColumnDropService` runs it to completion behind its own `PRAGMA table_info`
+ * guard and drops the column immediately after, and migration task 3 runs it for an
+ * install whose chain has not reached the drop's gate yet.
  *
  * The predicate is `song_id IS NULL OR title IS NULL`: `song_id` alone would skip
  * every row an earlier app version already backfilled under a narrower column set.

@@ -21,7 +21,7 @@ import { checkpointWalAsync, migrateBlobsToNormalized } from '@/db/migrateNormal
 import { getDb } from '@/store/persistence/db';
 import { kvStorage } from '@/store/persistence';
 import { syncStatusStore } from '@/store/syncStatusStore';
-import { LATEST_MIGRATION_ID } from './migrationService';
+import { migrationChainComplete } from './migrationService';
 
 /** Stamped after a successful full migration; the sole trigger gate.
  *
@@ -31,31 +31,7 @@ import { LATEST_MIGRATION_ID } from './migrationService';
 const MIGRATION_VERSION = '3';
 const MIGRATION_DONE_KEY = 'substreamer-normalized-migration-complete';
 
-/** `migrationStore`'s persisted KV row — read directly rather than through the store,
- *  which may not have rehydrated yet (the splash reads it the same way). */
-const MIGRATION_VERSION_KEY = 'substreamer-migration';
-
 let inFlight: Promise<void> | null = null;
-
-/**
- * Has the migration chain run to the end? `runMigrations` stops at the FIRST failure and
- * persists the version of the last success, so a halted chain leaves legacy rows the
- * later tasks never backfilled — the ETL would read those as empty, count them
- * `skipped`, and stamp itself complete. Defer instead; the next launch retries the chain.
- * `>=`, not `==`: a downgrade leaves the counter above this build's latest id, and that
- * chain is complete by definition. A fresh install passes — the runner fast-tracks the
- * counter to the latest id.
- */
-async function migrationChainComplete(): Promise<boolean> {
-  try {
-    const raw = await kvStorage.getItem(MIGRATION_VERSION_KEY);
-    if (!raw) return false;
-    const parsed = JSON.parse(raw) as { state?: { completedVersion?: number } };
-    return (parsed?.state?.completedVersion ?? 0) >= LATEST_MIGRATION_ID;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * Convert any un-migrated legacy blob/KV data into the normalized tables, in the

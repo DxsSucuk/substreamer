@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "91a7499b-bdd7-439f-8da3-89c9aeb8d983",
+  "id": "4b174f61-975e-426e-912d-8024026ed158",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "album_artists": {
@@ -3309,13 +3309,6 @@
           "notNull": true,
           "autoincrement": false
         },
-        "song_json": {
-          "name": "song_json",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
         "time": {
           "name": "time",
           "type": "integer",
@@ -4912,13 +4905,6 @@
           "name": "id",
           "type": "text",
           "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "song_json": {
-          "name": "song_json",
-          "type": "text",
-          "primaryKey": false,
           "notNull": true,
           "autoincrement": false
         },

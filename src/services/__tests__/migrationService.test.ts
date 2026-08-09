@@ -384,10 +384,13 @@ describe('runMigrations', () => {
   it('Task 3 backfills + refreshes analytics when scrobbles exist', async () => {
     const db = getDb()!;
     db.runSync('DELETE FROM scrobble_events');
-    db.runSync('INSERT INTO scrobble_events (id, song_json, time) VALUES (?, ?, ?);', [
+    db.runSync('INSERT INTO scrobble_events (id, time, song_id, title, artist, duration) VALUES (?, ?, ?, ?, ?, ?);', [
       'm1',
-      JSON.stringify({ id: 's1', title: 'Song', artist: 'A', duration: 200 }),
       Date.now(),
+      's1',
+      'Song',
+      'A',
+      200,
     ]);
     await runMigrations(2);
     const logContent = mockFileWrite.mock.calls[0][0] as string;

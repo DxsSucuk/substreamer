@@ -5,9 +5,9 @@
  *   → back online → processScrobbles submits `item.song.id` and hands the whole `song`
  *   to `addCompleted`, which derives the completed row from it.
  *
- * `pending_scrobble_events` writes an EMPTY `song_json`, so every field below survives
- * only through the typed columns and the five `pending_scrobble_*` child tables. What
- * pending loses, the listening history loses too — which is why this asserts the whole
+ * `pending_scrobble_events` has no `song_json` column at all now, so every field below
+ * survives only through the typed columns and the five `pending_scrobble_*` child
+ * tables. What pending loses, the listening history loses too — which is why this asserts the whole
  * `Child` at the `addCompleted` hand-off and again after it lands in `scrobble_events`.
  *
  * Per AGENTS.md §11 the seam proves SQL semantics, never concurrency.
@@ -158,13 +158,12 @@ it('an offline play survives a restart and reaches addCompleted intact', async (
   const { id: queuedId, time: queuedTime } = queued[0];
   await waitUntil('the pending row to be persisted', () => countRows('pending_scrobble_events') > 0);
 
-  // The envelope is empty — the columns and the child tables are the record.
+  // No envelope to fall back on — the columns and the child tables are the record.
   expect(
-    realDb.getFirstSync<{ song_json: string }>(
-      'SELECT song_json FROM pending_scrobble_events WHERE id = ?;',
-      [queuedId],
-    )?.song_json,
-  ).toBe('');
+    realDb
+      .getAllSync<{ name: string }>('PRAGMA table_info(pending_scrobble_events);')
+      .map((c) => c.name),
+  ).not.toContain('song_json');
   expect(countRows('pending_scrobble_genres')).toBe(2);
   expect(countRows('pending_scrobble_moods')).toBe(2);
 

@@ -61,7 +61,7 @@ beforeEach(() => {
 describe('childSnapshotArrayCommands — NOT NULL child columns, scrobble_*', () => {
   beforeEach(async () => {
     realDb.runSync(
-      "INSERT INTO scrobble_events (id, song_json, time, song_id, title) VALUES ('sc-1', '', 1, 'x-1', 'Hostile');",
+      "INSERT INTO scrobble_events (id, time, song_id, title) VALUES ('sc-1', 1, 'x-1', 'Hostile');",
     );
     await write('scrobble', 'scrobble_id', 'sc-1');
   });

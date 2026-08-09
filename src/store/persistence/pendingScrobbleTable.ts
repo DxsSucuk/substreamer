@@ -21,23 +21,32 @@ import {
 } from './scrobbleColumns';
 import {
   backfillSnapshotColumnsAsync,
+  envelopeColumnPresent,
   SCROBBLE_SELECT,
   scrobblesWithArrays,
   type ScrobbleSnapshotRow,
 } from './scrobbleSnapshot';
 
-/** Full INSERT with the snapshot columns (see scrobbleColumns.ts). */
-const INSERT_SQL =
-  `INSERT OR IGNORE INTO pending_scrobble_events ` +
-  `(id, song_json, time, ${PENDING_SCROBBLE_COLUMN_NAMES.join(', ')}) ` +
-  `VALUES (${new Array(3 + PENDING_SCROBBLE_COLUMN_NAMES.length).fill('?').join(', ')});`;
+const TABLE = 'pending_scrobble_events';
 
-/** `song_json` is written EMPTY. The typed columns plus the five
- *  `pending_scrobble_*` child tables are the record now and the reader reconstructs
- *  from them; the column stays NOT NULL only until a shadow-table rebuild can drop it. */
-const insertParams = (s: PendingScrobble): (string | number | null)[] => [
+/** Full INSERT with the snapshot columns (see scrobbleColumns.ts). Both forms, chosen
+ *  per session from the live column set — same two-sided trap as `scrobbleTable.ts`. */
+const insertSql = (withEnvelope: boolean): string =>
+  `INSERT OR IGNORE INTO ${TABLE} ` +
+  `(id, ${withEnvelope ? 'song_json, ' : ''}time, ${PENDING_SCROBBLE_COLUMN_NAMES.join(', ')}) ` +
+  `VALUES (${new Array((withEnvelope ? 3 : 2) + PENDING_SCROBBLE_COLUMN_NAMES.length)
+    .fill('?')
+    .join(', ')});`;
+
+const INSERT_SQL_WITH_ENVELOPE = insertSql(true);
+const INSERT_SQL = insertSql(false);
+
+/** `song_json`, where it still exists, is written EMPTY. The typed columns plus the
+ *  five `pending_scrobble_*` child tables are the record and the reader reconstructs
+ *  from them. */
+const insertParams = (s: PendingScrobble, withEnvelope: boolean): (string | number | null)[] => [
   s.id,
-  '',
+  ...(withEnvelope ? [''] : []),
   s.time,
   ...scrobbleColumnValues(deriveScrobbleColumns(s.song, s.time), PENDING_SCROBBLE_COLUMN_NAMES),
 ];
@@ -51,15 +60,19 @@ const insertParams = (s: PendingScrobble): (string | number | null)[] => [
  * over an id that already exists safe: without the DELETEs the child INSERT would hit
  * the `(scrobble_id, pos)` PK and abort the batch.
  */
-function insertCommands(scrobbles: readonly PendingScrobble[]): BatchCommand[] {
+function insertCommands(
+  scrobbles: readonly PendingScrobble[],
+  withEnvelope: boolean,
+): BatchCommand[] {
   const seen = new Set<string>();
   const commands: BatchCommand[] = [];
+  const sql = withEnvelope ? INSERT_SQL_WITH_ENVELOPE : INSERT_SQL;
   for (const s of scrobbles) {
     if (!s?.id || !s.song?.id || !s.song.title) continue;
     if (seen.has(s.id)) continue;
     seen.add(s.id);
     commands.push(
-      [INSERT_SQL, insertParams(s)],
+      [sql, insertParams(s, withEnvelope)],
       ...childSnapshotArrayCommands({
         tablePrefix: 'pending_scrobble',
         key: { scrobble_id: s.id },
@@ -95,10 +108,10 @@ export async function backfillPendingScrobbleColumnsAsync(): Promise<void> {
  * typed columns and the five `pending_scrobble_*` child tables — one child query per
  * table per chunk, never one per row.
  *
- * The column backfill runs FIRST: rows queued by a version that only wrote the
- * envelope have no columns, and an offline play dropped here is never submitted and
- * never deleted from the queue. Rows still missing `song_id`/`title` after it are
- * skipped, which is what the backfill's `''` title stamp exists for.
+ * Rows missing `song_id`/`title` are skipped: either the backfill has not reached them
+ * yet (`legacyColumnDropService` owns it, at idle) or it decided they were undecodable
+ * and stamped the `''` title that keeps them invisible. A queued offline play in the
+ * first case is submitted a launch later, not lost.
  *
  * Chunked with `setTimeout(0)` yields so the boot path can't freeze the JS thread
  * (setTimeout, not rAF — rAF can stall on RN 0.85/Fabric). Used by `rehydrateAllStores`.
@@ -106,7 +119,6 @@ export async function backfillPendingScrobbleColumnsAsync(): Promise<void> {
 export async function hydratePendingScrobblesAsync(): Promise<PendingScrobble[]> {
   const db = getDb();
   if (db === null) return [];
-  await backfillPendingScrobbleColumnsAsync();
   try {
     const rows = await db.getAllAsync<ScrobbleSnapshotRow>(
       `SELECT ${SCROBBLE_SELECT} FROM pending_scrobble_events ORDER BY time ASC;`,
@@ -146,9 +158,9 @@ export async function hydratePendingScrobblesAsync(): Promise<PendingScrobble[]>
 export async function insertPendingScrobble(scrobble: PendingScrobble): Promise<void> {
   const db = getDb();
   if (db === null) return;
-  const commands = insertCommands([scrobble]);
-  if (commands.length === 0) return;
   try {
+    const commands = insertCommands([scrobble], await envelopeColumnPresent(db, TABLE));
+    if (commands.length === 0) return;
     await db.runAtomicBatchAsync(commands);
   } catch {
     /* dropped */
@@ -185,9 +197,10 @@ export async function replaceAllPendingScrobbles(
   const db = getDb();
   if (db === null) return;
   try {
+    const withEnvelope = await envelopeColumnPresent(db, TABLE);
     await db.runAtomicBatchAsync([
       ['DELETE FROM pending_scrobble_events;', []],
-      ...insertCommands(scrobbles),
+      ...insertCommands(scrobbles, withEnvelope),
     ]);
   } catch {
     /* dropped */

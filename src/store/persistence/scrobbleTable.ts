@@ -16,22 +16,37 @@ import {
 } from './scrobbleColumns';
 import {
   backfillSnapshotColumnsAsync,
+  envelopeColumnPresent,
   SCROBBLE_SELECT,
   scrobblesWithArrays,
   type ScrobbleSnapshotRow,
 } from './scrobbleSnapshot';
 
-/** Full INSERT with the structured analytics columns (see scrobbleColumns.ts). */
-const INSERT_SQL =
-  `INSERT OR IGNORE INTO scrobble_events (id, song_json, time, ${SCROBBLE_COLUMN_NAMES.join(', ')}) ` +
-  `VALUES (${new Array(3 + SCROBBLE_COLUMN_NAMES.length).fill('?').join(', ')});`;
+const TABLE = 'scrobble_events';
 
-/** `song_json` is written EMPTY. The typed columns plus the five `scrobble_*` child
- *  tables are the record now and every reader reconstructs from them; the column
- *  stays NOT NULL only until a shadow-table rebuild can drop it. */
-const insertParams = (s: CompletedScrobble): (string | number | null)[] => [
+/** Full INSERT with the structured analytics columns (see scrobbleColumns.ts).
+ *
+ *  BOTH forms are built here, and which one a write uses is decided per session from
+ *  the live column set — see `envelopeColumnPresent`. A single statement cannot serve
+ *  both: naming `song_json` after the drop fails, omitting it before the drop fails
+ *  its `NOT NULL`. */
+const insertSql = (withEnvelope: boolean): string =>
+  `INSERT OR IGNORE INTO ${TABLE} ` +
+  `(id, ${withEnvelope ? 'song_json, ' : ''}time, ${SCROBBLE_COLUMN_NAMES.join(', ')}) ` +
+  `VALUES (${new Array((withEnvelope ? 3 : 2) + SCROBBLE_COLUMN_NAMES.length).fill('?').join(', ')});`;
+
+const INSERT_SQL_WITH_ENVELOPE = insertSql(true);
+const INSERT_SQL = insertSql(false);
+
+/** `song_json`, where it still exists, is written EMPTY. The typed columns plus the
+ *  five `scrobble_*` child tables are the record — every reader reconstructs from
+ *  them. */
+const insertParams = (
+  s: CompletedScrobble,
+  withEnvelope: boolean,
+): (string | number | null)[] => [
   s.id,
-  '',
+  ...(withEnvelope ? [''] : []),
   s.time,
   ...scrobbleColumnValues(deriveScrobbleColumns(s.song, s.time)),
 ];
@@ -47,15 +62,19 @@ const insertParams = (s: CompletedScrobble): (string | number | null)[] => [
  * over an id that already exists safe: without the DELETEs the child INSERT would
  * hit the `(scrobble_id, pos)` PK and abort the batch.
  */
-function insertCommands(scrobbles: readonly CompletedScrobble[]): BatchCommand[] {
+function insertCommands(
+  scrobbles: readonly CompletedScrobble[],
+  withEnvelope: boolean,
+): BatchCommand[] {
   const seen = new Set<string>();
   const commands: BatchCommand[] = [];
+  const sql = withEnvelope ? INSERT_SQL_WITH_ENVELOPE : INSERT_SQL;
   for (const s of scrobbles) {
     if (!s?.id || !s.song?.id || !s.song.title) continue;
     if (seen.has(s.id)) continue;
     seen.add(s.id);
     commands.push(
-      [INSERT_SQL, insertParams(s)],
+      [sql, insertParams(s, withEnvelope)],
       ...childSnapshotArrayCommands({
         tablePrefix: 'scrobble',
         key: { scrobble_id: s.id },
@@ -152,9 +171,9 @@ export async function countScrobbles(): Promise<number> {
 export async function insertScrobble(scrobble: CompletedScrobble): Promise<void> {
   const db = getDb();
   if (db === null) return;
-  const commands = insertCommands([scrobble]);
-  if (commands.length === 0) return;
   try {
+    const commands = insertCommands([scrobble], await envelopeColumnPresent(db, TABLE));
+    if (commands.length === 0) return;
     await db.runAtomicBatchAsync(commands);
   } catch {
     /* dropped */
@@ -176,8 +195,9 @@ export async function mergeScrobbles(
   const db = getDb();
   if (db === null) return { added: 0, skipped: scrobbles.length };
   try {
+    const withEnvelope = await envelopeColumnPresent(db, TABLE);
     const before = await countScrobbles();
-    await db.runAtomicBatchAsync(insertCommands(scrobbles));
+    await db.runAtomicBatchAsync(insertCommands(scrobbles, withEnvelope));
     const after = await countScrobbles();
     const added = Math.max(0, after - before);
     return { added, skipped: scrobbles.length - added };
@@ -195,9 +215,10 @@ export async function replaceAllScrobbles(scrobbles: readonly CompletedScrobble[
   const db = getDb();
   if (db === null) return;
   try {
+    const withEnvelope = await envelopeColumnPresent(db, TABLE);
     await db.runAtomicBatchAsync([
       ['DELETE FROM scrobble_events;', []],
-      ...insertCommands(scrobbles),
+      ...insertCommands(scrobbles, withEnvelope),
     ]);
   } catch {
     /* dropped */

@@ -58,6 +58,7 @@ import {
   recoverStalledSync,
 } from '../services/dataSyncService';
 import { runDataModelUpgradeIfNeeded } from '../services/dataModelUpgradeService';
+import { runLegacyColumnDropIfNeeded } from '../services/legacyColumnDropService';
 import { runLibraryReapIfNeeded } from '../services/libraryReapService';
 import { runSortKeyRebuildIfNeeded } from '../services/sortKeyRebuildService';
 import { hydrateDownloadedAlbumCoverArt } from '../hooks/useSongCoverArt';
@@ -270,6 +271,13 @@ async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
   // already hold. Idle-scheduled and chunked because `songs` is tens of thousands of rows;
   // resumable, so it finishes across launches if it is interrupted.
   idleStage('sortKeyRebuild', () => runSortKeyRebuildIfNeeded());
+  if (getCancelled()) return;
+
+  // Physically drop the two legacy `song_json` columns, once, after proving the
+  // backfill that reads them has nothing left to do. Idle-scheduled: each drop is a
+  // whole-table rewrite, and the writers resolve their column set at runtime so the
+  // two orderings against a live playback write are both correct.
+  idleStage('legacyColumnDrop', () => runLegacyColumnDropIfNeeded());
   if (getCancelled()) return;
 
   // Delete library rows the server no longer has, against the epoch the last completed

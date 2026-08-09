@@ -497,7 +497,6 @@ CREATE TABLE `pending_scrobble_contributors` (
 --> statement-breakpoint
 CREATE TABLE `pending_scrobble_events` (
 	`id` text PRIMARY KEY NOT NULL,
-	`song_json` text NOT NULL,
 	`time` integer NOT NULL,
 	`song_id` text,
 	`artist` text,
@@ -734,7 +733,6 @@ CREATE TABLE `scrobble_contributors` (
 --> statement-breakpoint
 CREATE TABLE `scrobble_events` (
 	`id` text PRIMARY KEY NOT NULL,
-	`song_json` text NOT NULL,
 	`time` integer NOT NULL,
 	`song_id` text,
 	`artist` text,

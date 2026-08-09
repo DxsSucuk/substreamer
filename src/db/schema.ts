@@ -964,7 +964,6 @@ export const scrobbleEvents = sqliteTable(
   'scrobble_events',
   {
     id: text('id').primaryKey(),
-    songJson: text('song_json').notNull(),
     time: integer('time').notNull(),
     songId: text('song_id'),
     artist: text('artist'),
@@ -1090,7 +1089,6 @@ export const pendingScrobbleEvents = sqliteTable(
   'pending_scrobble_events',
   {
     id: text('id').primaryKey(),
-    songJson: text('song_json').notNull(),
     time: integer('time').notNull(),
     songId: text('song_id'),
     artist: text('artist'),

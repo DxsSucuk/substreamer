@@ -9,6 +9,9 @@
  *
  * Per AGENTS.md §11 that seam proves SQL semantics, never concurrency — the seam
  * runs `executeBatch` synchronously, so nothing here says anything about the pool.
+ *
+ * The backfill only ever reads `song_json`, which the generated schema no longer has —
+ * so every case here rebuilds the table in the pre-drop shape it is written for.
  */
 import type { Child } from 'subsonic-api';
 
@@ -16,6 +19,7 @@ import type { BatchCommand } from '../../../db/client';
 import { __setDbForTests, getDb, type InternalDb } from '../db';
 import { deriveScrobbleColumns, SCROBBLE_COLUMN_NAMES } from '../scrobbleColumns';
 import { backfillScrobbleColumnsAsync } from '../scrobbleTable';
+import { createLegacyScrobbleTables } from '../../../test-utils/legacyScrobbleTables';
 
 const handle = getDb();
 if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
@@ -124,8 +128,9 @@ const wrapDb = (overrides: Partial<InternalDb>): InternalDb =>
 
 beforeEach(() => {
   __setDbForTests(realDb);
-  // ON DELETE CASCADE clears the five child tables with it.
-  realDb.runSync('DELETE FROM scrobble_events;');
+  // An install that has not run `legacyColumnDropService` yet. The rebuild also
+  // cascades the five child tables empty.
+  createLegacyScrobbleTables(realDb);
 });
 
 afterEach(() => {

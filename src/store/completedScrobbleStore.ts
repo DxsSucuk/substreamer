@@ -1,7 +1,6 @@
 import { create } from 'zustand';
 
 import {
-  backfillScrobbleColumnsAsync,
   insertScrobble,
   mergeScrobbles,
   replaceAllScrobbles,
@@ -79,8 +78,8 @@ export interface CompletedScrobbleState {
    * `{ added, skipped }`.
    */
   mergeAll: (scrobbles: CompletedScrobble[]) => Promise<{ added: number; skipped: number }>;
-  /** Called once at app start: backfill the structured columns for legacy rows,
-   *  then compute analytics from SQL (no full-history load into memory). */
+  /** Called once at app start: compute analytics from SQL (no full-history load
+   *  into memory). */
   hydrateFromDbAsync: () => Promise<void>;
 }
 
@@ -135,9 +134,7 @@ export const completedScrobbleStore = create<CompletedScrobbleState>()((set, get
   },
 
   hydrateFromDbAsync: async () => {
-    // Backfill the structured columns for any legacy (pre-columns) rows, then
-    // compute analytics from SQL — no full-history array load into memory.
-    await backfillScrobbleColumnsAsync();
+    // Analytics come from SQL — no full-history array load into memory.
     await get().refreshFromDb();
     set({ hasHydrated: true });
   },

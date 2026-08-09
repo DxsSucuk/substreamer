@@ -12,6 +12,10 @@ import {
 } from '../scrobbleAggregates';
 import { backfillScrobbleColumnsAsync } from '../scrobbleTable';
 import { deriveScrobbleColumns, scrobbleColumnValues, SCROBBLE_COLUMN_NAMES } from '../scrobbleColumns';
+import {
+  createLegacyScrobbleTables,
+  createScrobbleTables,
+} from '../../../test-utils/legacyScrobbleTables';
 
 const db = () => getDb()!;
 
@@ -22,9 +26,9 @@ const song = (id: string, extra: Partial<Child> = {}): Child =>
 const insert = (id: string, s: Child, time: number): void => {
   const cols = scrobbleColumnValues(deriveScrobbleColumns(s, time));
   db().runSync(
-    `INSERT INTO scrobble_events (id, song_json, time, ${SCROBBLE_COLUMN_NAMES.join(', ')}) ` +
-      `VALUES (${new Array(3 + SCROBBLE_COLUMN_NAMES.length).fill('?').join(', ')});`,
-    [id, JSON.stringify(s), time, ...cols],
+    `INSERT INTO scrobble_events (id, time, ${SCROBBLE_COLUMN_NAMES.join(', ')}) ` +
+      `VALUES (${new Array(2 + SCROBBLE_COLUMN_NAMES.length).fill('?').join(', ')});`,
+    [id, time, ...cols],
   );
 };
 
@@ -34,7 +38,8 @@ const DAY = 86_400_000;
 const NOW = 1_700_000_000_000;
 
 beforeEach(() => {
-  db().runSync('DELETE FROM scrobble_events');
+  // Rebuild rather than DELETE: one case below swaps in the legacy table shape.
+  createScrobbleTables(db());
 });
 
 it('computes all-time aggregates from GROUP BY', async () => {
@@ -64,7 +69,8 @@ it('scopes aggregates to a period via sinceMs', async () => {
 });
 
 it('backfills derived columns for rows written before the columns existed', async () => {
-  // Simulate a legacy row: only id/song_json/time, structured columns NULL.
+  // An install that has not run the column drop: only id/song_json/time populated.
+  createLegacyScrobbleTables(db());
   db().runSync('INSERT INTO scrobble_events (id, song_json, time) VALUES (?, ?, ?);', [
     'legacy',
     JSON.stringify(song('s9', { artist: 'Zed', album: 'AlbZ', duration: 50, genres: [{ name: 'Folk' }] as any })),
