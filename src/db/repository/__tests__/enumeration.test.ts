@@ -1,12 +1,12 @@
 /**
- * A6 sync primitives: id enumeration + the non-destructive full-sync reconcile that
- * must NEVER reap protected (downloaded/favorited) albums.
+ * The sync's id-enumeration primitives — the two sets the basic song walk diffs to
+ * decide which albums still need their tracks.
  */
 import type { AlbumID3, Child } from 'subsonic-api';
 
 import { getDb } from '../../../store/persistence/db';
 import { ensureNormalizedSchema } from '../../createNormalizedTables';
-import { countAlbums, listAlbumIds, reconcileAlbums, upsertAlbums } from '../albums';
+import { listAlbumIds, upsertAlbums } from '../albums';
 import { listSongAlbumIds, upsertSongs } from '../songs';
 
 const db = () => getDb()!;
@@ -27,12 +27,4 @@ it('listAlbumIds returns every album id', async () => {
 it('listSongAlbumIds returns the distinct albums that already have songs', async () => {
   await upsertSongs(db(), [song('s1', 'a1'), song('s2', 'a1'), song('s3', 'a2')]);
   expect((await listSongAlbumIds(db())).sort()).toEqual(['a1', 'a2']);
-});
-
-it('reconcileAlbums deletes the server-removed complement but SPARES protected ids', async () => {
-  await upsertAlbums(db(), [album('keep'), album('gone'), album('downloaded')]);
-  // Server now returns only 'keep'; 'downloaded' is protected (offline content).
-  await reconcileAlbums(db(), ['keep'], ['downloaded']);
-  expect((await listAlbumIds(db())).sort()).toEqual(['downloaded', 'keep']);
-  expect(await countAlbums(db())).toBe(2);
 });

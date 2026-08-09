@@ -471,14 +471,6 @@ export const albumIdsPresent = (db: InternalDb, ids: string[]): Promise<Set<stri
         )
         .then((rows) => new Set(rows.map((r) => r.id)));
 
-/** Delete album rows by id (children cascade via FK ON DELETE). Ids are passed as a
- *  JSON array via `json_each` to dodge the SQLite bound-variable limit. Used by the
- *  incremental removal path so a server-deleted album doesn't ghost in the list. */
-export const deleteAlbums = (db: InternalDb, ids: string[]): Promise<unknown> =>
-  db.runAsync('DELETE FROM albums WHERE id IN (SELECT value FROM json_each(?))', [
-    JSON.stringify(ids),
-  ]);
-
 /** Eager +1 play-count + last-played for a just-scrobbled album — a TARGETED scalar
  *  UPDATE (no child-table churn) so normalized play stats stay current for the detail
  *  screens. Relative increment mirrors the store bumps; a full resync overwrites with
@@ -530,25 +522,4 @@ export const albumBrowseRowToAlbumID3 = (r: AlbumBrowseRow): AlbumID3 => ({
 export const listAllAlbums = (db: InternalDb): Promise<AlbumBrowseRow[]> =>
   db.getAllAsync<AlbumBrowseRow>(
     `SELECT ${ALBUM_BROWSE_COLS} FROM albums ORDER BY sort_title, "id"`,
-  );
-
-/**
- * Non-destructive full-sync reconcile: delete album rows whose id is NOT in the current
- * server set AND NOT protected (downloaded/favorited detail we must never reap). A full
- * sync reconciles rather than dropping the tables so offline content survives. Children
- * cascade via FK. Both id sets pass as JSON via `json_each`.
- *
- * `NOT IN`, not the `NOT EXISTS` favourites insists on: the ids arrive as a JS array, so
- * the ephemeral b-tree SQLite builds IS that list — there is no indexed table to probe —
- * and this runs once per full sync, not once per page read.
- */
-export const reconcileAlbums = (
-  db: InternalDb,
-  keepIds: string[],
-  protectedIds: string[] = [],
-): Promise<unknown> =>
-  db.runAsync(
-    'DELETE FROM albums WHERE id NOT IN (SELECT value FROM json_each(?)) ' +
-      'AND id NOT IN (SELECT value FROM json_each(?))',
-    [JSON.stringify(keepIds), JSON.stringify(protectedIds)],
   );

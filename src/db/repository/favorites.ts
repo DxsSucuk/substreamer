@@ -125,8 +125,9 @@ const isDownloadable = (entity: Entity): entity is DownloadableEntity => entity 
  * ephemeral b-tree on every execution — 50,000 index entries built per page read to
  * answer a handful of probes. `NOT EXISTS` is a correlated PK probe per remainder row,
  * and has no NULL footgun. The rule is about a subquery over a TABLE on a repeated read —
- * it does not reach the once-per-sync prunes, which have no table to correlate against
- * (see `reconcileAlbums`, `deletePlaylistsNotIn`).
+ * it does not reach the prunes — `deletePlaylistsNotIn`, whose subquery IS the JS id array
+ * (`json_each`, no table to correlate against), or the epoch reap in `reap.ts`, whose
+ * download subqueries probe an existing index instead of materialising.
  */
 const disjointClause = (entity: Entity): string =>
   `NOT EXISTS (SELECT 1 FROM ${entity} t WHERE t.id = ${REMAINDER[entity]}.id AND t.starred IS NOT NULL)`;

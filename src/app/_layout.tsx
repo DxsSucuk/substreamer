@@ -58,6 +58,7 @@ import {
   recoverStalledSync,
 } from '../services/dataSyncService';
 import { runDataModelUpgradeIfNeeded } from '../services/dataModelUpgradeService';
+import { runLibraryReapIfNeeded } from '../services/libraryReapService';
 import { runSortKeyRebuildIfNeeded } from '../services/sortKeyRebuildService';
 import { hydrateDownloadedAlbumCoverArt } from '../hooks/useSongCoverArt';
 import { useLibrarySyncBackgroundNotification } from '../hooks/useLibrarySyncBackgroundNotification';
@@ -269,6 +270,12 @@ async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
   // already hold. Idle-scheduled and chunked because `songs` is tens of thousands of rows;
   // resumable, so it finishes across launches if it is interrupted.
   idleStage('sortKeyRebuild', () => runSortKeyRebuildIfNeeded());
+  if (getCancelled()) return;
+
+  // Delete library rows the server no longer has, against the epoch the last completed
+  // full resync earned. Idle-scheduled and chunked (the tables are the big ones), and it
+  // runs once per epoch rather than once per launch. No epoch, no reap.
+  idleStage('libraryReap', () => runLibraryReapIfNeeded());
   if (getCancelled()) return;
 
   // Re-push the CarPlay / Android Auto browse snapshot now the library stores
