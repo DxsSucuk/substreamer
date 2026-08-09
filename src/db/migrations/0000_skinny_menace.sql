@@ -439,6 +439,23 @@ CREATE TABLE `image_download_queue` (
 --> statement-breakpoint
 CREATE INDEX `idx_image_download_queue_status` ON `image_download_queue` (`status`,`added_at`);--> statement-breakpoint
 CREATE INDEX `idx_image_download_queue_cycle` ON `image_download_queue` (`cycle_id`);--> statement-breakpoint
+CREATE TABLE `lyric_lines` (
+	`song_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`start_ms` integer NOT NULL,
+	`text` text NOT NULL,
+	PRIMARY KEY(`song_id`, `pos`),
+	FOREIGN KEY (`song_id`) REFERENCES `lyrics`(`song_id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `lyrics` (
+	`song_id` text PRIMARY KEY NOT NULL,
+	`synced` integer,
+	`lang` text,
+	`offset_ms` integer,
+	`source` text
+);
+--> statement-breakpoint
 CREATE TABLE `pending_scrobble_album_artists` (
 	`scrobble_id` text NOT NULL,
 	`pos` integer NOT NULL,

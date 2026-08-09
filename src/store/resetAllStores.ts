@@ -35,6 +35,7 @@ import { favoritesStore } from './favoritesStore';
 import { genreStore } from './genreStore';
 import { imageCacheStore } from './imageCacheStore';
 import { layoutPreferencesStore } from './layoutPreferencesStore';
+import { lyricsStore } from './lyricsStore';
 import { mbidOverrideStore } from './mbidOverrideStore';
 import { musicCacheStore } from './musicCacheStore';
 import { offlineModeStore } from './offlineModeStore';
@@ -84,6 +85,10 @@ const allStores = [
   imageCacheStore,
   layoutPreferencesStore,
   localeStore,
+  // Session cache over the `lyrics` table, which logout drops with the rest of the
+  // model. Reset here too: the keys are server-scoped song ids, so a map surviving a
+  // server switch can show another server's words against a colliding id.
+  lyricsStore,
   mbidOverrideStore,
   musicCacheStore,
   offlineModeStore,

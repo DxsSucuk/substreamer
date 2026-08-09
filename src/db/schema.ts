@@ -394,6 +394,38 @@ export const songMoods = sqliteTable(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Lyrics
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One song's lyrics, from `getLyricsBySongId` (OpenSubsonic) or `getLyrics` (classic).
+ * Keyed by the song id but with NO FK to `songs` — lyrics are fetched for whatever is
+ * playing, which need not be a library row.
+ */
+export const lyrics = sqliteTable('lyrics', {
+  songId: text('song_id').primaryKey(),
+  synced: integer('synced', { mode: 'boolean' }),
+  lang: text('lang'),
+  offsetMs: integer('offset_ms'),
+  source: text('source'),
+});
+
+/** The lines, positional — a rewrite deletes then re-inserts so a shorter set leaves
+ *  no stale tail. The `(song_id, pos)` PK is also the song_id lookup index. */
+export const lyricLines = sqliteTable(
+  'lyric_lines',
+  {
+    songId: text('song_id')
+      .notNull()
+      .references(() => lyrics.songId, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    startMs: integer('start_ms').notNull(),
+    text: text('text').notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.songId, t.pos] }) }),
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Album children
 // ─────────────────────────────────────────────────────────────────────────────
 

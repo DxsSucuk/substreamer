@@ -130,6 +130,10 @@ export const MODEL_TABLES: readonly string[] = [
   'song_contributors',
   'song_genres',
   'song_moods',
+  // Lyrics are server-derived metadata keyed by a server-scoped song id, so logout must
+  // drop them — otherwise a colliding id on the next server shows the wrong song's words.
+  'lyrics',
+  'lyric_lines',
   // The home-screen album lists: ordered ids over `albums`, server-scoped for the same
   // reason favourites are. It FK-cascades from `albums` anyway, but must still be listed
   // — the allowlist fails CLOSED, so an unclassified table is never dropped.

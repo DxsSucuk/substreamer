@@ -2098,6 +2098,22 @@ const MIGRATION_TASKS: MigrationTask[] = [
     },
   },
 
+  {
+    id: 34,
+    name: 'Drop the retired lyrics blob',
+    run: async (log) => {
+      // Lyrics moved to the `lyrics` + `lyric_lines` tables, one row per song. The old
+      // `substreamer-lyrics` KV blob has no reader left; nothing is migrated out of it
+      // because lyrics are re-derivable from the server on the next player open.
+      try {
+        await kvStorage.removeItem('substreamer-lyrics');
+        log('[m34] cleared substreamer-lyrics blob');
+      } catch (e) {
+        log(`[m34] clear failed: ${errMessage(e)}`);
+      }
+    },
+  },
+
   // -------------------------------------------------------------------
   // TEMPLATE – How to add a new migration task:
   //
@@ -2133,15 +2149,15 @@ const MIGRATION_TASKS: MigrationTask[] = [
   // be re-run or extended if a field was missed). When enabled, THIS task runs a final
   // catch-up migration and THEN drops the tables — migrate-BEFORE-drop is mandatory so a
   // very-old upgrader still recovers their data before it's gone. Held back JUST IN CASE
-  // until the final release is verified; uncomment to enable (it becomes id 34).
+  // until the final release is verified; uncomment to enable (it becomes id 35).
   //
   // {
-  //   id: 34,
+  //   id: 35,
   //   name: 'Migrate any remaining blob data, then drop the legacy blob tables',
   //   run: async (log) => {
   //     const { getDb } = require('../store/persistence/db') as { getDb: () => any };
   //     const db = getDb();
-  //     if (db === null) { log('[m34] db unavailable — skipping'); return; }
+  //     if (db === null) { log('[m35] db unavailable — skipping'); return; }
   //     // Final catch-up FIRST (idempotent): recover any un-migrated blob data into the
   //     // normalized model before the tables vanish.
   //     const { migrateBlobsToNormalized, checkpointWalAsync } =
@@ -2149,12 +2165,12 @@ const MIGRATION_TASKS: MigrationTask[] = [
   //     await migrateBlobsToNormalized(db, log);
   //     for (const t of ['library_albums', 'song_index', 'album_details']) {
   //       await db.runAsync(`DROP TABLE IF EXISTS ${t};`);
-  //       log(`[m34] dropped ${t}`);
+  //       log(`[m35] dropped ${t}`);
   //     }
   //     // Reclaim the freed pages so the DB file actually shrinks.
   //     await checkpointWalAsync(db, log);
   //     await db.runAsync('VACUUM;');
-  //     log('[m34] reclaimed space');
+  //     log('[m35] reclaimed space');
   //   },
   // },
   // -------------------------------------------------------------------
