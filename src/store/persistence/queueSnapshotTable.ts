@@ -315,64 +315,97 @@ interface MutableArrays {
   moods?: string[];
 }
 
-interface CreditRow {
-  song_pos: number;
-  artist_id: string | null;
-  artist_name: string | null;
+/** Every array row carries the song it belongs to: the snapshot plus the position. */
+type ArrayRow<T> = T & { snapshot_id: string; song_pos: number };
+
+type CreditCols = { artist_id: string | null; artist_name: string | null };
+
+/** The five array tables' rows for whatever set of snapshots the caller selected. */
+interface SnapshotArrayRows {
+  genres: ArrayRow<{ name: string }>[];
+  artists: ArrayRow<CreditCols>[];
+  albumArtists: ArrayRow<CreditCols>[];
+  contributors: ArrayRow<CreditCols & { role: string; sub_role: string | null }>[];
+  moods: ArrayRow<{ mood: string }>[];
 }
 
-/** The five array tables for one snapshot: ONE query per table, grouped by song
- *  position in JS. A per-song query would be 5×N round trips on the restore path. */
-function loadSnapshotArrays(
-  db: InternalDb,
-  snapshotId: string,
-): Map<number, ChildSnapshotArrays> {
-  const out = new Map<number, MutableArrays>();
-  const select = (table: string, cols: string): string =>
-    `SELECT song_pos, ${cols} FROM queue_snapshot_song_${table} ` +
-    'WHERE snapshot_id = ? ORDER BY song_pos, pos;';
-  const params = [snapshotId];
-  const genres = db.getAllSync<{ song_pos: number; name: string }>(
-    select('genres', 'name'),
-    params,
-  );
-  const artists = db.getAllSync<CreditRow>(select('artists', 'artist_id, artist_name'), params);
-  const albumArtists = db.getAllSync<CreditRow>(
-    select('album_artists', 'artist_id, artist_name'),
-    params,
-  );
-  const contributors = db.getAllSync<CreditRow & { role: string; sub_role: string | null }>(
-    select('contributors', 'role, sub_role, artist_id, artist_name'),
-    params,
-  );
-  const moods = db.getAllSync<{ song_pos: number; mood: string }>(select('moods', 'mood'), params);
+/** ONE query per array table, whatever the snapshot count — a per-song query would
+ *  be 5×N round trips on the restore path. `where` restricts the snapshots. */
+const arraySql = (table: string, cols: string, where: string): string =>
+  `SELECT snapshot_id, song_pos, ${cols} FROM queue_snapshot_song_${table} ` +
+  `WHERE ${where} ORDER BY snapshot_id, song_pos, pos;`;
 
-  const bucket = (pos: number): MutableArrays => {
-    const existing = out.get(pos);
-    if (existing !== undefined) return existing;
-    const fresh: MutableArrays = {};
-    out.set(pos, fresh);
-    return fresh;
+function arrayRowsSync(
+  db: InternalDb,
+  where: string,
+  params: readonly unknown[],
+): SnapshotArrayRows {
+  const q = <T>(table: string, cols: string): ArrayRow<T>[] =>
+    db.getAllSync<ArrayRow<T>>(arraySql(table, cols, where), params);
+  return {
+    genres: q<{ name: string }>('genres', 'name'),
+    artists: q<CreditCols>('artists', 'artist_id, artist_name'),
+    albumArtists: q<CreditCols>('album_artists', 'artist_id, artist_name'),
+    contributors: q<CreditCols & { role: string; sub_role: string | null }>(
+      'contributors',
+      'role, sub_role, artist_id, artist_name',
+    ),
+    moods: q<{ mood: string }>('moods', 'mood'),
   };
-  const credit = (r: CreditRow): { artistId: string | null; artistName: string | null } => ({
+}
+
+async function arrayRowsAsync(
+  db: InternalDb,
+  where: string,
+  params: readonly unknown[],
+): Promise<SnapshotArrayRows> {
+  const q = <T>(table: string, cols: string): Promise<ArrayRow<T>[]> =>
+    db.getAllAsync<ArrayRow<T>>(arraySql(table, cols, where), params);
+  const [genres, artists, albumArtists, contributors, moods] = await Promise.all([
+    q<{ name: string }>('genres', 'name'),
+    q<CreditCols>('artists', 'artist_id, artist_name'),
+    q<CreditCols>('album_artists', 'artist_id, artist_name'),
+    q<CreditCols & { role: string; sub_role: string | null }>(
+      'contributors',
+      'role, sub_role, artist_id, artist_name',
+    ),
+    q<{ mood: string }>('moods', 'mood'),
+  ]);
+  return { genres, artists, albumArtists, contributors, moods };
+}
+
+/** Group the flat array rows by snapshot, then by song position. */
+function groupArrays(rows: SnapshotArrayRows): Map<string, Map<number, ChildSnapshotArrays>> {
+  const out = new Map<string, Map<number, MutableArrays>>();
+  const bucket = (r: { snapshot_id: string; song_pos: number }): MutableArrays => {
+    let bySong = out.get(r.snapshot_id);
+    if (bySong === undefined) {
+      bySong = new Map<number, MutableArrays>();
+      out.set(r.snapshot_id, bySong);
+    }
+    let fields = bySong.get(r.song_pos);
+    if (fields === undefined) {
+      fields = {};
+      bySong.set(r.song_pos, fields);
+    }
+    return fields;
+  };
+  const credit = (r: CreditCols): { artistId: string | null; artistName: string | null } => ({
     artistId: r.artist_id,
     artistName: r.artist_name,
   });
-  for (const r of genres) (bucket(r.song_pos).genres ??= []).push(r.name);
-  for (const r of artists) (bucket(r.song_pos).artists ??= []).push(credit(r));
-  for (const r of albumArtists) (bucket(r.song_pos).albumArtists ??= []).push(credit(r));
-  for (const r of contributors) {
-    (bucket(r.song_pos).contributors ??= []).push({
-      role: r.role,
-      subRole: r.sub_role,
-      ...credit(r),
-    });
+  for (const r of rows.genres) (bucket(r).genres ??= []).push(r.name);
+  for (const r of rows.artists) (bucket(r).artists ??= []).push(credit(r));
+  for (const r of rows.albumArtists) (bucket(r).albumArtists ??= []).push(credit(r));
+  for (const r of rows.contributors) {
+    (bucket(r).contributors ??= []).push({ role: r.role, subRole: r.sub_role, ...credit(r) });
   }
-  for (const r of moods) (bucket(r.song_pos).moods ??= []).push(r.mood);
+  for (const r of rows.moods) (bucket(r).moods ??= []).push(r.mood);
   return out;
 }
 
 const NO_ARRAYS: ChildSnapshotArrays = {};
+const NO_SONG_ARRAYS = new Map<number, ChildSnapshotArrays>();
 
 /**
  * Read one snapshot with its full `Child[]`, SYNCHRONOUSLY — `restorePersistedQueue`
@@ -389,7 +422,9 @@ export function readSnapshotSync(snapshotId: string): QueueSnapshot | null {
       `SELECT ${SONG_SELECT} FROM queue_snapshot_songs WHERE snapshot_id = ? ORDER BY pos;`,
       [snapshotId],
     );
-    const arrays = loadSnapshotArrays(db, snapshotId);
+    const arrays =
+      groupArrays(arrayRowsSync(db, 'snapshot_id = ?', [snapshotId])).get(snapshotId) ??
+      NO_SONG_ARRAYS;
     const tracks = rows.map((raw) =>
       childFromSnapshotRow(
         rowToSnapshotRow(raw),
@@ -412,6 +447,51 @@ export async function listBookmarks(): Promise<QueueSnapshotMeta[]> {
       `SELECT ${META_SELECT} WHERE kind = 'bookmark' ORDER BY created_at DESC;`,
     );
     return rows.map(metaFromRow);
+  } catch {
+    return [];
+  }
+}
+
+/** Predicate selecting every bookmark's rows in the child tables, so the bulk read
+ *  needs no id list and no parameter-count ceiling. */
+const BOOKMARK_SNAPSHOTS = "snapshot_id IN (SELECT id FROM queue_snapshots WHERE kind = 'bookmark')";
+
+/**
+ * Every bookmark with its full `Child[]`, newest first — what `bookmarksStore`
+ * hydrates its in-memory map from. ASYNC and bulk: 7 queries for the whole set, not
+ * 7 per bookmark, and off the JS thread because nothing paints from it before boot
+ * completes (the live queue is the one that must read synchronously).
+ */
+export async function readBookmarkSnapshots(): Promise<QueueSnapshot[]> {
+  const db = getDb();
+  if (db === null) return [];
+  try {
+    const metas = await listBookmarks();
+    if (metas.length === 0) return [];
+    const [rows, arrayRows] = await Promise.all([
+      db.getAllAsync<Record<string, unknown>>(
+        `SELECT snapshot_id, ${SONG_SELECT} FROM queue_snapshot_songs ` +
+          `WHERE ${BOOKMARK_SNAPSHOTS} ORDER BY snapshot_id, pos;`,
+      ),
+      arrayRowsAsync(db, BOOKMARK_SNAPSHOTS, []),
+    ]);
+    const arrays = groupArrays(arrayRows);
+    const tracks = new Map<string, Child[]>();
+    for (const raw of rows) {
+      const snapshotId = String(raw.snapshot_id);
+      let list = tracks.get(snapshotId);
+      if (list === undefined) {
+        list = [];
+        tracks.set(snapshotId, list);
+      }
+      list.push(
+        childFromSnapshotRow(
+          rowToSnapshotRow(raw),
+          arrays.get(snapshotId)?.get(raw.pos as number) ?? NO_ARRAYS,
+        ),
+      );
+    }
+    return metas.map((meta) => ({ ...meta, tracks: tracks.get(meta.id) ?? [] }));
   } catch {
     return [];
   }
