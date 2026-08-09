@@ -172,50 +172,55 @@ function rowToSnapshotRow(raw: Record<string, unknown>): ChildSnapshotRow {
 /* ------------------------------------------------------------------ */
 
 /**
- * Create or update a snapshot's parent row. `INSERT … ON CONFLICT DO UPDATE`, NEVER
- * `INSERT OR REPLACE` — the latter is DELETE-then-INSERT and would cascade the whole
- * queue away (AGENTS.md §11).
+ * The parent-row write: `INSERT … ON CONFLICT DO UPDATE`, NEVER `INSERT OR REPLACE` —
+ * the latter is DELETE-then-INSERT and would cascade the whole queue away
+ * (AGENTS.md §11).
  *
- * `track_count` is owned by {@link replaceSnapshotTracks} and left alone on conflict,
- * so the count can never disagree with the rows that are actually stored.
+ * `track_count` is owned by the songs write ({@link snapshotTrackCommands}) and left
+ * alone on conflict, so the count can never disagree with the rows actually stored.
  */
+const SNAPSHOT_UPSERT_SQL =
+  `INSERT INTO queue_snapshots (id, kind, name, created_at, current_index, position_sec, track_count)
+     VALUES (?, ?, ?, ?, ?, ?, 0)
+     ON CONFLICT(id) DO UPDATE SET
+       kind = excluded.kind,
+       name = excluded.name,
+       created_at = excluded.created_at,
+       current_index = excluded.current_index,
+       position_sec = excluded.position_sec;`;
+
+const snapshotUpsertParams = (
+  meta: Omit<QueueSnapshotMeta, 'trackCount'>,
+): (string | number | null)[] => [
+  meta.id,
+  meta.kind,
+  meta.name,
+  meta.createdAt,
+  meta.currentIndex,
+  meta.positionSec,
+];
+
+/** Create or update a snapshot's parent row. See {@link SNAPSHOT_UPSERT_SQL}. */
 export async function upsertSnapshot(meta: Omit<QueueSnapshotMeta, 'trackCount'>): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    await db.runAsync(
-      `INSERT INTO queue_snapshots (id, kind, name, created_at, current_index, position_sec, track_count)
-         VALUES (?, ?, ?, ?, ?, ?, 0)
-         ON CONFLICT(id) DO UPDATE SET
-           kind = excluded.kind,
-           name = excluded.name,
-           created_at = excluded.created_at,
-           current_index = excluded.current_index,
-           position_sec = excluded.position_sec;`,
-      [meta.id, meta.kind, meta.name, meta.createdAt, meta.currentIndex, meta.positionSec],
-    );
+    await db.runAsync(SNAPSHOT_UPSERT_SQL, snapshotUpsertParams(meta));
   } catch {
     /* dropped */
   }
 }
 
 /**
- * Replace a snapshot's songs wholesale, as ONE atomic batch (`runAtomicBatchAsync` —
- * `runBatchAsync` is not atomic). The leading DELETE is what makes a rewrite with
- * FEWER tracks correct: `pos` is positional, so without it a shorter queue leaves
- * stale tail rows — and it cascades each removed song's five array rows with it.
+ * The statements that make a snapshot's songs exactly `tracks`. The leading DELETE is
+ * what makes a rewrite with FEWER tracks correct: `pos` is positional, so without it a
+ * shorter queue leaves stale tail rows — and it cascades each removed song's five array
+ * rows with it.
  *
  * Entries with no id are dropped: `childToTrack` cannot play them, and `song_id` is
  * NOT NULL so one would abort the whole batch.
- *
- * The parent row must already exist ({@link upsertSnapshot}); the songs FK to it.
  */
-export async function replaceSnapshotTracks(
-  snapshotId: string,
-  tracks: readonly Child[],
-): Promise<void> {
-  const db = getDb();
-  if (db === null) return;
+function snapshotTrackCommands(snapshotId: string, tracks: readonly Child[]): BatchCommand[] {
   const usable = tracks.filter((c) => !!c?.id);
   const commands: BatchCommand[] = [
     ['DELETE FROM queue_snapshot_songs WHERE snapshot_id = ?;', [snapshotId]],
@@ -234,6 +239,63 @@ export async function replaceSnapshotTracks(
     'UPDATE queue_snapshots SET track_count = ? WHERE id = ?;',
     [usable.length, snapshotId],
   ]);
+  return commands;
+}
+
+/**
+ * Replace a snapshot's songs wholesale, as ONE atomic batch (`runAtomicBatchAsync` —
+ * `runBatchAsync` is not atomic).
+ *
+ * The parent row must already exist ({@link upsertSnapshot}); the songs FK to it.
+ */
+export async function replaceSnapshotTracks(
+  snapshotId: string,
+  tracks: readonly Child[],
+): Promise<void> {
+  const db = getDb();
+  if (db === null) return;
+  try {
+    await db.runAtomicBatchAsync(snapshotTrackCommands(snapshotId, tracks));
+  } catch {
+    /* dropped */
+  }
+}
+
+/** A bookmark as {@link writeBookmarkSnapshots} takes it. `kind` and `track_count`
+ *  are the table's own, so they are not part of the input. */
+export interface BookmarkSnapshotInput {
+  id: string;
+  name: string | null;
+  createdAt: number;
+  currentIndex: number;
+  positionSec: number | null;
+  tracks: readonly Child[];
+}
+
+/**
+ * Write a SET of bookmarks — parent rows and songs — as ONE atomic batch, which is what
+ * a backup restore needs. `replaceExisting` puts a `DELETE … WHERE kind = 'bookmark'`
+ * at the head of that same batch, so replace-mode restore removes the old set before
+ * writing the file's and a statement failure part-way rolls the lot back to the old set
+ * rather than leaving a mix of both (`runBatchAsync` would not — AGENTS.md §11).
+ *
+ * The live queue's row is never touched: the DELETE is scoped to `kind = 'bookmark'`.
+ */
+export async function writeBookmarkSnapshots(
+  bookmarks: readonly BookmarkSnapshotInput[],
+  options: { replaceExisting: boolean },
+): Promise<void> {
+  const db = getDb();
+  if (db === null) return;
+  const commands: BatchCommand[] = [];
+  if (options.replaceExisting) {
+    commands.push(["DELETE FROM queue_snapshots WHERE kind = 'bookmark';", []]);
+  }
+  for (const { tracks, ...meta } of bookmarks) {
+    commands.push([SNAPSHOT_UPSERT_SQL, snapshotUpsertParams({ ...meta, kind: 'bookmark' })]);
+    commands.push(...snapshotTrackCommands(meta.id, tracks));
+  }
+  if (commands.length === 0) return;
   try {
     await db.runAtomicBatchAsync(commands);
   } catch {

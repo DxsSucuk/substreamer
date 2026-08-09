@@ -279,6 +279,9 @@ export async function createBackup(): Promise<void> {
     exclusionsMeta = await writeBackupDataset(exclusionsFileName(stem), exclusionsData, exclusionCount);
   }
 
+  // The store, not the repository: it holds the complete set whichever source it
+  // hydrates from, and `readBookmarkSnapshots` cannot tell "none" from "DB
+  // unavailable" — exporting an empty file over a real set is not recoverable.
   const bookmarks = bookmarksStore.getState().bookmarks;
   const bookmarkCount = Object.keys(bookmarks).length;
   if (bookmarkCount > 0) {
@@ -513,17 +516,10 @@ export async function restoreBackup(
       bookmarkCount = result.added;
       bookmarkSkipped = result.skipped;
     } else {
-      // Replace mode trusts the file wholesale, but a bookmark carries a nested
-      // Child[] queue the UI iterates — drop malformed entries so a corrupt or
-      // hand-edited backup can't crash the bookmarks list on render.
-      const valid: Record<string, PlayQueueBookmark> = {};
-      for (const [id, value] of Object.entries(data)) {
-        if (value && typeof value === 'object' && value.id && Array.isArray(value.queue)) {
-          valid[id] = value;
-        }
-      }
-      bookmarksStore.setState({ bookmarks: valid });
-      bookmarkCount = Object.keys(valid).length;
+      // Through the store's action, never `setState`: replace mode has to clear the
+      // existing snapshot rows and write the file's in their place, and the action
+      // owns both halves (plus dropping malformed entries).
+      bookmarkCount = bookmarksStore.getState().replaceBookmarks(data);
     }
   }
 

@@ -20,8 +20,9 @@ import { kvStorage } from './persistence';
 import {
   deleteSnapshot,
   readBookmarkSnapshots,
-  replaceSnapshotTracks,
   upsertSnapshot,
+  writeBookmarkSnapshots,
+  type BookmarkSnapshotInput,
   type QueueSnapshotMeta,
 } from './persistence/queueSnapshotTable';
 import { type Child } from '../services/subsonicService';
@@ -66,13 +67,17 @@ interface BookmarksState {
    * Merge incoming bookmarks into the existing set: union, existing-wins on id
    * collision (consistent with scrobbleExclusionStore/mbidOverrideStore). Used
    * by merge-mode backup restore. Returns counts.
-   *
-   * Memory + the KV blob, which is what the store still reads. D1.3 must route it
-   * through the repository as well, before D1.4 flips reads to SQL.
    */
   mergeBookmarks: (
     incoming: Record<string, PlayQueueBookmark>,
   ) => { added: number; skipped: number };
+  /**
+   * Replace the whole set with `incoming`, dropping malformed entries. Used by
+   * replace-mode backup restore; returns how many were kept. The repository is
+   * cleared and rewritten in one atomic batch, so the set is never a mix of the
+   * two.
+   */
+  replaceBookmarks: (incoming: Record<string, PlayQueueBookmark>) => number;
   /**
    * Replace the in-memory map from `queue_snapshots`. NOT wired into
    * `rehydrateAllStores` yet — D1.4 does that, after its migration has made the
@@ -83,8 +88,9 @@ interface BookmarksState {
 
 const PERSIST_KEY = 'substreamer-bookmarks';
 
-/** A bookmark's parent row. `kind` is what separates it from the live queue in the
- *  table the two share; `trackCount` belongs to `replaceSnapshotTracks`. */
+/** A bookmark's parent row alone — what a rename writes. `kind` is what separates it
+ *  from the live queue in the table the two share; `trackCount` belongs to the songs
+ *  write. */
 const snapshotMeta = (
   bookmark: PlayQueueBookmark,
 ): Omit<QueueSnapshotMeta, 'trackCount'> => ({
@@ -96,12 +102,21 @@ const snapshotMeta = (
   positionSec: bookmark.positionSec,
 });
 
-/** Parent row then songs, in that order — the songs FK to the parent. Each op
- *  swallows its own failures, so this never rejects. */
-async function writeBookmark(bookmark: PlayQueueBookmark): Promise<void> {
-  await upsertSnapshot(snapshotMeta(bookmark));
-  await replaceSnapshotTracks(bookmark.id, bookmark.queue);
-}
+/** A bookmark as the repository's parent-row-plus-songs write takes it. */
+const snapshotInput = (bookmark: PlayQueueBookmark): BookmarkSnapshotInput => ({
+  id: bookmark.id,
+  name: bookmark.name,
+  createdAt: bookmark.createdAt,
+  currentIndex: bookmark.currentIndex,
+  positionSec: bookmark.positionSec,
+  tracks: bookmark.queue,
+});
+
+/** Imported bookmarks are untrusted — a backup file can be corrupt or hand-edited,
+ *  and the UI iterates `queue`, so an entry without one is dropped rather than left
+ *  to crash the list on render. */
+const isValidBookmark = (value: PlayQueueBookmark): boolean =>
+  !!value && typeof value === 'object' && !!value.id && Array.isArray(value.queue);
 
 export const bookmarksStore = create<BookmarksState>()(
   persist(
@@ -114,7 +129,7 @@ export const bookmarksStore = create<BookmarksState>()(
         set((state) => ({
           bookmarks: { ...state.bookmarks, [bookmark.id]: bookmark },
         }));
-        void writeBookmark(bookmark);
+        void writeBookmarkSnapshots([snapshotInput(bookmark)], { replaceExisting: false });
       },
 
       removeBookmark: (id) => {
@@ -140,14 +155,33 @@ export const bookmarksStore = create<BookmarksState>()(
 
       mergeBookmarks: (incoming) => {
         const next = { ...get().bookmarks };
-        const { added, skipped } = mergeExistingWins(
-          next,
-          incoming,
-          (value) =>
-            !!value && typeof value === 'object' && !!value.id && Array.isArray(value.queue),
-        );
-        if (added > 0) set({ bookmarks: next });
+        const before = new Set(Object.keys(next));
+        const { added, skipped } = mergeExistingWins(next, incoming, isValidBookmark);
+        if (added > 0) {
+          set({ bookmarks: next });
+          // Only the ids the merge actually added: one that lost the collision kept
+          // the local entry, and rewriting it would replace its songs with the
+          // file's for no reason.
+          void writeBookmarkSnapshots(
+            Object.keys(next)
+              .filter((id) => !before.has(id))
+              .map((id) => snapshotInput(next[id])),
+            { replaceExisting: false },
+          );
+        }
         return { added, skipped };
+      },
+
+      replaceBookmarks: (incoming) => {
+        const bookmarks: Record<string, PlayQueueBookmark> = {};
+        for (const [id, value] of Object.entries(incoming)) {
+          if (isValidBookmark(value)) bookmarks[id] = value;
+        }
+        set({ bookmarks });
+        void writeBookmarkSnapshots(Object.values(bookmarks).map(snapshotInput), {
+          replaceExisting: true,
+        });
+        return Object.keys(bookmarks).length;
       },
 
       hydrateFromDbAsync: async () => {
