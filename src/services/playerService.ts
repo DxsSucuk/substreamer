@@ -33,6 +33,7 @@ import { syncProxyUpstreams } from './sslTrustService';
 import { getLocalTrackUri, waitForTrackMapsReady } from './musicCacheService';
 import {
   persistQueue,
+  persistCurrentIndex,
   persistPositionIfDue,
   flushPosition,
   clearPersistedQueue,
@@ -181,7 +182,8 @@ export async function initPlayer(): Promise<void> {
       const child = currentChildQueue.find((c) => c.id === track.id) ?? null;
       playerStore.getState().setCurrentTrack(child, index ?? null);
       if (child) sendNowPlaying(child, trackPlaylistMap.get(child.id));
-      if (index != null && index >= 0) persistQueue(currentChildQueue, index);
+      // The queue is unchanged here — only the cursor moved, so this is one UPDATE.
+      if (index != null && index >= 0) persistCurrentIndex(index);
     } else {
       playerStore.getState().setCurrentTrack(null, null);
     }

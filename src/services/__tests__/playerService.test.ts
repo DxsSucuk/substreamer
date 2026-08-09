@@ -96,12 +96,14 @@ jest.mock('../../store/offlineModeStore', () => ({
 jest.mock('../subsonicService');
 
 const mockPersistQueue = jest.fn();
+const mockPersistCurrentIndex = jest.fn();
 const mockClearPersistedQueue = jest.fn();
 const mockGetPersistedQueue = jest.fn().mockReturnValue(null);
 const mockGetPersistedPosition = jest.fn().mockReturnValue(null);
 
 jest.mock('../queuePersistenceService', () => ({
   persistQueue: (...args: unknown[]) => mockPersistQueue(...args),
+  persistCurrentIndex: (...args: unknown[]) => mockPersistCurrentIndex(...args),
   persistPositionIfDue: jest.fn(),
   flushPosition: jest.fn(),
   clearPersistedQueue: () => mockClearPersistedQueue(),

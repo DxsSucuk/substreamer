@@ -1,22 +1,33 @@
-// Queue blob: written through the ASYNC adapter, debounced (full-queue
-// stringify + write coalesced across rapid skips, IO off the JS thread).
-// Position blob: tiny + already throttled to 10s, so it stays on the sync
-// adapter. Init reads are synchronous (one-shot at player start).
-import { kvStorage, kvStorageSync } from '../store/persistence';
+// The LIVE player queue, persisted as the `SNAPSHOT_LIVE_ID` row pair.
+//
+// The write is SPLIT: a track change or a position tick moves the cursor with ONE
+// UPDATE on the parent row, and only a queue CHANGE rewrites the songs — debounced
+// so a burst of skips collapses into one write, forced out by
+// `flushPersistedQueue()` when the app backgrounds.
+//
+// `liveQueue`/`liveIndex`/`livePosition` are the in-memory truth every writer reads;
+// the first read of the session seeds them from the stored row. The stored position
+// always belongs to the track under the cursor, because moving the cursor onto a
+// different track zeroes it.
+import {
+  deleteSnapshot,
+  readSnapshotSync,
+  replaceSnapshotTracks,
+  updateSnapshotIndex,
+  upsertSnapshot,
+  SNAPSHOT_LIVE_ID,
+} from '../store/persistence/queueSnapshotTable';
 import { type Child } from './subsonicService';
 
-const QUEUE_KEY = 'substreamer-persisted-queue';
-const POSITION_KEY = 'substreamer-persisted-position';
 export const PERSIST_INTERVAL_MS = 10_000;
 
 /**
- * Debounce window for queue writes. The queue is serialized in full on every
- * track change/skip; without coalescing, rapid skips would stringify + write
- * the entire (potentially thousands-of-tracks) queue many times on the JS
- * thread. A short trailing debounce collapses a burst to one write, and the
- * write itself runs off-thread via the async adapter. The on-disk copy only
- * needs to be current for crash/relaunch restore, so a ~1.5s lag is fine —
- * `flushPersistedQueue()` forces it out on backgrounding.
+ * Debounce window for queue-CHANGE writes. A queue change rewrites every song row,
+ * so a short trailing debounce collapses a burst (rapid skips that also add or prune
+ * tracks, a batch of queue edits) into one batch, off the JS thread. The stored copy
+ * only needs to be current for crash/relaunch restore, so a ~1.5s lag is fine —
+ * `flushPersistedQueue()` forces it out on backgrounding. Track changes do NOT wait
+ * on this: they are one UPDATE and go out immediately.
  */
 const QUEUE_DEBOUNCE_MS = 1500;
 
@@ -30,10 +41,51 @@ interface PersistedPosition {
   trackId: string;
 }
 
-let lastPositionPersistTime = 0;
+/* ------------------------------------------------------------------ */
+/*  In-memory truth                                                    */
+/* ------------------------------------------------------------------ */
 
+let liveQueue: Child[] = [];
+let liveIndex = 0;
+let livePosition = 0;
+let livePositionTrackId: string | null = null;
+/** True once memory is authoritative — after the first read or any write. */
+let liveLoaded = false;
+/** True while a queue change is waiting on the debounce, i.e. the song rows are
+ *  stale. The cursor writers defer to the pending flush rather than racing it. */
+let queueDirty = false;
+
+let lastPositionPersistTime = 0;
 let queueTimer: ReturnType<typeof setTimeout> | null = null;
-let pendingQueue: PersistedQueue | null = null;
+
+/** Seed memory from the stored row, once per process — the cold-start restore. */
+function ensureLoaded(): void {
+  if (liveLoaded) return;
+  liveLoaded = true;
+  const snapshot = readSnapshotSync(SNAPSHOT_LIVE_ID);
+  if (snapshot === null || snapshot.tracks.length === 0) return;
+  liveQueue = snapshot.tracks;
+  liveIndex = Math.min(Math.max(0, snapshot.currentIndex), snapshot.tracks.length - 1);
+  livePosition = snapshot.positionSec ?? 0;
+  livePositionTrackId = liveQueue[liveIndex]?.id ?? null;
+}
+
+/**
+ * Move the cursor in memory. The stored position is an offset INTO the track under
+ * the cursor, so landing on a different track voids it — that is what the separate
+ * position blob's `trackId` guard used to do at read time.
+ */
+function setCursor(queue: Child[], index: number): void {
+  const previousTrackId = liveQueue[liveIndex]?.id;
+  liveLoaded = true;
+  liveQueue = queue;
+  liveIndex = index;
+  const nextTrackId = queue[index]?.id;
+  if (nextTrackId !== previousTrackId) {
+    livePosition = 0;
+    livePositionTrackId = nextTrackId ?? null;
+  }
+}
 
 function clearQueueTimer(): void {
   if (queueTimer !== null) {
@@ -42,28 +94,53 @@ function clearQueueTimer(): void {
   }
 }
 
+/** Write the parent row then the songs — the songs FK to the parent, so the upsert
+ *  has to land first. Each op swallows its own failures. */
 function flushQueueWrite(): void {
   clearQueueTimer();
-  if (pendingQueue === null) return;
-  const data = pendingQueue;
-  pendingQueue = null;
-  // Stringify ONCE here (deferred from persistQueue), write off the JS thread.
-  void kvStorage.setItem(QUEUE_KEY, JSON.stringify(data));
+  if (!queueDirty) return;
+  queueDirty = false;
+  const tracks = liveQueue;
+  const meta = {
+    id: SNAPSHOT_LIVE_ID,
+    kind: 'live' as const,
+    name: null,
+    createdAt: Date.now(),
+    currentIndex: liveIndex,
+    positionSec: livePosition,
+  };
+  void (async () => {
+    await upsertSnapshot(meta);
+    await replaceSnapshotTracks(SNAPSHOT_LIVE_ID, tracks);
+  })();
 }
 
-export function persistQueue(
-  queue: Child[],
-  currentTrackIndex: number,
-): void {
-  // Hold the latest snapshot in memory; (re)arm the debounce. Readers see it
-  // immediately via getPersistedQueue (pending-first), so the delayed disk
-  // write is transparent.
-  pendingQueue = { queue, currentTrackIndex };
+/* ------------------------------------------------------------------ */
+/*  Writes                                                             */
+/* ------------------------------------------------------------------ */
+
+/** Record a queue CHANGE — tracks added, removed, reordered or replaced. Rewrites
+ *  every song row, so it is debounced; readers see the new queue immediately. */
+export function persistQueue(queue: Child[], currentTrackIndex: number): void {
+  setCursor(queue, currentTrackIndex);
+  queueDirty = true;
   clearQueueTimer();
   queueTimer = setTimeout(flushQueueWrite, QUEUE_DEBOUNCE_MS);
 }
 
-/** Force the pending queue snapshot to disk now (e.g. on app background). */
+/**
+ * Record a track change: ONE UPDATE on the parent row, the songs untouched. This is
+ * the hot path — it used to rewrite the whole queue. When a queue change is still
+ * inside its debounce window the pending flush carries the new cursor instead, so
+ * the cursor can never land on rows that have not been written yet.
+ */
+export function persistCurrentIndex(currentTrackIndex: number): void {
+  setCursor(liveQueue, currentTrackIndex);
+  if (queueDirty) return;
+  void updateSnapshotIndex(SNAPSHOT_LIVE_ID, liveIndex, livePosition);
+}
+
+/** Force the pending queue change out now (e.g. on app background). */
 export function flushPersistedQueue(): void {
   flushQueueWrite();
 }
@@ -78,6 +155,14 @@ function clampPersistedPosition(position: number, duration?: number): number {
   return duration != null && duration > 0 ? Math.min(floored, duration) : floored;
 }
 
+function setPosition(position: number, trackId: string, duration?: number): void {
+  liveLoaded = true;
+  livePosition = clampPersistedPosition(position, duration);
+  livePositionTrackId = trackId;
+}
+
+/** Store the resume position at most once per {@link PERSIST_INTERVAL_MS}. Returns
+ *  whether it wrote. Folded into the parent row, alongside the cursor it belongs to. */
 export function persistPositionIfDue(
   position: number,
   trackId: string,
@@ -86,55 +171,54 @@ export function persistPositionIfDue(
   const now = Date.now();
   if (now - lastPositionPersistTime < PERSIST_INTERVAL_MS) return false;
   lastPositionPersistTime = now;
-  kvStorageSync.setItem(
-    POSITION_KEY,
-    JSON.stringify({ position: clampPersistedPosition(position, duration), trackId } as PersistedPosition),
-  );
+  setPosition(position, trackId, duration);
+  // A queue change inside its debounce window carries the position out with it.
+  if (!queueDirty) void updateSnapshotIndex(SNAPSHOT_LIVE_ID, liveIndex, livePosition);
   return true;
 }
 
+/** Store the resume position now, ignoring the throttle. */
 export function flushPosition(position: number, trackId: string, duration?: number): void {
   lastPositionPersistTime = Date.now();
-  kvStorageSync.setItem(
-    POSITION_KEY,
-    JSON.stringify({ position: clampPersistedPosition(position, duration), trackId } as PersistedPosition),
-  );
+  setPosition(position, trackId, duration);
+  // "Flush" means now: a pending queue change goes out with it, not after it.
+  if (queueDirty) flushQueueWrite();
+  else void updateSnapshotIndex(SNAPSHOT_LIVE_ID, liveIndex, livePosition);
 }
 
 export function clearPersistedQueue(): void {
   // Cancel any pending queue write so it can't land after the removal.
   clearQueueTimer();
-  pendingQueue = null;
-  void kvStorage.removeItem(QUEUE_KEY);
-  kvStorageSync.removeItem(POSITION_KEY);
+  queueDirty = false;
+  liveLoaded = true;
+  liveQueue = [];
+  liveIndex = 0;
+  livePosition = 0;
+  livePositionTrackId = null;
   lastPositionPersistTime = 0;
+  void deleteSnapshot(SNAPSHOT_LIVE_ID);
 }
 
+/* ------------------------------------------------------------------ */
+/*  Reads                                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The queue to restore, SYNCHRONOUSLY — `restorePersistedQueue` seeds the store on
+ * the JS thread so the mini player paints immediately. The `Child` objects are whole:
+ * a restored queue becomes the scrobble write path's source.
+ */
 export function getPersistedQueue(): PersistedQueue | null {
-  // Prefer the in-memory pending snapshot (freshest); fall back to disk. At
-  // player init no write has happened this session, so this reads disk.
-  if (pendingQueue !== null) {
-    return pendingQueue.queue.length === 0 ? null : pendingQueue;
-  }
-  const raw = kvStorageSync.getItem(QUEUE_KEY) as string | null;
-  if (!raw) return null;
-  try {
-    const data = JSON.parse(raw) as PersistedQueue;
-    if (!Array.isArray(data.queue) || data.queue.length === 0) return null;
-    return data;
-  } catch {
-    return null;
-  }
+  ensureLoaded();
+  if (liveQueue.length === 0) return null;
+  return { queue: liveQueue, currentTrackIndex: liveIndex };
 }
 
+/** The resume position and the track it was measured on. */
 export function getPersistedPosition(): PersistedPosition | null {
-  const raw = kvStorageSync.getItem(POSITION_KEY) as string | null;
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as PersistedPosition;
-  } catch {
-    return null;
-  }
+  ensureLoaded();
+  if (livePositionTrackId === null) return null;
+  return { position: livePosition, trackId: livePositionTrackId };
 }
 
 export function resetPersistTimer(): void {

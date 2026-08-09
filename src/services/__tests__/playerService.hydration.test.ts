@@ -124,6 +124,7 @@ const mockGetPersistedQueue = jest.fn().mockReturnValue(null);
 const mockGetPersistedPosition = jest.fn().mockReturnValue(null);
 jest.mock('../queuePersistenceService', () => ({
   persistQueue: jest.fn(),
+  persistCurrentIndex: jest.fn(),
   persistPositionIfDue: jest.fn(),
   flushPosition: jest.fn(),
   clearPersistedQueue: jest.fn(),
