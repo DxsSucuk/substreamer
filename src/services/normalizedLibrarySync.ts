@@ -68,15 +68,41 @@ const BASIC_PAGE = 500; // getAlbumList2 spec cap
 const PROGRESS_EVERY = 5;
 /** Concurrent per-album `getAlbum` fetches during the basic-server song walk. */
 const WALK_CONCURRENCY = 4;
-/** How many times an empty song page must REPEAT before it counts as the end of the
- *  library. A 200 with no `searchResult3` (mid-rescan, proxied, rate limited) is
+/** How many times an empty page must REPEAT before it counts as the end of the library.
+ *  A 200 with no `albumList2`/`searchResult3` (mid-rescan, proxied, rate limited) is
  *  indistinguishable from exhaustion, and believing one ends the walk over a partial
  *  library. Real transport/Subsonic failures throw instead, and never get here. */
 const EMPTY_PAGE_RETRIES = 3;
 /** Backoff base between corroboration attempts (200ms, 400ms, 800ms). Short on purpose:
  *  each attempt also costs a round trip, and an exhausted library pays the whole ladder
- *  once per walk. */
+ *  once per paged phase. */
 const EMPTY_PAGE_RETRY_MS = 200;
+
+/**
+ * Consecutive-empty-page counter + backoff for one paged walk, shared by the album and
+ * the song phase. `shouldRetry` answers "this empty page is still unproven, ask again"
+ * and waits out the backoff before saying so; `reset` is called on any page with rows.
+ *
+ * It deliberately does NOT own the exit: the song loop returns 'done'/'bailed' where the
+ * album loop returns or breaks, and a common return type would fit neither.
+ */
+function createEmptyPageCorroborator(): {
+  shouldRetry: () => Promise<boolean>;
+  reset: () => void;
+} {
+  let empties = 0;
+  return {
+    async shouldRetry(): Promise<boolean> {
+      empties += 1;
+      if (empties > EMPTY_PAGE_RETRIES) return false;
+      await new Promise<void>((r) => setTimeout(r, EMPTY_PAGE_RETRY_MS * 2 ** (empties - 1)));
+      return true;
+    },
+    reset(): void {
+      empties = 0;
+    },
+  };
+}
 
 const nowMs = (): number => {
   const p = (globalThis as { performance?: { now?: () => number } }).performance;
@@ -211,8 +237,7 @@ async function runSearch3SongPhase(
   // downstream can see the damage.
   let firstPage = true;
   let songPage = 0;
-  /** Consecutive empty answers at the current offset — see EMPTY_PAGE_RETRIES. */
-  let emptyPages = 0;
+  const corroborate = createEmptyPageCorroborator();
   for (;;) {
     if (genChanged()) return 'bailed';
     if (isOffline()) {
@@ -227,16 +252,14 @@ async function runSearch3SongPhase(
     // throwing, and treating that as the end marks a truncated library complete.
     if (page.length === 0) {
       if (getApi() === null) return 'bailed';
-      emptyPages += 1;
       // One empty page is not proof. Ask again, with backoff, and only believe the end of
       // the library when the answer repeats: believing a single hiccup costs the user
       // every song after this offset, permanently, under a `complete` flag.
-      if (emptyPages > EMPTY_PAGE_RETRIES) return 'done';
       // eslint-disable-next-line no-await-in-loop
-      await new Promise<void>((r) => setTimeout(r, EMPTY_PAGE_RETRY_MS * 2 ** (emptyPages - 1)));
-      continue;
+      if (await corroborate.shouldRetry()) continue;
+      return 'done';
     }
-    emptyPages = 0;
+    corroborate.reset();
     if (firstPage) {
       firstPage = false;
       const missing = page.filter((s) => !s.albumId).length;
@@ -541,6 +564,7 @@ async function doNormalizedSync(
     let albumOffset = syncStatusStore.getState().librarySyncCursor;
     let useBasic = strat === 'basic';
     let prevFirstId: string | null = null;
+    const corroborate = createEmptyPageCorroborator();
     for (;;) {
       if (genChanged()) return;
       if (isOffline()) {
@@ -556,8 +580,14 @@ async function doNormalizedSync(
         // [] without throwing when there is none (mid-logout, pre-auth-restore), and
         // marking the library complete off that leaves it permanently truncated.
         if (getApi() === null) return;
+        // And only once the answer repeats: a well-formed 200 with no albums (mid-rescan,
+        // proxied, rate limited) reads exactly like exhaustion, and believing one latches
+        // a truncated album library 'complete'.
+        // eslint-disable-next-line no-await-in-loop
+        if (await corroborate.shouldRetry()) continue;
         break;
       }
+      corroborate.reset();
       // Ignore-offset guard: a server that ignores `albumOffset` returns the same
       // first page forever. Detect via an unchanged first id and switch to basic.
       if (!useBasic && albumOffset > 0 && page[0]?.id === prevFirstId) {

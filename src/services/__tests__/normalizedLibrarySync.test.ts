@@ -220,6 +220,82 @@ describe('an empty song page must be corroborated', () => {
   });
 });
 
+describe('an empty album page must be corroborated', () => {
+  /** Serve the album list two at a time, so a page can go missing part-way through it. */
+  const pagedAlbums = (count: number, offset: number) =>
+    Promise.resolve(mockAlbumsData.slice(offset, Math.min(offset + count, offset + 2)));
+
+  it('retries an empty page mid-enumeration instead of ending the album phase there', async () => {
+    let asksAtTwo = 0;
+    mockSearchAlbumsPage.mockImplementation((count: number, offset: number) => {
+      // One hiccup at offset 2. Believing it latched a truncated album library
+      // 'complete' — and the song phase only ever walks the albums it left behind.
+      if (offset === 2 && (asksAtTwo += 1) === 1) return Promise.resolve([]);
+      return pagedAlbums(count, offset);
+    });
+
+    await runNormalizedLibrarySync({ full: true });
+
+    expect(asksAtTwo).toBeGreaterThan(1); // it asked again rather than believing the []
+    expect(await countAlbums(db())).toBe(5);
+    expect(await countSongs(db())).toBe(10);
+    expect(syncStatusStore.getState().librarySyncComplete).toBe(true);
+    // The budget is CONSECUTIVE empties: the hiccup at offset 2 must not eat the
+    // corroboration the real end of the list gets.
+    expect(mockSearchAlbumsPage.mock.calls.filter(([, offset]) => offset === 5)).toHaveLength(4);
+  });
+
+  it('still terminates on a genuinely exhausted album list, with bounded retries', async () => {
+    mockSearchAlbumsPage.mockImplementation(pagedAlbums);
+
+    await runNormalizedLibrarySync({ full: true });
+
+    const asksPastTheEnd = mockSearchAlbumsPage.mock.calls.filter(([, offset]) => offset === 5);
+    expect(asksPastTheEnd.length).toBeGreaterThan(1); // corroborated
+    expect(asksPastTheEnd.length).toBeLessThanOrEqual(4); // and bounded
+    expect(syncStatusStore.getState().librarySyncComplete).toBe(true);
+    expect(await countAlbums(db())).toBe(5);
+  });
+
+  it('waits out the backoff between corroboration attempts', async () => {
+    const asks: number[] = [];
+    mockSearchAlbumsPage.mockImplementation((count: number, offset: number) => {
+      if (offset >= 5) {
+        asks.push(Date.now());
+        return Promise.resolve([]);
+      }
+      return pagedAlbums(count, offset);
+    });
+
+    await runNormalizedLibrarySync({ full: true });
+
+    // 200ms, 400ms, 800ms. Corroborating in a tight loop would just re-ask a rate-limiting
+    // server three more times inside the same window and get the same empty answer.
+    expect(asks).toHaveLength(4);
+    const gaps = asks.slice(1).map((t, i) => t - asks[i]);
+    expect(gaps[0]).toBeGreaterThanOrEqual(150);
+    expect(gaps[1]).toBeGreaterThanOrEqual(300);
+    expect(gaps[2]).toBeGreaterThanOrEqual(600);
+  });
+
+  it('returns without marking the library complete when the API vanishes mid-walk', async () => {
+    mockSearchAlbumsPage.mockImplementation((count: number, offset: number) => {
+      if (offset >= 2) {
+        mockApi = null; // logout / auth restore mid-walk: every page fn now resolves []
+        return Promise.resolve([]);
+      }
+      return pagedAlbums(count, offset);
+    });
+
+    await runNormalizedLibrarySync({ full: true });
+
+    expect(syncStatusStore.getState().librarySyncComplete).toBe(false);
+    expect(await countAlbums(db())).toBe(2);
+    // Nothing to corroborate with no API to ask — it must bail, not sit out the ladder.
+    expect(mockSearchAlbumsPage.mock.calls.filter(([, offset]) => offset === 2)).toHaveLength(1);
+  });
+});
+
 describe('song-gap repair', () => {
   it('costs one indexed probe and no per-album request when the library is healthy', async () => {
     const getAll = jest.spyOn(db(), 'getAllAsync');
