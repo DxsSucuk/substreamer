@@ -115,6 +115,11 @@ export interface SyncStatusState extends LastKnownMarkers {
    *  forever. Cleared by `resetSongSync` — the full-resync hatch is when it is worth
    *  asking again. */
   songGapRepairAttempted: boolean;
+  /** Albums the server answered "not found" (Subsonic error 70) for during the
+   *  per-album walk. They have no songs, so the incremental walk targets exactly
+   *  them — without this it re-asks every sync and gets the same answer forever.
+   *  Cleared by `resetSongSync`, the same full-resync hatch as the verdict above. */
+  notFoundAlbumIds: string[];
   /** EPHEMERAL — the fetch loop finished and the in-memory index is rebuilding
    *  (`rebuildFromDb`), which can take seconds. Drives a "Finalizing…" label so the
    *  100%-then-spinner window doesn't read as stuck. Not persisted. */
@@ -173,6 +178,8 @@ export interface SyncStatusState extends LastKnownMarkers {
   /** Record that the per-album gap repair ran and the remaining albums came back
    *  track-less — see {@link SyncStatusState.songGapRepairAttempted}. */
   markSongGapRepairAttempted: () => void;
+  /** Record albums the server said are gone — see {@link SyncStatusState.notFoundAlbumIds}. */
+  recordNotFoundAlbums: (ids: readonly string[]) => void;
   resetSongSync: () => void;
   /** Update the ephemeral blob→normalized migration progress (banner/card). */
   setNormalizedMigration: (phase: 'idle' | 'migrating', done: number, total: number) => void;
@@ -189,6 +196,11 @@ export interface SyncStatusState extends LastKnownMarkers {
 }
 
 const PERSIST_KEY = 'substreamer-sync-status';
+
+/** Ceiling on `notFoundAlbumIds`. Normally a handful, but a server repointed at a
+ *  different library answers 70 for everything, and the list is persisted whole on
+ *  every sync. Past the cap the extras are simply re-asked each walk. */
+const NOT_FOUND_ALBUM_CAP = 2000;
 
 export const syncStatusStore = create<SyncStatusState>()(
   persist(
@@ -214,6 +226,7 @@ export const syncStatusStore = create<SyncStatusState>()(
       fullWalkPending: false,
       songSyncComplete: false,
       songGapRepairAttempted: false,
+      notFoundAlbumIds: [],
       songSyncFinalizing: false,
 
       normalizedMigrationPhase: 'idle',
@@ -304,6 +317,11 @@ export const syncStatusStore = create<SyncStatusState>()(
           fullSyncCompletedAt: s.librarySyncComplete ? Date.now() : s.fullSyncCompletedAt,
         })),
       markSongGapRepairAttempted: () => set({ songGapRepairAttempted: true }),
+      recordNotFoundAlbums: (ids) => {
+        if (ids.length === 0) return;
+        const merged = new Set([...get().notFoundAlbumIds, ...ids]);
+        set({ notFoundAlbumIds: [...merged].slice(0, NOT_FOUND_ALBUM_CAP) });
+      },
       resetSongSync: () =>
         set({
           songSyncStrategy: null,
@@ -311,6 +329,7 @@ export const syncStatusStore = create<SyncStatusState>()(
           // The full resync is the "start over" hatch — ask the server about the empty
           // albums again rather than carrying a stale verdict across it.
           songGapRepairAttempted: false,
+          notFoundAlbumIds: [],
           // The full resync wants every album's songs
           // re-fetched, not just the ones missing them. Persisted with the cursor
           // in this same write so an interrupted run resumes as a full walk.
@@ -370,6 +389,7 @@ export const syncStatusStore = create<SyncStatusState>()(
         playlistLibraryLastFetchedAt: state.playlistLibraryLastFetchedAt,
         songSyncComplete: state.songSyncComplete,
         songGapRepairAttempted: state.songGapRepairAttempted,
+        notFoundAlbumIds: state.notFoundAlbumIds,
         fullSyncCompletedAt: state.fullSyncCompletedAt,
         lastChangeDetectionAt: state.lastChangeDetectionAt,
         lastKnownServerSongCount: state.lastKnownServerSongCount,

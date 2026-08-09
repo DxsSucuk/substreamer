@@ -37,18 +37,21 @@ const mockSearchAlbumsPage = jest.fn((count: number, offset: number) =>
 const mockSearchSongsPage = jest.fn((count: number, offset: number) =>
   Promise.resolve(mockSongsData.slice(offset, offset + count)),
 );
-const mockGetAlbum = jest.fn((id: string) =>
-  Promise.resolve({
+/** `getAlbumResult` envelope for an album the server served. */
+const mockAlbumOk = (id: string, song?: unknown[]) => ({
+  status: 'ok',
+  album: {
     ...mockAlbumsData.find((a) => a.id === id),
-    song: mockSongsData.filter((s) => (s as { albumId?: string }).albumId === id),
-  } as unknown),
-);
+    song: song ?? mockSongsData.filter((s) => (s as { albumId?: string }).albumId === id),
+  },
+});
+const mockGetAlbum = jest.fn((id: string) => Promise.resolve(mockAlbumOk(id) as unknown));
 jest.mock('../subsonicService', () => ({
   probeEmptySearch3: () => Promise.resolve(true),
   searchAlbumsPage: (count: number, offset: number) => mockSearchAlbumsPage(count, offset),
   getAlbumsPageByName: (size: number, offset: number) => Promise.resolve(mockAlbumsData.slice(offset, offset + size)),
   searchSongsPage: (count: number, offset: number) => mockSearchSongsPage(count, offset),
-  getAlbum: (id: string) => mockGetAlbum(id),
+  getAlbumResult: (id: string) => mockGetAlbum(id),
   // An empty page only means "end of library" when there was an API to ask; the loops
   // consult this to tell that apart from "no usable API, so everything resolves []".
   getApi: () => mockApi,
@@ -96,12 +99,7 @@ beforeEach(() => {
     Promise.resolve(mockSongsData.slice(offset, offset + count)),
   );
   mockGetAlbum.mockReset();
-  mockGetAlbum.mockImplementation((id: string) =>
-    Promise.resolve({
-      ...mockAlbumsData.find((a) => a.id === id),
-      song: mockSongsData.filter((s) => (s as { albumId?: string }).albumId === id),
-    } as unknown),
-  );
+  mockGetAlbum.mockImplementation((id: string) => Promise.resolve(mockAlbumOk(id) as unknown));
   db().runSync('DELETE FROM playlists');
   db().runSync('DELETE FROM songs');
   db().runSync('DELETE FROM albums');
@@ -257,7 +255,8 @@ describe('song-gap repair', () => {
 
   it('does not mark the song sync complete when the repair could not run', async () => {
     serveSongs(6);
-    mockGetAlbum.mockImplementation(() => Promise.resolve(null)); // every repair fetch fails
+    // every repair fetch fails at the transport
+    mockGetAlbum.mockImplementation(() => Promise.resolve({ status: 'failed' } as unknown));
 
     await runNormalizedLibrarySync({ full: true });
 
@@ -269,9 +268,7 @@ describe('song-gap repair', () => {
 
   it('stops re-triggering once the server says the gapped albums have no tracks', async () => {
     serveSongs(6);
-    mockGetAlbum.mockImplementation((id: string) =>
-      Promise.resolve({ ...mockAlbumsData.find((a) => a.id === id), song: [] } as unknown),
-    );
+    mockGetAlbum.mockImplementation((id: string) => Promise.resolve(mockAlbumOk(id, []) as unknown));
 
     await runNormalizedLibrarySync({ full: true });
 
@@ -312,18 +309,20 @@ describe('the per-album walk', () => {
     expect(mockGetAlbum).toHaveBeenCalled();
   });
 
+  /** The persisted strategy is what routes the run; on a basic server the probe has
+   *  already stored 'basic' and the sync resumes on the walk. */
+  const onBasicServer = () => syncStatusStore.setState({ syncStrategy: 'basic' });
+
   it('does not count an album the server returned no songs for as walked', async () => {
     mockGetAlbum.mockImplementation((id: string) => {
-      if (id === 'al4') return Promise.resolve(null); // fetch failed → the walk bails
-      const album = mockAlbumsData.find((a) => a.id === id);
+      // A transport failure, or any Subsonic code other than 70 (40 wrong credentials,
+      // 30 incompatible version) — all of which must keep bailing.
+      if (id === 'al4') return Promise.resolve({ status: 'failed' } as unknown);
       // al3 exists on the server but has no tracks at all.
-      const song = id === 'al3' ? [] : mockSongsData.filter((s) => (s as { albumId?: string }).albumId === id);
-      return Promise.resolve({ ...album, song } as unknown);
+      return Promise.resolve(mockAlbumOk(id, id === 'al3' ? [] : undefined) as unknown);
     });
 
-    // The persisted strategy is what routes the run; on a basic server the probe has
-    // already stored 'basic' and the sync resumes on the walk.
-    syncStatusStore.setState({ syncStrategy: 'basic' });
+    onBasicServer();
 
     await runNormalizedLibrarySync({ full: true });
 
@@ -335,6 +334,51 @@ describe('the per-album walk', () => {
     // or the progress bar reads 100% over a library that still has holes in it.
     expect(syncStatusStore.getState().detailSyncCompleted).toBe(3);
     expect(syncStatusStore.getState().songSyncComplete).toBe(false);
+    // A failed fetch is not a verdict about the album — nothing is recorded, so the
+    // next run asks again.
+    expect(syncStatusStore.getState().notFoundAlbumIds).toEqual([]);
+  });
+
+  it('completes the run when the server says an album is gone', async () => {
+    // Subsonic error 70. Before this, one album the server had deleted bailed the whole
+    // walk, and `fullWalkPending` (cleared only on completion) made every later sync
+    // re-walk the entire library and bail on the same album.
+    mockGetAlbum.mockImplementation((id: string) =>
+      Promise.resolve((id === 'al4' ? { status: 'not-found' } : mockAlbumOk(id)) as unknown),
+    );
+    onBasicServer();
+
+    await runNormalizedLibrarySync({ full: true });
+
+    expect(syncStatusStore.getState().songSyncStrategy).toBe('basic');
+    expect(syncStatusStore.getState().songSyncComplete).toBe(true);
+    expect(syncStatusStore.getState().fullWalkPending).toBe(false);
+    // The other four albums' songs all landed; only the deleted album's are missing.
+    expect(await countSongs(db())).toBe(8);
+    expect(syncStatusStore.getState().notFoundAlbumIds).toEqual(['al4']);
+  });
+
+  it('stops asking about an album the server has already said is gone', async () => {
+    mockGetAlbum.mockImplementation((id: string) => {
+      if (id === 'al4') return Promise.resolve({ status: 'not-found' } as unknown);
+      return Promise.resolve(mockAlbumOk(id, id === 'al3' ? [] : undefined) as unknown);
+    });
+    onBasicServer();
+
+    await runNormalizedLibrarySync({ full: true });
+
+    mockGetAlbum.mockClear();
+    await runNormalizedLibrarySync();
+
+    // al3 is still track-less on the server so the walk re-asks about it; al4 is not
+    // re-asked, or a deleted album costs a request on every sync forever.
+    expect(mockGetAlbum.mock.calls.map(([id]) => id)).toEqual(['al3']);
+  });
+
+  it('asks about a gone album again after the user forces a full resync', async () => {
+    syncStatusStore.setState({ notFoundAlbumIds: ['al4'] });
+    syncStatusStore.getState().resetSongSync();
+    expect(syncStatusStore.getState().notFoundAlbumIds).toEqual([]);
   });
 });
 

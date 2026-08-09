@@ -384,15 +384,49 @@ export async function getRandomAlbums(size?: number): Promise<AlbumID3[]> {
   return response.albumList2?.album ?? [];
 }
 
-export async function getAlbum(albumId: string): Promise<AlbumWithSongsID3 | null> {
+/** Subsonic error code 70 — "the requested data was not found". */
+const SUBSONIC_ERROR_NOT_FOUND = 70;
+
+/** The Subsonic error code carried by a protocol-level failure envelope, or null
+ *  when the response is not a failure. See {@link throwIfSubsonicFailure}. */
+function subsonicErrorCode(
+  response: { status?: string; error?: { code?: number } },
+): number | null {
+  if (response.status !== 'failed' && response.status !== 'fail') return null;
+  return response.error?.code ?? null;
+}
+
+/**
+ * Outcome of an album fetch, keeping the distinction {@link getAlbum} flattens.
+ * `not-found` is the server's own verdict that the album is gone (HTTP 200 with
+ * `status: 'failed'` and error code 70). Every other failure is `failed` — a
+ * transport throw, a malformed 200, and every other Subsonic code, because code
+ * 40 (wrong credentials) and 30 (incompatible version) share the same envelope
+ * and must never be read as "this album is gone".
+ */
+export type AlbumFetchResult =
+  | { status: 'ok'; album: AlbumWithSongsID3 }
+  | { status: 'not-found' }
+  | { status: 'failed' };
+
+export async function getAlbumResult(albumId: string): Promise<AlbumFetchResult> {
   const api = getApi();
-  if (!api) return null;
+  if (!api) return { status: 'failed' };
   try {
     const response = await api.getAlbum({ id: albumId });
-    return response.album ?? null;
+    if (response.album != null) return { status: 'ok', album: response.album };
+    if (subsonicErrorCode(response) === SUBSONIC_ERROR_NOT_FOUND) return { status: 'not-found' };
+    return { status: 'failed' };
   } catch {
-    return null;
+    return { status: 'failed' };
   }
+}
+
+/** Album detail, or `null` for every failure. Callers that must tell "the server
+ *  deleted it" from "the fetch failed" use {@link getAlbumResult}. */
+export async function getAlbum(albumId: string): Promise<AlbumWithSongsID3 | null> {
+  const result = await getAlbumResult(albumId);
+  return result.status === 'ok' ? result.album : null;
 }
 
 export async function getAlbumInfo2(albumId: string): Promise<AlbumInfo | null> {

@@ -51,7 +51,7 @@ import { syncCachedItemTracks } from './musicCacheService';
 
 import {
   ensureCoverArtAuth,
-  getAlbum,
+  getAlbumResult,
   getAlbumsPageByName,
   getAllArtists,
   getAllPlaylists,
@@ -91,9 +91,10 @@ let inFlightFull = false;
 
 /**
  * Basic (non-search3) servers: songs don't carry `albumId`, so the paged fast path can't
- * key them. Walk each album we don't yet have songs for (`listAlbumIds − listSongAlbumIds`)
- * and upsert its `getAlbum` song list. Resumable (skips already-populated albums) and bails
- * on a generation bump or offline flip; progress is albums-with-songs / total-albums.
+ * key them. Walk each album we don't yet have songs for (`listAlbumIds − listSongAlbumIds
+ * − notFoundAlbumIds`) and upsert its `getAlbum` song list. Resumable (skips
+ * already-populated albums) and bails on a generation bump, an offline flip or a failed
+ * fetch; progress is albums-with-songs / total-albums.
  */
 async function doBasicSongWalk(
   db: InternalDb,
@@ -113,7 +114,10 @@ async function doBasicSongWalk(
   // instant no-op and silently mark the sync complete.
   const fullWalk = !onlyMissing && syncStatusStore.getState().fullWalkPending;
   const have = fullWalk ? new Set<string>() : new Set(await listSongAlbumIds(db));
-  const missing = allIds.filter((id) => !have.has(id));
+  // Albums the server has already said are gone. They hold no songs, so every walk
+  // would otherwise pick them straight back up and re-ask for the same 70.
+  const knownGone = new Set(syncStatusStore.getState().notFoundAlbumIds);
+  const missing = allIds.filter((id) => !have.has(id) && !knownGone.has(id));
   syncStatusStore.getState().setDetailSyncTotal(allIds.length);
   let done = allIds.length - missing.length;
   syncStatusStore.getState().setDetailSyncCompleted(done);
@@ -133,19 +137,26 @@ async function doBasicSongWalk(
       missing,
       async (id) => {
         if (genChanged() || isOffline()) throw new Error('walk-bail');
-        // `getAlbum` swallows every error and returns null, so a null result is the ONLY
-        // signal a fetch failed. Throw so it lands in runPool's `rejected` — otherwise a
-        // flaky connection silently leaves albums track-less and still reports success.
-        const album = await getAlbum(id);
-        if (album === null) throw new Error('walk-fetch-failed');
+        const result = await getAlbumResult(id);
+        // The server's own verdict that this album is gone: skip it and let the walk
+        // reach completion. One deleted album used to bail the whole run, and since
+        // `fullWalkPending` is only cleared on completion, every later sync re-walked
+        // the entire library and bailed on the same album.
+        if (result.status === 'not-found') return 'not-found' as const;
+        // Everything else — a transport failure, any other Subsonic error code — throws
+        // so it lands in runPool's `rejected`. Otherwise a flaky connection (or an
+        // expired token) silently leaves albums track-less and still reports success.
+        if (result.status !== 'ok') throw new Error('walk-fetch-failed');
+        const album = result.album;
         // An album the server returned no songs for is NOT walked: counting it would
         // drive the progress bar to 100% and read as a completed walk over a library
         // that still has album-shaped holes in it.
-        if (!album.song || album.song.length === 0) return;
+        if (!album.song || album.song.length === 0) return undefined;
         await upsertSongs(db, album.song, undefined, articles);
         await deleteAlbumSongsNotIn(db, id, album.song.map((s) => s.id), album.songCount);
         done += 1;
         if (done % PROGRESS_EVERY === 0) syncStatusStore.getState().setDetailSyncCompleted(done);
+        return undefined;
       },
       { concurrency: WALK_CONCURRENCY, signal: ctrl.signal },
     );
@@ -155,6 +166,11 @@ async function doBasicSongWalk(
   }
 
   syncStatusStore.getState().setDetailSyncCompleted(done);
+  // Persist the server's not-found verdicts even on a bail — they are facts about the
+  // server, independent of why the rest of the walk stopped.
+  syncStatusStore.getState().recordNotFoundAlbums(
+    result.fulfilled.filter((f) => f.value === 'not-found').map((f) => f.item),
+  );
   // A partial walk must NOT read as success: it would clear `fullWalkPending` and mark
   // the song sync complete with albums still missing their tracks.
   if (result.aborted || result.rejected.length > 0) return 'bailed';

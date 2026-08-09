@@ -525,6 +525,56 @@ describe('API wrapper functions', () => {
     expect(result).toBeNull();
   });
 
+  describe('getAlbumResult keeps the failure modes apart', () => {
+    /** A Subsonic failure envelope: HTTP 200, `status: 'failed'`, an error code. */
+    const respondWith = (response: unknown) => {
+      const { default: SubsonicAPI } = require('subsonic-api');
+      SubsonicAPI.prototype.getAlbum = jest.fn().mockResolvedValue(response);
+      const { getAlbumResult, getApi } = require('../subsonicService');
+      getApi();
+      return getAlbumResult('a1');
+    };
+
+    it('reports the album on success', async () => {
+      expect(await respondWith({ status: 'ok', album: { id: 'a1' } })).toEqual({
+        status: 'ok',
+        album: { id: 'a1' },
+      });
+    });
+
+    it('reports not-found for error code 70', async () => {
+      expect(await respondWith({ status: 'failed', error: { code: 70, message: 'not found' } }))
+        .toEqual({ status: 'not-found' });
+    });
+
+    it('reports failed for wrong credentials (40) and incompatible version (30)', async () => {
+      // The same envelope as a 70. Reading these as "the album is gone" would let an
+      // expired token mark a partial library complete.
+      expect(await respondWith({ status: 'failed', error: { code: 40 } })).toEqual({
+        status: 'failed',
+      });
+      expect(await respondWith({ status: 'failed', error: { code: 30 } })).toEqual({
+        status: 'failed',
+      });
+    });
+
+    it('reports failed for a failure envelope with no code, and for a 200 with no album', async () => {
+      expect(await respondWith({ status: 'failed' })).toEqual({ status: 'failed' });
+      expect(await respondWith({ status: 'ok' })).toEqual({ status: 'failed' });
+    });
+
+    it('reports failed on a transport throw and with no API', async () => {
+      const { default: SubsonicAPI } = require('subsonic-api');
+      SubsonicAPI.prototype.getAlbum = jest.fn().mockRejectedValue(new Error('fail'));
+      const { getAlbumResult, getApi } = require('../subsonicService');
+      getApi();
+      expect(await getAlbumResult('a1')).toEqual({ status: 'failed' });
+
+      mockAuthStore.getState.mockReturnValue({ isLoggedIn: false } as any);
+      expect(await getAlbumResult('a1')).toEqual({ status: 'failed' });
+    });
+  });
+
   it('getRecentlyAddedAlbums returns empty when no API', async () => {
     mockAuthStore.getState.mockReturnValue({ isLoggedIn: false } as any);
     const { getRecentlyAddedAlbums } = require('../subsonicService');
