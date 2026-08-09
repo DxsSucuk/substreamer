@@ -530,6 +530,12 @@ async function doNormalizedSync(
   const genChanged = (): boolean => syncStatusStore.getState().generation !== capturedGen;
   const isOffline = (): boolean => offlineModeStore.getState().offlineMode;
 
+  // The reap epoch, minted before the first write so everything this run writes carries
+  // `synced_at >= epoch`. `full` only: a non-full run resumes from its cursors and never
+  // enumerates the whole library, so it can authorise nothing. Local to the run — one
+  // that bails or is interrupted takes its epoch with it and persists nothing.
+  const epoch = full ? Date.now() : null;
+
   const tStart = nowMs();
   try {
     if (full) {
@@ -669,6 +675,10 @@ async function doNormalizedSync(
     if (genChanged()) return;
     syncStatusStore.getState().setDetailSyncCompleted(totalAlbums);
     syncStatusStore.getState().markSongSyncComplete();
+    // Both markers reached inside one full run: the enumeration is authoritative, so the
+    // epoch is worth keeping. `recordFullResyncEpoch` re-checks both flags — a run
+    // finished by a non-full resume gets here with no epoch and mints nothing.
+    if (epoch !== null) syncStatusStore.getState().recordFullResyncEpoch(epoch);
     const songMs = nowMs() - tSong0;
 
     // ── Artists + Playlists — lightweight lists, tacked onto the initial sync so the

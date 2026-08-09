@@ -458,6 +458,96 @@ describe('the per-album walk', () => {
   });
 });
 
+describe('the reap epoch', () => {
+  /** Oldest stamp in a table, plus how many rows carry none. */
+  const stamps = (table: 'albums' | 'songs') =>
+    db().getFirstSync<{ oldest: number | null; unstamped: number }>(
+      `SELECT MIN(synced_at) AS oldest, SUM(synced_at IS NULL) AS unstamped FROM ${table}`,
+    );
+
+  it('a completed full run mints an epoch no later than any row it wrote', async () => {
+    expect(syncStatusStore.getState().fullResyncEpoch).toBeNull();
+
+    await runNormalizedLibrarySync({ full: true });
+
+    const epoch = syncStatusStore.getState().fullResyncEpoch;
+    expect(epoch).toBeGreaterThan(0);
+    // The invariant the reap deletes against: `WHERE synced_at < epoch` must not be able
+    // to match anything this run wrote.
+    for (const table of ['albums', 'songs'] as const) {
+      expect(stamps(table)?.unstamped).toBe(0);
+      expect(stamps(table)?.oldest).toBeGreaterThanOrEqual(epoch!);
+    }
+  });
+
+  it('mints nothing when the album phase never completes', async () => {
+    mockSearchAlbumsPage.mockImplementation(() => Promise.reject(new Error('boom')));
+
+    await runNormalizedLibrarySync({ full: true });
+
+    expect(syncStatusStore.getState().librarySyncComplete).toBe(false);
+    expect(syncStatusStore.getState().fullResyncEpoch).toBeNull();
+  });
+
+  it('mints nothing when the song walk bails on a transport error', async () => {
+    syncStatusStore.setState({ syncStrategy: 'basic' });
+    mockGetAlbum.mockImplementation((id: string) =>
+      Promise.resolve((id === 'al3' ? { status: 'failed' } : mockAlbumOk(id)) as unknown),
+    );
+
+    await runNormalizedLibrarySync({ full: true });
+
+    // The ALBUM half completed; the gate is both halves, so that is not enough.
+    expect(syncStatusStore.getState().librarySyncComplete).toBe(true);
+    expect(syncStatusStore.getState().songSyncComplete).toBe(false);
+    expect(syncStatusStore.getState().fullResyncEpoch).toBeNull();
+  });
+
+  it('mints nothing when an interrupted full run is finished by a non-full resume', async () => {
+    // Interrupt the full run mid-album-list: the API vanishes, every page fn resolves []
+    // and the loop bails without marking anything complete.
+    mockSearchAlbumsPage.mockImplementation((count: number, offset: number) => {
+      if (offset >= 2) {
+        mockApi = null;
+        return Promise.resolve([]);
+      }
+      return Promise.resolve(mockAlbumsData.slice(offset, Math.min(offset + count, offset + 2)));
+    });
+    await runNormalizedLibrarySync({ full: true });
+    expect(syncStatusStore.getState().librarySyncComplete).toBe(false);
+    // `resetSongSync` persisted this, so the resume below still re-walks every song.
+    expect(syncStatusStore.getState().fullWalkPending).toBe(true);
+    expect(syncStatusStore.getState().fullResyncEpoch).toBeNull();
+
+    mockApi = {};
+    mockSearchAlbumsPage.mockImplementation((count: number, offset: number) =>
+      Promise.resolve(mockAlbumsData.slice(offset, offset + count)),
+    );
+    await runNormalizedLibrarySync({ reason: 'resume-button' });
+
+    // It re-enumerated everything and reached BOTH markers — and still mints nothing. A
+    // resumed run starts from the persisted cursors, so nothing proves it saw the whole
+    // library. `fullSyncCompletedAt` is stamped here, which is exactly why it cannot be
+    // the gate.
+    expect(syncStatusStore.getState().librarySyncComplete).toBe(true);
+    expect(syncStatusStore.getState().songSyncComplete).toBe(true);
+    expect(await countSongs(db())).toBe(10);
+    expect(syncStatusStore.getState().fullSyncCompletedAt).toBeGreaterThan(0);
+    expect(syncStatusStore.getState().fullResyncEpoch).toBeNull();
+  });
+
+  it('an incremental run neither mints nor refreshes an epoch', async () => {
+    await runNormalizedLibrarySync({ full: true });
+    const earned = syncStatusStore.getState().fullResyncEpoch;
+    expect(earned).toBeGreaterThan(0);
+
+    await runNormalizedLibrarySync({ reason: 'pull-to-refresh' });
+
+    expect(syncStatusStore.getState().songSyncComplete).toBe(true);
+    expect(syncStatusStore.getState().fullResyncEpoch).toBe(earned);
+  });
+});
+
 describe('playlist detail reconcile', () => {
   const pl = (id: string, changed: string, songCount: number) =>
     ({ id, name: id, changed, songCount }) as unknown as Record<string, unknown>;

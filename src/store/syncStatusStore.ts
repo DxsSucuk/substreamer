@@ -139,6 +139,18 @@ export interface SyncStatusState extends LastKnownMarkers {
    *  when both `librarySyncComplete` and `songSyncComplete` are true. Null until
    *  the first complete sync; cleared when either sync is reset. */
   fullSyncCompletedAt: number | null;
+  /** Epoch ms captured at the START of the last `full` resync that enumerated the whole
+   *  library end to end. Every row that run wrote carries `synced_at >= this` (the stamp
+   *  in `bulkUpsert`), so a row older than it is one that run did not see — the
+   *  authorisation the reap deletes against. `null` = never earned (fresh install, or no
+   *  full resync since this shipped), which authorises nothing.
+   *
+   *  `fullSyncCompletedAt` cannot serve: it is stamped at the END of a run, so it
+   *  post-dates every row the run wrote, and by ANY run that finds both halves complete —
+   *  including an incremental resume, which does not restart the cursors from zero.
+   *  Deliberately NOT cleared by the resets: an earned epoch stays a valid lower bound,
+   *  since every later run only ever writes fresher stamps. */
+  fullResyncEpoch: number | null;
   /** Epoch ms of the last PARTIAL update that actually CHANGED library data
    *  (scan-detected new/changed album, album refresh writing new songs). Distinct
    *  from `lastChangeDetectionAt`, which is only when detection last RAN. */
@@ -180,6 +192,10 @@ export interface SyncStatusState extends LastKnownMarkers {
   markSongGapRepairAttempted: () => void;
   /** Record albums the server said are gone — see {@link SyncStatusState.notFoundAlbumIds}. */
   recordNotFoundAlbums: (ids: readonly string[]) => void;
+  /** Persist the epoch of a completed full resync — see {@link SyncStatusState.fullResyncEpoch}.
+   *  Refused unless BOTH halves are marked complete, so a caller that gets the sequencing
+   *  wrong cannot authorise a reap over a truncated enumeration. */
+  recordFullResyncEpoch: (epoch: number) => void;
   resetSongSync: () => void;
   /** Update the ephemeral blob→normalized migration progress (banner/card). */
   setNormalizedMigration: (phase: 'idle' | 'migrating', done: number, total: number) => void;
@@ -234,6 +250,7 @@ export const syncStatusStore = create<SyncStatusState>()(
       normalizedMigrationTotal: 0,
 
       fullSyncCompletedAt: null,
+      fullResyncEpoch: null,
       libraryLastUpdatedAt: null,
 
       lastChangeDetectionAt: null,
@@ -322,6 +339,13 @@ export const syncStatusStore = create<SyncStatusState>()(
         const merged = new Set([...get().notFoundAlbumIds, ...ids]);
         set({ notFoundAlbumIds: [...merged].slice(0, NOT_FOUND_ALBUM_CAP) });
       },
+      recordFullResyncEpoch: (epoch) => {
+        // A full run resets both flags at its start and only the two completion markers
+        // set them again — so both true is proof that THIS run enumerated both halves.
+        const s = get();
+        if (!s.librarySyncComplete || !s.songSyncComplete) return;
+        set({ fullResyncEpoch: epoch });
+      },
       resetSongSync: () =>
         set({
           songSyncStrategy: null,
@@ -391,6 +415,7 @@ export const syncStatusStore = create<SyncStatusState>()(
         songGapRepairAttempted: state.songGapRepairAttempted,
         notFoundAlbumIds: state.notFoundAlbumIds,
         fullSyncCompletedAt: state.fullSyncCompletedAt,
+        fullResyncEpoch: state.fullResyncEpoch,
         lastChangeDetectionAt: state.lastChangeDetectionAt,
         lastKnownServerSongCount: state.lastKnownServerSongCount,
         lastKnownServerScanTime: state.lastKnownServerScanTime,
