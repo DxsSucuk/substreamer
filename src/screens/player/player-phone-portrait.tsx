@@ -64,7 +64,7 @@ import {
 import { sanitizeBiographyText } from '@/utils/formatters';
 import { type Child } from '@/services/subsonicService';
 import { usePlayerAlbumInfo } from '@/hooks/usePlayerAlbumInfo';
-import { usePlayerLyrics } from '@/hooks/usePlayerLyrics';
+import { usePlayerLyrics, type PlayerLyricsResult } from '@/hooks/usePlayerLyrics';
 import { playbackSettingsStore } from '@/store/playbackSettingsStore';
 import { moreOptionsStore } from '@/store/moreOptionsStore';
 import { playerStore } from '@/store/playerStore';
@@ -115,6 +115,20 @@ export function PlayerPhonePortrait() {
   );
 
   const offlineMode = offlineModeStore((s) => s.offlineMode);
+
+  // Lyrics are fetched at the screen, not inside the lazily-mounted Lyrics tab,
+  // so they load whenever the player is open rather than only once it is selected.
+  const {
+    entry: lyricsEntry,
+    loading: lyricsLoading,
+    error: lyricsError,
+    handleRetry: handleRetryLyrics,
+  } = usePlayerLyrics(
+    currentTrack?.id ?? null,
+    currentTrack?.artist,
+    currentTrack?.title,
+    true,
+  );
 
   /* ---- Tab state ---- */
   const [activeTab, setActiveTab] = useState<PlayerTab>('player');
@@ -393,7 +407,14 @@ export function PlayerPhonePortrait() {
             pointerEvents={activeTab === 'lyrics' ? 'auto' : 'none'}
           >
             {mountedTabs.has('lyrics') && currentTrack && (
-              <LyricsTab currentTrack={currentTrack} colors={colors} />
+              <LyricsTab
+                currentTrack={currentTrack}
+                colors={colors}
+                entry={lyricsEntry}
+                loading={lyricsLoading}
+                error={lyricsError}
+                handleRetry={handleRetryLyrics}
+              />
             )}
           </Animated.View>
         </View>
@@ -793,29 +814,26 @@ const AlbumInfoTab = memo(function AlbumInfoTab({
 /*  Lyrics tab                                                         */
 /* ------------------------------------------------------------------ */
 
+/** Pure presenter — the fetch it displays is owned by `PlayerPhonePortrait`. */
 const LyricsTab = memo(function LyricsTab({
   currentTrack,
   colors,
-}: {
+  entry,
+  loading,
+  error,
+  handleRetry,
+}: PlayerLyricsResult & {
   currentTrack: Child;
   colors: ThemeColors;
 }) {
-  const trackId = currentTrack.id;
-  const {
-    entry: lyricsEntry,
-    loading: lyricsLoading,
-    error: lyricsError,
-    handleRetry,
-  } = usePlayerLyrics(trackId, currentTrack.artist, currentTrack.title);
-
   return (
     <View style={styles.lyricsContainer}>
       <LyricsContent
-        key={trackId}
-        trackId={trackId}
-        lyricsData={lyricsEntry}
-        lyricsLoading={lyricsLoading}
-        lyricsError={lyricsError}
+        key={currentTrack.id}
+        trackId={currentTrack.id}
+        lyricsData={entry}
+        lyricsLoading={loading}
+        lyricsError={error}
         onRetry={handleRetry}
         durationSec={currentTrack.duration ?? null}
         colors={colors}

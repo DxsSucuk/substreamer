@@ -79,12 +79,13 @@ export const PlayerModeContent = memo(function PlayerModeContent({
   const notesAttributionUrl = albumInfoEntry?.enrichedNotesUrl ?? null;
 
   const trackId = currentTrack.id;
+  // Always enabled: this host is mounted only by the tablet-portrait player route.
   const {
     entry: lyricsEntry,
     loading: lyricsLoading,
     error: lyricsError,
     handleRetry: handleRetryLyrics,
-  } = usePlayerLyrics(trackId, currentTrack.artist, currentTrack.title);
+  } = usePlayerLyrics(trackId, currentTrack.artist, currentTrack.title, true);
 
   const renderQueueItem = useCallback(
     ({ item, index }: { item: Child; index: number }) => (
