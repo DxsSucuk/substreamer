@@ -96,6 +96,10 @@ export const songs = sqliteTable(
     normArtist: text('norm_artist'),
     dmetaTitle: text('dmeta_title'),
     dmetaArtist: text('dmeta_artist'),
+    // Epoch-ms of the last write of this row by ANY writer — `bulkUpsert` stamps it,
+    // so a row written out-of-band can never look older than the sync run that
+    // followed it. NULL = not written since the column shipped.
+    syncedAt: integer('synced_at'),
   },
   (t) => ({
     sortIdx: index('idx_songs_sort').on(t.sortTitle, t.id),
@@ -154,6 +158,8 @@ export const albums = sqliteTable(
     normArtist: text('norm_artist'),
     dmetaName: text('dmeta_name'),
     dmetaArtist: text('dmeta_artist'),
+    // See `songs.syncedAt` — same contract, stamped by the same `bulkUpsert` layer.
+    syncedAt: integer('synced_at'),
   },
   (t) => ({
     sortIdx: index('idx_albums_sort').on(t.sortTitle, t.id),

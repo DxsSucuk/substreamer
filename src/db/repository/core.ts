@@ -100,6 +100,20 @@ function buildUpsertRow(table: string, row: Row, pk = 'id', merge = false): Batc
   return [sql, cols.map((c) => coerceBind(table, c, row[c]))];
 }
 
+/**
+ * Tables carrying `synced_at`, stamped on EVERY write rather than only by the library
+ * sync. A full run starts at epoch `E` and everything it writes carries `>= E`; a row
+ * written out-of-band during or after it (a detail fetch, a carousel refresh, a browse,
+ * a download) also carries `>= E`, so it can never look older than the run that
+ * followed it. Keyed on the table, not an opt-in flag, so a writer added later cannot
+ * forget it.
+ *
+ * Albums and songs only. Artists and playlists are enumerated in a single call and
+ * already reconcile by set difference (`deleteArtistsNotIn` / `deletePlaylistsNotIn`);
+ * the stamp exists for the PAGED entities that cannot.
+ */
+const STAMPED_TABLES = new Set(['albums', 'songs']);
+
 /** Build a plain INSERT command tuple (child tables; parent rows were just cleared). */
 function buildInsertChild(table: string, row: Row): BatchCommand {
   const cols = Object.keys(row);
@@ -149,6 +163,10 @@ export async function bulkUpsert<T>(
   items: T[],
 ): Promise<number> {
   const { table, idOf, rowOf, children = [], chunkSize = 500, onProgress, merge = false } = opts;
+  // One stamp for the whole write (see {@link STAMPED_TABLES}). Always supplied, so
+  // `excluded.synced_at` is never NULL and the merge policy's COALESCE takes it —
+  // a supplementary writer refreshes the stamp exactly like an authoritative one.
+  const syncedAt = STAMPED_TABLES.has(table) ? Date.now() : null;
   const sorted = [...items].sort((a, b) => (idOf(a) < idOf(b) ? -1 : idOf(a) > idOf(b) ? 1 : 0));
   let done = 0;
   let prevWrite: Promise<void> = Promise.resolve();
@@ -159,7 +177,10 @@ export async function bulkUpsert<T>(
     const commands: BatchCommand[] = [];
     for (const item of chunk) {
       const id = idOf(item);
-      commands.push(buildUpsertRow(table, rowOf(item), 'id', merge));
+      const row = rowOf(item);
+      commands.push(
+        buildUpsertRow(table, syncedAt === null ? row : { ...row, synced_at: syncedAt }, 'id', merge),
+      );
       for (const spec of children) {
         const childRows = spec.rows(item, id);
         // In MERGE mode an absent child set means "this payload has no opinion", not

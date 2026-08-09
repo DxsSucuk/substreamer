@@ -698,13 +698,14 @@ describe('projection totality (the widened reads select every column)', () => {
   const projected = (cols: string): string[] => cols.split(', ').map((c) => c.replace(/"/g, ''));
 
   /** The table's real columns minus the internal derivatives, which deliberately have
-   *  no API counterpart: the `norm_*`/`dmeta_*` accent-folded search copies, and
-   *  `playlists.detail_*`, whose own read is `listPlaylistDetailState`. */
+   *  no API counterpart: the `norm_*`/`dmeta_*` accent-folded search copies,
+   *  `playlists.detail_*`, whose own read is `listPlaylistDetailState`, and
+   *  `synced_at`, write-side bookkeeping no read projects. */
   const apiColumns = (table: string): string[] =>
     db()
       .getAllSync<{ name: string }>(`PRAGMA table_info(${table})`)
       .map((c) => c.name)
-      .filter((n) => !/^(norm_|dmeta_|detail_)/.test(n));
+      .filter((n) => !/^(norm_|dmeta_|detail_)/.test(n) && n !== 'synced_at');
 
   // The failure this guards: a column added to the schema but not to the field list
   // is `undefined` at runtime with no type error — the bug class that shipped three

@@ -102,7 +102,8 @@ CREATE TABLE `albums` (
 	`norm_name` text,
 	`norm_artist` text,
 	`dmeta_name` text,
-	`dmeta_artist` text
+	`dmeta_artist` text,
+	`synced_at` integer
 );
 --> statement-breakpoint
 CREATE INDEX `idx_albums_sort` ON `albums` (`sort_title`,`id`);--> statement-breakpoint
@@ -914,7 +915,8 @@ CREATE TABLE `songs` (
 	`norm_title` text,
 	`norm_artist` text,
 	`dmeta_title` text,
-	`dmeta_artist` text
+	`dmeta_artist` text,
+	`synced_at` integer
 );
 --> statement-breakpoint
 CREATE INDEX `idx_songs_sort` ON `songs` (`sort_title`,`id`);--> statement-breakpoint

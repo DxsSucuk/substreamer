@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "61599347-26a7-4a17-a0a8-7eb6b6682a1a",
+  "id": "91a7499b-bdd7-439f-8da3-89c9aeb8d983",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "album_artists": {
@@ -706,6 +706,13 @@
         "dmeta_artist": {
           "name": "dmeta_artist",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "synced_at": {
+          "name": "synced_at",
+          "type": "integer",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
@@ -6133,6 +6140,13 @@
         "dmeta_artist": {
           "name": "dmeta_artist",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "synced_at": {
+          "name": "synced_at",
+          "type": "integer",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
