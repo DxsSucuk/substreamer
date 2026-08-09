@@ -42,7 +42,11 @@ const hostileChild = {
 
 const write = async (tablePrefix: string, keyColumn: string, keyValue: string): Promise<void> => {
   await realDb.runAtomicBatchAsync(
-    childSnapshotArrayCommands({ tablePrefix, keyColumn, keyValue, child: hostileChild }),
+    childSnapshotArrayCommands({
+      tablePrefix,
+      key: { [keyColumn]: keyValue },
+      child: hostileChild,
+    }),
   );
 };
 

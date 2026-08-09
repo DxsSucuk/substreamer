@@ -209,8 +209,7 @@ describe('childSnapshotArrayCommands', () => {
   const commands = (child: Child, tablePrefix = 'cached_song'): Array<[string, unknown[]]> =>
     childSnapshotArrayCommands({
       tablePrefix,
-      keyColumn: 'song_id',
-      keyValue: 's1',
+      key: { song_id: 's1' },
       child,
     }).map(([sql, params]) => [sql.replace(/\s+/g, ' ').trim(), [...params]]);
 

@@ -579,6 +579,122 @@ CREATE TABLE `playlists` (
 --> statement-breakpoint
 CREATE INDEX `idx_playlists_sort_title` ON `playlists` (`sort_title`,`id`);--> statement-breakpoint
 CREATE INDEX `idx_playlists_norm_name` ON `playlists` (`norm_name`);--> statement-breakpoint
+CREATE TABLE `queue_snapshot_song_album_artists` (
+	`snapshot_id` text NOT NULL,
+	`song_pos` integer NOT NULL,
+	`pos` integer NOT NULL,
+	`artist_id` text,
+	`artist_name` text,
+	PRIMARY KEY(`snapshot_id`, `song_pos`, `pos`),
+	FOREIGN KEY (`snapshot_id`,`song_pos`) REFERENCES `queue_snapshot_songs`(`snapshot_id`,`pos`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `queue_snapshot_song_artists` (
+	`snapshot_id` text NOT NULL,
+	`song_pos` integer NOT NULL,
+	`pos` integer NOT NULL,
+	`artist_id` text,
+	`artist_name` text,
+	PRIMARY KEY(`snapshot_id`, `song_pos`, `pos`),
+	FOREIGN KEY (`snapshot_id`,`song_pos`) REFERENCES `queue_snapshot_songs`(`snapshot_id`,`pos`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `queue_snapshot_song_contributors` (
+	`snapshot_id` text NOT NULL,
+	`song_pos` integer NOT NULL,
+	`pos` integer NOT NULL,
+	`role` text NOT NULL,
+	`sub_role` text,
+	`artist_id` text,
+	`artist_name` text,
+	PRIMARY KEY(`snapshot_id`, `song_pos`, `pos`),
+	FOREIGN KEY (`snapshot_id`,`song_pos`) REFERENCES `queue_snapshot_songs`(`snapshot_id`,`pos`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `queue_snapshot_song_genres` (
+	`snapshot_id` text NOT NULL,
+	`song_pos` integer NOT NULL,
+	`pos` integer NOT NULL,
+	`name` text NOT NULL,
+	PRIMARY KEY(`snapshot_id`, `song_pos`, `pos`),
+	FOREIGN KEY (`snapshot_id`,`song_pos`) REFERENCES `queue_snapshot_songs`(`snapshot_id`,`pos`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `queue_snapshot_song_moods` (
+	`snapshot_id` text NOT NULL,
+	`song_pos` integer NOT NULL,
+	`pos` integer NOT NULL,
+	`mood` text NOT NULL,
+	PRIMARY KEY(`snapshot_id`, `song_pos`, `pos`),
+	FOREIGN KEY (`snapshot_id`,`song_pos`) REFERENCES `queue_snapshot_songs`(`snapshot_id`,`pos`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `queue_snapshot_songs` (
+	`snapshot_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`song_id` text NOT NULL,
+	`title` text,
+	`artist` text,
+	`album` text,
+	`cover_art` text,
+	`duration` integer,
+	`album_id` text,
+	`suffix` text,
+	`bit_rate` integer,
+	`bit_depth` integer,
+	`sampling_rate` integer,
+	`artist_id` text,
+	`display_artist` text,
+	`display_album_artist` text,
+	`display_composer` text,
+	`track` integer,
+	`disc_number` integer,
+	`year` integer,
+	`genre` text,
+	`size` integer,
+	`content_type` text,
+	`transcoded_content_type` text,
+	`transcoded_suffix` text,
+	`channel_count` integer,
+	`path` text,
+	`user_rating` integer,
+	`average_rating` real,
+	`play_count` integer,
+	`created` integer,
+	`starred` integer,
+	`played` text,
+	`type` text,
+	`bpm` integer,
+	`comment` text,
+	`sort_name` text,
+	`music_brainz_id` text,
+	`explicit_status` text,
+	`bookmark_position` integer,
+	`is_video` integer,
+	`is_dir` integer,
+	`parent` text,
+	`original_width` integer,
+	`original_height` integer,
+	`rg_track_gain` real,
+	`rg_album_gain` real,
+	`rg_track_peak` real,
+	`rg_album_peak` real,
+	`rg_base_gain` real,
+	`rg_fallback_gain` real,
+	PRIMARY KEY(`snapshot_id`, `pos`),
+	FOREIGN KEY (`snapshot_id`) REFERENCES `queue_snapshots`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `queue_snapshots` (
+	`id` text PRIMARY KEY NOT NULL,
+	`kind` text NOT NULL,
+	`name` text,
+	`created_at` integer NOT NULL,
+	`current_index` integer NOT NULL,
+	`position_sec` real,
+	`track_count` integer NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE `scrobble_album_artists` (
 	`scrobble_id` text NOT NULL,
 	`pos` integer NOT NULL,

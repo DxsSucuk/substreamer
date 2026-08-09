@@ -179,7 +179,9 @@ export function childSnapshotFields(child: Child): ChildSnapshotFields {
  *
  * `tablePrefix` names all five (`cached_song` → `cached_song_genres`,
  * `cached_song_artists`, `cached_song_album_artists`, `cached_song_contributors`,
- * `cached_song_moods`) and `keyColumn`/`keyValue` are the owning row's key.
+ * `cached_song_moods`). `key` is the owning row's key columns → values, in column
+ * order: one entry for the song-keyed and scrobble-keyed tables, two for the queue
+ * snapshot's `(snapshot_id, song_pos)` rows.
  *
  * Entries a NOT NULL column would reject are skipped and `pos` numbers the
  * survivors, so a `moods: [null]` or a role-less contributor costs that entry
@@ -187,34 +189,39 @@ export function childSnapshotFields(child: Child): ChildSnapshotFields {
  */
 export function childSnapshotArrayCommands(spec: {
   tablePrefix: string;
-  keyColumn: string;
-  keyValue: string;
+  key: Readonly<Record<string, string | number>>;
   child: Child;
 }): BatchCommand[] {
-  const { tablePrefix, keyColumn, keyValue, child } = spec;
+  const { tablePrefix, key, child } = spec;
+  const keyValues = Object.values(key);
+  const where = Object.keys(key)
+    .map((c) => `${c} = ?`)
+    .join(' AND ');
+  const keyCols = Object.keys(key).join(', ');
+  const keyMarks = keyValues.map(() => '?').join(', ');
   const statements: BatchCommand[] = [
     'genres',
     'artists',
     'album_artists',
     'contributors',
     'moods',
-  ].map((suffix) => [`DELETE FROM ${tablePrefix}_${suffix} WHERE ${keyColumn} = ?;`, [keyValue]]);
+  ].map((suffix) => [`DELETE FROM ${tablePrefix}_${suffix} WHERE ${where};`, keyValues]);
   childGenreNames(child).forEach((name, pos) => {
     statements.push([
-      `INSERT INTO ${tablePrefix}_genres (${keyColumn}, pos, name) VALUES (?, ?, ?);`,
-      [keyValue, pos, name],
+      `INSERT INTO ${tablePrefix}_genres (${keyCols}, pos, name) VALUES (${keyMarks}, ?, ?);`,
+      [...keyValues, pos, name],
     ]);
   });
   presentEntries(child.artists).forEach((a, pos) => {
     statements.push([
-      `INSERT INTO ${tablePrefix}_artists (${keyColumn}, pos, artist_id, artist_name) VALUES (?, ?, ?, ?);`,
-      [keyValue, pos, a.id ?? null, a.name ?? null],
+      `INSERT INTO ${tablePrefix}_artists (${keyCols}, pos, artist_id, artist_name) VALUES (${keyMarks}, ?, ?, ?);`,
+      [...keyValues, pos, a.id ?? null, a.name ?? null],
     ]);
   });
   presentEntries(child.albumArtists).forEach((a, pos) => {
     statements.push([
-      `INSERT INTO ${tablePrefix}_album_artists (${keyColumn}, pos, artist_id, artist_name) VALUES (?, ?, ?, ?);`,
-      [keyValue, pos, a.id ?? null, a.name ?? null],
+      `INSERT INTO ${tablePrefix}_album_artists (${keyCols}, pos, artist_id, artist_name) VALUES (${keyMarks}, ?, ?, ?);`,
+      [...keyValues, pos, a.id ?? null, a.name ?? null],
     ]);
   });
   presentEntries(child.contributors)
@@ -222,17 +229,24 @@ export function childSnapshotArrayCommands(spec: {
     .forEach((c, pos) => {
       statements.push([
         `INSERT INTO ${tablePrefix}_contributors
-         (${keyColumn}, pos, role, sub_role, artist_id, artist_name)
-         VALUES (?, ?, ?, ?, ?, ?);`,
-        [keyValue, pos, c.role, c.subRole ?? null, c.artist?.id ?? null, c.artist?.name ?? null],
+         (${keyCols}, pos, role, sub_role, artist_id, artist_name)
+         VALUES (${keyMarks}, ?, ?, ?, ?, ?);`,
+        [
+          ...keyValues,
+          pos,
+          c.role,
+          c.subRole ?? null,
+          c.artist?.id ?? null,
+          c.artist?.name ?? null,
+        ],
       ]);
     });
   presentEntries(child.moods)
     .filter(isNonEmptyString)
     .forEach((mood, pos) => {
       statements.push([
-        `INSERT INTO ${tablePrefix}_moods (${keyColumn}, pos, mood) VALUES (?, ?, ?);`,
-        [keyValue, pos, mood],
+        `INSERT INTO ${tablePrefix}_moods (${keyCols}, pos, mood) VALUES (${keyMarks}, ?, ?);`,
+        [...keyValues, pos, mood],
       ]);
     });
   return statements;

@@ -277,8 +277,7 @@ export async function backfillSnapshotColumnsAsync(spec: {
         updates.push(
           ...childSnapshotArrayCommands({
             tablePrefix,
-            keyColumn: CHILD_KEY_COLUMN,
-            keyValue: row.id,
+            key: { [CHILD_KEY_COLUMN]: row.id },
             child,
           }),
         );

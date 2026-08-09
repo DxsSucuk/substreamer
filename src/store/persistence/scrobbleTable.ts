@@ -58,8 +58,7 @@ function insertCommands(scrobbles: readonly CompletedScrobble[]): BatchCommand[]
       [INSERT_SQL, insertParams(s)],
       ...childSnapshotArrayCommands({
         tablePrefix: 'scrobble',
-        keyColumn: 'scrobble_id',
-        keyValue: s.id,
+        key: { scrobble_id: s.id },
         child: s.song,
       }),
     );

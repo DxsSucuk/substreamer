@@ -62,8 +62,7 @@ function insertCommands(scrobbles: readonly PendingScrobble[]): BatchCommand[] {
       [INSERT_SQL, insertParams(s)],
       ...childSnapshotArrayCommands({
         tablePrefix: 'pending_scrobble',
-        keyColumn: 'scrobble_id',
-        keyValue: s.id,
+        key: { scrobble_id: s.id },
         child: s.song,
       }),
     );

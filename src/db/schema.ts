@@ -17,6 +17,7 @@
  */
 import { sql } from 'drizzle-orm';
 import {
+  foreignKey,
   index,
   integer,
   primaryKey,
@@ -659,6 +660,194 @@ export const playlistAllowedUsers = sqliteTable(
     username: text('username').notNull(),
   },
   (t) => ({ pk: primaryKey({ columns: [t.playlistId, t.pos] }) }),
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Queue snapshots — the live player queue and the saved bookmarks
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One saved ordered queue: the live player queue (`kind = 'live'`, a single row
+ * whose id is `SNAPSHOT_LIVE_ID`) or a user-created bookmark (`kind = 'bookmark'`).
+ *
+ * The playback cursor lives HERE rather than on the songs, so a track change is a
+ * one-row UPDATE instead of a rewrite of the whole queue.
+ */
+export const queueSnapshots = sqliteTable('queue_snapshots', {
+  id: text('id').primaryKey(),
+  /** `live` | `bookmark`. */
+  kind: text('kind').notNull(),
+  /** User-facing name; bookmarks only. */
+  name: text('name'),
+  createdAt: integer('created_at').notNull(),
+  currentIndex: integer('current_index').notNull(),
+  /** Playback offset within the current track, seconds. */
+  positionSec: real('position_sec'),
+  /** Denormalized `COUNT(*)` of the songs, so the bookmark list needs no join. */
+  trackCount: integer('track_count').notNull(),
+});
+
+/**
+ * The queue's songs, positional. A FULL `Child` snapshot — deliberately NOT a
+ * reference to `songs`, so a resync or a reap can never empty a saved queue.
+ * Column names/types come from the shared mapping in `./childSnapshot.ts`.
+ */
+export const queueSnapshotSongs = sqliteTable(
+  'queue_snapshot_songs',
+  {
+    snapshotId: text('snapshot_id')
+      .notNull()
+      .references(() => queueSnapshots.id, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    songId: text('song_id').notNull(),
+    title: text('title'),
+    artist: text('artist'),
+    album: text('album'),
+    coverArt: text('cover_art'),
+    duration: integer('duration'),
+    albumId: text('album_id'),
+    suffix: text('suffix'),
+    bitRate: integer('bit_rate'),
+    bitDepth: integer('bit_depth'),
+    samplingRate: integer('sampling_rate'),
+    artistId: text('artist_id'),
+    displayArtist: text('display_artist'),
+    displayAlbumArtist: text('display_album_artist'),
+    displayComposer: text('display_composer'),
+    track: integer('track'),
+    discNumber: integer('disc_number'),
+    year: integer('year'),
+    genre: text('genre'),
+    size: integer('size'),
+    contentType: text('content_type'),
+    transcodedContentType: text('transcoded_content_type'),
+    transcodedSuffix: text('transcoded_suffix'),
+    channelCount: integer('channel_count'),
+    path: text('path'),
+    userRating: integer('user_rating'),
+    averageRating: real('average_rating'),
+    playCount: integer('play_count'),
+    created: integer('created'),
+    starred: integer('starred'),
+    played: text('played'),
+    type: text('type'),
+    bpm: integer('bpm'),
+    comment: text('comment'),
+    sortName: text('sort_name'),
+    musicBrainzId: text('music_brainz_id'),
+    explicitStatus: text('explicit_status'),
+    bookmarkPosition: integer('bookmark_position'),
+    isVideo: integer('is_video', { mode: 'boolean' }),
+    isDir: integer('is_dir', { mode: 'boolean' }),
+    parent: text('parent'),
+    originalWidth: integer('original_width'),
+    originalHeight: integer('original_height'),
+    rgTrackGain: real('rg_track_gain'),
+    rgAlbumGain: real('rg_album_gain'),
+    rgTrackPeak: real('rg_track_peak'),
+    rgAlbumPeak: real('rg_album_peak'),
+    rgBaseGain: real('rg_base_gain'),
+    rgFallbackGain: real('rg_fallback_gain'),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.snapshotId, t.pos] }) }),
+);
+
+// The queued Child's multi-valued fields, mirroring `cached_song_*`. They are carried
+// because the queue `Child` is what the scrobble write path snapshots into
+// `scrobble_events` + its five child tables — dropping them here would write
+// array-less plays into an unrecoverable history after every cold start.
+//
+// Keyed `(snapshot_id, song_pos)` — the owning SONG row, not the snapshot — so a
+// rewrite with fewer tracks cascades the surplus arrays away.
+
+export const queueSnapshotSongGenres = sqliteTable(
+  'queue_snapshot_song_genres',
+  {
+    snapshotId: text('snapshot_id').notNull(),
+    songPos: integer('song_pos').notNull(),
+    pos: integer('pos').notNull(),
+    name: text('name').notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.snapshotId, t.songPos, t.pos] }),
+    songFk: foreignKey({
+      columns: [t.snapshotId, t.songPos],
+      foreignColumns: [queueSnapshotSongs.snapshotId, queueSnapshotSongs.pos],
+    }).onDelete('cascade'),
+  }),
+);
+
+export const queueSnapshotSongArtists = sqliteTable(
+  'queue_snapshot_song_artists',
+  {
+    snapshotId: text('snapshot_id').notNull(),
+    songPos: integer('song_pos').notNull(),
+    pos: integer('pos').notNull(),
+    artistId: text('artist_id'),
+    artistName: text('artist_name'),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.snapshotId, t.songPos, t.pos] }),
+    songFk: foreignKey({
+      columns: [t.snapshotId, t.songPos],
+      foreignColumns: [queueSnapshotSongs.snapshotId, queueSnapshotSongs.pos],
+    }).onDelete('cascade'),
+  }),
+);
+
+export const queueSnapshotSongAlbumArtists = sqliteTable(
+  'queue_snapshot_song_album_artists',
+  {
+    snapshotId: text('snapshot_id').notNull(),
+    songPos: integer('song_pos').notNull(),
+    pos: integer('pos').notNull(),
+    artistId: text('artist_id'),
+    artistName: text('artist_name'),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.snapshotId, t.songPos, t.pos] }),
+    songFk: foreignKey({
+      columns: [t.snapshotId, t.songPos],
+      foreignColumns: [queueSnapshotSongs.snapshotId, queueSnapshotSongs.pos],
+    }).onDelete('cascade'),
+  }),
+);
+
+export const queueSnapshotSongContributors = sqliteTable(
+  'queue_snapshot_song_contributors',
+  {
+    snapshotId: text('snapshot_id').notNull(),
+    songPos: integer('song_pos').notNull(),
+    pos: integer('pos').notNull(),
+    role: text('role').notNull(),
+    subRole: text('sub_role'),
+    artistId: text('artist_id'),
+    artistName: text('artist_name'),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.snapshotId, t.songPos, t.pos] }),
+    songFk: foreignKey({
+      columns: [t.snapshotId, t.songPos],
+      foreignColumns: [queueSnapshotSongs.snapshotId, queueSnapshotSongs.pos],
+    }).onDelete('cascade'),
+  }),
+);
+
+export const queueSnapshotSongMoods = sqliteTable(
+  'queue_snapshot_song_moods',
+  {
+    snapshotId: text('snapshot_id').notNull(),
+    songPos: integer('song_pos').notNull(),
+    pos: integer('pos').notNull(),
+    mood: text('mood').notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.snapshotId, t.songPos, t.pos] }),
+    songFk: foreignKey({
+      columns: [t.snapshotId, t.songPos],
+      foreignColumns: [queueSnapshotSongs.snapshotId, queueSnapshotSongs.pos],
+    }).onDelete('cascade'),
+  }),
 );
 
 // ─────────────────────────────────────────────────────────────────────────────

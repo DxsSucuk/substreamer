@@ -138,6 +138,19 @@ export const MODEL_TABLES: readonly string[] = [
   // reason favourites are. It FK-cascades from `albums` anyway, but must still be listed
   // — the allowlist fails CLOSED, so an unclassified table is never dropped.
   'album_list_entries',
+  // The live player queue AND the saved bookmarks — one table pair, so one answer for
+  // both. MODEL, because every snapshot row holds server-scoped song ids: a bookmark
+  // surviving into another account plays server A's ids against server B. It also
+  // matches what ships today — logout clears both the queue keys and the bookmarks
+  // blob via `clearKvStorage` — and the only caller of the drop loop IS logout: a full
+  // resync deliberately does not drop tables, so a saved queue survives a resync.
+  'queue_snapshots',
+  'queue_snapshot_songs',
+  'queue_snapshot_song_genres',
+  'queue_snapshot_song_artists',
+  'queue_snapshot_song_album_artists',
+  'queue_snapshot_song_contributors',
+  'queue_snapshot_song_moods',
   // Favourites are server-scoped, so logout must drop them: leaving them KEPT would
   // leak server A's favourites into server B.
   'favorite_songs',

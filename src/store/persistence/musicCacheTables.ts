@@ -1113,8 +1113,7 @@ export async function orphanSongIfUnreferencedAsync(
 const cachedSongChildCommands = (songId: string, child: Child): BatchCommand[] =>
   childSnapshotArrayCommands({
     tablePrefix: 'cached_song',
-    keyColumn: 'song_id',
-    keyValue: songId,
+    key: { song_id: songId },
     child,
   });
 
