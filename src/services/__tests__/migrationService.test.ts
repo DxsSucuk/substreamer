@@ -257,7 +257,7 @@ describe('fresh-install fast-track (completedVersion 0, DB healthy)', () => {
     ]);
   });
 
-  it('runMigrations(0) runs only #1/#2/#21 and stamps LATEST_MIGRATION_ID', async () => {
+  it('runMigrations(0) runs only migrations 1, 2 and 21 and stamps LATEST_MIGRATION_ID', async () => {
     const onProgress = jest.fn();
     const newVersion = await runMigrations(0, onProgress);
     expect(newVersion).toBe(LATEST_MIGRATION_ID);

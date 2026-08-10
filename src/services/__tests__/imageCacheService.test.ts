@@ -735,7 +735,7 @@ describe('download pipeline — cacheAllSizes + processQueue', () => {
   });
 });
 
-describe('prefetchCoverArt — keys off the coverArt value, not the entity ID (#202)', () => {
+describe('prefetchCoverArt — keys off the coverArt value, not the entity ID', () => {
   it('warms the cache for the coverArt value, never the entity id', async () => {
     const { getCoverArtUrl: mockGetCoverArtUrl } = jest.requireMock(
       '../subsonicService',

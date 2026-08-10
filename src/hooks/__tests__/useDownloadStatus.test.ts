@@ -79,7 +79,7 @@ describe('useDownloadStatus', () => {
       expect(result.current).toBe('partial');
     });
 
-    it('returns "complete" for a real single-track album (1 of 1) — fixes #159', () => {
+    it('returns "complete" for a real single-track album (1 of 1)', () => {
       // expectedSongCount is authoritative (server-fetched at write time), so a
       // 1/1 row reflects a real single-track album — forcing it to "partial"
       // would misreport every genuine single.

@@ -1023,7 +1023,7 @@ describe('enqueueAlbumDownload', () => {
     expect(queue[0].totalSongs).toBe(2);
   });
 
-  it('caches album cover by the album coverArt value, not the entity ID (#202)', async () => {
+  it('caches album cover by the album coverArt value, not the entity ID', async () => {
     mockCheckStorageLimit.mockReturnValue(true);
     mockFetchAlbum.mockResolvedValue({
       id: 'album-1',
