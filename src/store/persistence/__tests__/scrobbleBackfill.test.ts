@@ -5,9 +5,9 @@
  * `scrobbleTable.test.ts` cannot model: 37 typed columns, the five `scrobble_*`
  * child tables, their FK/cascade, and `runBatchAsync`'s non-atomic abort. This
  * suite runs the generated schema (`src/db/normalizedDdl.ts`, applied at import by
- * `persistence/db.ts`) on the better-sqlite3-backed op-SQLite seam.
+ * `persistence/db.ts`) on the better-sqlite3-backed op-SQLite substitute.
  *
- * Per AGENTS.md §11 that seam proves SQL semantics, never concurrency — the seam
+ * Per AGENTS.md §11 the substitute proves SQL semantics, never concurrency — it
  * runs `executeBatch` synchronously, so nothing here says anything about the pool.
  *
  * The backfill only ever reads `song_json`, which the generated schema no longer has —
@@ -22,7 +22,7 @@ import { backfillScrobbleColumnsAsync } from '../scrobbleTable';
 import { createLegacyScrobbleTables } from '../../../test-utils/legacyScrobbleTables';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 const TIME = 1_700_000_000_000;

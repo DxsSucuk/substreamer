@@ -1,6 +1,6 @@
 /**
  * Backup RESTORE onto the shared snapshot table, against REAL SQL on the
- * better-sqlite3-backed op-SQLite seam: merge mode writes the merged-in bookmarks
+ * better-sqlite3-backed op-SQLite substitute: merge mode writes the merged-in bookmarks
  * through without disturbing the ones that won their collision, replace mode removes
  * the old set BEFORE writing the file's, a statement failure part-way leaves the old
  * set whole rather than a mix of both, and an old backup file — the format is
@@ -10,7 +10,7 @@
  * file is written from the store, which is the complete set, not from the table, which
  * holds only what has been saved since the upgrade until D1.4's migration runs.
  *
- * Per AGENTS.md §11 the seam proves SQL semantics, never concurrency.
+ * Per AGENTS.md §11 the substitute proves SQL semantics, never concurrency.
  */
 const mockFileInstances = new Map<string, { exists: boolean; content: string }>();
 const mockCompressToFile = jest.fn();
@@ -91,7 +91,7 @@ import { authStore } from '../../authStore';
 import { createBackup, restoreBackup, type BackupEntry } from '../../../services/backupService';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 /** A `Child` carrying all five arrays, so a restored track is checked whole. */

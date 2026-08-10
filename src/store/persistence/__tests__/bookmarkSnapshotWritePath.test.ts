@@ -1,10 +1,10 @@
 /**
  * Bookmarks on the shared snapshot table, against REAL SQL on the better-sqlite3-backed
- * op-SQLite seam: the store writes through, a fresh hydrate rebuilds whole `Child`s,
+ * op-SQLite substitute: the store writes through, a fresh hydrate rebuilds whole `Child`s,
  * a RENAME keeps the songs (the `INSERT OR REPLACE` cascade trap), a delete takes them,
  * and the live queue and the bookmarks never touch each other in the one table they share.
  *
- * Per AGENTS.md §11 the seam proves SQL semantics, never concurrency.
+ * Per AGENTS.md §11 the substitute proves SQL semantics, never concurrency.
  */
 jest.mock('../kvStorage', () => require('../__mocks__/kvStorage'));
 
@@ -21,7 +21,7 @@ import {
 import { bookmarksStore, type PlayQueueBookmark } from '../../bookmarksStore';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 /** A `Child` carrying all five arrays plus the field groups the queue UI reads. */

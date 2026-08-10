@@ -1,6 +1,6 @@
 /**
  * The scrobble WRITE path against REAL SQL on the better-sqlite3-backed op-SQLite
- * seam: a live insert writes the five `scrobble_*` child rows alongside the parent,
+ * substitute: a live insert writes the five `scrobble_*` child rows alongside the parent,
  * and never depends on the `song_json` envelope — which is gone from the schema and
  * dropped from an upgrading install at idle, so the last block below drives the write
  * path in BOTH column states.
@@ -10,7 +10,7 @@
  * of an envelope, because nothing writes one: every assertion below is a round trip
  * through the typed columns and the child tables alone.
  *
- * Per AGENTS.md §11 the seam proves SQL semantics, never concurrency.
+ * Per AGENTS.md §11 the substitute proves SQL semantics, never concurrency.
  */
 import type { Child } from 'subsonic-api';
 
@@ -36,7 +36,7 @@ import { resetEnvelopeColumnCache } from '../scrobbleSnapshot';
 import type { CompletedScrobble } from '../../completedScrobbleStore';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 const TIME = 1_700_000_000_000;

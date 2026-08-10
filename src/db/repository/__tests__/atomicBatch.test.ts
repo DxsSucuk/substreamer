@@ -7,7 +7,7 @@
  * kill required) left the parent row alive with its children deleted and never
  * reinserted, which several sites read as "we have this album's detail".
  *
- * Real SQL against the better-sqlite3-backed op-SQLite seam, so the SAVEPOINT and the
+ * Real SQL against the better-sqlite3-backed op-SQLite substitute, so the SAVEPOINT and the
  * constraint violations are the real ones.
  */
 import type { AlbumID3, ArtistID3, Child } from 'subsonic-api';

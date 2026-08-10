@@ -201,7 +201,7 @@ jest.mock('../subsonicService', () => ({
   getCoverArtUrl: jest.fn(() => 'http://example/cov'),
 }));
 
-// The queue worker calls a swappable `imageDownloader` seam. Tests
+// The queue worker downloads through a swappable `imageDownloader`. Tests
 // install a deterministic stub via `__setImageDownloaderForTest()` rather
 // than driving `downloadAndCacheImage`'s full fetch + resize pipeline.
 let mockDownloaderShouldFail = false;
@@ -236,7 +236,7 @@ beforeEach(() => {
   mockHydrateCachedSongs.mockReturnValue({});
   mockGetAllCachedCoverArtIds.mockReturnValue([]);
   mockDownloaderShouldFail = false;
-  // Re-install the downloader stub — the seam may have been reset by
+  // Re-install the downloader stub — it may have been reset by
   // earlier tests calling __setImageDownloaderForTest(undefined).
   __setImageDownloaderForTest(mockDownloader);
 });

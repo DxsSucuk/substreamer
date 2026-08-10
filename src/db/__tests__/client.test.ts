@@ -12,7 +12,7 @@
  * its RELEASE, so recovering from the JS `catch` would leave the savepoint open across a
  * round trip to JS and let the pool commit other writers' work inside it, to be discarded
  * by the ROLLBACK. The recovery is therefore enqueued unconditionally in the same tick —
- * on the success path it is a no-op that fails with "no such savepoint". The seam parks
+ * on the success path it is a no-op that fails with "no such savepoint". The substitute parks
  * both on op-SQLite's transaction lock, so the ISSUE order and the RUN order are both
  * checkable here; what stays device-only is the native pool draining underneath.
  */

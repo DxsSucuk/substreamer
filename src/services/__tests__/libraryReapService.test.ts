@@ -1,5 +1,5 @@
 /**
- * The epoch reap, against REAL SQL on the better-sqlite3-backed op-SQLite seam.
+ * The epoch reap, against REAL SQL on the better-sqlite3-backed op-SQLite substitute.
  *
  * The exclusions are the whole point of the feature, so each one gets a direct test:
  * the reap that deletes a genuinely server-deleted album has to leave a downloaded

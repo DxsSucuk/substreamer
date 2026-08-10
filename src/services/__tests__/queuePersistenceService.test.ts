@@ -1,6 +1,6 @@
 /**
  * The LIVE queue's persistence against REAL SQL on the better-sqlite3-backed op-SQLite
- * seam.
+ * substitute.
  *
  * The first describe asserts that a track change is ONE UPDATE on the parent row, not
  * a re-serialize-and-rewrite of the whole queue. The statement counts are asserted
@@ -10,7 +10,7 @@
  * DB underneath, which is what a relaunch looks like — the restore then has to come
  * out of the rows.
  *
- * Per AGENTS.md §11 the seam proves SQL semantics, never concurrency.
+ * Per AGENTS.md §11 the substitute proves SQL semantics, never concurrency.
  */
 import type { Child } from 'subsonic-api';
 
@@ -28,7 +28,7 @@ import {
 } from '../queuePersistenceService';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 const QUEUE_DEBOUNCE_MS = 1500;
@@ -90,7 +90,7 @@ const liveRow = (): { current_index: number; position_sec: number | null; track_
     'live',
   ]);
 
-/** Let the fire-and-forget writes reach the seam. Microtasks are not enough: a batch
+/** Let the fire-and-forget writes reach the engine. Microtasks are not enough: a batch
  *  is parked on op-SQLite's transaction lock and started from a `setImmediate`, which
  *  this suite's fake timers own. */
 const drain = settleDbWrites;

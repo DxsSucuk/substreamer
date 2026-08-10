@@ -1,5 +1,5 @@
 /**
- * Phase 0.5 proof: the op-SQLite ⇄ better-sqlite3 test seam runs REAL SQL and
+ * Phase 0.5 proof: the op-SQLite ⇄ better-sqlite3 substitute runs REAL SQL and
  * faithfully models the op-SQLite semantics the persistence rebuild relies on —
  * async/sync execute, keyset pagination, atomic transactions, and reactive
  * queries that fire on transaction commit. This is the shared backend every
@@ -12,7 +12,7 @@ jest.mock('@op-engineering/op-sqlite', () =>
 
 const memory = () => open({ name: 'test.db', location: ':memory:' });
 
-describe('op-SQLite ⇄ better-sqlite3 test seam', () => {
+describe('op-SQLite ⇄ better-sqlite3 substitute', () => {
   it('runs real SQL: create / insert / select (async + sync)', async () => {
     const db = memory();
     await db.execute('CREATE TABLE songs (id TEXT PRIMARY KEY, title TEXT, starred INTEGER)');

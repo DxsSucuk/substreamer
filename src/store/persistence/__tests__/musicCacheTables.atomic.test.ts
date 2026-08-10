@@ -8,7 +8,7 @@
  * neither the foreign keys, nor `UNIQUE (item_id, song_id)`, nor the row-at-a-time
  * `PRIMARY KEY (item_id, position)` enforcement those decisions turn on. This
  * suite runs against the generated schema (`src/db/normalizedDdl.ts`, created at
- * import by `persistence/db.ts`) on the better-sqlite3-backed op-SQLite seam,
+ * import by `persistence/db.ts`) on the better-sqlite3-backed op-SQLite substitute,
  * which enables `PRAGMA foreign_keys`.
  */
 import type { Child } from 'subsonic-api';
@@ -29,7 +29,7 @@ import {
 } from '../musicCacheTables';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 /* ------------------------------------------------------------------ */

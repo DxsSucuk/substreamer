@@ -1,6 +1,6 @@
 /**
  * `legacyColumnDropService` against REAL SQL on the better-sqlite3-backed op-SQLite
- * seam — `ALTER TABLE … DROP COLUMN` included, which the vendored SQLite supports on
+ * substitute — `ALTER TABLE … DROP COLUMN` included, which the vendored SQLite supports on
  * both platforms.
  *
  * The load-bearing case is the one that does NOT drop: the backfill swallows every
@@ -8,7 +8,7 @@
  * it must stop the column that feeds it being destroyed. Everything else here is the
  * write path staying correct on both sides of the drop.
  *
- * Per AGENTS.md §11 the seam proves SQL semantics, never concurrency.
+ * Per AGENTS.md §11 the substitute proves SQL semantics, never concurrency.
  */
 import type { Child } from 'subsonic-api';
 
@@ -36,7 +36,7 @@ import type { CompletedScrobble } from '../../store/completedScrobbleStore';
 import type { PendingScrobble } from '../../store/pendingScrobbleStore';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 const TABLES = ['scrobble_events', 'pending_scrobble_events'] as const;

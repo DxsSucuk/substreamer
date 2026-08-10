@@ -1,6 +1,6 @@
 /**
  * The `favorite_*` remainder against REAL SQL on the better-sqlite3-backed op-SQLite
- * seam: the entity round trip through the columns, and — the load-bearing part — the
+ * substitute: the entity round trip through the columns, and — the load-bearing part — the
  * per-row gate that decides whether an item comes from its columns or from the legacy
  * `json` envelope.
  *
@@ -9,7 +9,7 @@
  * `__starred__` download. Reading a row through columns it does not have yet is a user's
  * favourites silently vanishing, so the gate is asserted directly rather than inferred.
  *
- * Per AGENTS.md §11 the seam proves SQL semantics, never concurrency.
+ * Per AGENTS.md §11 the substitute proves SQL semantics, never concurrency.
  */
 import type { AlbumID3, ArtistID3, Child } from 'subsonic-api';
 

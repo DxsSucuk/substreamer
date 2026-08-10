@@ -1,6 +1,6 @@
 /**
- * Write ORDER through the music-cache tables, against the submission model the seam
- * reproduces (`src/db/testing/opSqliteBetterSqlite3.ts`): a batch is parked on
+ * Write ORDER through the music-cache tables, against the submission model the Jest
+ * SQLite substitute reproduces (`src/db/testing/opSqliteBetterSqlite3.ts`): a batch is parked on
  * op-SQLite's transaction lock and started a macrotask later, while a read — or a
  * bare `runAsync` write — reaches the engine at call time and overtakes it.
  *

@@ -150,7 +150,7 @@ export function initFailover(): void {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Test seam — reset module state between test cases.                  */
+/*  Test-only — reset module state between test cases.                  */
 /* ------------------------------------------------------------------ */
 
 export function _resetForTest(): void {

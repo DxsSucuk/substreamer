@@ -5,7 +5,7 @@
  * call.
  *
  * Runs against the generated schema (`src/db/normalizedDdl.ts`, created at import
- * by `persistence/db.ts`) on the better-sqlite3-backed op-SQLite seam. Two things
+ * by `persistence/db.ts`) on the better-sqlite3-backed op-SQLite substitute. Two things
  * the module owns are only expressible there: the `(cover_art_id, size)` primary
  * key the upsert conflicts on, and the `NOT IN (SELECT … FROM
  * image_download_queue)` filter that keeps an in-flight cover out of the
@@ -30,7 +30,7 @@ import {
 } from '../imageCacheTable';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 function seedRow(overrides?: Partial<CachedImageRow>): CachedImageRow {

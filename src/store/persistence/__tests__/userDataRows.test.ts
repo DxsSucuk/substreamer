@@ -1,6 +1,6 @@
 /**
  * `mbid_overrides` and `scrobble_exclusions` — the write path, the hydration gate and
- * migration 42 — against REAL SQL on the better-sqlite3-backed op-SQLite seam.
+ * migration 42 — against REAL SQL on the better-sqlite3-backed op-SQLite substitute.
  *
  * The load-bearing case is the UNMIGRATED one. Both stores are `persist`-wrapped, so
  * every `set` re-serialises the partialized slice back to KV: a hydrate that read an
@@ -8,7 +8,7 @@
  * user typed by hand. So the assertions here are as much about what does NOT happen as
  * what does.
  *
- * Per AGENTS.md §11 the seam proves SQL semantics, never concurrency.
+ * Per AGENTS.md §11 the substitute proves SQL semantics, never concurrency.
  */
 jest.mock('../kvStorage', () => require('../__mocks__/kvStorage'));
 
@@ -38,7 +38,7 @@ import {
 } from '../../../db/createNormalizedTables';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 const OVERRIDES_KEY = 'substreamer-mbid-overrides';

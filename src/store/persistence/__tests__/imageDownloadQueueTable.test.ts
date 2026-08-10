@@ -5,7 +5,7 @@
  * all, and a handle that throws on every call.
  *
  * Runs against the generated schema (`src/db/normalizedDdl.ts`, created at import
- * by `persistence/db.ts`) on the better-sqlite3-backed op-SQLite seam. The enqueue
+ * by `persistence/db.ts`) on the better-sqlite3-backed op-SQLite substitute. The enqueue
  * is the reason this suite has to: it is one `INSERT OR IGNORE … SELECT … FROM
  * json_each(?)`, so `json_each`, the PK conflict and the `changes` it returns are
  * all engine behaviour — and that count is the image-refresh banner's
@@ -26,7 +26,7 @@ import {
 } from '../imageDownloadQueueTable';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 interface RawRow {

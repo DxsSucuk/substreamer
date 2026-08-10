@@ -1,6 +1,6 @@
 /**
  * `synced_at` — the stamp every `albums`/`songs` writer leaves, against REAL SQL on
- * the better-sqlite3-backed op-SQLite seam.
+ * the better-sqlite3-backed op-SQLite substitute.
  *
  * It lives in `bulkUpsert`, so it has to hold under BOTH upsert policies. The merge
  * policy is `COALESCE(excluded.col, col)`; the stamp is always supplied, so `excluded`

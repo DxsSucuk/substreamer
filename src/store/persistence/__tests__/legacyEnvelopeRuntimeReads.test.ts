@@ -10,7 +10,7 @@
  * `raw_json` / `meta_v` cannot blank them, so the migration path keeps its source.
  *
  * Every rule here is a property of REAL SQL. So this suite runs the generated
- * schema on the better-sqlite3-backed op-SQLite seam, against the real store.
+ * schema on the better-sqlite3-backed op-SQLite substitute, against the real store.
  */
 jest.mock('../../../services/subsonicService');
 jest.mock('../kvStorage', () => require('../__mocks__/kvStorage'));
@@ -30,7 +30,7 @@ import { getSongEnvelope, musicCacheStore } from '../../musicCacheStore';
 import { getOfflineGenresPresent, getOfflineSongsByGenre } from '../../../services/searchService';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 const CREATED_ISO = '2019-03-11T09:15:00.000Z';

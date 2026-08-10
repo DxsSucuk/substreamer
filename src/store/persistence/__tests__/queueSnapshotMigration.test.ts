@@ -1,12 +1,12 @@
 /**
  * Migration 36 — the pre-upgrade KV blobs into `queue_snapshots`, against REAL SQL on
- * the better-sqlite3-backed op-SQLite seam.
+ * the better-sqlite3-backed op-SQLite substitute.
  *
  * The load-bearing case is the failing one: a bookmark has no source to refetch from,
  * so when the rows do not take the write the KV key must still be there afterwards.
  * That is the difference between recoverable and gone.
  *
- * Per AGENTS.md §11 the seam proves SQL semantics, never concurrency.
+ * Per AGENTS.md §11 the substitute proves SQL semantics, never concurrency.
  */
 jest.mock('../kvStorage', () => require('../__mocks__/kvStorage'));
 
@@ -26,7 +26,7 @@ import {
 import { bookmarksStore, type PlayQueueBookmark } from '../../bookmarksStore';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 const BOOKMARKS_KEY = 'substreamer-bookmarks';

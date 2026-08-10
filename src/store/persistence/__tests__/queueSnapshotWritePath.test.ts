@@ -1,10 +1,10 @@
 /**
  * The queue-snapshot repository against REAL SQL on the better-sqlite3-backed
- * op-SQLite seam: order preservation, the SPLIT write (a cursor move must not touch
+ * op-SQLite substitute: order preservation, the SPLIT write (a cursor move must not touch
  * the songs), positional truncation, the FK cascades, and the parent upsert that must
  * NOT behave like `INSERT OR REPLACE`.
  *
- * Per AGENTS.md §11 the seam proves SQL semantics, never concurrency.
+ * Per AGENTS.md §11 the substitute proves SQL semantics, never concurrency.
  */
 import type { Child } from 'subsonic-api';
 
@@ -21,7 +21,7 @@ import {
 } from '../queueSnapshotTable';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 /** Every column the snapshot table carries, plus the five arrays. */

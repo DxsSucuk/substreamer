@@ -2200,7 +2200,7 @@ function connectivityAllowsImageWork(): boolean {
 }
 
 /**
- * Test seam — the queue worker calls this rather than `downloadAndCacheImage`
+ * Test-only — the queue worker calls this rather than `downloadAndCacheImage`
  * directly so tests can swap it for a deterministic stub. Production code
  * uses the default (real `downloadAndCacheImage`).
  */

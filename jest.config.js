@@ -80,7 +80,7 @@ module.exports = {
     // drizzle-kit's schema source: the DDL is generated from it ahead of time
     // (`normalizedDdl.ts`), so nothing imports it at runtime.
     '!src/db/schema.ts',
-    // The op-SQLite ⇄ better-sqlite3 Jest seam — test infrastructure.
+    // The op-SQLite ⇄ better-sqlite3 Jest substitute — test infrastructure.
     '!src/db/testing/**',
   ],
 };

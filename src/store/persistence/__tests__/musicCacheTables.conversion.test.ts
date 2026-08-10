@@ -11,7 +11,7 @@
  * file-fact split, the `json_group_array` genre projection and the FK cascades.
  * This suite therefore runs against the generated schema (`src/db/normalizedDdl.ts`,
  * created at import by `persistence/db.ts`) on the better-sqlite3-backed
- * op-SQLite seam, which enables `PRAGMA foreign_keys`.
+ * op-SQLite substitute, which enables `PRAGMA foreign_keys`.
  */
 import { __setDbForTests, getDb, type InternalDb } from '../db';
 import {
@@ -24,7 +24,7 @@ import {
 } from '../musicCacheTables';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 /** The live better-sqlite3-backed handle. Tests that swap in a wrapper restore this. */
 const realDb: InternalDb = handle;
 

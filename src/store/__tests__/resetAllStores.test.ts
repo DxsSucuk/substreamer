@@ -12,7 +12,7 @@ jest.mock('../persistence/kvStorage', () => {
     clearKvStorage: jest.fn(),
   };
 });
-// Partial: `openDbConnection` must stay real (persistence/db opens the seam with it).
+// Partial: `openDbConnection` must stay real (persistence/db opens the substitute with it).
 // Only `awaitDbWritesIdle` is wrapped, so the guard in front of the DROP loop is
 // assertable — it is one easily-deleted line standing between logout and a
 // nested-BEGIN failure that skips the rest of the teardown.
@@ -203,7 +203,7 @@ describe('resetAllStores', () => {
   it('waits for the pool to be write-idle BEFORE the DROP loop', async () => {
     // `resetNormalizedSchema`'s `BEGIN` runs on the JS thread and bypasses the pool, so
     // it hard-fails on Android if a pool transaction is still open. Ordering is the
-    // whole point of the guard — asserted here because the seam runs everything
+    // whole point of the guard — asserted here because the substitute runs everything
     // synchronously and cannot reproduce the overlap itself.
     const handle = getDb()!;
     const withTransactionSync = jest.spyOn(handle, 'withTransactionSync');

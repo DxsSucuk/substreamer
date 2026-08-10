@@ -3,7 +3,7 @@
  *
  * Owns the single DB connection (`openDbConnection` in `@/db/client`, which applies
  * the PRAGMAs), the boot-time one-time heals, schema creation for every table the
- * app uses, health reporting, and the test-injection seam. Every other module in
+ * app uses, health reporting, and the test-injection hook. Every other module in
  * `src/store/persistence/` (the Zustand StateStorage adapter + the row-table query
  * helpers) pulls its handle from `getDb()` instead of opening its own.
  *
@@ -142,7 +142,7 @@ export function isDbHealthy(): boolean {
 export const dbInitError: Error | null = initError;
 
 /**
- * Test-only: swap the shared handle. The sole `__setDbForTests` seam for every
+ * Test-only: swap the shared handle. The single injection point for every
  * persistence module.
  */
 export function __setDbForTests(fake: InternalDb | null): void {

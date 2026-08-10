@@ -8,7 +8,7 @@
  * contributor aborts the whole batch — losing the row, not just the entry. The
  * shared builder guards both tables at once, so both are asserted here.
  *
- * Per AGENTS.md §11 the seam proves SQL semantics, never concurrency.
+ * Per AGENTS.md §11 the substitute proves SQL semantics, never concurrency.
  */
 import type { Child } from 'subsonic-api';
 
@@ -17,7 +17,7 @@ import { getDb, type InternalDb } from '@/store/persistence/db';
 import { childSnapshotArrayCommands } from '../childSnapshot';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 /** Every shape a NOT NULL child column rejects, interleaved with good entries so a

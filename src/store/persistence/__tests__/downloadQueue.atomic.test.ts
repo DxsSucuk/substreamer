@@ -6,7 +6,7 @@
  * `musicCacheTables.test.ts` cannot model: SQLite re-checks a unique index after
  * EVERY row of an UPDATE, and a duplicate INSERT has to be rejected. This suite
  * runs the generated schema (`src/db/normalizedDdl.ts`) on the better-sqlite3-backed
- * op-SQLite seam.
+ * op-SQLite substitute.
  *
  * Two halves:
  *  - the boot heal in `persistence/db.ts`, exercised by booting the module against
@@ -24,7 +24,7 @@ import {
 } from '../musicCacheTables';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 const CREATE_DOWNLOAD_QUEUE = NORMALIZED_DDL.find((s) =>

@@ -10,7 +10,7 @@
  * tables. What pending loses, the listening history loses too — which is why this asserts the whole
  * `Child` at the `addCompleted` hand-off and again after it lands in `scrobble_events`.
  *
- * Per AGENTS.md §11 the seam proves SQL semantics, never concurrency.
+ * Per AGENTS.md §11 the substitute proves SQL semantics, never concurrency.
  */
 jest.mock('../../../services/subsonicService');
 jest.mock('../../../services/playStatsService', () => ({ applyLocalPlay: jest.fn() }));
@@ -25,7 +25,7 @@ import { getDb, type InternalDb } from '../db';
 import { hydrateScrobblesAsync } from '../scrobbleTable';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 const mockGetApi = getApi as jest.Mock;

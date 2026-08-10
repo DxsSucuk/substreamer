@@ -1,5 +1,5 @@
 /**
- * `download_queue_songs` against REAL SQL on the better-sqlite3-backed op-SQLite seam:
+ * `download_queue_songs` against REAL SQL on the better-sqlite3-backed op-SQLite substitute:
  * the round trip, the FK cascades, and — the load-bearing part — the per-row gate that
  * decides whether a queue item's payload comes from the rows or from the legacy
  * `songs_json`.
@@ -10,7 +10,7 @@
  * Reading a row through the child table before it holds any is how a queued download
  * gets silently marked complete.
  *
- * Per AGENTS.md §11 the seam proves SQL semantics, never concurrency.
+ * Per AGENTS.md §11 the substitute proves SQL semantics, never concurrency.
  */
 import type { Child } from 'subsonic-api';
 
@@ -30,7 +30,7 @@ import {
 } from '../musicCacheTables';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 /** Every column the snapshot carries, plus the five arrays — so "arrays intact" is a

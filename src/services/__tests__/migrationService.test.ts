@@ -23,7 +23,7 @@ jest.mock('../imageCacheService', () => ({
 // The runner REFUSES to run when the DB is unavailable: a version misread as 0 must
 // NOT re-run every migration on an already-loaded app (that repeated the destructive
 // image-cache re-key wipes m25/m29 in prod and deleted the on-disk cache). The test DB
-// is healthy (op-SQLite better-sqlite3 seam), so default isDbHealthy TRUE; the guard
+// is healthy (op-SQLite better-sqlite3 substitute), so default isDbHealthy TRUE; the guard
 // tests flip it false to assert NOTHING runs.
 jest.mock('../../store/persistence/db', () => {
   const actual = jest.requireActual('../../store/persistence/db');

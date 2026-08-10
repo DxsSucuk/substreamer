@@ -1,13 +1,13 @@
 /**
  * `scrobble_events` writes, read back through `hydrateScrobblesAsync`, against REAL
- * SQL on the better-sqlite3-backed op-SQLite seam.
+ * SQL on the better-sqlite3-backed op-SQLite substitute.
  *
- * Uses the real seam, not a hand-rolled fake: a fake storing `(id, song_json, time)`
+ * Uses the substitute, not a hand-rolled fake: a fake storing `(id, song_json, time)`
  * and matching statements by SQL prefix cannot represent the 37 typed columns the
  * readers reconstruct from — any SELECT-list change makes it return `[]` and fail
  * like a logic bug.
  *
- * Per AGENTS.md §11 the seam proves SQL semantics, never concurrency.
+ * Per AGENTS.md §11 the substitute proves SQL semantics, never concurrency.
  */
 import { __setDbForTests, getDb, type InternalDb } from '../db';
 import {
@@ -19,7 +19,7 @@ import {
 } from '../scrobbleTable';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 function makeScrobble(overrides?: Record<string, any>): any {

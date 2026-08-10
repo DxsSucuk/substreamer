@@ -1,6 +1,6 @@
 /**
  * Migration 38 — the `genres` and `shares` KV blobs into their tables, against REAL SQL
- * on the better-sqlite3-backed op-SQLite seam.
+ * on the better-sqlite3-backed op-SQLite substitute.
  *
  * The load-bearing property is that both blobs are MIGRATED rather than dropped: the
  * share browser renders its empty state off `shares.length === 0`, so a dropped blob
@@ -8,7 +8,7 @@
  * failing case: when the rows do not take the write, the KV key must still be there
  * afterwards so the next launch retries.
  *
- * Per AGENTS.md §11 the seam proves SQL semantics, never concurrency.
+ * Per AGENTS.md §11 the substitute proves SQL semantics, never concurrency.
  */
 jest.mock('../kvStorage', () => require('../__mocks__/kvStorage'));
 
@@ -25,7 +25,7 @@ import { sharesStore } from '../../sharesStore';
 import type { Genre, Share } from '../../../services/subsonicService';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 const GENRES_KEY = 'substreamer-genres';

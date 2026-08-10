@@ -1,14 +1,14 @@
 /**
  * The four scrobble readers reconstructing a `Child` from the typed columns + the
  * five `scrobble_*` child tables, against REAL SQL on the better-sqlite3-backed
- * op-SQLite seam.
+ * op-SQLite substitute.
  *
  * Rows are seeded as an upgrading install leaves them — envelope only — and populated
  * by `backfillScrobbleColumnsAsync`, so reading back through the readers is a genuine
  * round trip through the columns, not through the blob. That shape needs the pre-drop
  * table, which the generated schema no longer produces, so each case rebuilds it.
  *
- * Per AGENTS.md §11 the seam proves SQL semantics, never concurrency.
+ * Per AGENTS.md §11 the substitute proves SQL semantics, never concurrency.
  */
 import type { Child } from 'subsonic-api';
 
@@ -24,7 +24,7 @@ import { backfillScrobbleColumnsAsync, hydrateScrobblesAsync } from '../scrobble
 import { createLegacyScrobbleTables } from '../../../test-utils/legacyScrobbleTables';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 const TIME = 1_700_000_000_000;

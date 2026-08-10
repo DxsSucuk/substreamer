@@ -13,7 +13,7 @@
  * cascades of the rows it writes).
  *
  * Runs against the generated schema (`src/db/normalizedDdl.ts`, created at import by
- * `persistence/db.ts`) on the better-sqlite3-backed op-SQLite seam, which enables
+ * `persistence/db.ts`) on the better-sqlite3-backed op-SQLite substitute, which enables
  * `PRAGMA foreign_keys` — so an edge needs its item AND its song to exist.
  */
 import { __setDbForTests, getDb, type InternalDb } from '../db';
@@ -54,7 +54,7 @@ import {
 } from '../musicCacheTables';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 /* ------------------------------------------------------------------ */

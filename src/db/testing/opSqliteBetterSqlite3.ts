@@ -4,7 +4,7 @@
  * op-SQLite is a native TurboModule — it cannot load under Node/Jest (its own Node
  * build is broken in the shipped package), so every DB-touching test needs a stand-in.
  * This adapter presents op-SQLite's real API shape backed by an in-memory
- * `better-sqlite3`, so tests run REAL SQL through one shared seam rather than
+ * `better-sqlite3`, so tests run REAL SQL through one shared adapter rather than
  * hand-rolled SQL-string-matching fakes.
  *
  * Wire it up per-suite (or via `moduleNameMapper`):
@@ -99,7 +99,7 @@ function makeDb(bs: Database.Database, dbPath: string): DB {
    *
    * So a read — or a bare `runAsync` write — issued AFTER a batch is applied BEFORE
    * it. That is ordinary JS scheduling, not native concurrency, so it belongs in the
-   * seam: applying batches synchronously here hid two shipped write-ordering bugs.
+   * adapter: applying batches synchronously here hid two shipped write-ordering bugs.
    */
   const lock = { queue: [] as Array<() => void>, inProgress: false };
 

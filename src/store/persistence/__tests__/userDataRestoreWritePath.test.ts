@@ -1,6 +1,6 @@
 /**
  * Backup RESTORE onto `mbid_overrides` and `scrobble_exclusions`, against REAL SQL on the
- * better-sqlite3-backed op-SQLite seam: merge mode writes the merged-in entries through
+ * better-sqlite3-backed op-SQLite substitute: merge mode writes the merged-in entries through
  * without disturbing the ones that won their collision, replace mode removes the old set
  * BEFORE writing the file's, a failure part-way leaves the old set whole rather than a
  * mix, and an old backup file — the format is unchanged — still restores in both modes.
@@ -14,7 +14,7 @@
  * written from the store, which is the complete set, not from the table, which holds only
  * what has been written since the upgrade until migration 42 runs.
  *
- * Per AGENTS.md §11 the seam proves SQL semantics, never concurrency.
+ * Per AGENTS.md §11 the substitute proves SQL semantics, never concurrency.
  */
 const mockFileInstances = new Map<string, { exists: boolean; content: string }>();
 const mockCompressToFile = jest.fn();
@@ -93,7 +93,7 @@ import { authStore } from '../../authStore';
 import { createBackup, restoreBackup, type BackupEntry } from '../../../services/backupService';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 const STEM = 'backup-test';

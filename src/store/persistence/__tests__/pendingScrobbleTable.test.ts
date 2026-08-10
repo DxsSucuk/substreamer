@@ -1,6 +1,6 @@
 /**
  * `pending_scrobble_events` against REAL SQL on the better-sqlite3-backed op-SQLite
- * seam: the offline queue stores the same `Child` snapshot the completed table does —
+ * substitute: the offline queue stores the same `Child` snapshot the completed table does —
  * typed columns plus five `pending_scrobble_*` child tables — and never depends on the
  * `song_json` envelope. The backfill block below is the exception: it is written for
  * the pre-drop table, so it rebuilds it.
@@ -10,7 +10,7 @@
  * child tables' FK/cascade. Same test intents, real SQL — the precedent
  * `scrobbleTable.test.ts` set in step 4.5.
  *
- * Per AGENTS.md §11 the seam proves SQL semantics, never concurrency.
+ * Per AGENTS.md §11 the substitute proves SQL semantics, never concurrency.
  */
 import type { Child } from 'subsonic-api';
 
@@ -33,7 +33,7 @@ import {
 import type { PendingScrobble } from '../../pendingScrobbleStore';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 const TIME = 1_700_000_000_000;

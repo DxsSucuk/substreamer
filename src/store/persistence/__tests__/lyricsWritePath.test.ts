@@ -1,13 +1,13 @@
 /**
  * The lyrics READ/WRITE path against REAL SQL on the better-sqlite3-backed op-SQLite
- * seam: one parent row plus its positional `lyric_lines`, written per song.
+ * substitute: one parent row plus its positional `lyric_lines`, written per song.
  *
  * The last describe asserts the write cost stays proportional to the one song, not the
  * cache: a single KV blob re-stringified in full on every fetch makes storing one song
  * grow with every song already stored. The statement count is asserted directly rather
  * than inspected.
  *
- * Per AGENTS.md §11 the seam proves SQL semantics, never concurrency.
+ * Per AGENTS.md §11 the substitute proves SQL semantics, never concurrency.
  */
 jest.mock('../../../services/subsonicService', () => ({
   __esModule: true,
@@ -28,7 +28,7 @@ import { getLyricsForTrack, type LyricsData } from '../../../services/subsonicSe
 import { lyricsStore } from '../../lyricsStore';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 const mockGetLyrics = getLyricsForTrack as jest.MockedFunction<typeof getLyricsForTrack>;

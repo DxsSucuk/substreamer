@@ -112,7 +112,7 @@ export function runLegacyColumnDropIfNeeded(): Promise<void> {
   return inFlight;
 }
 
-/** Test seam: drop the shared in-flight promise between cases. */
+/** Test-only: drop the shared in-flight promise between cases. */
 export const __resetLegacyColumnDropForTests = (): void => {
   inFlight = null;
 };

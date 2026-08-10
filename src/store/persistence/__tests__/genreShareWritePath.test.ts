@@ -1,13 +1,13 @@
 /**
  * The `genres` and `shares`/`share_entries` repositories, against REAL SQL on the
- * better-sqlite3-backed op-SQLite seam: a share's entries round-trip in order, deleting
+ * better-sqlite3-backed op-SQLite substitute: a share's entries round-trip in order, deleting
  * a share cascades them, and both writes replace the set rather than accumulating it.
  *
  * `share_entries` holds a SNAPSHOT, not a reference into `songs` — the entry-shaped
  * assertions here are what the share list and the edit sheet render, and they must
  * survive a song that is not in the library.
  *
- * Per AGENTS.md §11 the seam proves SQL semantics, never concurrency.
+ * Per AGENTS.md §11 the substitute proves SQL semantics, never concurrency.
  */
 jest.mock('../kvStorage', () => require('../__mocks__/kvStorage'));
 
@@ -20,7 +20,7 @@ import { deleteShareRow, readShares, replaceShares } from '../sharesTable';
 import type { Genre, Share } from '../../../services/subsonicService';
 
 const handle = getDb();
-if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite substitute failed to open');
 const realDb: InternalDb = handle;
 
 const entry = (id: string, overrides: Partial<Child> = {}): Child =>
