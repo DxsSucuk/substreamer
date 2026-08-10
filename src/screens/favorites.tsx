@@ -209,8 +209,7 @@ export function FavoritesScreen() {
   const contentInsetTop = headerHeight + segmentHeight;
 
   // Count + duration as two SQL aggregates over the favourites set — never a whole-set
-  // read, and never a JSON parse of the remainder (`favorite_songs.duration` is a
-  // column for exactly this).
+  // read. Both halves store `duration` as a column, so this stays an aggregate.
   const [totals, setTotals] = useState({ count: 0, duration: 0 });
   useEffect(() => {
     let alive = true;

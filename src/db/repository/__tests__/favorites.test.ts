@@ -134,16 +134,22 @@ describe('marks on library rows', () => {
 });
 
 describe('the remainder tables', () => {
-  it('holds the verbatim envelope, with duration as a hot column', async () => {
+  it('holds the entity in columns, leaving the legacy envelope column empty', async () => {
     await replaceFavoriteSongs(db(), [
       song('r1', { starred: new Date(900), duration: 42, genre: 'Jazz' }),
     ]);
-    const row = db().getFirstSync<{ id: string; starred: number; duration: number; json: string }>(
-      'SELECT * FROM favorite_songs',
-    );
+    const row = db().getFirstSync<{
+      starred: number;
+      duration: number;
+      genre: string;
+      title: string;
+      json: string;
+    }>('SELECT * FROM favorite_songs');
     expect(row?.starred).toBe(900);
     expect(row?.duration).toBe(42);
-    expect((JSON.parse(row!.json) as Child).genre).toBe('Jazz');
+    expect(row?.genre).toBe('Jazz');
+    expect(row?.title).toBe('Song r1');
+    expect(row?.json).toBe('');
   });
 
   it('stores 0 when the server sent no date, and reads it back as undefined', async () => {

@@ -67,7 +67,13 @@ describe('ensureNormalizedSchema', () => {
 
   it('drops the favourites remainder tables on logout (they are server-scoped)', () => {
     const droppable = new Set(normalizedTableNames());
-    for (const t of ['favorite_songs', 'favorite_albums', 'favorite_artists']) {
+    for (const t of [
+      'favorite_songs', 'favorite_song_genres', 'favorite_song_artists',
+      'favorite_song_album_artists', 'favorite_song_contributors', 'favorite_song_moods',
+      'favorite_albums', 'favorite_album_genres', 'favorite_album_artists',
+      'favorite_album_release_types', 'favorite_album_moods', 'favorite_album_record_labels',
+      'favorite_album_disc_titles', 'favorite_artists', 'favorite_artist_roles',
+    ]) {
       expect(droppable.has(t)).toBe(true);
     }
   });

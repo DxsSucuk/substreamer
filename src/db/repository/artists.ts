@@ -39,7 +39,7 @@ export interface ArtistListRow extends ArtistColumns {
 
 /** Typed against the row so a stale or misspelled column is a compile error, and the
  *  COLS string derives from it so the SQL cannot drift from the row type. */
-const ARTIST_LIST_FIELDS: readonly (keyof ArtistColumns)[] = [
+export const ARTIST_LIST_FIELDS: readonly (keyof ArtistColumns)[] = [
   'id', 'name', 'sort_name', 'sort_title', 'cover_art', 'artist_image_url', 'album_count',
   'starred', 'user_rating', 'music_brainz_id',
 ];
@@ -72,12 +72,17 @@ export function artistListRowToArtistID3(r: ArtistListRow): LibraryArtist {
 }
 
 /** Attach `artist_roles` to a page of artist rows — one batched query, stitched in
- *  JS. Rows with no roles keep the key absent rather than holding an empty array. */
-export async function hydrateArtistRows(db: InternalDb, rows: ArtistListRow[]): Promise<void> {
+ *  JS. Rows with no roles keep the key absent rather than holding an empty array.
+ *  `prefix` names the child-table family — see {@link hydrateAlbumRows}. */
+export async function hydrateArtistRows(
+  db: InternalDb,
+  rows: ArtistListRow[],
+  prefix = 'artist',
+): Promise<void> {
   if (rows.length === 0) return;
   const roles = await fetchChildren<{ role: string }, string>(
     db,
-    { table: 'artist_roles', parentCol: 'artist_id', columns: ['role'] },
+    { table: `${prefix}_roles`, parentCol: 'artist_id', columns: ['role'] },
     rows.map((r) => r.id),
     (c) => c.role,
   );

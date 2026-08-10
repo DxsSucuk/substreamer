@@ -508,30 +508,209 @@ CREATE TABLE `download_queue_songs` (
 );
 --> statement-breakpoint
 CREATE INDEX `idx_download_queue_songs_song_id` ON `download_queue_songs` (`song_id`);--> statement-breakpoint
+CREATE TABLE `favorite_album_artists` (
+	`album_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`artist_id` text,
+	`artist_name` text,
+	PRIMARY KEY(`album_id`, `pos`),
+	FOREIGN KEY (`album_id`) REFERENCES `favorite_albums`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `favorite_album_disc_titles` (
+	`album_id` text NOT NULL,
+	`disc` integer NOT NULL,
+	`title` text NOT NULL,
+	PRIMARY KEY(`album_id`, `disc`),
+	FOREIGN KEY (`album_id`) REFERENCES `favorite_albums`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `favorite_album_genres` (
+	`album_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`name` text NOT NULL,
+	PRIMARY KEY(`album_id`, `pos`),
+	FOREIGN KEY (`album_id`) REFERENCES `favorite_albums`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `favorite_album_moods` (
+	`album_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`mood` text NOT NULL,
+	PRIMARY KEY(`album_id`, `pos`),
+	FOREIGN KEY (`album_id`) REFERENCES `favorite_albums`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `favorite_album_record_labels` (
+	`album_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`name` text NOT NULL,
+	PRIMARY KEY(`album_id`, `pos`),
+	FOREIGN KEY (`album_id`) REFERENCES `favorite_albums`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `favorite_album_release_types` (
+	`album_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`name` text NOT NULL,
+	PRIMARY KEY(`album_id`, `pos`),
+	FOREIGN KEY (`album_id`) REFERENCES `favorite_albums`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
 CREATE TABLE `favorite_albums` (
 	`id` text PRIMARY KEY NOT NULL,
 	`starred` integer NOT NULL,
 	`sort_title` text,
 	`sort_artist` text,
-	`json` text NOT NULL
+	`json` text NOT NULL,
+	`name` text,
+	`artist_id` text,
+	`artist` text,
+	`display_artist` text,
+	`cover_art` text,
+	`song_count` integer,
+	`duration` integer,
+	`play_count` integer,
+	`created` integer,
+	`year` integer,
+	`genre` text,
+	`played` text,
+	`user_rating` integer,
+	`version` text,
+	`music_brainz_id` text,
+	`sort_name` text,
+	`is_compilation` integer,
+	`explicit_status` text,
+	`original_release_year` integer,
+	`original_release_month` integer,
+	`original_release_day` integer,
+	`release_year` integer,
+	`release_month` integer,
+	`release_day` integer
 );
 --> statement-breakpoint
 CREATE INDEX `idx_favorite_albums_starred_key` ON `favorite_albums` (`starred`,`id`);--> statement-breakpoint
+CREATE TABLE `favorite_artist_roles` (
+	`artist_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`role` text NOT NULL,
+	PRIMARY KEY(`artist_id`, `pos`),
+	FOREIGN KEY (`artist_id`) REFERENCES `favorite_artists`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
 CREATE TABLE `favorite_artists` (
 	`id` text PRIMARY KEY NOT NULL,
 	`starred` integer NOT NULL,
 	`sort_title` text,
-	`json` text NOT NULL
+	`json` text NOT NULL,
+	`name` text,
+	`sort_name` text,
+	`cover_art` text,
+	`artist_image_url` text,
+	`album_count` integer,
+	`user_rating` integer,
+	`music_brainz_id` text
 );
 --> statement-breakpoint
 CREATE INDEX `idx_favorite_artists_starred_key` ON `favorite_artists` (`starred`,`id`);--> statement-breakpoint
+CREATE TABLE `favorite_song_album_artists` (
+	`song_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`artist_id` text,
+	`artist_name` text,
+	PRIMARY KEY(`song_id`, `pos`),
+	FOREIGN KEY (`song_id`) REFERENCES `favorite_songs`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `favorite_song_artists` (
+	`song_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`artist_id` text,
+	`artist_name` text,
+	PRIMARY KEY(`song_id`, `pos`),
+	FOREIGN KEY (`song_id`) REFERENCES `favorite_songs`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `favorite_song_contributors` (
+	`song_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`role` text NOT NULL,
+	`sub_role` text,
+	`artist_id` text,
+	`artist_name` text,
+	PRIMARY KEY(`song_id`, `pos`),
+	FOREIGN KEY (`song_id`) REFERENCES `favorite_songs`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `favorite_song_genres` (
+	`song_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`name` text NOT NULL,
+	PRIMARY KEY(`song_id`, `pos`),
+	FOREIGN KEY (`song_id`) REFERENCES `favorite_songs`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `favorite_song_moods` (
+	`song_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`mood` text NOT NULL,
+	PRIMARY KEY(`song_id`, `pos`),
+	FOREIGN KEY (`song_id`) REFERENCES `favorite_songs`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
 CREATE TABLE `favorite_songs` (
 	`id` text PRIMARY KEY NOT NULL,
 	`starred` integer NOT NULL,
 	`duration` integer,
 	`sort_title` text,
 	`sort_artist` text,
-	`json` text NOT NULL
+	`json` text NOT NULL,
+	`title` text,
+	`artist` text,
+	`album` text,
+	`cover_art` text,
+	`album_id` text,
+	`suffix` text,
+	`bit_rate` integer,
+	`bit_depth` integer,
+	`sampling_rate` integer,
+	`artist_id` text,
+	`display_artist` text,
+	`display_album_artist` text,
+	`display_composer` text,
+	`track` integer,
+	`disc_number` integer,
+	`year` integer,
+	`genre` text,
+	`size` integer,
+	`content_type` text,
+	`transcoded_content_type` text,
+	`transcoded_suffix` text,
+	`channel_count` integer,
+	`path` text,
+	`user_rating` integer,
+	`average_rating` real,
+	`play_count` integer,
+	`created` integer,
+	`played` text,
+	`type` text,
+	`bpm` integer,
+	`comment` text,
+	`sort_name` text,
+	`music_brainz_id` text,
+	`explicit_status` text,
+	`bookmark_position` integer,
+	`is_video` integer,
+	`is_dir` integer,
+	`parent` text,
+	`original_width` integer,
+	`original_height` integer,
+	`rg_track_gain` real,
+	`rg_album_gain` real,
+	`rg_track_peak` real,
+	`rg_album_peak` real,
+	`rg_base_gain` real,
+	`rg_fallback_gain` real
 );
 --> statement-breakpoint
 CREATE INDEX `idx_favorite_songs_starred_key` ON `favorite_songs` (`starred`,`id`);--> statement-breakpoint

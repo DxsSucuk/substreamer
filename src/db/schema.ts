@@ -243,41 +243,100 @@ export const playlists = sqliteTable(
 //
 // Favourites are marked on the library row (`songs`/`albums`/`artists`.`starred`).
 // A row in those tables means "the library sync put it here", so the favourites
-// reconcile never INSERTs one; a starred item with no library row goes here instead,
-// holding the verbatim `getStarred2` envelope so it renders at full fidelity.
-// Normally EMPTY — the library sync enumerates everything the server has.
+// reconcile never INSERTs one; a starred item with no library row goes here instead.
+// Normally EMPTY — but a fresh install, a logout or a full resync empties the library
+// tables, and then EVERY favourite lands here until the next library sync.
+//
+// Each table carries the full column set of the mapper that owns its entity type
+// (`childSnapshot` for `Child`, the `albums`/`artists` repository mappers for
+// `AlbumID3`/`ArtistID3`) plus that entity's child tables, so a remainder row and a
+// library row present the same object. `json` held the verbatim `getStarred2` envelope
+// and is kept as dead data for rows written before the columns existed.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Starred songs with no `songs` row. PK is `id` (not `song_id`) so the shared
- *  `keysetPage` primitive — which hardcodes the id column — pages these verbatim. */
+ *  `keysetPage` primitive — which hardcodes the id column — pages these verbatim, and
+ *  so the `Child` snapshot stores no second copy of the song id. */
 export const favoriteSongs = sqliteTable(
   'favorite_songs',
   {
     id: text('id').primaryKey(),
     /** Epoch ms the item was starred, or 0 when the server sent no date. NOT NULL —
-     *  it is the sort key; 0 reads back as `undefined`, never a fabricated date. */
+     *  it is the sort key; 0 reads back as `undefined`, never a fabricated date. This
+     *  IS the snapshot's `starred` column, under the remainder's own 0-not-NULL rule. */
     starred: integer('starred').notNull(),
     /** Hot column so the Favourites action-bar total is a SQL aggregate rather than a
-     *  JSON parse of every row. Written from the same payload object as `json`. */
+     *  read of every row. Part of the `Child` snapshot column set. */
     duration: integer('duration'),
-    /** Mirror the `songs` columns of the same name, written from the same envelope
-     *  through `db/sortKeys`, so the Songs tab's favourites filter orders the union of
-     *  both halves in SQL. The Favourites TAB still reads this table `starred DESC`. */
+    /** Mirror the `songs` columns of the same name, derived through `db/sortKeys` — NOT
+     *  snapshot fields — so the Songs tab's favourites filter orders the union of both
+     *  halves in SQL. The Favourites TAB still reads this table `starred DESC`. */
     sortTitle: text('sort_title'),
     sortArtist: text('sort_artist'),
-    /** The verbatim `getStarred2` `Child` envelope. */
+    /** The pre-columns `getStarred2` `Child` envelope. Written `''` now; a row still
+     *  holding one is read from it, which is what `title IS NULL` selects. */
     json: text('json').notNull(),
+    /** Written unconditionally by the only writer, so NOT NULL is the read gate: a row
+     *  from before this release has NULL here and is read from `json`. */
+    title: text('title'),
+    artist: text('artist'),
+    album: text('album'),
+    coverArt: text('cover_art'),
+    albumId: text('album_id'),
+    suffix: text('suffix'),
+    bitRate: integer('bit_rate'),
+    bitDepth: integer('bit_depth'),
+    samplingRate: integer('sampling_rate'),
+    artistId: text('artist_id'),
+    displayArtist: text('display_artist'),
+    displayAlbumArtist: text('display_album_artist'),
+    displayComposer: text('display_composer'),
+    track: integer('track'),
+    discNumber: integer('disc_number'),
+    year: integer('year'),
+    genre: text('genre'),
+    size: integer('size'),
+    contentType: text('content_type'),
+    transcodedContentType: text('transcoded_content_type'),
+    transcodedSuffix: text('transcoded_suffix'),
+    channelCount: integer('channel_count'),
+    path: text('path'),
+    userRating: integer('user_rating'),
+    averageRating: real('average_rating'),
+    playCount: integer('play_count'),
+    created: integer('created'),
+    played: text('played'),
+    type: text('type'),
+    bpm: integer('bpm'),
+    comment: text('comment'),
+    sortName: text('sort_name'),
+    musicBrainzId: text('music_brainz_id'),
+    explicitStatus: text('explicit_status'),
+    bookmarkPosition: integer('bookmark_position'),
+    isVideo: integer('is_video', { mode: 'boolean' }),
+    isDir: integer('is_dir', { mode: 'boolean' }),
+    parent: text('parent'),
+    originalWidth: integer('original_width'),
+    originalHeight: integer('original_height'),
+    rgTrackGain: real('rg_track_gain'),
+    rgAlbumGain: real('rg_album_gain'),
+    rgTrackPeak: real('rg_track_peak'),
+    rgAlbumPeak: real('rg_album_peak'),
+    rgBaseGain: real('rg_base_gain'),
+    rgFallbackGain: real('rg_fallback_gain'),
   },
   (t) => ({ starredKeyIdx: index('idx_favorite_songs_starred_key').on(t.starred, t.id) }),
 );
 
 /**
- * Starred albums with no `albums` row — verbatim `AlbumID3` envelope.
+ * Starred albums with no `albums` row — the `albums` column set, minus the internal
+ * search derivatives (`norm_*`/`dmeta_*`: the remainder is not searched) and
+ * `synced_at` (the library sync never writes here).
  *
- * `sort_title`/`sort_artist` mirror the `albums` columns of the same name, written from
- * the same envelope through `db/sortKeys`. They exist so the Library tab's favourites
- * filter can `ORDER BY` the union of both halves in SQL instead of the screen re-sorting
- * it — the Favourites TAB still reads this table `starred DESC`.
+ * `sort_title`/`sort_artist` mirror the `albums` columns of the same name, derived
+ * through `db/sortKeys`. They exist so the Library tab's favourites filter can
+ * `ORDER BY` the union of both halves in SQL instead of the screen re-sorting it — the
+ * Favourites TAB still reads this table `starred DESC`.
  */
 export const favoriteAlbums = sqliteTable(
   'favorite_albums',
@@ -286,22 +345,211 @@ export const favoriteAlbums = sqliteTable(
     starred: integer('starred').notNull(),
     sortTitle: text('sort_title'),
     sortArtist: text('sort_artist'),
+    /** See `favorite_songs.json`. */
     json: text('json').notNull(),
+    /** The read gate — see `favorite_songs.title`. */
+    name: text('name'),
+    artistId: text('artist_id'),
+    artist: text('artist'),
+    displayArtist: text('display_artist'),
+    coverArt: text('cover_art'),
+    songCount: integer('song_count'),
+    duration: integer('duration'),
+    playCount: integer('play_count'),
+    created: integer('created'),
+    year: integer('year'),
+    genre: text('genre'),
+    played: text('played'),
+    userRating: integer('user_rating'),
+    version: text('version'),
+    musicBrainzId: text('music_brainz_id'),
+    sortName: text('sort_name'),
+    isCompilation: integer('is_compilation', { mode: 'boolean' }),
+    explicitStatus: text('explicit_status'),
+    originalReleaseYear: integer('original_release_year'),
+    originalReleaseMonth: integer('original_release_month'),
+    originalReleaseDay: integer('original_release_day'),
+    releaseYear: integer('release_year'),
+    releaseMonth: integer('release_month'),
+    releaseDay: integer('release_day'),
   },
   (t) => ({ starredKeyIdx: index('idx_favorite_albums_starred_key').on(t.starred, t.id) }),
 );
 
-/** Starred artists with no `artists` row — verbatim `ArtistID3` envelope. `sort_title`
- *  as on `favorite_albums`. */
+/** Starred artists with no `artists` row — the `artists` column set minus the search
+ *  derivatives. `sort_title` and `name` as on `favorite_albums`. */
 export const favoriteArtists = sqliteTable(
   'favorite_artists',
   {
     id: text('id').primaryKey(),
     starred: integer('starred').notNull(),
     sortTitle: text('sort_title'),
+    /** See `favorite_songs.json`. */
     json: text('json').notNull(),
+    /** The read gate — see `favorite_songs.title`. */
+    name: text('name'),
+    sortName: text('sort_name'),
+    coverArt: text('cover_art'),
+    artistImageUrl: text('artist_image_url'),
+    albumCount: integer('album_count'),
+    userRating: integer('user_rating'),
+    musicBrainzId: text('music_brainz_id'),
   },
   (t) => ({ starredKeyIdx: index('idx_favorite_artists_starred_key').on(t.starred, t.id) }),
+);
+
+// The remainder's multi-valued children, mirroring the library child tables one for
+// one. Their own tables rather than the library ones: `album_genres` FKs to `albums`,
+// and the whole point of the remainder is that no such row exists.
+
+export const favoriteSongGenres = sqliteTable(
+  'favorite_song_genres',
+  {
+    songId: text('song_id')
+      .notNull()
+      .references(() => favoriteSongs.id, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    name: text('name').notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.songId, t.pos] }) }),
+);
+
+export const favoriteSongArtists = sqliteTable(
+  'favorite_song_artists',
+  {
+    songId: text('song_id')
+      .notNull()
+      .references(() => favoriteSongs.id, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    artistId: text('artist_id'),
+    artistName: text('artist_name'),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.songId, t.pos] }) }),
+);
+
+export const favoriteSongAlbumArtists = sqliteTable(
+  'favorite_song_album_artists',
+  {
+    songId: text('song_id')
+      .notNull()
+      .references(() => favoriteSongs.id, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    artistId: text('artist_id'),
+    artistName: text('artist_name'),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.songId, t.pos] }) }),
+);
+
+export const favoriteSongContributors = sqliteTable(
+  'favorite_song_contributors',
+  {
+    songId: text('song_id')
+      .notNull()
+      .references(() => favoriteSongs.id, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    role: text('role').notNull(),
+    subRole: text('sub_role'),
+    artistId: text('artist_id'),
+    artistName: text('artist_name'),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.songId, t.pos] }) }),
+);
+
+export const favoriteSongMoods = sqliteTable(
+  'favorite_song_moods',
+  {
+    songId: text('song_id')
+      .notNull()
+      .references(() => favoriteSongs.id, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    mood: text('mood').notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.songId, t.pos] }) }),
+);
+
+export const favoriteAlbumGenres = sqliteTable(
+  'favorite_album_genres',
+  {
+    albumId: text('album_id')
+      .notNull()
+      .references(() => favoriteAlbums.id, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    name: text('name').notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.albumId, t.pos] }) }),
+);
+
+export const favoriteAlbumArtists = sqliteTable(
+  'favorite_album_artists',
+  {
+    albumId: text('album_id')
+      .notNull()
+      .references(() => favoriteAlbums.id, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    artistId: text('artist_id'),
+    artistName: text('artist_name'),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.albumId, t.pos] }) }),
+);
+
+export const favoriteAlbumReleaseTypes = sqliteTable(
+  'favorite_album_release_types',
+  {
+    albumId: text('album_id')
+      .notNull()
+      .references(() => favoriteAlbums.id, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    name: text('name').notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.albumId, t.pos] }) }),
+);
+
+export const favoriteAlbumMoods = sqliteTable(
+  'favorite_album_moods',
+  {
+    albumId: text('album_id')
+      .notNull()
+      .references(() => favoriteAlbums.id, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    mood: text('mood').notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.albumId, t.pos] }) }),
+);
+
+export const favoriteAlbumRecordLabels = sqliteTable(
+  'favorite_album_record_labels',
+  {
+    albumId: text('album_id')
+      .notNull()
+      .references(() => favoriteAlbums.id, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    name: text('name').notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.albumId, t.pos] }) }),
+);
+
+export const favoriteAlbumDiscTitles = sqliteTable(
+  'favorite_album_disc_titles',
+  {
+    albumId: text('album_id')
+      .notNull()
+      .references(() => favoriteAlbums.id, { onDelete: 'cascade' }),
+    disc: integer('disc').notNull(),
+    title: text('title').notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.albumId, t.disc] }) }),
+);
+
+export const favoriteArtistRoles = sqliteTable(
+  'favorite_artist_roles',
+  {
+    artistId: text('artist_id')
+      .notNull()
+      .references(() => favoriteArtists.id, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    role: text('role').notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.artistId, t.pos] }) }),
 );
 
 /**

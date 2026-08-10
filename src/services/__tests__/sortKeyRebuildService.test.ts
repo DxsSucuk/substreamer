@@ -269,16 +269,21 @@ describe('runSortKeyRebuildIfNeeded', () => {
     expect(unfilled?.n).toBe(0);
   });
 
-  it('skips an unparseable remainder envelope instead of failing the pass', async () => {
+  it('skips a remainder row Migration 40 has not converted, rather than keying off NULLs', async () => {
     await replaceFavoriteAlbums(db(), [album('fa1', 'Fine')]);
-    db().runSync("UPDATE favorite_albums SET json = 'not json', sort_title = NULL WHERE id = 'fa1'");
+    // Exactly what `ALTER TABLE ADD COLUMN` leaves on a row written before the columns
+    // existed: the stored key and the envelope, and NULL everywhere else.
+    db().runSync(
+      "UPDATE favorite_albums SET name = NULL, artist = NULL, display_artist = NULL, " +
+        "json = '{\"id\":\"fa1\",\"name\":\"Fine\"}' WHERE id = 'fa1'",
+    );
     await upsertAlbums(db(), [album('a1', '"Heroes"')]);
     setKey('albums', 'id', 'a1', { sort_title: null });
 
     await runSortKeyRebuildIfNeeded();
-    // The corrupt row keeps its NULL key; the rest of the pass still completed.
+    // The unconverted row keeps the key it already had; the rest of the pass completed.
     expect(await readKey('SELECT sort_title FROM favorite_albums WHERE id = ?', ['fa1'])).toEqual({
-      sort_title: null,
+      sort_title: 'fine',
     });
     expect(await readKey('SELECT sort_title FROM albums WHERE id = ?', ['a1'])).toEqual({
       sort_title: 'heroes"',

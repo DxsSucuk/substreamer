@@ -6,8 +6,15 @@
  *    The reconcile NEVER inserts into those tables: a row there means "the library sync
  *    put it here", and the presence checks across the app depend on that.
  *  - **the remainder** — `favorite_songs`/`favorite_albums`/`favorite_artists`, holding
- *    the verbatim `getStarred2` envelope for starred items the library does not have.
- *    Normally EMPTY (the library sync enumerates everything the server has).
+ *    the starred items the library does not have. Normally EMPTY — but a fresh install,
+ *    a logout or a full resync empties the library tables, and then EVERY favourite
+ *    lands here until the next library sync.
+ *
+ * A remainder row stores its entity in COLUMNS, through the same mappers the library
+ * half uses (`childSnapshot` for `Child`, the `albums`/`artists` mappers for
+ * `AlbumID3`/`ArtistID3`) plus that entity's child tables, so the two halves of a list
+ * present the same object. `json` held the pre-columns `getStarred2` envelope; a row
+ * still holding one is read from it (see {@link RemainderItems}).
  *
  * The two halves are kept disjoint at READ time, by a `NOT EXISTS` clause on every
  * remainder query — never by assuming a past reconcile left them disjoint. It cannot:
@@ -24,18 +31,46 @@ import type { AlbumID3, ArtistID3, Child } from 'subsonic-api';
 
 import { mergeSorted, mergeStarredDesc, type StarredEntry } from '@/utils/mergeStarredDesc';
 
+import {
+  childFromSnapshotRow,
+  childSnapshotArrayCommands,
+  childSnapshotArrayKey,
+  childSnapshotInsertCommand,
+  childSnapshotRowFromRaw,
+  childSnapshotSelect,
+  readChildSnapshotArraysAsync,
+  type ChildSnapshotArrays,
+} from '../childSnapshot';
 import type { BatchCommand, InternalDb } from '../client';
 import { albumSortKeys, artistSortTitle, songSortKeys } from '../sortKeys';
 import { getSortArticles } from '../sortArticles';
 import {
   ALBUM_LIST_COLS,
+  ALBUM_LIST_FIELDS,
   albumListRowToAlbumID3,
   hydrateAlbumRows,
   type AlbumListRow,
   type AlbumSortOrder,
 } from './albums';
-import { ARTIST_LIST_COLS, artistListRowToArtistID3, hydrateArtistRows, type ArtistListRow } from './artists';
-import { countRows, keysetPage, type Cursor } from './core';
+import {
+  ARTIST_LIST_COLS,
+  ARTIST_LIST_FIELDS,
+  artistListRowToArtistID3,
+  hydrateArtistRows,
+  type ArtistListRow,
+} from './artists';
+import {
+  albumArtistRows,
+  albumDiscTitleRows,
+  albumGenreRows,
+  albumMoodRows,
+  albumRecordLabelRows,
+  albumReleaseTypeRows,
+  albumRow,
+  artistRoleRows,
+  artistRow,
+} from './mappers';
+import { countRows, keysetPage, type Cursor, type Row } from './core';
 // The download predicates live in `downloads.ts` — ONE definition, so the library tab's
 // filter and the favourites filter cannot drift apart.
 import { downloadedClause, type DownloadableEntity } from './downloads';
@@ -149,38 +184,104 @@ const remainderWhere = (entity: Entity, f: StarredFilter): string =>
 /*  Remainder rows → entities                                          */
 /* ------------------------------------------------------------------ */
 
-interface RemainderRow {
+/** What every remainder projection carries, whatever the entity: the id, the
+ *  membership epoch, the legacy envelope column, and the A–Z keys the merge orders on
+ *  (`sort_artist` is absent on the artist remainder, where the name IS the title key). */
+type RemainderCore = {
   id: string;
-  starred: number;
+  starred: number | null;
   json: string;
-  /** Mirrors the library table's key of the same name — `sort_artist` is absent on the
-   *  artist remainder, where the name IS the title key. */
   sort_title?: string | null;
   sort_artist?: string | null;
-}
-interface RemainderSongRow extends RemainderRow {
-  duration: number | null;
+};
+
+/** The `favorite_songs` projection: the shared `Child` snapshot columns, aliased to
+ *  their `ChildSnapshotRow` keys, plus the remainder's own three. `title` is the gate
+ *  (see {@link RemainderItems}); the rest are consumed through `childSnapshotRowFromRaw`. */
+type FavoriteSongRow = RemainderCore & Record<string, unknown> & { title?: string | null };
+type FavoriteAlbumRow = AlbumListRow & { json: string };
+type FavoriteArtistRow = ArtistListRow & { json: string };
+
+const REMAINDER_SONG_COLS = `"sort_title", "sort_artist", "json", ${childSnapshotSelect('id')}`;
+const REMAINDER_ALBUM_COLS = `${ALBUM_LIST_COLS}, "json"`;
+const REMAINDER_ARTIST_COLS = `${ARTIST_LIST_COLS}, "json"`;
+
+const NO_ARRAYS: ChildSnapshotArrays = {};
+const NO_ROW_ARRAYS = new Map<string, ChildSnapshotArrays>();
+
+/**
+ * The pre-columns envelope, for a row Migration 40 has not converted.
+ *
+ * Rehydrates the dates `JSON.stringify` flattened to ISO strings so a remainder item and
+ * a library item read the same. An unparseable envelope yields an EMPTY item rather than
+ * throwing: the row still contributes its id and its star, where a throw would take the
+ * whole Favourites list down.
+ */
+function parseEnvelope<T>(json: string): T {
+  try {
+    const parsed = (JSON.parse(json) ?? {}) as T & { created?: string | Date };
+    return parsed.created ? { ...parsed, created: new Date(parsed.created) } : parsed;
+  } catch {
+    return {} as T;
+  }
 }
 
-const REMAINDER_SONG_COLS = '"id", "starred", "duration", "sort_title", "sort_artist", "json"';
-const REMAINDER_ALBUM_COLS = '"id", "starred", "sort_title", "sort_artist", "json"';
-const REMAINDER_ARTIST_COLS = '"id", "starred", "sort_title", "json"';
+/**
+ * Build one remainder row's entity from ITS OWN columns, or from its envelope until it
+ * has them.
+ *
+ * The gate is per ROW and on CONTENT: the entity's name column is written
+ * unconditionally by the only writer, so NULL means "this row predates the columns" —
+ * `ALTER TABLE ADD COLUMN` leaves exactly that. Reading such a row through the columns
+ * would return an item with no title, no artist and no stream metadata, and these feed
+ * Play All, CarPlay and the `__starred__` download.
+ */
+type RemainderItems<T, R extends RemainderCore> = (db: InternalDb, rows: R[]) => Promise<T[]>;
 
-/** Rehydrate the dates `JSON.stringify` flattened to ISO strings, so a remainder row
- *  and a library row present the same shape. `starred: 0` reads back as `undefined` —
- *  membership without a fabricated date. */
-function parseEntry<T extends { created?: Date; starred?: Date }>(row: RemainderRow): StarredEntry<T> {
-  const parsed = JSON.parse(row.json) as T;
-  return {
-    id: row.id,
-    starred: row.starred,
-    item: {
-      ...parsed,
-      ...(parsed.created ? { created: new Date(parsed.created) } : {}),
-      starred: row.starred ? new Date(row.starred) : undefined,
-    },
-  };
-}
+const songItems: RemainderItems<Child, FavoriteSongRow> = async (db, rows) => {
+  const stored = rows.filter((r) => r.title != null);
+  const arrays =
+    stored.length > 0
+      ? await readChildSnapshotArraysAsync(db, {
+          tablePrefix: 'favorite_song',
+          keyColumns: ['song_id'],
+          where: 'song_id IN (SELECT value FROM json_each(?))',
+          params: [JSON.stringify(stored.map((r) => r.id))],
+        })
+      : NO_ROW_ARRAYS;
+  return rows.map((r) =>
+    r.title == null
+      ? parseEnvelope<Child>(r.json)
+      : childFromSnapshotRow(
+          childSnapshotRowFromRaw(r),
+          arrays.get(childSnapshotArrayKey([r.id])) ?? NO_ARRAYS,
+        ),
+  );
+};
+
+const albumItems: RemainderItems<AlbumID3, FavoriteAlbumRow> = async (db, rows) => {
+  const stored = rows.filter((r) => r.name != null);
+  if (stored.length > 0) await hydrateAlbumRows(db, stored, 'favorite_album');
+  return rows.map((r) =>
+    r.name == null ? parseEnvelope<AlbumID3>(r.json) : albumListRowToAlbumID3(r),
+  );
+};
+
+const artistItems: RemainderItems<ArtistID3, FavoriteArtistRow> = async (db, rows) => {
+  const stored = rows.filter((r) => r.name != null);
+  if (stored.length > 0) await hydrateArtistRows(db, stored, 'favorite_artist');
+  return rows.map((r) =>
+    r.name == null ? parseEnvelope<ArtistID3>(r.json) : artistListRowToArtistID3(r),
+  );
+};
+
+/** The row's stored epoch is the item's `starred`, whichever source the item came from:
+ *  `0` reads back as `undefined` — membership without a fabricated date. */
+const entryOf = <T extends { starred?: Date }>(row: RemainderCore, item: T): StarredEntry<T> => ({
+  id: row.id,
+  starred: row.starred ?? 0,
+  item: { ...item, starred: row.starred ? new Date(row.starred) : undefined },
+});
 
 /* ------------------------------------------------------------------ */
 /*  Paged reads — one page from each half, merged against one cursor    */
@@ -217,13 +318,14 @@ function mergePages<T>(
   return { rows, nextCursor: more && last ? { sortKey: last.starred, id: last.id } : null };
 }
 
-async function remainderPage<T extends { created?: Date; starred?: Date }>(
+async function remainderPage<T extends { starred?: Date }, R extends RemainderCore>(
   db: InternalDb,
   entity: Entity,
   columns: string,
+  items: RemainderItems<T, R>,
   opts: StarredPageOpts,
 ): Promise<{ rows: StarredEntry<T>[]; hasMore: boolean }> {
-  const page = await keysetPage<RemainderRow>(db, {
+  const page = await keysetPage<R & { id: string }>(db, {
     table: REMAINDER[entity],
     sortCol: 'starred',
     columns,
@@ -231,9 +333,13 @@ async function remainderPage<T extends { created?: Date; starred?: Date }>(
     limit: opts.limit,
     cursor: opts.cursor,
     where: remainderWhere(entity, opts),
-    sortKeyOf: (r) => r.starred,
+    sortKeyOf: (r) => r.starred ?? 0,
   });
-  return { rows: page.rows.map((r) => parseEntry<T>(r)), hasMore: page.nextCursor != null };
+  const built = await items(db, page.rows);
+  return {
+    rows: page.rows.map((r, i) => entryOf(r, built[i])),
+    hasMore: page.nextCursor != null,
+  };
 }
 
 /** One page of starred songs, newest favourite first. */
@@ -256,7 +362,11 @@ export async function starredSongsPage(
     rows: page.rows.map((r) => ({ id: r.id, starred: r.starred ?? 0, item: songListRowToChild(r) })),
     nextCursor: page.nextCursor,
   };
-  return mergePages(lib, await remainderPage<Child>(db, 'songs', REMAINDER_SONG_COLS, opts), opts.limit);
+  return mergePages(
+    lib,
+    await remainderPage(db, 'songs', REMAINDER_SONG_COLS, songItems, opts),
+    opts.limit,
+  );
 }
 
 /** One page of starred albums, newest favourite first. */
@@ -281,7 +391,7 @@ export async function starredAlbumsPage(
   };
   return mergePages(
     lib,
-    await remainderPage<AlbumID3>(db, 'albums', REMAINDER_ALBUM_COLS, opts),
+    await remainderPage(db, 'albums', REMAINDER_ALBUM_COLS, albumItems, opts),
     opts.limit,
   );
 }
@@ -312,7 +422,7 @@ export async function starredArtistsPage(
   };
   return mergePages(
     lib,
-    await remainderPage<ArtistID3>(db, 'artists', REMAINDER_ARTIST_COLS, opts),
+    await remainderPage(db, 'artists', REMAINDER_ARTIST_COLS, artistItems, opts),
     opts.limit,
   );
 }
@@ -381,18 +491,20 @@ function mergeHalves<T>(
   ).map(({ id, starred, item, keys }) => ({ id, starred, item, sortKey: keys[0] }));
 }
 
-async function allRemainder<T extends { created?: Date; starred?: Date }>(
+async function allRemainder<T extends { starred?: Date }, R extends RemainderCore>(
   db: InternalDb,
   entity: Entity,
   columns: string,
+  items: RemainderItems<T, R>,
   f: StarredFilter,
   order: string = STARRED_DESC,
-): Promise<{ entries: StarredEntry<T>[]; rows: RemainderRow[] }> {
-  const rows = await db.getAllAsync<RemainderRow>(
+): Promise<{ entries: StarredEntry<T>[]; rows: R[] }> {
+  const rows = await db.getAllAsync<R>(
     `SELECT ${columns} FROM ${REMAINDER[entity]} WHERE ${remainderWhere(entity, f)} ` +
       `ORDER BY ${order}`,
   );
-  return { entries: rows.map((r) => parseEntry<T>(r)), rows };
+  const built = await items(db, rows);
+  return { entries: rows.map((r, i) => entryOf(r, built[i])), rows };
 }
 
 /**
@@ -419,7 +531,7 @@ export async function listAllStarredSongs(
   );
   await hydrateSongRows(db, rows);
   const lib = rows.map((r) => ({ id: r.id, starred: r.starred ?? 0, item: songListRowToChild(r) as Child }));
-  const rem = await allRemainder<Child>(db, 'songs', REMAINDER_SONG_COLS, f, order);
+  const rem = await allRemainder(db, 'songs', REMAINDER_SONG_COLS, songItems, f, order);
   return mergeHalves(lib, rem.entries, rows, rem.rows, cols);
 }
 
@@ -446,7 +558,7 @@ export async function listAllStarredAlbums(
     starred: r.starred ?? 0,
     item: albumListRowToAlbumID3(r) as AlbumID3,
   }));
-  const rem = await allRemainder<AlbumID3>(db, 'albums', REMAINDER_ALBUM_COLS, f, order);
+  const rem = await allRemainder(db, 'albums', REMAINDER_ALBUM_COLS, albumItems, f, order);
   return mergeHalves(lib, rem.entries, rows, rem.rows, cols);
 }
 
@@ -469,7 +581,7 @@ export async function listAllStarredArtists(
     starred: r.starred ?? 0,
     item: artistListRowToArtistID3(r) as ArtistID3,
   }));
-  const rem = await allRemainder<ArtistID3>(db, 'artists', REMAINDER_ARTIST_COLS, {}, order);
+  const rem = await allRemainder(db, 'artists', REMAINDER_ARTIST_COLS, artistItems, {}, order);
   return mergeHalves(lib, rem.entries, rows, rem.rows, cols);
 }
 
@@ -502,8 +614,7 @@ export async function countStarredSongs(db: InternalDb): Promise<number> {
 }
 
 /** Count + summed duration for the Favourites action bar — two SQL aggregates, both
- *  O(favourites). `duration` is a hot column on `favorite_songs` precisely so the
- *  remainder half does not have to be parsed to answer this. */
+ *  O(favourites) and both over stored columns, on either half. */
 export async function starredSongTotals(
   db: InternalDb,
   f: StarredFilter = {},
@@ -523,17 +634,19 @@ export async function starredSongTotals(
   };
 }
 
-/** Starred artist names, both halves — the voice-assistant vocabulary donation. */
+/** Starred artist names, both halves — the voice-assistant vocabulary donation. The
+ *  remainder answers from its own `name` column, falling back to the envelope for a row
+ *  Migration 40 has not converted. */
 export async function listStarredArtistNames(db: InternalDb): Promise<string[]> {
   const [lib, rem] = await Promise.all([
     db.getAllAsync<{ name: string | null }>('SELECT "name" FROM artists WHERE starred IS NOT NULL'),
-    db.getAllAsync<{ json: string }>(
-      `SELECT "json" FROM ${REMAINDER.artists} WHERE ${disjointClause('artists')}`,
+    db.getAllAsync<{ name: string | null; json: string }>(
+      `SELECT "name", "json" FROM ${REMAINDER.artists} WHERE ${disjointClause('artists')}`,
     ),
   ]);
   return [
     ...lib.map((r) => r.name ?? ''),
-    ...rem.map((r) => (JSON.parse(r.json) as ArtistID3).name ?? ''),
+    ...rem.map((r) => r.name ?? parseEnvelope<ArtistID3>(r.json).name ?? ''),
   ].filter((n) => n.length > 0);
 }
 
@@ -564,12 +677,13 @@ export async function randomStarredSong(
     );
     return row ? { id: row.id, title: row.title ?? undefined } : null;
   }
-  const row = await db.getFirstAsync<{ id: string; json: string }>(
-    `SELECT "id", "json" FROM ${REMAINDER.songs} WHERE ${disjointClause('songs')} ` +
+  const row = await db.getFirstAsync<{ id: string; title: string | null; json: string }>(
+    `SELECT "id", "title", "json" FROM ${REMAINDER.songs} WHERE ${disjointClause('songs')} ` +
       'ORDER BY "starred" DESC, "id" DESC LIMIT 1 OFFSET ?',
     [k - libCount],
   );
-  return row ? { id: row.id, title: (JSON.parse(row.json) as Child).title } : null;
+  if (!row) return null;
+  return { id: row.id, title: row.title ?? parseEnvelope<Child>(row.json).title };
 }
 
 /* ------------------------------------------------------------------ */
@@ -628,6 +742,112 @@ export const clearStarredArtistsNotIn = (db: InternalDb, keepIds: readonly strin
   clearStarredNotIn(db, 'artists', keepIds);
 
 /**
+ * What a remainder row holds beyond its entity: the membership epoch, the derived A–Z
+ * keys and the legacy envelope column.
+ *
+ * Passed in rather than derived so ONE command builder serves both writers — the
+ * reconcile derives all three from the payload, and Migration 40 hands back exactly what
+ * the row already holds, so converting a row cannot move it in the list or discard its
+ * envelope. `sort_artist` is unused by the artist remainder, where the name IS the key.
+ */
+export interface RemainderOwn {
+  starred: number;
+  /** Column names, so `songSortKeys`/`albumSortKeys` spread straight in. */
+  sort_title: string;
+  sort_artist: string;
+  json: string;
+}
+
+/** One mapper `Row` as an INSERT — the statement derives from the row the mapper
+ *  produced, so there is no second column list to drift from it. */
+const insertRow = (table: string, row: Row): BatchCommand => {
+  const cols = Object.keys(row);
+  return [
+    `INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
+    cols.map((c) => row[c]),
+  ];
+};
+
+const childRowCommands = (table: string, rows: readonly Row[]): BatchCommand[] =>
+  rows.map((r) => insertRow(table, r));
+
+/** A mapper row narrowed to the columns the remainder table has — the library tables
+ *  also carry the `norm_*`/`dmeta_*` search derivatives and `synced_at`, neither of
+ *  which the remainder is read through. */
+const pickColumns = (row: Row, fields: readonly string[]): Row => {
+  const out: Row = {};
+  for (const f of fields) out[f] = row[f] ?? null;
+  return out;
+};
+
+/** The `Child` as the snapshot columns store it: `title` written even when the server
+ *  sent none — it is the read gate — and `starred` as the remainder's epoch-or-0, which
+ *  its `starred` column is NOT NULL for. */
+const snapshotChild = (s: Child, starredAt: number): Child => ({
+  ...s,
+  title: s.title ?? '',
+  starred: new Date(starredAt),
+});
+
+/** The statements that write one starred song the library does not hold: its `Child`
+ *  snapshot columns, the remainder's own three, and the five array tables. */
+export const favoriteSongCommands = (song: Child, own: RemainderOwn): BatchCommand[] => {
+  const child = snapshotChild(song, own.starred);
+  return [
+    childSnapshotInsertCommand({
+      table: 'favorite_songs',
+      key: { sort_title: own.sort_title, sort_artist: own.sort_artist, json: own.json },
+      child,
+      idColumn: 'id',
+    }),
+    ...childSnapshotArrayCommands({
+      tablePrefix: 'favorite_song',
+      key: { song_id: song.id },
+      child,
+    }),
+  ];
+};
+
+/** As {@link favoriteSongCommands}, through the `albums` mapper and its six child
+ *  tables. `name` is written even when the server sent none — it is the read gate. */
+export const favoriteAlbumCommands = (
+  album: AlbumID3,
+  own: RemainderOwn,
+  articles?: readonly string[],
+): BatchCommand[] => [
+  insertRow('favorite_albums', {
+    ...pickColumns(albumRow(album, articles), ALBUM_LIST_FIELDS),
+    name: album.name ?? '',
+    starred: own.starred,
+    sort_title: own.sort_title,
+    sort_artist: own.sort_artist,
+    json: own.json,
+  }),
+  ...childRowCommands('favorite_album_genres', albumGenreRows(album, album.id)),
+  ...childRowCommands('favorite_album_artists', albumArtistRows(album, album.id)),
+  ...childRowCommands('favorite_album_release_types', albumReleaseTypeRows(album, album.id)),
+  ...childRowCommands('favorite_album_moods', albumMoodRows(album, album.id)),
+  ...childRowCommands('favorite_album_record_labels', albumRecordLabelRows(album, album.id)),
+  ...childRowCommands('favorite_album_disc_titles', albumDiscTitleRows(album, album.id)),
+];
+
+/** As {@link favoriteSongCommands}, through the `artists` mapper and `artist_roles`. */
+export const favoriteArtistCommands = (
+  artist: ArtistID3,
+  own: RemainderOwn,
+  articles?: readonly string[],
+): BatchCommand[] => [
+  insertRow('favorite_artists', {
+    ...pickColumns(artistRow(artist, articles), ARTIST_LIST_FIELDS),
+    name: artist.name ?? '',
+    starred: own.starred,
+    sort_title: own.sort_title,
+    json: own.json,
+  }),
+  ...childRowCommands('favorite_artist_roles', artistRoleRows(artist, artist.id)),
+];
+
+/**
  * Rebuild a remainder table from scratch, TRANSACTIONALLY.
  *
  * These rows are the only local copy of items the library does not have, and restoring
@@ -635,75 +855,147 @@ export const clearStarredArtistsNotIn = (db: InternalDb, keepIds: readonly strin
  * are not derivable offline, and a delete-then-insert rebuild killed mid-way would leave
  * a fraction of the set. Hence ONE `runAtomicBatchAsync` — the JS thread never yields
  * between the DELETE and the last INSERT, so no other writer's statements land inside
- * our savepoint.
+ * our savepoint. The leading DELETE cascades the previous rows' child tables away.
+ *
+ * The payload is deduped by id: the child tables FK to the row, so `INSERT OR REPLACE`
+ * — which is DELETE-then-INSERT — would cascade away the arrays it had just written. A
+ * server that repeats an id gets its last copy, exactly as `OR REPLACE` gave it.
  */
-async function replaceRemainder(
+async function replaceRemainder<T extends { id: string }>(
   db: InternalDb,
   entity: Entity,
-  commands: BatchCommand[],
+  items: readonly T[],
+  commandsOf: (item: T) => BatchCommand[],
 ): Promise<void> {
+  const unique = [...new Map(items.map((i) => [i.id, i])).values()];
   await db.runAtomicBatchAsync([
     [`DELETE FROM ${REMAINDER[entity]}`, []] as BatchCommand,
-    ...commands,
+    ...unique.flatMap(commandsOf),
   ]);
 }
 
-/** Replace `favorite_songs` with the starred songs the library does not hold.
- *  `duration`, the sort keys and `json` are written from the SAME payload object in one
- *  statement, so neither the hot column nor the keys can disagree with the envelope. */
+/** `''` for the envelope column: it is `NOT NULL` and holds only pre-columns rows. */
+const NEW_ROW_JSON = '';
+
+/** Replace `favorite_songs` with the starred songs the library does not hold. The
+ *  columns and the sort keys come from the SAME payload object in one statement, so
+ *  they cannot disagree. */
 export const replaceFavoriteSongs = (db: InternalDb, songs: readonly Child[]): Promise<void> => {
   const articles = getSortArticles();
-  return replaceRemainder(
-    db,
-    'songs',
-    songs.map((s): BatchCommand => {
-      const keys = songSortKeys(s, articles);
-      return [
-        'INSERT OR REPLACE INTO favorite_songs (id, starred, duration, sort_title, sort_artist, json) ' +
-          'VALUES (?, ?, ?, ?, ?, ?)',
-        [
-          s.id,
-          epochOf(s.starred),
-          s.duration ?? null,
-          keys.sort_title,
-          keys.sort_artist,
-          JSON.stringify(s),
-        ],
-      ];
+  return replaceRemainder(db, 'songs', songs, (s) =>
+    favoriteSongCommands(s, {
+      starred: epochOf(s.starred),
+      ...songSortKeys(s, articles),
+      json: NEW_ROW_JSON,
     }),
   );
 };
 
-/** The sort keys come from the SAME envelope in the same statement, through the same
- *  `db/sortKeys` derivation the `albums` table uses — nothing is parsed back out of
- *  `json`, and the remainder can never order differently from the library half. */
+/** The sort keys come through the same `db/sortKeys` derivation the `albums` table
+ *  uses, so the remainder can never order differently from the library half. */
 export const replaceFavoriteAlbums = (db: InternalDb, albums: readonly AlbumID3[]): Promise<void> => {
   const articles = getSortArticles();
-  return replaceRemainder(
-    db,
-    'albums',
-    albums.map((a): BatchCommand => {
-      const keys = albumSortKeys(a, articles);
-      return [
-        'INSERT OR REPLACE INTO favorite_albums (id, starred, sort_title, sort_artist, json) ' +
-          'VALUES (?, ?, ?, ?, ?)',
-        [a.id, epochOf(a.starred), keys.sort_title, keys.sort_artist, JSON.stringify(a)],
-      ];
-    }),
+  return replaceRemainder(db, 'albums', albums, (a) =>
+    favoriteAlbumCommands(
+      a,
+      { starred: epochOf(a.starred), ...albumSortKeys(a, articles), json: NEW_ROW_JSON },
+      articles,
+    ),
   );
 };
 
 export const replaceFavoriteArtists = (db: InternalDb, artists: readonly ArtistID3[]): Promise<void> => {
   const articles = getSortArticles();
-  return replaceRemainder(
-    db,
-    'artists',
-    artists.map((a): BatchCommand => [
-      'INSERT OR REPLACE INTO favorite_artists (id, starred, sort_title, json) VALUES (?, ?, ?, ?)',
-      [a.id, epochOf(a.starred), artistSortTitle(a, articles), JSON.stringify(a)],
-    ]),
+  return replaceRemainder(db, 'artists', artists, (a) =>
+    favoriteArtistCommands(
+      a,
+      {
+        starred: epochOf(a.starred),
+        sort_title: artistSortTitle(a, articles),
+        sort_artist: '',
+        json: NEW_ROW_JSON,
+      },
+      articles,
+    ),
   );
 };
+
+/* ------------------------------------------------------------------ */
+/*  Migration 40 — the one-time envelope → columns conversion          */
+/* ------------------------------------------------------------------ */
+
+/** The entity one remainder table holds. The conversion walks all three. */
+export type StarredEntity = Entity;
+export const STARRED_ENTITIES: readonly Entity[] = ['songs', 'albums', 'artists'];
+
+/** The column whose NULL means "this row is still read from its envelope". */
+const GATE_COLUMN: Record<Entity, string> = { songs: 'title', albums: 'name', artists: 'name' };
+
+/** One remainder row the columns have not reached: everything the row owns, plus the
+ *  envelope to convert it from. */
+export interface UnconvertedFavorite extends RemainderOwn {
+  id: string;
+}
+
+/** The rows Migration 40 still has to convert. `favorite_artists` has no `sort_artist`
+ *  column — the name IS its key — so the projection supplies the empty one the shared
+ *  {@link RemainderOwn} shape expects. */
+export const readUnconvertedFavorites = (
+  db: InternalDb,
+  entity: Entity,
+): Promise<UnconvertedFavorite[]> =>
+  db.getAllAsync<UnconvertedFavorite>(
+    `SELECT "id", "starred", COALESCE("sort_title", '') AS sort_title, ` +
+      `${entity === 'artists' ? `'' AS sort_artist` : `COALESCE("sort_artist", '') AS sort_artist`}, ` +
+      `"json" FROM ${REMAINDER[entity]} WHERE "${GATE_COLUMN[entity]}" IS NULL`,
+  );
+
+/** The write for one row, or null when its envelope yields nothing to write — an
+ *  unparseable one, or an entity with no name for the gate to key on. Left alone rather
+ *  than converted to an empty row: the envelope is all that row has. */
+function convertCommands(
+  entity: Entity,
+  row: UnconvertedFavorite,
+  articles: readonly string[] | undefined,
+): BatchCommand[] | null {
+  if (entity === 'songs') {
+    const song = parseEnvelope<Child>(row.json);
+    return song.title ? favoriteSongCommands({ ...song, id: row.id }, row) : null;
+  }
+  if (entity === 'albums') {
+    const album = parseEnvelope<AlbumID3>(row.json);
+    return album.name ? favoriteAlbumCommands({ ...album, id: row.id }, row, articles) : null;
+  }
+  const artist = parseEnvelope<ArtistID3>(row.json);
+  return artist.name ? favoriteArtistCommands({ ...artist, id: row.id }, row, articles) : null;
+}
+
+/**
+ * Convert one row: its envelope into its columns and child tables, in ONE atomic batch
+ * that keeps the row's own `starred`, sort keys and envelope exactly as they were.
+ *
+ * Reads the gate column back afterwards, because the write "returning" proves nothing
+ * about what landed. False means the row still reads from its envelope, which is the
+ * safe direction — these rows feed Play All, CarPlay and the `__starred__` download,
+ * and a row read through empty columns is a favourite that has silently vanished.
+ */
+export async function convertFavoriteRow(
+  db: InternalDb,
+  entity: Entity,
+  row: UnconvertedFavorite,
+): Promise<boolean> {
+  const commands = convertCommands(entity, row, getSortArticles());
+  if (commands === null) return false;
+  await db.runAtomicBatchAsync([
+    [`DELETE FROM ${REMAINDER[entity]} WHERE id = ?`, [row.id]] as BatchCommand,
+    ...commands,
+  ]);
+  const back = await db.getFirstAsync<{ gate: string | null }>(
+    `SELECT "${GATE_COLUMN[entity]}" AS gate FROM ${REMAINDER[entity]} WHERE id = ?`,
+    [row.id],
+  );
+  return back != null && back.gate !== null;
+}
 
 /** `0` when the server sent no date: keeps `IS NOT NULL` membership, reads back as
  *  `undefined`, and sorts last. Never a fabricated date. */

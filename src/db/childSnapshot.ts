@@ -324,11 +324,21 @@ const SNAPSHOT_KEYS = Object.keys(CHILD_SNAPSHOT_COLUMNS) as SnapshotKey[];
 /** Stored 0/1 by SQLite; `Child` declares them boolean. */
 const BOOL_KEYS: ReadonlySet<SnapshotKey> = new Set<SnapshotKey>(['isVideo', 'isDir']);
 
+/** The column a table stores the song id in — `song_id` unless it keys on that id
+ *  directly, as `favorite_songs` does (its PK IS the song id, so a second copy would
+ *  be the same string twice per row). */
+const idColumnOf = (k: SnapshotKey, idColumn: string): string =>
+  k === 'id' ? idColumn : CHILD_SNAPSHOT_COLUMNS[k];
+
 /** Aliased to the `ChildSnapshotRow` keys, so a selected row IS the shape
  *  {@link childSnapshotRowFromRaw} takes and there is no second name mapping to drift. */
-export const CHILD_SNAPSHOT_SELECT = SNAPSHOT_KEYS.map((k) =>
-  CHILD_SNAPSHOT_COLUMNS[k] === k ? k : `${CHILD_SNAPSHOT_COLUMNS[k]} AS ${k}`,
-).join(', ');
+export const childSnapshotSelect = (idColumn: string = CHILD_SNAPSHOT_COLUMNS.id): string =>
+  SNAPSHOT_KEYS.map((k) => {
+    const col = idColumnOf(k, idColumn);
+    return col === k ? k : `${col} AS ${k}`;
+  }).join(', ');
+
+export const CHILD_SNAPSHOT_SELECT = childSnapshotSelect();
 
 /** The shared `Child` mapping plus the identity/core fields it deliberately omits. */
 export function childSnapshotRow(child: Child): ChildSnapshotRow {
@@ -344,17 +354,22 @@ export function childSnapshotRow(child: Child): ChildSnapshotRow {
 }
 
 /**
- * The INSERT for one full-snapshot song row. `key` names the owning columns → values
- * in column order (`{snapshot_id, pos}`, `{queue_id, pos}`); the `Child` columns follow.
+ * The INSERT for one full-snapshot song row. `key` names the columns the CONSUMER owns
+ * → values, written ahead of the `Child` columns: its key (`{snapshot_id, pos}`,
+ * `{queue_id, pos}`) plus anything else on the row that is not `Child` data
+ * (`favorite_songs`'s derived sort keys and its NOT NULL envelope column).
  */
 export function childSnapshotInsertCommand(spec: {
   table: string;
   key: Readonly<Record<string, string | number>>;
   child: Child;
+  /** See {@link childSnapshotSelect}. */
+  idColumn?: string;
 }): BatchCommand {
   const keyCols = Object.keys(spec.key);
   const row: Record<string, unknown> = { ...childSnapshotRow(spec.child) };
-  const columns = [...keyCols, ...SNAPSHOT_KEYS.map((k) => CHILD_SNAPSHOT_COLUMNS[k])];
+  const idColumn = spec.idColumn ?? CHILD_SNAPSHOT_COLUMNS.id;
+  const columns = [...keyCols, ...SNAPSHOT_KEYS.map((k) => idColumnOf(k, idColumn))];
   return [
     `INSERT INTO ${spec.table} (${columns.join(', ')}) ` +
       `VALUES (${new Array(columns.length).fill('?').join(', ')});`,

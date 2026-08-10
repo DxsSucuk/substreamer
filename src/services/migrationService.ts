@@ -47,6 +47,7 @@ import {
   bulkInsertCachedImages,
   countCachedImages as countCachedImagesRow,
 } from '../store/persistence/imageCacheTable';
+import { migrateFavoritesToColumns } from '../db/favoritesColumnsMigration';
 import { migrateDownloadQueueSongs } from '../store/persistence/downloadQueueSongsMigration';
 import { migrateGenresAndSharesFromKv } from '../store/persistence/genreShareMigration';
 import { migrateQueueSnapshotsFromKv } from '../store/persistence/queueSnapshotMigration';
@@ -2158,6 +2159,23 @@ const MIGRATION_TASKS: MigrationTask[] = [
     },
   },
 
+  {
+    id: 40,
+    name: 'Move starred items into their columns',
+    run: async (log) => {
+      // The `favorite_*` remainder now stores its entities in columns. `json` is KEPT
+      // and never rewritten: every row is verified back before its columns are read,
+      // and one that does not verify keeps reading the envelope — the remainder is the
+      // only local copy of a favourite the library has no row for.
+      const db = getDb();
+      if (db === null) {
+        log('[m40] db unavailable — favourites keep reading their envelopes');
+        return;
+      }
+      await migrateFavoritesToColumns(db, log);
+    },
+  },
+
   // -------------------------------------------------------------------
   // TEMPLATE – How to add a new migration task:
   //
@@ -2194,12 +2212,12 @@ const MIGRATION_TASKS: MigrationTask[] = [
   // catch-up migration and THEN drops the tables — migrate-BEFORE-drop is mandatory so a
   // very-old upgrader still recovers their data before it's gone. Held back JUST IN CASE
   // until the final release is verified; uncomment to enable. It takes the NEXT free id
-  // — 40 — because a task numbered below the highest that has shipped never runs for
+  // — 41 — because a task numbered below the highest that has shipped never runs for
   // anyone who has already passed it (`getPendingTasks` returns `id > completedVersion`);
   // 35 and 37 were both skipped that way as 36 and 38 shipped.
   //
   // {
-  //   id: 40,
+  //   id: 41,
   //   name: 'Migrate any remaining blob data, then drop the legacy blob tables',
   //   run: async (log) => {
   //     const { getDb } = require('../store/persistence/db') as { getDb: () => any };

@@ -25,6 +25,7 @@ import {
   playlistSortTitle,
   songSortKeys,
   type AlbumSortSource,
+  type SortKeyPair,
 } from '../db/sortKeys';
 import { errMessage } from '../utils/errorMessage';
 import { getDb, type BatchCommand, type InternalDb } from '../store/persistence/db';
@@ -54,7 +55,7 @@ interface RebuildSpec {
   idCol: string;
   /** Columns the derivation reads, beyond the id. */
   columns: readonly string[];
-  /** Column → new value. An empty map skips the row (an unparseable envelope). */
+  /** Column → new value. An empty map skips the row — see {@link unconverted}. */
   keysOf: (row: Record<string, unknown>, articles?: readonly string[]) => Record<string, string>;
 }
 
@@ -69,20 +70,25 @@ const albumSourceOf = (r: Record<string, unknown>): AlbumSortSource => ({
   displayArtist: text(r.display_artist),
 });
 
-/** The `favorite_*` remainder keeps the verbatim server envelope, so the inputs are in
- *  `json`. Unparseable rows are skipped — their keys stay NULL and they sort first,
- *  which is what a row with no key does anyway. */
-function parseEnvelope(row: Record<string, unknown>): Record<string, unknown> | null {
-  const raw = text(row.json);
-  if (raw === null) return null;
-  try {
-    return JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
+/** A `favorite_*` row Migration 40 has not converted has NULL where its entity's name
+ *  belongs, and its inputs are still only in `json`. Skipped rather than recomputed:
+ *  deriving from NULLs would overwrite the correct key the row already carries. */
+const unconverted = (row: Record<string, unknown>, nameCol: string): boolean =>
+  text(row[nameCol]) === null;
 
 const ALBUM_COLUMNS = ['name', 'sort_name', 'artist', 'display_artist'] as const;
+const SONG_COLUMNS = ['title', 'sort_name', 'artist'] as const;
+const ARTIST_COLUMNS = ['name', 'sort_name'] as const;
+
+const songKeys = (r: Record<string, unknown>, articles?: readonly string[]): SortKeyPair =>
+  songSortKeys({ title: text(r.title), sortName: text(r.sort_name), artist: text(r.artist) }, articles);
+
+const artistKey = (
+  r: Record<string, unknown>,
+  articles?: readonly string[],
+): Record<string, string> => ({
+  sort_title: artistSortTitle({ name: text(r.name), sortName: text(r.sort_name) }, articles),
+});
 
 /**
  * Ordered so the cheap tables finish first and a resumed pass makes visible progress
@@ -98,10 +104,8 @@ const SPECS: readonly RebuildSpec[] = [
   {
     table: 'artists',
     idCol: 'id',
-    columns: ['name', 'sort_name'],
-    keysOf: (r, articles): Record<string, string> => ({
-      sort_title: artistSortTitle({ name: text(r.name), sortName: text(r.sort_name) }, articles),
-    }),
+    columns: ARTIST_COLUMNS,
+    keysOf: artistKey,
   },
   {
     table: 'playlists',
@@ -114,46 +118,21 @@ const SPECS: readonly RebuildSpec[] = [
   {
     table: 'favorite_albums',
     idCol: 'id',
-    columns: ['json'],
-    keysOf: (r, articles): Record<string, string> => {
-      const a = parseEnvelope(r);
-      return a
-        ? albumSortKeys(
-            {
-              name: text(a.name),
-              sortName: text(a.sortName),
-              artist: text(a.artist),
-              displayArtist: text(a.displayArtist),
-            },
-            articles,
-          )
-        : {};
-    },
+    columns: ALBUM_COLUMNS,
+    keysOf: (r, articles) =>
+      unconverted(r, 'name') ? {} : albumSortKeys(albumSourceOf(r), articles),
   },
   {
     table: 'favorite_artists',
     idCol: 'id',
-    columns: ['json'],
-    keysOf: (r, articles): Record<string, string> => {
-      const a = parseEnvelope(r);
-      return a
-        ? { sort_title: artistSortTitle({ name: text(a.name), sortName: text(a.sortName) }, articles) }
-        : {};
-    },
+    columns: ARTIST_COLUMNS,
+    keysOf: (r, articles) => (unconverted(r, 'name') ? {} : artistKey(r, articles)),
   },
   {
     table: 'favorite_songs',
     idCol: 'id',
-    columns: ['json'],
-    keysOf: (r, articles): Record<string, string> => {
-      const c = parseEnvelope(r);
-      return c
-        ? songSortKeys(
-            { title: text(c.title), sortName: text(c.sortName), artist: text(c.artist) },
-            articles,
-          )
-        : {};
-    },
+    columns: SONG_COLUMNS,
+    keysOf: (r, articles) => (unconverted(r, 'title') ? {} : songKeys(r, articles)),
   },
   {
     table: 'cached_albums',
@@ -172,22 +151,14 @@ const SPECS: readonly RebuildSpec[] = [
   {
     table: 'cached_songs',
     idCol: 'song_id',
-    columns: ['title', 'sort_name', 'artist'],
-    keysOf: (r, articles) =>
-      songSortKeys(
-        { title: text(r.title), sortName: text(r.sort_name), artist: text(r.artist) },
-        articles,
-      ),
+    columns: SONG_COLUMNS,
+    keysOf: songKeys,
   },
   {
     table: 'songs',
     idCol: 'id',
-    columns: ['title', 'sort_name', 'artist'],
-    keysOf: (r, articles) =>
-      songSortKeys(
-        { title: text(r.title), sortName: text(r.sort_name), artist: text(r.artist) },
-        articles,
-      ),
+    columns: SONG_COLUMNS,
+    keysOf: songKeys,
   },
 ];
 

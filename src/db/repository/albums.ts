@@ -71,7 +71,7 @@ export interface AlbumListRow extends AlbumColumns {
 
 /** Typed against the row so a stale or misspelled column is a compile error, and the
  *  COLS string derives from it so the SQL cannot drift from the row type. */
-const ALBUM_LIST_FIELDS: readonly (keyof AlbumColumns)[] = [
+export const ALBUM_LIST_FIELDS: readonly (keyof AlbumColumns)[] = [
   'id', 'artist_id', 'name', 'artist', 'display_artist', 'cover_art', 'song_count',
   'duration', 'play_count', 'created', 'starred', 'year', 'genre', 'played', 'user_rating',
   'version', 'music_brainz_id', 'sort_name', 'sort_title', 'sort_artist', 'is_compilation',
@@ -158,39 +158,48 @@ const artistStub = (id: string | null, name: string | null): ArtistID3 => ({
  * Attach the multi-value children to a page of album rows — one batched query per
  * child table, stitched in JS. Rows with no children keep the key absent rather than
  * holding an empty array (consumers treat the two identically).
+ *
+ * `prefix` names the child-table family: `album` for the library, `favorite_album` for
+ * the starred remainder, whose rows have no `albums` row for the library children to
+ * hang off. One reader for both, so the two halves of a favourites list cannot present
+ * different objects.
  */
-export async function hydrateAlbumRows(db: InternalDb, rows: AlbumListRow[]): Promise<void> {
+export async function hydrateAlbumRows(
+  db: InternalDb,
+  rows: AlbumListRow[],
+  prefix = 'album',
+): Promise<void> {
   if (rows.length === 0) return;
   const ids = rows.map((r) => r.id);
   const [artists, genres, discTitles, moods, recordLabels, releaseTypes] = await Promise.all([
     fetchChildren<{ artist_id: string | null; artist_name: string | null }, ArtistID3>(
       db,
-      { table: 'album_artists', parentCol: 'album_id', columns: ['artist_id', 'artist_name'] },
+      { table: `${prefix}_artists`, parentCol: 'album_id', columns: ['artist_id', 'artist_name'] },
       ids,
       (c) => artistStub(c.artist_id, c.artist_name),
     ),
     fetchChildren<{ name: string }, string>(
-      db, { table: 'album_genres', parentCol: 'album_id', columns: ['name'] }, ids, (c) => c.name,
+      db, { table: `${prefix}_genres`, parentCol: 'album_id', columns: ['name'] }, ids, (c) => c.name,
     ),
     // Disc titles are keyed (album_id, disc) — there is no `pos` to order by.
     fetchChildren<{ disc: number; title: string }, DiscTitle>(
       db,
-      { table: 'album_disc_titles', parentCol: 'album_id', columns: ['disc', 'title'], orderBy: 'disc' },
+      { table: `${prefix}_disc_titles`, parentCol: 'album_id', columns: ['disc', 'title'], orderBy: 'disc' },
       ids,
       (c) => ({ disc: c.disc, title: c.title }),
     ),
     fetchChildren<{ mood: string }, string>(
-      db, { table: 'album_moods', parentCol: 'album_id', columns: ['mood'] }, ids, (c) => c.mood,
+      db, { table: `${prefix}_moods`, parentCol: 'album_id', columns: ['mood'] }, ids, (c) => c.mood,
     ),
     fetchChildren<{ name: string }, RecordLabel>(
       db,
-      { table: 'album_record_labels', parentCol: 'album_id', columns: ['name'] },
+      { table: `${prefix}_record_labels`, parentCol: 'album_id', columns: ['name'] },
       ids,
       (c) => ({ name: c.name }),
     ),
     fetchChildren<{ name: string }, string>(
       db,
-      { table: 'album_release_types', parentCol: 'album_id', columns: ['name'] },
+      { table: `${prefix}_release_types`, parentCol: 'album_id', columns: ['name'] },
       ids,
       (c) => c.name,
     ),
