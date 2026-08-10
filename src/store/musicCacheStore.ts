@@ -232,6 +232,23 @@ function generateQueueId(): string {
 }
 
 /**
+ * Queue items whose payload write is still in flight, by `queueId`.
+ *
+ * The mirror publishes an item synchronously so the UI shows it at once, but its songs
+ * only exist in `download_queue_songs`. Anything that reads that payload has to wait for
+ * the write, and waiting on the promise is the only way to know: op-sqlite's JS
+ * `executeBatch` parks a batch on a transaction lock and submits it to the native pool
+ * from a `setImmediate`, while every read reaches the pool at call time — so a read
+ * issued after the write still runs first.
+ */
+const queuePayloadWrites = new Map<string, Promise<void>>();
+
+/** Resolves once `queueId`'s songs are on disk; already-resolved for anything else. */
+export function whenQueuePayloadWritten(queueId: string): Promise<void> {
+  return queuePayloadWrites.get(queueId) ?? Promise.resolve();
+}
+
+/**
  * Shared body of `enqueue` / `enqueueTopUp`.
  *
  * The dedupe read and the append happen inside ONE functional `set`, so the write
@@ -242,7 +259,8 @@ function generateQueueId(): string {
  *
  * Stays synchronous on purpose: every caller runs `processQueue()` on the next line
  * and none awaits, and the `itemId` dedupe is only sound because the action cannot
- * yield between reading the queue and appending to it.
+ * yield between reading the queue and appending to it. The payload write it starts is
+ * registered in {@link queuePayloadWrites} for the worker to wait on.
  */
 function appendToQueue(
   set: StoreApi<MusicCacheState>['setState'],
@@ -275,14 +293,22 @@ function appendToQueue(
   });
   const row = get().downloadQueue.find((q) => q.queueId === queueId);
   if (row === undefined) return; // deduped
-  void insertDownloadQueueItem(row, songs).then((assigned) => {
-    if (assigned === null || assigned === row.queuePosition) return;
-    set((state) => ({
-      downloadQueue: state.downloadQueue.map((q) =>
-        q.queueId === queueId ? { ...q, queuePosition: assigned } : q,
-      ),
-    }));
-  });
+  const written = insertDownloadQueueItem(row, songs)
+    .then((assigned) => {
+      if (assigned === null || assigned === row.queuePosition) return;
+      set((state) => ({
+        downloadQueue: state.downloadQueue.map((q) =>
+          q.queueId === queueId ? { ...q, queuePosition: assigned } : q,
+        ),
+      }));
+    })
+    // Swallowed so a waiter never inherits a rejection; the write itself already
+    // swallows its own failures and the row reads as empty, which the worker errors on.
+    .catch(() => undefined)
+    .finally(() => {
+      queuePayloadWrites.delete(queueId);
+    });
+  queuePayloadWrites.set(queueId, written);
 }
 
 /**

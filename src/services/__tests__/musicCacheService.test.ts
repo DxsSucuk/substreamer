@@ -276,11 +276,19 @@ jest.mock('../../store/persistence/musicCacheTables', () => {
     reorderCachedItemSongs: jest.fn(),
     // download_queue writes. The append echoes the store's optimistic slot back —
     // SQL assigns it for real, and here memory and disk agree.
+    //
+    // The payload lands a MACROTASK later, not at call time. op-sqlite's JS
+    // `enhanceDB.executeBatch` parks a batch on a transaction lock and only submits it
+    // to the native pool from a `setImmediate`, while `execute` (every read) reaches
+    // the pool at call time — so a read issued in the same tick as an un-awaited batch
+    // runs FIRST. Committing here synchronously hides that, and the download worker
+    // reads this payload out of SQL.
     insertDownloadQueueItem: jest.fn(
       async (
         row: { queueId: string; queuePosition: number },
         songs: Array<Record<string, unknown>>,
       ) => {
+        await new Promise((resolve) => setImmediate(resolve));
         queueSongs.set(row.queueId, [...songs]);
         return row.queuePosition;
       },
@@ -331,7 +339,7 @@ jest.mock('../../store/persistence/musicCacheTables', () => {
   };
 });
 
-import { musicCacheStore } from '../../store/musicCacheStore';
+import { musicCacheStore, whenQueuePayloadWritten } from '../../store/musicCacheStore';
 import { favoritesStore } from '../../store/favoritesStore';
 import { getDb } from '../../store/persistence/db';
 import { upsertSongs } from '../../db/repository/songs';
@@ -948,6 +956,8 @@ describe('enqueueAlbumDownload', () => {
     expect(queue).toHaveLength(1);
     expect(queue[0].itemId).toBe('album-1');
     expect(queue[0].totalSongs).toBe(3);
+    // The payload is asserted on disk, so wait for the write the enqueue started.
+    await whenQueuePayloadWritten(queue[0].queueId);
     const songs = persistenceMock.__queueSongs.get(queue[0].queueId) as Array<{ id: string }>;
     expect(songs.map((s) => s.id).sort()).toEqual(['t3', 't4', 't5']);
     // downloadedAt on the existing cached_items row is untouched.
@@ -2564,6 +2574,167 @@ describe('download pipeline', () => {
     // exercised the pause-and-requeue code path.
     const q = musicCacheStore.getState().downloadQueue.find((x: any) => x.itemId === 'album-mid');
     expect(q).toBeDefined();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  The worker never claims an item whose payload is not on disk yet   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Every status a queue item passes through, plus any error it is stamped with.
+ * `insertDownloadQueueItem` commits a MACROTASK after the enqueue (see its mock), so a
+ * worker that claims the item straight away reads an empty payload.
+ */
+function trackQueueItem(itemId: string): {
+  statuses: string[];
+  errors: string[];
+  stop: () => void;
+} {
+  const statuses: string[] = [];
+  const errors: string[] = [];
+  const stop = musicCacheStore.subscribe((state) => {
+    const row = state.downloadQueue.find((q) => q.itemId === itemId);
+    if (!row) return;
+    if (statuses[statuses.length - 1] !== row.status) statuses.push(row.status);
+    if (row.error && !errors.includes(row.error)) errors.push(row.error);
+  });
+  return { statuses, errors, stop };
+}
+
+describe('download queue payload durability', () => {
+  beforeEach(() => {
+    mockFileExists = true;
+    mockFileSize = 5000;
+    mockDownloadFileAsyncWithProgress.mockResolvedValue(undefined);
+  });
+
+  afterEach(async () => {
+    await waitForQueueIdle();
+    mockCheckStorageLimit.mockReturnValue(true);
+    await forceRecoverDownloadsAsync();
+    await waitForQueueIdle();
+  });
+
+  it('a fresh album enqueue downloads instead of erroring on an unwritten payload', async () => {
+    mockFetchAlbum.mockResolvedValue({
+      id: 'album-race', name: 'Race', artist: 'A', coverArt: 'c',
+      song: [makeChild('race-t1', { albumId: 'album-race' })],
+    });
+    const seen = trackQueueItem('album-race');
+
+    await enqueueAlbumDownload('album-race');
+    await waitForQueueIdle();
+    seen.stop();
+
+    expect(seen.errors).toEqual([]);
+    expect(seen.statuses).toEqual(['queued', 'downloading']);
+    expect(musicCacheStore.getState().cachedItems['album-race'].songIds).toEqual(['race-t1']);
+  });
+
+  it('a playlist enqueue downloads rather than erroring', async () => {
+    mockFetchPlaylist.mockResolvedValue({
+      id: 'pl-race', name: 'PL',
+      entry: [makeChild('plr-t1', { albumId: 'album-plr' })],
+    });
+    const seen = trackQueueItem('pl-race');
+
+    await enqueuePlaylistDownload('pl-race');
+    await waitForQueueIdle();
+    seen.stop();
+
+    expect(seen.errors).toEqual([]);
+    expect(musicCacheStore.getState().cachedItems['pl-race'].songIds).toEqual(['plr-t1']);
+  });
+
+  it('a single-song enqueue downloads rather than erroring', async () => {
+    const seen = trackQueueItem('song:one-t1');
+
+    await enqueueSongDownload(makeChild('one-t1', { albumId: 'album-one' }));
+    await waitForQueueIdle();
+    seen.stop();
+
+    expect(seen.errors).toEqual([]);
+    expect(musicCacheStore.getState().cachedItems['song:one-t1'].songIds).toEqual(['one-t1']);
+  });
+
+  it('a top-up enqueues only the missing songs and downloads them', async () => {
+    seedSong(makeCachedSong('top-t1', { albumId: 'album-top' }));
+    seedItem('album-top', { type: 'album', songIds: ['top-t1'], expectedSongCount: 2 });
+    mockFetchAlbum.mockResolvedValue({
+      id: 'album-top', name: 'Top', artist: 'A', coverArt: 'c',
+      song: [
+        makeChild('top-t1', { albumId: 'album-top' }),
+        makeChild('top-t2', { albumId: 'album-top' }),
+      ],
+    });
+    const seen = trackQueueItem('album-top');
+
+    await enqueueAlbumDownload('album-top');
+    await waitForQueueIdle();
+    seen.stop();
+
+    expect(seen.errors).toEqual([]);
+    expect(seen.statuses).toEqual(['queued', 'downloading']);
+    expect(musicCacheStore.getState().cachedItems['album-top'].songIds).toEqual(['top-t1', 'top-t2']);
+  });
+
+  it('syncCachedItemTracks re-enqueues a changed playlist and downloads it', async () => {
+    seedSong(makeCachedSong('sync-t1', { albumId: 'album-sync' }));
+    seedItem('pl-sync', { type: 'playlist', songIds: ['sync-t1'] });
+    const seen = trackQueueItem('pl-sync');
+
+    syncCachedItemTracks('pl-sync', [
+      makeChild('sync-t1', { albumId: 'album-sync' }),
+      makeChild('sync-t2', { albumId: 'album-sync' }),
+    ]);
+    await waitForQueueIdle();
+    seen.stop();
+
+    expect(seen.errors).toEqual([]);
+    expect(musicCacheStore.getState().cachedItems['pl-sync'].songIds).toEqual([
+      'sync-t1',
+      'sync-t2',
+    ]);
+  });
+
+  it('re-adding an album after removing it downloads again', async () => {
+    mockFetchAlbum.mockResolvedValue({
+      id: 'album-again', name: 'Again', artist: 'A', coverArt: 'c',
+      song: [makeChild('again-t1', { albumId: 'album-again' })],
+    });
+    await enqueueAlbumDownload('album-again');
+    await waitForQueueIdle();
+    expect(musicCacheStore.getState().cachedItems['album-again']).toBeDefined();
+
+    await deleteCachedItem('album-again');
+    expect(musicCacheStore.getState().cachedItems['album-again']).toBeUndefined();
+
+    const seen = trackQueueItem('album-again');
+    await enqueueAlbumDownload('album-again');
+    await waitForQueueIdle();
+    seen.stop();
+
+    expect(seen.errors).toEqual([]);
+    expect(musicCacheStore.getState().cachedItems['album-again'].songIds).toEqual(['again-t1']);
+  });
+
+  it('retrying an errored item still downloads it', async () => {
+    seedQueuePayload('q-retry', [makeChild('retry-t1', { albumId: 'album-retry2' })]);
+    musicCacheStore.setState({
+      downloadQueue: [
+        {
+          queueId: 'q-retry', itemId: 'album-retry2', type: 'album', name: 'Retry',
+          status: 'error', error: 'Failed to read songs', totalSongs: 1,
+          completedSongs: 0, addedAt: 0, queuePosition: 1,
+        },
+      ],
+    } as any);
+
+    await retryDownload('q-retry');
+    await waitForQueueIdle();
+
+    expect(musicCacheStore.getState().cachedItems['album-retry2'].songIds).toEqual(['retry-t1']);
   });
 });
 

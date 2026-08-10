@@ -1340,15 +1340,24 @@ export async function deleteCachedItem(itemId: string): Promise<void> {
 /*  cached_item_songs (edge) writes                                    */
 /* ------------------------------------------------------------------ */
 
+/**
+ * One edge. Batched despite being a single statement, and that is load-bearing: the row
+ * FKs to `cached_items` AND `cached_songs`, both written by batches, and op-sqlite runs
+ * batches in submission order while a bare statement overtakes every batch still parked
+ * on its transaction lock. Sent bare, the edge lands before its parents and
+ * `PRAGMA foreign_keys = ON` rejects it — silently, since the write swallows.
+ */
 export async function insertCachedItemSong(itemId: string, position: number, songId: string): Promise<void> {
   const db = getDb();
   if (db === null) return;
   if (!itemId || !songId) return;
   try {
-    await db.runAsync(
-      'INSERT OR IGNORE INTO cached_item_songs (item_id, position, song_id) VALUES (?, ?, ?);',
-      [itemId, position, songId],
-    );
+    await db.runAtomicBatchAsync([
+      [
+        'INSERT OR IGNORE INTO cached_item_songs (item_id, position, song_id) VALUES (?, ?, ?);',
+        [itemId, position, songId],
+      ],
+    ]);
   } catch {
     /* dropped */
   }

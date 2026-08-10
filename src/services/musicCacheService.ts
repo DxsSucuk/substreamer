@@ -39,6 +39,7 @@ import { favoritesStore } from '../store/favoritesStore';
 import { storageLimitStore } from '../store/storageLimitStore';
 import {
   musicCacheStore,
+  whenQueuePayloadWritten,
   type CachedItemMeta,
   type CachedSongMeta,
   type DownloadQueueItem,
@@ -1047,6 +1048,16 @@ async function processQueue(): Promise<void> {
       const { downloadQueue } = musicCacheStore.getState();
       const next = downloadQueue.find((q) => q.status === 'queued');
       if (!next) break;
+
+      // An enqueue publishes the item to the mirror before its songs reach SQL, and
+      // `downloadItem` reads the payload from there — so claim the item only once the
+      // write it started has landed, or the read finds nothing to download.
+      await whenQueuePayloadWritten(next.queueId);
+      if (myId !== processingId) return;
+      const claimed = musicCacheStore.getState().downloadQueue.find(
+        (q) => q.queueId === next.queueId,
+      );
+      if (claimed?.status !== 'queued') continue;
 
       musicCacheStore.getState().updateQueueItem(next.queueId, { status: 'downloading' });
       await downloadItem(next, myId);
