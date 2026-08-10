@@ -117,9 +117,9 @@ const rowIds = (r: ReturnType<typeof render>): string[] =>
   r.queryAllByTestId(/^(artist|album|song):/).map((n) => String(n.props.testID));
 
 describe('SearchScreen — downloaded filter drops artists entirely', () => {
-  // Artists cannot be downloaded. The filter used to keep any artist who owned a matching
-  // downloaded album, which disagreed with the library tab (hides artists) and with offline
-  // search (returns none). All three now agree: no artists under the Downloaded filter.
+  // Artists cannot be downloaded. Keeping an artist who merely owns a matching downloaded
+  // album would disagree with the library tab (hides artists) and with offline search
+  // (returns none). All three agree: no artists under the Downloaded filter.
   it('renders no artist rows when the Downloaded filter is on', async () => {
     filterBarStore.setState({ downloadedOnly: true });
     seedDownloadedAlbum('al1'); // so the screen has content once the read lands

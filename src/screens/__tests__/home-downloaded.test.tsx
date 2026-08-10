@@ -340,8 +340,8 @@ describe('HomeScreen — whole-screen empty state under a filter', () => {
   });
 });
 
-/** The reactivity `cachedItems` used to give away free: SQL has no Zustand subscription,
- *  so without keying on `revision` both sections go stale under a completing download. */
+/** SQL has no Zustand subscription, so without keying on `revision` both sections go
+ *  stale under a completing download. */
 describe('HomeScreen — Downloaded sections track musicCacheStore.revision', () => {
   it('re-reads albums AND playlists when a download completes on screen', async () => {
     seedDownloadedAlbum('dl1');

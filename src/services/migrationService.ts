@@ -806,7 +806,7 @@ async function backfillCachedItemEnvelopes(
  *
  * A queue row whose entries already look full (cheapest sentinel: any
  * entry has `isDir`, a required field on the API type) is skipped — those
- * came from a post-bfe1886 runtime write and are already correct.
+ * came from a runtime write of the full shape and are already correct.
  */
 async function repairDownloadQueueSongsJson(
   log: (message: string) => void,
@@ -1442,13 +1442,10 @@ const MIGRATION_TASKS: MigrationTask[] = [
     id: 10,
     name: 'Backfill downloaded track formats (deprecated in v2)',
     run: async (log) => {
-      // In v1 this migration backfilled the `downloadedFormats` map on the
-      // musicCacheStore blob. In the v2 re-architecture (see
-      // `plans/music-downloads-v2.md`) format metadata lives inline on the
-      // `cached_songs` per-row table, so there is no longer a separate map
-      // to populate here. Task #14 owns the v1→v2 migration and carries any
-      // format info over during that pass. Kept as a no-op so the migration
-      // ID sequence is preserved for users whose `completedVersion` is < 10.
+      // Format metadata lives inline on the `cached_songs` per-row table, so
+      // there is no separate `downloadedFormats` map to populate; migration 14
+      // carries v1 format info over during the v1→v2 pass. Kept as a no-op so
+      // the ID sequence is preserved for users on `completedVersion` < 10.
       log('Task deprecated in v2; format data now lives in cached_songs — skipping.');
     },
   },
@@ -1848,11 +1845,8 @@ const MIGRATION_TASKS: MigrationTask[] = [
     },
   },
 
-  // IDs 22 and 23 are intentionally skipped. Both were unshipped image-
-  // cache migrations (reconcile to full cover-art IDs / clear legacy
-  // recache blob) consolidated into Migration 25 below before they ever
-  // reached production. Leaving the gap rather than renumbering keeps
-  // pre-consolidation git history readable.
+  // IDs 22 and 23 are intentionally skipped — both were consolidated into
+  // Migration 25 below before shipping. Leave the gap; do not renumber or reuse.
 
   {
     id: 24,
@@ -1920,9 +1914,7 @@ const MIGRATION_TASKS: MigrationTask[] = [
         log(`[m25] wipe failed: ${errMessage(e)}`);
       }
       // Also drop the legacy substreamer-cover-art-recache kvStorage blob
-      // — replaced by the persistent SQL image-download queue. (Originally
-      // unshipped Migration 23; folded in here since it's the same
-      // cleanup family.)
+      // — replaced by the persistent SQL image-download queue.
       try {
         await kvStorage.removeItem('substreamer-cover-art-recache');
         log('[m25] cleared substreamer-cover-art-recache blob');
@@ -1937,12 +1929,12 @@ const MIGRATION_TASKS: MigrationTask[] = [
     id: 27,
     name: 'Backfill cached_items.expected_song_count from album_details',
     run: async (log) => {
-      // Pre-#159 fix, `ensurePartialAlbumEdge` wrote `expected_song_count = 1`
-      // when albumDetailStore didn't yet have the album, indistinguishable
-      // from a genuine single-track album. The runtime now fetches the
-      // authoritative count when stitching the partial-album row; this
-      // migration corrects any historical rows whose count is stale by
-      // sourcing the real value from the locally cached album_details
+      // Older installs carry `expected_song_count = 1` rows written by
+      // `ensurePartialAlbumEdge` when albumDetailStore didn't yet have the
+      // album — indistinguishable from a genuine single-track album. The
+      // runtime now fetches the authoritative count when stitching the
+      // partial-album row; this migration corrects any stale historical rows
+      // by sourcing the real value from the locally cached album_details
       // envelope.
       //
       // Rows for which no album_details exists are left untouched — the
@@ -1999,7 +1991,7 @@ const MIGRATION_TASKS: MigrationTask[] = [
     id: 29,
     name: 'Re-key image cache to the coverArt-value model',
     run: async (log) => {
-      // #202: cover-art lookups moved back from the entity ID to the entity's
+      // Cover-art lookups moved from the entity ID to the entity's
       // `coverArt` VALUE (album.coverArt / playlist.coverArt / artist.coverArt;
       // songs resolve their parent album's or own coverArt). Files cached under
       // the OLD entity-ID keys are now orphaned — no consumer queries an entity
@@ -2011,8 +2003,7 @@ const MIGRATION_TASKS: MigrationTask[] = [
       // nothing worth preserving there. On servers where the ID happened to
       // resolve (Navidrome), `ensureCached` (online browsing) and the download
       // recache below repopulate the correct coverArt-keyed files. A blanket
-      // wipe also reclaims the orphaned bytes immediately. (Mirrors m25, which
-      // did the inverse switch.)
+      // wipe also reclaims the orphaned bytes immediately.
       try {
         const freed = await clearImageCache();
         log(`[m29] wiped image cache, freed=${freed} bytes`);
@@ -2201,7 +2192,7 @@ const MIGRATION_TASKS: MigrationTask[] = [
   //   5. A fresh install (completedVersion 0) fast-tracks straight to the
   //      latest id, running ONLY tasks tagged `runOnFreshInstall`. Pure data
   //      transforms no-op on an empty DB and stay untagged. Tag the task if it
-  //      seeds state a fresh install needs (see #21's deviceId persist) or
+  //      seeds state a fresh install needs (migration 21's deviceId persist) or
   //      cleans up old-release files — otherwise it is silently skipped on
   //      fresh installs.
   //

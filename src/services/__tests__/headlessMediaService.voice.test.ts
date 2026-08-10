@@ -100,8 +100,8 @@ describe('resolveVoice — structured-field handling', () => {
   });
 
   it('locks the artist in FUZZILY via scoreCandidate ("by corn" → Korn, not Other Band)', async () => {
-    // The old code was a case-insensitive substring filter — "corn" would not
-    // match "Korn". scoreCandidate scores it phonetically, so Korn still wins.
+    // A case-insensitive substring filter would not match "corn" to "Korn".
+    // scoreCandidate scores it phonetically, so Korn still wins.
     mockSearchLibrary.mockResolvedValue({ songs: [korn, other], albums: [], artists: [] });
     const songs = await __test.resolveVoice(
       req({ song: 'Freak on a Leash', artist: 'corn', type: 'song' }),

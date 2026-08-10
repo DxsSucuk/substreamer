@@ -8,8 +8,6 @@
  * service-layer kvStorage blob (`substreamer-image-queue-meta`) and re-read
  * on every subscription tick — the store is a thin reactive mirror, not the
  * source of truth.
- *
- * See plans/2026-05-23-image-cache-queue-rework.md.
  */
 import { create } from 'zustand';
 

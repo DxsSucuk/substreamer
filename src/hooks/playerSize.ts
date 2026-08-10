@@ -1,7 +1,7 @@
 /**
  * Height- AND width-tiered sizing for the phone Now Playing screen.
  *
- * Very small Android devices (e.g. an 800×480 MP3 player — issue #90) don't have
+ * Very small Android devices (e.g. an 800×480 MP3 player) don't have
  * room for the full-size player: the fixed control rows + tab bar get pushed
  * behind the system nav bar, and on a narrow portrait width the control rows
  * overflow off both edges. Rather than scroll, we compact the layout in tiers —

@@ -1,9 +1,8 @@
 /**
  * Shared player lyrics fetch coordination. Owns the store selectors, the
  * fetch-attempt guard ref, the gated effect, and the retry handler. The
- * phone (`player-phone-portrait.tsx`) and tablet (`PlayerTabletLandscape.tsx`)
- * used to implement this independently — see Phase 6 of
- * `plans/2026-05-22-audit-remediation-roadmap.md` for full rationale.
+ * Shared by the phone (`player-phone-portrait.tsx`) and tablet
+ * (`PlayerTabletLandscape.tsx`) surfaces.
  *
  * Fetch policy: lyrics load only while a player surface is on screen
  * (`enabled`) and the app is foreground. App-active is read here rather than at

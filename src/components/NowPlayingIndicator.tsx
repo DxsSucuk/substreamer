@@ -148,15 +148,13 @@ export const NowPlayingIndicator = memo(function NowPlayingIndicator({
         sv.value = withTiming(BAR_PAUSED_FRACTION, { duration: 200 });
       });
     }
-    // Intentionally NO cleanup `cancelAnimation` here. Earlier versions
-    // cancelled on every dep change, which created a race on the UI
-    // thread when isPlaying flipped pause→play: the cleanup's cancel
-    // could arrive after the body's `sv.value = withRepeat(...)`, and
-    // since cancelAnimation freezes the SV at its current value, the
-    // bars would stay frozen at the paused mid-height. Reanimated
-    // automatically replaces an SV's animation on a new assignment, so
-    // the only cancel we actually need is for component unmount —
-    // handled by the separate effect below.
+    // Intentionally NO cleanup `cancelAnimation` here. Cancelling on every dep
+    // change races the UI thread when isPlaying flips pause→play: the cancel can
+    // land after the body's `sv.value = withRepeat(...)`, and since
+    // cancelAnimation freezes the SV at its current value the bars stay stuck at
+    // the paused mid-height. Reanimated replaces an SV's animation on a new
+    // assignment, so the only cancel needed is on unmount — handled by the
+    // separate effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shouldAnimate, barCount]);
 

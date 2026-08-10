@@ -33,12 +33,11 @@ export function minDelay(ms = 2000): Promise<void> {
  * Format a timestamp as a human-readable relative time string.
  * Requires i18next `t` function for localised output.
  *
- * "Yesterday" / "N days ago" use CALENDAR days (in local time), not
- * elapsed 24-hour buckets. A play "47 hours ago" used to render as
- * "yesterday" via `Math.floor(hours / 24) === 1`, but that disagreed
- * with the streak / heatmap views which are calendar-based. Consistent
- * across views now: if the streak says yesterday was empty, the recent-
- * play row won't claim to be "yesterday".
+ * "Yesterday" / "N days ago" use CALENDAR days (in local time), not elapsed
+ * 24-hour buckets: `Math.floor(hours / 24) === 1` would call a play "47 hours
+ * ago" yesterday, disagreeing with the calendar-based streak / heatmap views.
+ * If the streak says yesterday was empty, the recent-play row must not claim
+ * to be "yesterday".
  */
 export function timeAgo(ts: number, t: (key: string, opts?: Record<string, unknown>) => string): string {
   const now = Date.now();

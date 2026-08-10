@@ -7,8 +7,8 @@ describe("md5 (UTF-8 correctness)", () => {
   });
 
   it("hashes non-ASCII (multi-byte UTF-8) input as the server does", () => {
-    // Previously these hashed UTF-16 code units → wrong hash → 401s for
-    // international passwords. Now they hash the UTF-8 bytes.
+    // Must hash the UTF-8 bytes, not UTF-16 code units — the latter gives a
+    // wrong hash and 401s for international passwords.
     expect(md5("mön")).toBe("473bba104a8e0934879bcc27b86e17be");
     expect(md5("héllo123salt")).toBe("171e20e134fecb7469c9b078759a8846");
   });

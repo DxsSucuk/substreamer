@@ -2,7 +2,7 @@
  * Pill-style notification banner for the "refresh downloaded metadata" pass —
  * re-caching album/playlist detail + cover art for downloaded items so offline
  * views never lose their metadata. Driven by `downloadedMetadataRefreshStore`,
- * so it surfaces BOTH the proactive startup backfill (migration #33) and the
+ * so it surfaces BOTH the proactive startup backfill and the
  * manual "Refresh metadata" settings button, anywhere in the app.
  *
  * Visual language matches `ImageCacheBanner` / `LibrarySyncBanner` — dark

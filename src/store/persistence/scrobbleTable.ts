@@ -208,7 +208,7 @@ export async function mergeScrobbles(
 
 /**
  * Wipe and bulk-insert the full scrobble set as ONE atomic batch.
- * Used by backup restore and the one-shot blob → per-row migration (task #13).
+ * Used by backup restore and the one-shot blob → per-row migration.
  * Invalid/duplicate records are filtered before insertion.
  */
 export async function replaceAllScrobbles(scrobbles: readonly CompletedScrobble[]): Promise<void> {

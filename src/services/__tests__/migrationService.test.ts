@@ -30,7 +30,7 @@ jest.mock('../../store/persistence/db', () => {
   return { ...actual, isDbHealthy: jest.fn(() => true) };
 });
 
-// Task #13 delegates bulk-insert to the scrobble table helper. Mock the write
+// Task 13 delegates bulk-insert to the scrobble table helper. Mock the write
 // functions so the test can assert wiring without needing a real SQLite handle. The
 // rest of the module stays REAL: `scrobbleAggregates` reconstructs its rows through
 // this module's `SCROBBLE_SELECT` / `scrobblesWithArrays`, and stubbing those to
@@ -43,7 +43,7 @@ jest.mock('../../store/persistence/scrobbleTable', () => ({
   backfillScrobbleColumnsAsync: jest.fn(async () => {}),
 }));
 
-// Task #15 mirrors task 13 for pending scrobbles. Mock the helper module so
+// Task 15 mirrors task 13 for pending scrobbles. Mock the helper module so
 // the migration test can assert wiring without a real SQLite handle.
 jest.mock('../../store/persistence/pendingScrobbleTable', () => ({
   replaceAllPendingScrobbles: jest.fn(),
@@ -52,7 +52,7 @@ jest.mock('../../store/persistence/pendingScrobbleTable', () => ({
   clearPendingScrobbles: jest.fn(),
 }));
 
-// Migration #21 imports deviceIdentityStore which transitively pulls
+// Migration 21 imports deviceIdentityStore which transitively pulls
 // expo-device + expo-crypto + i18n. Mock the store and the native modules
 // so the migration runs without dragging the native bridge into the test.
 jest.mock('../../store/deviceIdentityStore', () => ({
@@ -70,7 +70,7 @@ jest.mock('../../store/deviceIdentityStore', () => ({
   getDeviceShortId: () => 'mock1234',
 }));
 
-// Task #14 calls bulkReplace to write the v2 rows. Mock the whole module so
+// Task 14 calls bulkReplace to write the v2 rows. Mock the whole module so
 // tests don't need a real SQLite handle; assertions are on the mock calls.
 jest.mock('../../store/persistence/musicCacheTables', () => ({
   bulkReplace: jest.fn(),
@@ -91,7 +91,7 @@ jest.mock('../../store/persistence/musicCacheTables', () => ({
   addColumnIfMissing: jest.fn(() => false),
 }));
 
-// Task #14 consults albumDetailStore for albumId resolution when a playlist
+// Task 14 consults albumDetailStore for albumId resolution when a playlist
 // track's album wasn't itself cached as a v1 album item. Mock with a
 // controllable getState() so tests can dial the resolution map up and down.
 let mockAlbumDetailAlbums: Record<string, any> = {};
@@ -266,10 +266,10 @@ describe('fresh-install fast-track (completedVersion 0, DB healthy)', () => {
 });
 
 describe('DB-unavailable guard — the runner must NOT run any migration', () => {
-  // Regression guard for the prod incident: a failed DB init makes the persisted
-  // completedVersion read back as 0; the OLD code then re-ran EVERY migration on an
-  // already-loaded app, repeating the destructive image-cache wipes (m25/m29) and
-  // deleting the on-disk cache. When the DB is unavailable we must run NOTHING.
+  // A failed DB init makes the persisted completedVersion read back as 0, which
+  // would re-run EVERY migration on an already-loaded app — repeating the
+  // destructive image-cache wipes (m25/m29) and deleting the on-disk cache. When
+  // the DB is unavailable we must run NOTHING.
   beforeEach(() => (isDbHealthy as jest.Mock).mockReturnValue(false));
   afterEach(() => (isDbHealthy as jest.Mock).mockReturnValue(true));
 

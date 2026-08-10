@@ -179,7 +179,7 @@ describe('BottomSheet', () => {
 
     // Programmatic close (visible → false) is deferred by one frame so any
     // parent state updates queued in the same tick get a chance to commit
-    // before the native Modal unmounts (U8: react-native-screens#3786). The
+    // before the native Modal unmounts (software-mansion/react-native-screens#3786). The
     // sheet still closes without calling onClose — the parent already
     // considers it closed.
     rerender(
@@ -273,10 +273,9 @@ describe('BottomSheet', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  // #154 — without onCloseComplete, opening an Alert immediately after the
-  // BottomSheet closed left the alert showing but un-tappable on Android.
-  // onCloseComplete fires only AFTER the Modal has fully torn down so
-  // chained modals can safely mount.
+  // Without onCloseComplete, an Alert opened immediately after the BottomSheet
+  // closes shows but is un-tappable on Android. onCloseComplete fires only AFTER
+  // the Modal has fully torn down, so chained modals can safely mount.
   it('fires onCloseComplete after a programmatic close', async () => {
     const onCloseComplete = jest.fn();
     const { rerender } = render(

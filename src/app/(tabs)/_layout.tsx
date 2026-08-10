@@ -58,7 +58,7 @@ export default function TabLayout() {
           tabBarInactiveTintColor: colors.textSecondary,
           // The default tab button uses a borderless Android ripple — an
           // unbounded circle sized to the tab width that overshoots the short
-          // bar and clips at the top (#222). Bound it to the cell + a small
+          // bar and clips at the top. Bound it to the cell + a small
           // radius so the circle fits inside the short bar's height without
           // clipping top/bottom. iOS ignores android_ripple.
           tabBarButton: (props) => (

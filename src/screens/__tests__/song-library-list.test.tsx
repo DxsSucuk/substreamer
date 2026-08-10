@@ -187,10 +187,8 @@ describe('SongLibraryListScreen — toggling Favourites on an already-mounted li
     mockRenders.length = 0;
 
     r.rerender(<SongLibraryListScreen downloadedOnly />);
-    // This assertion used to say the opposite: the downloaded branch read the store
-    // synchronously, so a spinner here meant a stale favourites flag. It is a SQL read
-    // now, so the same mounted component drops the favourites rows and waits — and the
-    // frame in between has to say loading, exactly as the toggle-ON direction does.
+    // A SQL read, so the same mounted component drops the favourites rows and waits —
+    // the frame in between has to say loading, exactly as the toggle-ON direction does.
     expect(mockRenders[0]).toMatchObject({ items: [], loading: true });
     await waitFor(() => expect(latest().items.map((s) => s.id)).toEqual(['star-a']));
     expect(mockRenders.filter((m) => m.items.length === 0 && !m.loading)).toEqual([]);
@@ -213,9 +211,9 @@ describe('SongLibraryListScreen — toggling Favourites on an already-mounted li
 });
 
 /**
- * The defect this step fixes: with the sort order set to Artist the browse list ordered
- * by artist and both filtered lists silently fell back to raw-title order. Every case
- * below asserts a filtered list against an order the JS comparator could not produce.
+ * With the sort order set to Artist the filtered lists must order by artist too, never
+ * silently fall back to raw-title order. Every case below asserts a filtered list
+ * against an order the JS comparator could not produce.
  */
 describe('SongLibraryListScreen — the filters follow the song sort order', () => {
   /** Titles and artists disagree, and the ids run with the TITLES — so an artist-ordered
@@ -280,8 +278,8 @@ describe('SongLibraryListScreen — the filters follow the song sort order', () 
   });
 
   it('files a punctuation-leading title under H in EVERY filter combination', async () => {
-    // The reported symptom: `"Heroes"` jumped back to `#` the moment a filter went on,
-    // because the JS comparator compared the RAW title.
+    // A JS comparator over the RAW title files `"Heroes"` under `#`, so any filter
+    // path that falls back to one breaks the letter.
     await upsertSongs(db(), [
       song('s-h', { title: '"Heroes"' }),
       song('s-g', { title: 'Ghosts' }),

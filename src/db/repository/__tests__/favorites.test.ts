@@ -367,11 +367,10 @@ describe('the downloaded filter reaches BOTH halves', () => {
     ).toEqual(['full', 'part']);
   });
 
-  // Artists are NOT downloadable. Owning a downloaded album used to promote an artist into
-  // a "downloaded artists" list; it no longer does anywhere, because the Downloaded filter
-  // hides artist lists outright instead of narrowing them. The reads below therefore take
-  // no filter at all — `StarredArtistPageOpts` omits it so it cannot be passed and silently
-  // ignored — and downloads must not change what they return.
+  // Artists are NOT downloadable, and the Downloaded filter hides artist lists outright
+  // instead of narrowing them. The reads below therefore take no filter at all —
+  // `StarredArtistPageOpts` omits it so it cannot be passed and silently ignored — and
+  // downloads must not change what they return.
   it('returns the whole starred artist set regardless of what is downloaded', async () => {
     await upsertArtists(db(), [artist('ar1'), artist('ar2')]);
     await markStarredArtists(db(), [
@@ -753,8 +752,8 @@ describe('the whole-set SONG read takes a sort order', () => {
 
   it('strips the leading article, so `A Horse With No Name` files under H', async () => {
     // `A` is NOT in `DEFAULT_IGNORED_ARTICLES` (it collides with the English preposition),
-    // so this only files under H on a server that ships it in `ignoredArticles` — which is
-    // exactly the config the defect was reported on. Both halves must read the SAME list.
+    // so this only files under H on a server that ships it in `ignoredArticles`.
+    // Both halves must read the SAME list.
     setSortArticles(['the', 'a']);
     try {
       await upsertSongs(db(), [song('lib-g', { title: 'Ghosts' }), song('lib-i', { title: 'Ivy' })]);

@@ -214,8 +214,8 @@ describe('FavoritesScreen — reactivity on musicCacheStore.revision', () => {
   });
 
   it('re-runs the SQL totals when a download lands', async () => {
-    // `starredSongTotals` counts the DOWNLOADED favourites under this filter, so it keys on
-    // the same signal the probe does — it used to key on the `cachedItems` object identity.
+    // `starredSongTotals` counts the DOWNLOADED favourites under this filter, so it must
+    // key on the same signal the probe does.
     seedStarredAggregate();
     await upsertSongs(db(), [{ id: 's1', title: 'Song s1', isDir: false, duration: 10 } as Child]);
     await markStarredSongs(db(), [{ id: 's1', starredAt: 100 }]);

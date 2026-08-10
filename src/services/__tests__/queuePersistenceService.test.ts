@@ -2,9 +2,9 @@
  * The LIVE queue's persistence against REAL SQL on the better-sqlite3-backed op-SQLite
  * seam.
  *
- * The first describe is the point of the change: a track change used to re-serialize
- * and rewrite the whole queue, and is now ONE UPDATE on the parent row. The statement
- * counts are asserted directly rather than inferred from the stored result.
+ * The first describe asserts that a track change is ONE UPDATE on the parent row, not
+ * a re-serialize-and-rewrite of the whole queue. The statement counts are asserted
+ * directly rather than inferred from the stored result.
  *
  * `coldStart()` re-evaluates the service with its in-memory state empty and the same
  * DB underneath, which is what a relaunch looks like — the restore then has to come

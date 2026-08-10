@@ -2861,8 +2861,8 @@ describe('reconcileMusicCacheAsync', () => {
 
   it('skips the stale-dir sweep when validAlbumIds is empty (pre-migration safety gate)', async () => {
     // No songs seeded → validAlbumIds is empty. Directories on disk must
-    // NOT be swept — this is the gate that protects v1 cache data when
-    // task #14 hasn't completed yet.
+    // NOT be swept — this is the gate that protects v1 cache data when the
+    // v1→v2 migration hasn't completed yet.
     mockFileExists = true;
     mockListDirectoryAsync.mockImplementation(async (uri: string) => {
       if (uri.endsWith('/music-cache')) return ['v1-playlist-dir', 'v1-album-dir'];

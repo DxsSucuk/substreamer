@@ -6,9 +6,8 @@ import { getCurrentSSIDWithRetry } from '../services/autoOfflineService';
 /**
  * Owns the home-WiFi SSID detection state for the offline-mode setup UI.
  *
- * `refreshSSID` re-reads the current network in one place (the block was
- * previously copy-pasted across the mount effect, mode-select, grant-
- * permission and retry handlers):
+ * `refreshSSID` re-reads the current network in one place, shared by the mount
+ * effect, mode-select, grant-permission and retry handlers:
  *   - off WiFi → clear the SSID and flag `notOnWifi`;
  *   - on WiFi → fetch the SSID and flag `ssidReadFailed` when a
  *     permission-granted read still comes back empty.

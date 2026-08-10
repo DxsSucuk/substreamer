@@ -140,10 +140,9 @@ describe('persistence/db (happy path)', () => {
   });
 
   it('cached_item_songs declares ON DELETE CASCADE on item_id', () => {
-    // Guards against accidental schema regression — the cascade behavior is
-    // exactly what the UPSERT fix in commit 5867ff0 relies on for orphan
-    // edges to clean up, and its absence would silently corrupt the
-    // refcount-by-COUNT invariant. Match the CREATE specifically: the dedup DELETE in
+    // Guards against accidental schema regression — the UPSERT path relies on
+    // this cascade for orphan edges to clean up, and its absence would silently
+    // corrupt the refcount-by-COUNT invariant. Match the CREATE specifically: the dedup DELETE in
     // db.ts also mentions the table, and drizzle emits lowercase `ON DELETE cascade`.
     const cascadeDdl = NORMALIZED_DDL.find(
       (sql) => sql.trim().startsWith('CREATE TABLE') && sql.includes('cached_item_songs'),

@@ -1,12 +1,11 @@
 /**
- * Tests for the persistent image-download queue worker added in Phase 2
- * of the image-cache rework. See plans/2026-05-23-image-cache-queue-rework.md.
+ * Tests for the persistent image-download queue worker.
  *
  * These tests focus on the orchestration layer — enqueue → worker → state
  * transitions → cycle accounting. The actual `downloadAndCacheImage`
  * machinery (fetch + variant generation) is exercised by
- * `imageCacheService.test.ts`; here we mock it out and assert the queue
- * state transitions our new code performs.
+ * `imageCacheService.test.ts`; here it is mocked out so the assertions land
+ * on the queue state transitions.
  */
 
 jest.mock('expo-file-system', () => ({
@@ -258,7 +257,7 @@ describe('image-queue meta accessors', () => {
 
 describe('enqueueImageRefreshCycle', () => {
   it('refresh-downloads snapshots from cached_items + per-song covers', async () => {
-    // Snapshot keys off the stored coverArt VALUE (#202): the cached_item's
+    // Snapshot keys off the stored coverArt VALUE: the cached_item's
     // coverArtId for album/playlist, and the mode-aware resolved cover for
     // songs (album mode, empty library → falls back to the song's own coverArt).
     mockHydrateCachedItems.mockReturnValue({

@@ -30,10 +30,6 @@ import { playerStore } from '../store/playerStore';
  * already provides safe-area handling for its own children, so the tabs
  * call passes `false` (the default). Non-tab Stack screens render this
  * as the last layout-flow element, so they pass `true`.
- *
- * The cover-art recache progress banner used to live here too in a
- * download-style strip. It moved to `BannerStack` at the top of the
- * tabs to match the library-sync notification pill.
  */
 interface BottomChromeProps {
   withSafeAreaPadding?: boolean;

@@ -189,8 +189,8 @@ jest.mock('../subsonicService');
 jest.mock('../normalizedLibrarySync', () => ({
   runNormalizedLibrarySync: (opts?: unknown) => {
     mockRunNormalizedLibrarySync(opts);
-    // A NON-full run is exactly what `albumLibraryStore.fetchAllAlbums()` used to be
-    // (resume the album list, then the songs), so route it there — the pager/scope
+    // A NON-full run does what `albumLibraryStore.fetchAllAlbums()` does (resume the
+    // album list, then the songs), so route it there — the pager/scope
     // assertions below are about the fan-out, and stay meaningful. Returning that
     // mock's promise also preserves the tests that control timing through it.
     return (opts as { full?: boolean } | undefined)?.full === true

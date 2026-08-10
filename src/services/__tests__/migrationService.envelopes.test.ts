@@ -20,7 +20,7 @@ jest.mock('../imageCacheService', () => ({
   clearImageCache: jest.fn(async () => 0),
 }));
 
-// Migration #21 imports deviceIdentityStore which transitively pulls
+// Migration 21 imports deviceIdentityStore which transitively pulls
 // expo-device + expo-crypto + i18n. Mock the store so the migration runs
 // without dragging the native bridge into the test.
 jest.mock('../../store/deviceIdentityStore', () => ({

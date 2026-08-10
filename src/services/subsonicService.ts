@@ -47,7 +47,7 @@ export function normalizeServerUrl(url: string): string {
   }
   // Strip a trailing '/rest' path segment (leading slash — never the '.rest'
   // TLD) so a saved '.../rest' URL doesn't double up when callers append the
-  // Subsonic '/rest/' path (issue #225).
+  // Subsonic '/rest/' path.
   return base.replace(/\/+$/, '').replace(/\/rest$/i, '');
 }
 
@@ -583,7 +583,7 @@ export async function getLyricsForTrack(
  * fast library-sync path)? A tiny `albumCount:10` request — if it returns any
  * albums, the empty query "match all" works and we can page `search3` in bulk;
  * otherwise the caller falls back to the legacy `getAlbumList2` + per-album
- * walk path. (#204)
+ * walk path.
  */
 export async function probeEmptySearch3(): Promise<boolean> {
   const api = getApi();

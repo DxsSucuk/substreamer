@@ -2,10 +2,10 @@
  * `scrobble_events` writes, read back through `hydrateScrobblesAsync`, against REAL
  * SQL on the better-sqlite3-backed op-SQLite seam.
  *
- * The hand-rolled fake this suite used to carry stored only `(id, song_json, time)`
- * and matched statements by SQL prefix, so it could not represent the 37 typed
- * columns the readers now reconstruct from — any SELECT-list change made it return
- * `[]` and fail like a logic bug.
+ * Uses the real seam, not a hand-rolled fake: a fake storing `(id, song_json, time)`
+ * and matching statements by SQL prefix cannot represent the 37 typed columns the
+ * readers reconstruct from — any SELECT-list change makes it return `[]` and fail
+ * like a logic bug.
  *
  * Per AGENTS.md §11 the seam proves SQL semantics, never concurrency.
  */

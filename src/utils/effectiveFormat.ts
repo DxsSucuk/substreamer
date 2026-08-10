@@ -96,7 +96,7 @@ function resolveEffectiveBitRate(
  */
 export function getEffectiveFormat(track: Child): EffectiveFormat | null {
   // 1. Downloaded copy is authoritative. Format info lives inline on the
-  //    cached song row since v2 (previously in a separate downloadedFormats map).
+  //    cached song row.
   const downloadedSong = musicCacheStore.getState().cachedSongs[track.id];
   if (downloadedSong) {
     return {

@@ -900,7 +900,7 @@ export function countDownloadQueueItems(): number {
  * NOT a derived partial-album grouping (`COALESCE(derived,0)=0`). Songs with no real
  * holder are omitted (caller treats a missing key as 0). Chunked to stay under the
  * SQLite bound-variable limit. Fails SAFE: if the `derived` column doesn't exist yet
- * (migration #31 not run) the JOIN throws and we fall back to the raw all-edges count
+ * (migrations not yet run) the JOIN throws and we fall back to the raw all-edges count
  * rather than mass-orphaning.
  */
 export async function countRealSongRefsForSongsAsync(
@@ -1985,7 +1985,7 @@ export async function markDownloadComplete(
 
 /**
  * Wipe the download tables and replace their contents in ONE atomic batch.
- * Used by migration task #14 after parsing the v1 blob.
+ * Used by the v1→v2 download migration after parsing the v1 blob.
  */
 export async function bulkReplace(params: {
   items: Array<Omit<CachedItemRow, 'songIds'>>;

@@ -5,8 +5,8 @@
  * uses, and drive the album-detail walk, change detection, and reconciliation.
  *
  * All entry points are idempotent via a `Map<SyncScope, Promise<void>>` kept
- * on `syncStatusStore.inFlight`. Overlapping calls collapse per the subset
- * matrix documented in `plans/canonical-album-data-sync.md`.
+ * on `syncStatusStore.inFlight`. Overlapping calls collapse per the scope
+ * subset relation (`isSubsetOf`), applied in `dispatch`.
  */
 import { albumListsStore } from '../store/albumListsStore';
 import { favoritesStore } from '../store/favoritesStore';
@@ -269,7 +269,7 @@ async function startupOrResumeFlow(): Promise<void> {
       genreStore.getState().fetchGenres();
 
       // One-time repair: re-cache detail + cover art for downloaded items missing it.
-      // Flagged by migration #33; runs once the server is genuinely reachable.
+      // Flagged by a one-shot migration; runs once the server is genuinely reachable.
       //
       // RESUME, don't restart: `missing` mode only fetches detail that is still
       // absent, so an interrupted run's completed work is never redone and the flag

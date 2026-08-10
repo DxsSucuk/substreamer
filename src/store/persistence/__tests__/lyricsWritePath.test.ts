@@ -2,10 +2,10 @@
  * The lyrics READ/WRITE path against REAL SQL on the better-sqlite3-backed op-SQLite
  * seam: one parent row plus its positional `lyric_lines`, written per song.
  *
- * The last describe is the point of the whole change — lyrics used to live in one
- * `substreamer-lyrics` KV blob that every fetch re-stringified in full, so the cost of
- * storing one song grew with every song already stored. The statement count is asserted
- * directly rather than inspected.
+ * The last describe asserts the write cost stays proportional to the one song, not the
+ * cache: a single KV blob re-stringified in full on every fetch makes storing one song
+ * grow with every song already stored. The statement count is asserted directly rather
+ * than inspected.
  *
  * Per AGENTS.md §11 the seam proves SQL semantics, never concurrency.
  */
@@ -368,7 +368,7 @@ describe('lyricsStore.fetchLyrics — over the real table', () => {
 });
 
 /* ------------------------------------------------------------------ */
-/*  The defect: the write must not scale with what is already stored   */
+/*  The write must not scale with what is already stored               */
 /* ------------------------------------------------------------------ */
 
 describe('write cost is proportional to the one song, not the cache', () => {

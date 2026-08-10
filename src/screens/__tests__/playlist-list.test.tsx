@@ -154,8 +154,8 @@ describe('PlaylistListScreen — empty-state copy', () => {
   });
 });
 
-/** The reactivity `cachedItems` used to give away free: SQL has no Zustand subscription,
- *  so without keying on `revision` the list goes stale under a completing download. */
+/** SQL has no Zustand subscription, so without keying on `revision` the list goes
+ *  stale under a completing download. */
 describe('PlaylistListScreen — downloaded filter tracks musicCacheStore.revision', () => {
   it('re-reads when a download completes while the list is on screen', async () => {
     seedDownloadedPlaylist('pl1');

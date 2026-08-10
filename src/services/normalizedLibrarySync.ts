@@ -165,9 +165,9 @@ async function doBasicSongWalk(
         if (genChanged() || isOffline()) throw new Error('walk-bail');
         const result = await getAlbumResult(id);
         // The server's own verdict that this album is gone: skip it and let the walk
-        // reach completion. One deleted album used to bail the whole run, and since
-        // `fullWalkPending` is only cleared on completion, every later sync re-walked
-        // the entire library and bailed on the same album.
+        // reach completion. A single deleted album bailing the run is unrecoverable:
+        // `fullWalkPending` clears only on completion, so every later sync re-walks
+        // the entire library and bails on the same album.
         if (result.status === 'not-found') return 'not-found' as const;
         // Everything else — a transport failure, any other Subsonic error code — throws
         // so it lands in runPool's `rejected`. Otherwise a flaky connection (or an

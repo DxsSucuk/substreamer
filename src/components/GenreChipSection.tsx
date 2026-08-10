@@ -137,11 +137,10 @@ const MixItUpChip = memo(function MixItUpChip({ colors }: { colors: ThemeColors 
   const [loading, setLoading] = useState(false);
   const color = colors.primary;
 
-  // Always-visible primary chip: skip the useEffect-driven entrance animation
-  // used by the genre chips. An earlier version started opacity at 0 and used
-  // `useEffect + withTiming` to fade in, which left the chip invisible
-  // whenever the effect didn't fire as expected (double-mount, strict-mode
-  // quirks, worklet timing).
+  // Always-visible primary chip: no useEffect-driven entrance animation like the
+  // genre chips have. Starting opacity at 0 and fading in via `useEffect +
+  // withTiming` leaves the chip permanently invisible whenever the effect doesn't
+  // fire as expected (double-mount, strict-mode quirks, worklet timing).
   const scale = useSharedValue(1);
   const handlePressIn = useCallback(() => {
     scale.value = withSpring(0.96, { damping: 15, stiffness: 150 });

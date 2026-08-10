@@ -108,7 +108,7 @@ const fullTrack = () => ({
   rgTrackGain: -6.5, rgAlbumPeak: 0.99,
 });
 
-/** The fields the song-details modal renders — the whole point of #12. */
+/** The fields the song-details modal renders. */
 function expectFullMetadata(song: any) {
   expect(song.suffix).toBe('flac');
   expect(song.bitRate).toBe(1000);
@@ -298,8 +298,8 @@ describe('performOfflineSearch', () => {
     expect((await performOfflineSearch('track')).songs[0].album).toBe('Parent Item Name');
   });
 
-  /* #12: hits used to be a hand-rolled 7-field projection, so the details modal had
-   * nothing to render. They now come off the promoted columns via `getSongEnvelope`. */
+  /* Hits must be a full `Child`, not a narrow projection, or the details modal has
+   * nothing to render. They come off the promoted columns via `getSongEnvelope`. */
   it('carries the full downloaded metadata onto a hit', async () => {
     seedCache({ a1: { name: 'Album', tracks: [fullTrack()] } });
 
@@ -468,7 +468,7 @@ describe('getOfflineSongsByGenre', () => {
     expect(getOfflineSongsByGenre('Rock')).toHaveLength(0);
   });
 
-  /* #12: the genre-filtered mixes get the same full `Child` as the unfiltered ones. */
+  /* The genre-filtered mixes get the same full `Child` as the unfiltered ones. */
   it('carries the full downloaded metadata', () => {
     seedCache({ a1: { name: 'Album', tracks: [fullTrack()] } });
 
@@ -572,7 +572,7 @@ describe('getOfflineSongsAll', () => {
     expect(getOfflineSongsAll().map((s) => s.id)).toEqual(['t1']);
   });
 
-  /* #12 again, on the path the Tuned In offline mixes read. */
+  /* Same full-`Child` requirement, on the path the Tuned In offline mixes read. */
   it('carries the full downloaded metadata', () => {
     seedCache({ a1: { name: 'Album', tracks: [fullTrack()] } });
 
@@ -627,8 +627,8 @@ describe('searchLibrary — data-state routing', () => {
   });
 
   it('returns matching ARTISTS from the synced artist library (search3 parity)', async () => {
-    // Regression: local search used to hardcode artists:[] — "pearl" showed
-    // albums + songs but never the Pearl Jam artist row.
+    // Local search must not hardcode `artists: []` — "pearl" has to return the
+    // Pearl Jam artist row, not just albums + songs.
     mockSearchArtists.mockResolvedValue([
       { id: 'ar1', name: 'Pearl Jam', album_count: 57, cover_art: null, sort_name: null, sort_title: 'pearl jam', starred: null, user_rating: null, artist_image_url: null, music_brainz_id: null },
       { id: 'ar2', name: 'Metallica', album_count: 12, cover_art: null, sort_name: null, sort_title: 'metallica', starred: null, user_rating: null, artist_image_url: null, music_brainz_id: null },

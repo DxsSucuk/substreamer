@@ -12,9 +12,9 @@ private var sslTrustSwizzleInstalled = false
 /// `URLSessionConfiguration.defaultSessionConfiguration`, and a session created
 /// from an explicit configuration consults ONLY that configuration's
 /// `protocolClasses` — it ignores globally `URLProtocol.registerClass`-registered
-/// protocols (this is the iOS #175 root cause). So we swizzle the `default`
-/// class getter to prepend our protocol to the returned configuration. Mirrors
-/// expo-dev-launcher's `DevLauncherNetworkInterceptor` swizzle.
+/// protocols. So we swizzle the `default` class getter to prepend our protocol
+/// to the returned configuration. Mirrors expo-dev-launcher's
+/// `DevLauncherNetworkInterceptor` swizzle.
 ///
 /// We swizzle ONLY `default` (what RN, expo-image and the download module use),
 /// not `ephemeral` — so `SslTrustProxy`'s own ephemeral upstream session stays

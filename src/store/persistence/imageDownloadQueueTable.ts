@@ -16,8 +16,6 @@
  * Error-swallowing: every read returns a safe default ([], null, 0) and
  * every write is a silent no-op on failure. Consumers never need to
  * handle exceptions from this module.
- *
- * See plans/2026-05-23-image-cache-queue-rework.md for the design.
  */
 import { getDb } from './db';
 

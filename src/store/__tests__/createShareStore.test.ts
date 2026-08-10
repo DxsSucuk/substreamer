@@ -60,8 +60,8 @@ describe('createShareStore', () => {
     expect(state.coverArtId).toBeNull();
   });
 
-  // #151 — Subsonic createShare accepts a single song id (mediafile);
-  // we ship it via the same sheet as albums/playlists.
+  // Subsonic createShare accepts a single song id (mediafile); it ships via
+  // the same sheet as albums/playlists.
   it('showSong sets song share state with the song id as itemId', () => {
     createShareStore.getState().showSong('song-1', 'My Song', 'The Artist', 'cover-3');
     const state = createShareStore.getState();

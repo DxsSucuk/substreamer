@@ -1402,10 +1402,9 @@ describe('getSongEnvelope', () => {
 /* ------------------------------------------------------------------ */
 
 /**
- * The downloaded lists used to be `useMemo`s over `cachedItems`/`cachedSongs`, so a
- * completing download re-rendered them for free. Reads that move to SQL lose that and
- * key an effect on `revision` instead — which means a mutation that forgets to bump it
- * is a silently stale list, invisible in a diff.
+ * SQL reads have no Zustand subscription, so the downloaded lists key an effect on
+ * `revision` — which means a mutation that forgets to bump it is a silently stale
+ * list, invisible in a diff.
  *
  * So this suite is completeness-driven: every action that can change either map is
  * listed. Adding a mutation without a case here is the bug it exists to catch.

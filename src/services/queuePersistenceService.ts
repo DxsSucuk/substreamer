@@ -73,8 +73,7 @@ function ensureLoaded(): void {
 
 /**
  * Move the cursor in memory. The stored position is an offset INTO the track under
- * the cursor, so landing on a different track voids it — that is what the separate
- * position blob's `trackId` guard used to do at read time.
+ * the cursor, so landing on a different track voids it.
  */
 function setCursor(queue: Child[], index: number): void {
   const previousTrackId = liveQueue[liveIndex]?.id;
@@ -130,10 +129,10 @@ export function persistQueue(queue: Child[], currentTrackIndex: number): void {
 }
 
 /**
- * Record a track change: ONE UPDATE on the parent row, the songs untouched. This is
- * the hot path — it used to rewrite the whole queue. When a queue change is still
- * inside its debounce window the pending flush carries the new cursor instead, so
- * the cursor can never land on rows that have not been written yet.
+ * Record a track change: ONE UPDATE on the parent row, the songs untouched — this is
+ * the hot path. When a queue change is still inside its debounce window the pending
+ * flush carries the new cursor instead, so the cursor can never land on rows that
+ * have not been written yet.
  */
 export function persistCurrentIndex(currentTrackIndex: number): void {
   setCursor(liveQueue, currentTrackIndex);

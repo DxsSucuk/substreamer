@@ -69,7 +69,6 @@ describe('runDataModelUpgradeIfNeeded', () => {
   });
 
   it('never re-imports the frozen blob tables after the normalized model shrinks', async () => {
-    // The trigger used to be a drift check (blobs hold more rows than normalized).
     // Nothing writes the blob tables any more, so their counts are a permanent
     // high-water mark: any later shrink — a reap, an interrupted resync, or the wipe on
     // a server switch — would re-import that stale library, in the switch case into a

@@ -5,10 +5,8 @@
  * `cached_song_genres.name`, `cached_song_moods.mood` and
  * `cached_song_contributors.role` are NOT NULL (and so are their `scrobble_*`
  * twins), so a server sending `moods: [null]`, a blank genre or a role-less
- * contributor used to abort the whole batch — losing the row, not just the entry.
- * `cached_songs` has carried that exposure on live server data since it shipped;
- * hardening the shared builder fixes both tables at once, which is the whole point
- * of the extraction, so both are asserted here.
+ * contributor aborts the whole batch — losing the row, not just the entry. The
+ * shared builder guards both tables at once, so both are asserted here.
  *
  * Per AGENTS.md §11 the seam proves SQL semantics, never concurrency.
  */

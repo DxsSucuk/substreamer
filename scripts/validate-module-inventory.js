@@ -11,8 +11,6 @@
  * Warnings (do not fail CI):
  *  - A module has tests but isn't represented in `collectCoverageFrom`
  *    (it still runs via `npm run test:modules`, just no coverage signal)
- *
- * Pairs with Phase 9 of plans/2026-05-22-audit-remediation-roadmap.md.
  */
 
 const fs = require('fs');

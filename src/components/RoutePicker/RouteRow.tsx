@@ -30,7 +30,7 @@ export interface RouteRowProps {
  * Single device row: icon + name + subtitle + trailing accessory (spinner /
  * check / error / chevron). Inline PIN expander for AirPlay pair auth so the
  * user doesn't leave the picker. The inline field is a plain TextInput — the
- * host BottomSheet lifts itself above the keyboard (see BottomSheet #209).
+ * host BottomSheet lifts itself above the keyboard.
  */
 export function RouteRow({ route, onConnect, onDisconnect, subtitleOverride, theme: t }: RouteRowProps) {
   const [pinExpanded, setPinExpanded] = useState(false);

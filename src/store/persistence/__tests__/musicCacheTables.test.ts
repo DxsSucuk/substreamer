@@ -292,10 +292,10 @@ describe('cached_items + edges', () => {
     expect(countCachedItems()).toBe(0);
   });
 
-  // The music-downloads-v2 regression: `INSERT OR REPLACE` on a parent row is
-  // DELETE-then-INSERT, and the DELETE fires `ON DELETE CASCADE` on the edges. A
-  // sync pass re-writing an item's metadata emptied every offline playlist, and the
-  // next reconcile then deleted the empty shells. UPSERT updates in place instead.
+  // `INSERT OR REPLACE` on a parent row is DELETE-then-INSERT, and the DELETE fires
+  // `ON DELETE CASCADE` on the edges: a sync pass re-writing an item's metadata
+  // empties every offline playlist, and the next reconcile deletes the empty shells.
+  // UPSERT updates in place instead.
   it('preserves an items edges when a later write touches the parent row', async () => {
     await seedHolder('pl-1', ['s-a', 's-b']);
     expect(songIdsOf('pl-1')).toEqual(['s-a', 's-b']);

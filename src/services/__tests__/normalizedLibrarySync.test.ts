@@ -192,7 +192,7 @@ describe('an empty song page must be corroborated', () => {
     let asksAtFour = 0;
     mockSearchSongsPage.mockImplementation((count: number, offset: number) => {
       // One hiccup at offset 4: a 200 with no searchResult3 is indistinguishable from
-      // exhaustion, and believing it used to cost every song after this offset.
+      // exhaustion, and believing it costs every song after this offset.
       if (offset === 4 && (asksAtFour += 1) === 1) return Promise.resolve([]);
       return Promise.resolve(mockSongsData.slice(offset, Math.min(offset + count, offset + 4)));
     });

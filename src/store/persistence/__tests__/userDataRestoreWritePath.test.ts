@@ -413,7 +413,7 @@ describe('a restore that fails part-way', () => {
 
 describe('an old backup file', () => {
   /** The pre-`type` MBID shape: keyed by artist id, `{ artistId, artistName, mbid }`.
-   *  `restoreBackup` normalises it, and has since before this change. */
+   *  `restoreBackup` normalises it. */
   const legacyOverrides = {
     'ar-legacy': { artistId: 'ar-legacy', artistName: 'Old Artist', mbid: 'mbid-legacy' },
   };

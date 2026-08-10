@@ -533,11 +533,10 @@ describe('AnimatedSplashScreen', () => {
     });
 
     it('hydrates per-row stores even when no migrations are pending', async () => {
-      // Regression: before this fix, the splash short-circuited with fadeOut
-      // when pending was empty and never called hydrateFromDb. Symptom: on
-      // every launch AFTER the last migration had already completed, per-row
-      // stores (music cache, completed scrobbles)
-      // would render as empty even though their tables had data on disk.
+      // hydrateFromDb must run even when nothing is pending. Short-circuiting to
+      // fadeOut on an empty pending list leaves per-row stores (music cache,
+      // completed scrobbles) rendering empty on every launch after the last
+      // migration completed, though their tables have data on disk.
       mockPendingTasks = [];
 
       // eslint-disable-next-line @typescript-eslint/no-require-imports

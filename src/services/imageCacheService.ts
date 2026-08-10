@@ -1732,9 +1732,9 @@ async function generateResizedVariant(
       logImageCache(`resize id=${coverArtId} threshold-purge`);
       await purgeCoverArtRows(coverArtId);
       // No further server-side recovery is attempted. The Subsonic spec
-      // for `getCoverArt` accepts only `id` and `size`; the previously-
-      // used `format=jpg` query was a no-op (the server returned the
-      // same un-decodable bytes). User-visible recovery is handled
+      // for `getCoverArt` accepts only `id` and `size`, so a `format=jpg`
+      // query is a no-op — the server returns the same un-decodable
+      // bytes. User-visible recovery is handled
       // upstream in CachedImage's source-size fallback, which renders
       // the (decodable) 600 source in the smaller slot when smaller
       // variants are unavailable.
@@ -1926,8 +1926,8 @@ async function teardownImageCacheState({ reinit }: { reinit: boolean }): Promise
   // GUARD: never perform the destructive wipe when the DB is unavailable. The disk
   // delete below is unconditional, but the paired row-clear (clearAllCachedImages)
   // needs the DB — wiping now would orphan every row (files gone, rows remain → mass
-  // placeholder). This is precisely how a migration-triggered clear during a failed DB
-  // boot nuked the cache. Skip the destructive part; the in-memory reset still runs.
+  // placeholder) — a clear triggered during a failed DB boot would nuke the cache.
+  // Skip the destructive part; the in-memory reset still runs.
   if (!isDbHealthy()) {
     logImageCache(`teardown-wipe SKIPPED reinit=${reinit} — DB unavailable, refusing to orphan the cache`);
     imageCacheStore.getState().reset();
@@ -1978,7 +1978,7 @@ export async function clearImageCache(
  * artists, playlists). Keys off the entity's `coverArt` value via
  * `resolveEntityCoverArt` (mode-aware for songs) so the warmed file matches
  * what the render side reads. Deduplicates by resolved value and skips entries
- * already in cache. (#202)
+ * already in cache.
  */
 export function prefetchCoverArt(
   entities: Array<AlbumID3 | ArtistID3 | Playlist | Child>,
@@ -2003,7 +2003,7 @@ export function prefetchCoverArt(
  * `coverArtId` field for albums/playlists, and the mode-aware song cover value
  * for songs (see src/utils/coverArtId.ts) — NOT the entity ID. Same scheme that
  * every consumer (CachedImage, childToTrack, etc.) uses, so the recached files
- * match what callers will look up. (#202)
+ * match what callers will look up.
  */
 function hydrateCachedItemsForRecache(): {
   items: Array<{ type: string; coverArtId: string | null }>;
@@ -2031,7 +2031,6 @@ function hydrateCachedItemsForRecache(): {
 
 /* ------------------------------------------------------------------ */
 /*  Persistent image-download queue worker                              */
-/*  See plans/2026-05-23-image-cache-queue-rework.md.                   */
 /* ------------------------------------------------------------------ */
 
 /**

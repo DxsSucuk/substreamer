@@ -477,7 +477,7 @@ const PlayerContent = memo(function PlayerContent({
   // and the portrait width drive the responsive tier: smaller art/controls/
   // fonts on short OR narrow screens, and the secondary controls row is dropped
   // on the smallest tier so the essential transport controls always stay above
-  // the nav bar AND fit horizontally (issue #90 — 800×480 is narrow in portrait).
+  // the nav bar AND fit horizontally (800×480 is narrow in portrait).
   const availableHeight = windowHeight - insets.top - insets.bottom - HEADER_BAR_HEIGHT;
   const m = useMemo(
     () => getPlayerSize(availableHeight, windowWidth),
@@ -656,7 +656,7 @@ const PlayerContent = memo(function PlayerContent({
 
       {/* Secondary controls row — dropped on the smallest tier
           (m.showSecondaryRow === false) so the transport controls clear the nav
-          bar (issue #90). When present, its own middle spacer keeps both rows
+          bar. When present, its own middle spacer keeps both rows
           evenly distributed; when absent, the two remaining spacers center the
           single primary row. */}
       {m.showSecondaryRow && (

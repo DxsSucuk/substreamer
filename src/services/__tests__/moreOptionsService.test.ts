@@ -407,9 +407,8 @@ describe('playMoreLikeThis', () => {
     expect(mockOverlayShowError).toHaveBeenCalledWith('Failed to load similar songs');
   });
 
-  // Issue #156 — thin getSimilarSongs results used to ship a 2-track queue.
-  // Now we top up via similar2 → same-genre → artist top, preserving order
-  // and deduping the source song + duplicates.
+  // A thin getSimilarSongs result is topped up via similar2 → same-genre →
+  // artist top, preserving order and deduping the source song + duplicates.
   it('tops up via similar2 when getSimilarSongs returns too few', async () => {
     mockGetSimilarSongs.mockResolvedValue([{ id: 't1' }, { id: 't2' }]);
     mockGetSimilarSongs2.mockResolvedValue(
@@ -841,8 +840,8 @@ describe('playMoreByArtist', () => {
       expect(queue.length).toBe(20);
     });
 
-    /* The #12 defect: the offline artist sheet used to hand-roll a 7-field `Child`,
-     * so the details modal had nothing to render. */
+    /* The offline artist sheet must emit a full `Child`, not a narrow projection —
+     * the song-details modal renders fields well beyond the playback essentials. */
     it('carries the full downloaded metadata, with album/coverArt still from the item', async () => {
       const cachedSongs: Record<string, any> = {
         s1: {

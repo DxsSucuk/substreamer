@@ -51,9 +51,8 @@ const SONG_EXCLUSIONS =
  * list (both read `getAlbumDetail` → `albums` + `songs`) while the album still LISTS under
  * Downloaded, which reads `cached_*`. So the exclusion is the union of three sources —
  * the album downloaded as an album, the album parenting any downloaded song, and the
- * parent recorded on a single-song download. The first two are the shape `downloadedAlbumIds`
- * + `parentAlbumIds` had before `44c5793` deleted them; the third is the branch of
- * `parentAlbumIds` that `cached_songs.album_id` does not always reach.
+ * parent recorded on a single-song download. The third is needed because
+ * `cached_songs.album_id` does not always reach it.
  *
  * `parent_album_id IS NOT NULL` is required, not cosmetic: a NULL anywhere in a `NOT IN`
  * subquery makes the whole predicate NULL, and the reap would silently delete nothing.

@@ -10,8 +10,7 @@
  * downloading, the service checks whether a song is already in the pool. If
  * so, it just inserts a new `cached_item_songs` edge — no bytes, no network.
  *
- * See `plans/music-downloads-v2.md` for the full architectural plan. Key
- * guarantees:
+ * Key guarantees:
  *   - Tmp-file atomicity (download to .tmp, move on success)
  *   - Kill-mid-item resumption via pre-scan + `recoverStalledDownloadsAsync`
  *   - Retry-once-on-null inside `downloadItem`
@@ -607,19 +606,19 @@ async function removeOrphanItemRows(): Promise<number> {
 
 /**
  * Pass 4: sweep non-album top-level directories — leftover v1 playlist /
- * __starred__ dirs from a partial Task-14 migration, or other junk.
+ * __starred__ dirs from a partial v1→v2 migration, or other junk.
  *
  * CRITICAL SAFETY GATE: skip this pass entirely if we have no valid
  * album_ids. `cached_songs` is empty in two scenarios, neither of which
  * should trigger a sweep:
  *   (a) Fresh install — there's nothing on disk to sweep, so skipping
  *       is a cheap no-op.
- *   (b) Migration task #14 hasn't completed yet (an earlier task threw and
- *       runMigrations halted) — the v1 cache directories are still on disk
- *       in their original shape waiting to be migrated. Sweeping them here
- *       would be catastrophic data loss.
+ *   (b) The v1→v2 migration (migration 14) hasn't completed yet (an earlier
+ *       task threw and runMigrations halted) — the v1 cache directories are
+ *       still on disk in their original shape waiting to be migrated.
+ *       Sweeping them here would be catastrophic data loss.
  * Without this gate, scenario (b) would wipe every cached file the user has
- * before task #14 ever gets a chance to run on the next launch.
+ * before that migration ever gets a chance to run on the next launch.
  */
 function sweepStaleTopLevelDirs(
   dir: Directory,
@@ -861,7 +860,7 @@ export async function enqueueAlbumDownload(
 
     // Cover art keys off the album's `coverArt` value, never the entity ID
     // (see src/utils/coverArtId.ts) — so the warmed/stored key matches what
-    // the grid renders and resolves on OpenSubsonic servers. (#202)
+    // the grid renders and resolves on OpenSubsonic servers.
     const topUpCover = coverArtForAlbum(album);
     await ensureCoverBeforeBinary(topUpCover, awaitCover);
     cacheTrackCoverArt(missingSongs);
@@ -918,7 +917,7 @@ export async function enqueuePlaylistDownload(
   // Re-check after the awaits (see enqueueAlbumDownload) — avoid a duplicate row.
   if (musicCacheStore.getState().downloadQueue.some((q) => q.itemId === playlistId)) return;
 
-  // Cover art keys off the playlist's `coverArt` value (see coverArtId.ts). (#202)
+  // Cover art keys off the playlist's `coverArt` value (see coverArtId.ts).
   const playlistCover = coverArtForPlaylist(playlist);
   await ensureCoverBeforeBinary(playlistCover, awaitCover);
   cacheTrackCoverArt(playlist.entry);
@@ -1186,7 +1185,7 @@ async function ensurePartialAlbumEdge(
       type: 'album',
       name: song.album ?? detail?.album.name ?? 'Unknown',
       artist: song.artist ?? detail?.album.artist,
-      // Album item — cover art keys off the album's `coverArt` value (#202),
+      // Album item — cover art keys off the album's `coverArt` value,
       // looked up from the synced library (fallback to the song's own cover).
       coverArtId: albumCoverArtById(albumId) ?? song.coverArt,
       expectedSongCount,

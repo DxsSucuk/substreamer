@@ -111,7 +111,7 @@ import i18n from '../i18n/i18n';
 
 // Configure NetInfo once, before any listener registers. SSID fetching is enabled only
 // while home-WiFi auto-offline needs it (see netInfoConfig); always-on calls iOS's
-// location-gated SSID API on every WiFi state update, a needless battery/CPU drain (#200).
+// location-gated SSID API on every WiFi state update, a needless battery/CPU drain.
 try {
   initNetInfoConfig();
 } catch (e) {
@@ -147,7 +147,7 @@ try {
 //   • iOS 26 liquid glass containers use the correct color scheme from frame 1
 //   • Android sets AppCompatDelegate night mode BEFORE the Activity finishes
 //     creating, avoiding an onConfigurationChanged during React's initial
-//     render that crashes on Android 16 (see #85)
+//     render that crashes on Android 16
 // The 'system' preference MUST also call setColorScheme('unspecified') here;
 // skipping it leaves the mode unset until a useEffect fires post-render,
 // which triggers a configuration change event mid-commit and crashes.
@@ -303,7 +303,7 @@ async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
   runWhenIdle(() => { if (!getCancelled()) void processImageQueue(); });
 
   // Don't add a cold-start home-list refresh here: onStartup's immediate chain already
-  // fires it (gated) right after rehydrate, and a second call doubles the fan-out (#148).
+  // fires it (gated) right after rehydrate, and a second call doubles the fan-out.
 }
 
 /**
@@ -447,8 +447,8 @@ export default function RootLayout() {
         // user hasn't explicitly paused it. Respects isPaused internally.
         void processImageQueue();
         // Re-sync the home-screen album lists so plays from other
-        // clients during backgrounding appear without a manual refresh
-        // (#148). 10-minute threshold dedupes rapid foreground flips.
+        // clients during backgrounding appear without a manual refresh.
+        // 10-minute threshold dedupes rapid foreground flips.
         void albumListsStore.getState().refreshAllIfDue(FOREGROUND_REFRESH_THRESHOLD_MS);
       } else if (next === 'background' || next === 'inactive') {
         // Flush debounced writes so leaving the app persists the latest state

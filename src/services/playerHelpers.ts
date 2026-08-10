@@ -113,7 +113,7 @@ export function childToTrack(
 
   // Cover-art lookup resolves the song's `coverArt` value (album mode: the
   // parent album's coverArt so every track in an album shares one cached file;
-  // per-track mode: the song's own) — see src/utils/coverArtId.ts. (#202)
+  // per-track mode: the song's own) — see src/utils/coverArtId.ts.
   const coverArtId = resolveSongCoverArt(child);
   // In offline mode drop any server-only artwork so the lock-screen artwork
   // fetch can't hit the network either. (`getCoverArtUrl` also returns null

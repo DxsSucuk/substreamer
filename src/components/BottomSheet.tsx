@@ -192,7 +192,7 @@ export function BottomSheet({
   // back button) which call playExitAnimation directly. Programmatic closes must
   // be instant so the next sheet can mount without two Modals overlapping.
   //
-  // U8 (react-native-screens iOS Fabric Yoga SIGABRT, software-mansion/react-native-screens#3786):
+  // iOS Fabric Yoga SIGABRT (software-mansion/react-native-screens#3786):
   // defer setInternalVisible(false) by one frame. Action handlers commonly call
   // both `setSomeParentState(...)` and `hide()` in the same tick. Tearing down
   // the native Modal in the same frame as the parent re-render races Yoga and

@@ -65,6 +65,12 @@ const CardSeparator = () => <View style={{ width: CARD_GAP }} />;
 // event forces a re-measure. Matches AlbumListView / PlaylistListView / ArtistListView.
 const HORIZONTAL_DRAW_DISTANCE = 300;
 
+// Every carousel below passes `maintainVisibleContentPosition={{ disabled: true }}`.
+// FlashList v2 enables it by default, anchoring the viewport to a previously-visible
+// item; these carousels have their data REPLACED wholesale (filter toggle, section
+// refresh, sync), so the anchor lands at a different index and parks the list where
+// there is nothing to draw — only a manual scroll recovers it.
+
 const SECTION_CONFIG: Record<
   AlbumListType,
   { titleKey: string; emptyMessageKey: string; refresh: () => Promise<void> }
@@ -226,11 +232,7 @@ function AlbumSection({
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.horizontalList}
           ItemSeparatorComponent={CardSeparator}
-          // These carousels have their data REPLACED wholesale — a filter toggle, a
-          // section refresh, a sync. FlashList v2 enables maintainVisibleContentPosition
-          // by default, which anchors the viewport to a previously-visible item; when the
-          // replacement data puts that item at a different index the list ends up parked
-          // where there is nothing to draw, and only a manual scroll recovers it.
+          // Data replaced wholesale — see the note on HORIZONTAL_DRAW_DISTANCE above.
           maintainVisibleContentPosition={{ disabled: true }}
           drawDistance={HORIZONTAL_DRAW_DISTANCE}
         />
@@ -277,11 +279,7 @@ function DownloadedAlbumSection({
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.horizontalList}
           ItemSeparatorComponent={CardSeparator}
-          // These carousels have their data REPLACED wholesale — a filter toggle, a
-          // section refresh, a sync. FlashList v2 enables maintainVisibleContentPosition
-          // by default, which anchors the viewport to a previously-visible item; when the
-          // replacement data puts that item at a different index the list ends up parked
-          // where there is nothing to draw, and only a manual scroll recovers it.
+          // Data replaced wholesale — see the note on HORIZONTAL_DRAW_DISTANCE above.
           maintainVisibleContentPosition={{ disabled: true }}
           drawDistance={HORIZONTAL_DRAW_DISTANCE}
         />
@@ -327,11 +325,7 @@ function PlaylistSection({
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.horizontalList}
           ItemSeparatorComponent={CardSeparator}
-          // These carousels have their data REPLACED wholesale — a filter toggle, a
-          // section refresh, a sync. FlashList v2 enables maintainVisibleContentPosition
-          // by default, which anchors the viewport to a previously-visible item; when the
-          // replacement data puts that item at a different index the list ends up parked
-          // where there is nothing to draw, and only a manual scroll recovers it.
+          // Data replaced wholesale — see the note on HORIZONTAL_DRAW_DISTANCE above.
           maintainVisibleContentPosition={{ disabled: true }}
           drawDistance={HORIZONTAL_DRAW_DISTANCE}
         />

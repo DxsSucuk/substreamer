@@ -1829,8 +1829,8 @@ describe('coverArtPathKey — FS-hostile coverArtId sanitisation', () => {
   });
 
   it('distinct IDs `dc-abc:1` and `dc-abc_1` resolve to distinct paths', async () => {
-    // Regression: the old `:` → `_` mapping collapsed these to the same dir.
-    // Percent-encoded `%3A` makes them injective.
+    // A `:` → `_` mapping would collapse these to the same dir; percent-encoded
+    // `%3A` keeps it injective.
     seedDbRow({ coverArtId: 'dc-abc_1', size: 300, ext: 'jpg' });
     seedDbRow({ coverArtId: 'dc-abc:1', size: 300, ext: 'jpg' });
 

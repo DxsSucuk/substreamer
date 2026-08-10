@@ -63,7 +63,7 @@ async function resolveSongIds(target: AddToPlaylistTarget): Promise<string[] | n
 }
 
 function getTargetCoverArt(target: AddToPlaylistTarget): string | undefined {
-  // `coverArt`-value based cover art (see src/utils/coverArtId.ts). (#202)
+  // `coverArt`-value based cover art (see src/utils/coverArtId.ts).
   if (target.type === 'song') return resolveSongCoverArt(target.item);
   if (target.type === 'album') return coverArtForAlbum(target.item);
   const first = target.songs[0];

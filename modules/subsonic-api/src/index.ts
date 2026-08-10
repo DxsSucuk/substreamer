@@ -224,7 +224,7 @@ export default class SubsonicAPI {
 		let base = this.baseURL();
 		// Match the '/rest/' path segment (leading slash), not a bare 'rest/': a
 // '.rest' TLD host makes baseURL() end '.rest/', which would else be mistaken
-// for the API path and skip it (issue #225).
+// for the API path and skip it.
 if (!base.endsWith("/rest/")) base += "rest/";
 
 		if (!method.endsWith(".m3u8")) base += `${method}.view`;
@@ -376,7 +376,7 @@ if (!base.endsWith("/rest/")) base += "rest/";
 		let base = this.baseURL();
 		// Match the '/rest/' path segment (leading slash), not a bare 'rest/': a
 // '.rest' TLD host makes baseURL() end '.rest/', which would else be mistaken
-// for the API path and skip it (issue #225).
+// for the API path and skip it.
 if (!base.endsWith("/rest/")) base += "rest/";
 		base += "getTranscodeDecision.view";
 

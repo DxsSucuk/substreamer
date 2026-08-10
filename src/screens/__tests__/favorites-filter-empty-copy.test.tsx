@@ -91,10 +91,10 @@ beforeEach(() => {
 });
 
 /**
- * The reported defect: Favourites → Songs with the Downloaded chip on read "No favorite
- * songs yet" for a user who HAS favourites, just none downloaded. Both branches are
- * asserted throughout — it is easy to make every empty state say "check your filters",
- * and that would be the worse bug.
+ * Favourites → Songs with the Downloaded chip on must not read "No favorite songs yet"
+ * for a user who HAS favourites, just none downloaded. Both branches are asserted
+ * throughout — it is easy to make every empty state say "check your filters", and that
+ * would be the worse bug.
  *
  * Only `downloadedOnly` is consulted on this tab: `FilterBar` hides the Favourites chip on
  * the favourites route and the starred lists never apply it, so a `favoritesOnly` value

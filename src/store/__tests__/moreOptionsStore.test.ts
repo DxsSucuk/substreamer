@@ -42,7 +42,7 @@ describe('moreOptionsStore', () => {
     expect(state.source).toBe('default');
   });
 
-  // #154 fix — hideAndAwait closes the sheet and returns a promise that
+  // hideAndAwait closes the sheet and returns a promise that
   // resolves only when the BottomSheet signals onCloseComplete. Action
   // handlers `await` it before opening a chained modal/alert, so the
   // chained modal mounts AFTER the sheet's native Modal is fully gone.

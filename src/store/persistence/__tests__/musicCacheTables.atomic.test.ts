@@ -239,8 +239,8 @@ describe('markDownloadComplete (real SQL)', () => {
   });
 
   it('leaves NO hole when a re-sent song is already an edge of the item', async () => {
-    // The regression: a JS position counter advances past the ignored duplicate
-    // and strands `1,2,4`, which breaks the store's `songIds[position-1]` mapping.
+    // A JS position counter advances past the ignored duplicate and strands
+    // `1,2,4`, which breaks the store's `songIds[position-1]` mapping.
     await seedHolder('alb-1', ['s1', 's2']);
     await markDownloadComplete(
       'q-1',
@@ -585,8 +585,8 @@ describe('orphanSongIfUnreferencedAsync (real SQL)', () => {
   });
 
   it('reports orphaned:false when the batch rolls back, and keeps the song', async () => {
-    // The pre-existing bug: `orphaned` used to be set BEFORE the writes, so a
-    // rollback still reported success and the store dropped a song the DB held.
+    // `orphaned` must be set AFTER the writes: set before, a rollback still
+    // reports success and the store drops a song the DB still holds.
     await seedHolder('album:x', ['s1', 's2'], { derived: true });
     const poisoned: InternalDb = {
       ...realDb,

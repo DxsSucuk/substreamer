@@ -11,8 +11,8 @@
  *
  * The four sections (platform ~4-tab limit): Home (curated album lists, offline
  * recomposed via homeSectionsService), Favorites (flat songs), Albums (A–Z
- * buckets), Playlists. See src/services/headlessMediaService.helpers.ts for the id scheme
- * + A–Z bucketing, and plans/carplay-android-auto.md for the full design.
+ * buckets), Playlists. See src/services/headlessMediaService.helpers.ts for the
+ * id scheme + A–Z bucketing.
  */
 import type {
   BrowseItem,

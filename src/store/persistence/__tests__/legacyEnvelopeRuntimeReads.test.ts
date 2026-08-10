@@ -309,8 +309,8 @@ describe('the envelope path vs the columns — same answers', () => {
     await musicCacheStore.getState().hydrateFromDbAsync();
   });
 
-  /* `getSongEnvelope` used to `JSON.parse` this exact blob. Field by field, the
-   * columns give back what the parse did. */
+  /* Field by field, the columns must give back exactly what a `JSON.parse` of this
+   * legacy blob produced. */
   it('getSongEnvelope rebuilds the Child the envelope carried', () => {
     const envelope = sourceChild();
     const child = getSongEnvelope('s1') as unknown as Record<string, unknown>;

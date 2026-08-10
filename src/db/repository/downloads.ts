@@ -204,7 +204,7 @@ export interface DownloadedSongRow {
   sort_name: string | null;
   /** The keys this list is ORDERED BY. Projected, not discarded, because the A–Z
    *  scroller's letter is derived from the key the row actually sorted on — recomputing
-   *  it from the title is the second derivation this projection used to force. */
+   *  it from the title would be a second, divergent derivation. */
   sort_title: string | null;
   sort_artist: string | null;
   /**

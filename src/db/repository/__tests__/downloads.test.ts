@@ -561,10 +561,10 @@ describe('listDownloadedSongs — the sort order', () => {
   });
 
   it('carries the key it ORDERED BY, so the scroller letter cannot disagree', async () => {
-    // The 3c defect: `getSortKey` prefers a server-stripped `sortName`, and a projection
-    // that dropped it left the scroller recomputing from the raw title — filing the row
-    // under A while the list sorts it at H. The key is projected now, so the letter is
-    // read off the same column the ORDER BY used.
+    // `getSortKey` prefers a server-stripped `sortName`; a projection that drops it
+    // leaves the scroller recomputing from the raw title — filing the row under A
+    // while the list sorts it at H. The key is projected, so the letter is read off
+    // the same column the ORDER BY used.
     await seedSong('s-h', 'A Horse With No Name', { sortName: 'Horse With No Name' });
     await seedSong('s-g', 'Ghosts');
     await seedSong('s-i', 'Ivy');
