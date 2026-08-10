@@ -1,16 +1,16 @@
 /**
- * Step 11B — no `raw_json` read at runtime.
+ * No `raw_json` at runtime — neither read nor carried.
  *
- * The three runtime envelope readers are gone; the typed columns are the only
- * runtime source. What makes that safe is ORDER: `hydrateFromDbAsync` AWAITS the
- * conversion, which resolves TRUE only once the work set
- * (`meta_v IS NULL AND raw_json IS NOT NULL`) is empty on BOTH tables. A row can
- * therefore never be published ahead of its own promotion.
+ * The runtime envelope readers are gone and so is the plumbing: the hydrate
+ * projections, the row mapper, the store merge and the upsert bindings no longer
+ * mention the column. The typed columns are the only runtime source. What makes
+ * that safe is ORDER — `hydrateFromDbAsync` AWAITS the conversion, which resolves
+ * TRUE only once the work set (`meta_v IS NULL AND raw_json IS NOT NULL`) is
+ * empty on BOTH tables — and OMISSION: a write statement that never names
+ * `raw_json` / `meta_v` cannot blank them, so the migration path keeps its source.
  *
- * Every rule here is a property of REAL SQL — the work-set predicate, the
- * per-row atomicity that makes a failed run lose nothing, and the upsert that no
- * longer re-arms `meta_v`. So this suite runs the generated schema on the
- * better-sqlite3-backed op-SQLite seam, against the real store.
+ * Every rule here is a property of REAL SQL. So this suite runs the generated
+ * schema on the better-sqlite3-backed op-SQLite seam, against the real store.
  */
 jest.mock('../../../services/subsonicService');
 jest.mock('../kvStorage', () => require('../__mocks__/kvStorage'));
@@ -18,6 +18,8 @@ jest.mock('../kvStorage', () => require('../__mocks__/kvStorage'));
 import { __setDbForTests, getDb, type InternalDb } from '../db';
 import {
   convertLegacyMetadataAsync,
+  hydrateCachedItemsAsync,
+  hydrateCachedSongsAsync,
   upsertCachedItem,
   upsertCachedSong,
   type CachedItemRow,
@@ -346,14 +348,15 @@ describe('the envelope path vs the columns — same answers', () => {
 });
 
 /* ------------------------------------------------------------------ */
-/*  The upsert no longer re-arms meta_v                                 */
+/*  The upsert leaves the legacy columns alone                          */
 /* ------------------------------------------------------------------ */
 
-describe('the upsert leaves meta_v alone', () => {
-  it('a download landing a NEW song envelope does not re-arm a converted row', async () => {
+describe('the upsert leaves raw_json and meta_v alone', () => {
+  it('a re-download of a converted song neither re-arms meta_v nor rewrites the envelope', async () => {
     insertLegacySong();
     await convertLegacyMetadataAsync();
     expect(songRow()!.meta_v).toBe(1);
+    const envelope = songRow()!.raw_json;
 
     await upsertCachedSong({
       id: 's1',
@@ -364,21 +367,22 @@ describe('the upsert leaves meta_v alone', () => {
       suffix: 'mp3',
       formatCapturedAt: 1_700_000_001_000,
       downloadedAt: 1_700_000_001_000,
-      rawJson: JSON.stringify({ ...sourceChild(), genre: 'Rewritten' }),
     } as CachedSongRow);
 
     // Still stamped: the promoted columns hold the metadata, so there is nothing
     // for a re-arm to promote — and re-arming would send the conversion back over
     // a row whose columns are already fresher.
     expect(songRow()!.meta_v).toBe(1);
+    expect(songRow()!.raw_json).toBe(envelope);
     expect(songRow()!.genre).toBe('Folk, World, & Country');
     expect(workSet('cached_songs')).toBe(0);
   });
 
-  it('a download landing a NEW item envelope does not re-arm a converted row', async () => {
+  it('a re-download of a converted item neither re-arms meta_v nor rewrites the envelope', async () => {
     insertLegacyItem('alb-1', []);
     await convertLegacyMetadataAsync();
     expect(itemRow()!.meta_v).toBe(1);
+    const envelope = itemRow()!.raw_json;
 
     await upsertCachedItem({
       itemId: 'alb-1',
@@ -387,10 +391,10 @@ describe('the upsert leaves meta_v alone', () => {
       expectedSongCount: 30,
       lastSyncAt: 1_700_000_001_000,
       downloadedAt: 1_700_000_001_000,
-      rawJson: JSON.stringify({ ...albumEnvelope(), name: 'Rewritten' }),
     } as Omit<CachedItemRow, 'songIds'>);
 
     expect(itemRow()!.meta_v).toBe(1);
+    expect(itemRow()!.raw_json).toBe(envelope);
     expect(workSet('cached_items')).toBe(0);
   });
 });
@@ -399,25 +403,71 @@ describe('the upsert leaves meta_v alone', () => {
 /*  The migration path keeps its column                                 */
 /* ------------------------------------------------------------------ */
 
-describe('raw_json survives for the migration path', () => {
-  /* Migrations 18/19 backfill `WHERE raw_json IS NULL` and Migration 20 preloads
-   * `WHERE raw_json IS NOT NULL`. The runtime must not empty the column out from
-   * under them — the physical drop is a later migration, not this step. */
-  it('is preserved by the conversion, the hydrate and a write-back', async () => {
+/* THE SAFETY PROPERTY OF THE WHOLE STEP. The hydrate no longer projects
+ * `raw_json` and the upsert no longer binds it, so the in-memory row cannot
+ * carry an envelope back to disk. That is only safe because the write statement
+ * omits the column entirely — an UPSERT that listed it would bind NULL from a
+ * row that never held one and blank the envelope on the first write-back,
+ * stranding `convertLegacyMetadataAsync` and Migration 20 with no source. */
+describe('raw_json and meta_v survive for the migration path', () => {
+  it('a hydrate + write-back leaves both columns byte-identical', async () => {
     insertLegacySong();
-    const envelope = songRow()!.raw_json;
+    insertLegacyItem();
+    const songEnvelope = songRow()!.raw_json;
+    const itemEnvelope = itemRow()!.raw_json;
+    expect(typeof songEnvelope).toBe('string');
+    expect(typeof itemEnvelope).toBe('string');
+
+    // Hydrate WITHOUT the conversion, so the rows are still unconverted when
+    // they are written back — the exact state the migration path depends on.
+    const songs = await hydrateCachedSongsAsync();
+    const items = await hydrateCachedItemsAsync();
+    await upsertCachedSong({ ...songs.s1, bytes: 999 });
+    const { songIds: _songIds, ...item } = items['alb-1'];
+    await upsertCachedItem({ ...item, name: 'Renamed' });
+
+    expect(songRow()!.raw_json).toBe(songEnvelope);
+    expect(songRow()!.meta_v).toBeNull();
+    expect(songRow()!.bytes).toBe(999);
+    expect(itemRow()!.raw_json).toBe(itemEnvelope);
+    expect(itemRow()!.meta_v).toBeNull();
+    expect(itemRow()!.name).toBe('Renamed');
+    // Both still in the work set, so the conversion still has its source.
+    expect(workSet('cached_songs')).toBe(1);
+    expect(workSet('cached_items')).toBe(1);
+  });
+
+  it('the conversion still finds and promotes a row written back through the upsert', async () => {
+    insertLegacySong();
+    insertLegacyItem();
+    const songs = await hydrateCachedSongsAsync();
+    await upsertCachedSong({ ...songs.s1, bytes: 999 });
+
+    await expect(convertLegacyMetadataAsync()).resolves.toBe(true);
+
+    expect(songRow()!.genre).toBe('Folk, World, & Country');
+    expect(songRow()!.track).toBe(11);
+    expect(songRow()!.src_album_id).toBe('alb-real');
+    expect(itemRow()!.meta_v).toBe(1);
+  });
+
+  /* The in-memory row must not carry the envelope: on an install that has not
+   * finished the conversion, every downloaded song's full JSON string would be
+   * resident in JS from boot for no reader. Asserted on the KEY, not the value,
+   * so re-adding it to a projection or the mapper fails here. */
+  it('is never projected onto the in-memory row', async () => {
+    insertLegacySong();
+    insertLegacyItem();
+
+    const songs = await hydrateCachedSongsAsync();
+    const items = await hydrateCachedItemsAsync();
+    expect('rawJson' in songs.s1).toBe(false);
+    expect('raw_json' in songs.s1).toBe(false);
+    expect('rawJson' in items['alb-1']).toBe(false);
+    expect('raw_json' in items['alb-1']).toBe(false);
 
     await musicCacheStore.getState().hydrateFromDbAsync();
-    const row = musicCacheStore.getState().cachedSongs.s1;
-    await upsertCachedSong({ ...row, bytes: 999 } as CachedSongRow);
-
-    expect(songRow()!.raw_json).toBe(envelope);
-    expect(songRow()!.bytes).toBe(999);
-    // Still visible to Migration 20's preload predicate.
-    expect(
-      realDb.getFirstSync<{ c: number }>(
-        'SELECT COUNT(*) AS c FROM cached_songs WHERE raw_json IS NOT NULL;',
-      )!.c,
-    ).toBe(1);
+    expect('rawJson' in musicCacheStore.getState().cachedSongs.s1).toBe(false);
+    expect('rawJson' in musicCacheStore.getState().cachedItems['alb-1']).toBe(false);
   });
 });

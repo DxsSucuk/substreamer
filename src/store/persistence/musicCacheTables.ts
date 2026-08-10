@@ -52,13 +52,6 @@ export interface CachedSongRow {
   samplingRate?: number;
   formatCapturedAt: number;
   downloadedAt: number;
-  /**
-   * Serialised full Subsonic `Child` envelope. Legacy: written by builds up to
-   * v8.0.91 and by Migrations 18/20, retained so the migration path can still
-   * read it and for rollback safety. NO runtime reader consults it — only
-   * `convertLegacyMetadataAsync` does, promoting it into the columns below.
-   */
-  rawJson?: string;
 
   /* --- the server's track (`Child`), promoted from the envelope --- */
   /** `Child.albumId` — the SERVER's album, unlike `albumId` above. */
@@ -173,12 +166,6 @@ export interface CachedItemRow {
   downloadedAt: number;
   /** Joined from cached_item_songs on hydrate, in position order. */
   songIds: string[];
-  /**
-   * Serialised full Subsonic `AlbumID3` (for album items) or `Playlist`
-   * (for playlist items). Legacy — see `CachedSongRow.rawJson`. NULL for
-   * `favorites` / `song` intents which have no natural envelope.
-   */
-  rawJson?: string;
   /**
    * Per-type metadata from the component tables: `cached_albums` for an `album`
    * item, `cached_playlists` for a `playlist` one. `favorites` / `song` intents
@@ -479,7 +466,6 @@ interface RawSongRow {
   sampling_rate: number | null;
   format_captured_at: number;
   downloaded_at: number;
-  raw_json: string | null;
   /** `json_group_array` projection of `cached_song_genres`; `'[]'` when none. */
   genres?: string | null;
 }
@@ -494,7 +480,6 @@ interface RawItemRow {
   parent_album_id: string | null;
   last_sync_at: number;
   downloaded_at: number;
-  raw_json: string | null;
   derived: number | null;
   /** Present only on the component-joined hydrate; `ca_`/`cp_` alias prefixes. */
   ca_item_id?: string | null;
@@ -534,7 +519,6 @@ function mapSongRow(row: RawSongRow): CachedSongRow {
   if (row.bit_rate !== null) out.bitRate = row.bit_rate;
   if (row.bit_depth !== null) out.bitDepth = row.bit_depth;
   if (row.sampling_rate !== null) out.samplingRate = row.sampling_rate;
-  if (row.raw_json !== null) out.rawJson = row.raw_json;
   Object.assign(out, readColumns(PROMOTED_SONG_COLUMNS, row as unknown as Record<string, unknown>));
   // `'[]'` is the no-genres case — skip the parse rather than allocate an empty
   // array for every song on the boot path.
@@ -561,7 +545,6 @@ function mapItemRow(row: RawItemRow, songIds: string[]): CachedItemRow {
   if (row.artist !== null) out.artist = row.artist;
   if (row.cover_art_id !== null) out.coverArtId = row.cover_art_id;
   if (row.parent_album_id !== null) out.parentAlbumId = row.parent_album_id;
-  if (row.raw_json !== null) out.rawJson = row.raw_json;
   // Component presence is the joined PK, never a data column — every metadata
   // column is legitimately NULL for a real row.
   const raw = row as unknown as Record<string, unknown>;
@@ -639,7 +622,7 @@ export function hydrateCachedSongs(): Record<string, CachedSongRow> {
     const rows = db.getAllSync<RawSongRow>(
       `SELECT song_id, title, artist, album, album_id, cover_art, bytes,
               duration, suffix, bit_rate, bit_depth, sampling_rate,
-              format_captured_at, downloaded_at, raw_json
+              format_captured_at, downloaded_at
          FROM cached_songs;`,
     );
     const out: Record<string, CachedSongRow> = {};
@@ -663,7 +646,7 @@ export function hydrateCachedItems(): Record<string, CachedItemRow> {
   try {
     const items = db.getAllSync<RawItemRow>(
       `SELECT item_id, type, name, artist, cover_art_id, expected_song_count,
-              parent_album_id, last_sync_at, downloaded_at, raw_json, derived
+              parent_album_id, last_sync_at, downloaded_at, derived
          FROM cached_items;`,
     );
     const edges = db.getAllSync<{ item_id: string; song_id: string }>(
@@ -704,8 +687,10 @@ async function yieldEvery(i: number): Promise<void> {
 }
 
 /**
- * Song projection for the async hydrate: the file columns, the legacy envelope,
- * every promoted `Child` column, and the genre array.
+ * Song projection for the async hydrate: the file columns, every promoted
+ * `Child` column, and the genre array. `raw_json` is deliberately NOT selected —
+ * nothing reads it at runtime, and a library of pre-cutover downloads would keep
+ * every envelope string resident in JS from boot for no consumer.
  *
  * Genres come back as a scalar subquery over an inner `ORDER BY pos`, NOT
  * `GROUP_CONCAT` (real genre names contain commas — "Folk, World, & Country")
@@ -714,7 +699,7 @@ async function yieldEvery(i: number): Promise<void> {
  */
 const SONG_HYDRATE_SELECT = `SELECT song_id, title, artist, album, album_id, cover_art, bytes,
         duration, suffix, bit_rate, bit_depth, sampling_rate,
-        format_captured_at, downloaded_at, raw_json,
+        format_captured_at, downloaded_at,
         ${columnNames(PROMOTED_SONG_COLUMNS)},
         (SELECT json_group_array(name)
            FROM (SELECT name FROM cached_song_genres
@@ -727,7 +712,7 @@ const SONG_HYDRATE_SELECT = `SELECT song_id, title, artist, album, album_id, cov
  *  `created` and `duration` all exist on more than one of the three tables. */
 const ITEM_HYDRATE_SELECT = `SELECT i.item_id, i.type, i.name, i.artist, i.cover_art_id,
         i.expected_song_count, i.parent_album_id, i.last_sync_at, i.downloaded_at,
-        i.raw_json, i.derived,
+        i.derived,
         a.item_id AS ca_item_id, ${aliasedColumns(ALBUM_META_COLUMNS, 'a', 'ca_')},
         p.item_id AS cp_item_id, ${aliasedColumns(PLAYLIST_META_COLUMNS, 'p', 'cp_')}
    FROM cached_items i
@@ -1107,9 +1092,9 @@ const cachedSongChildCommands = (songId: string, child: Child): BatchCommand[] =
 const CACHED_SONG_UPSERT_SQL = `INSERT INTO cached_songs
    (song_id, title, artist, album, album_id, cover_art, bytes, duration,
     suffix, bit_rate, bit_depth, sampling_rate, format_captured_at,
-    downloaded_at, raw_json, sort_title, sort_artist,
+    downloaded_at, sort_title, sort_artist,
     ${columnNames(PROMOTED_SONG_COLUMNS)})
-   VALUES (${placeholders(17 + PROMOTED_SONG_COLUMNS.length)})
+   VALUES (${placeholders(16 + PROMOTED_SONG_COLUMNS.length)})
    ON CONFLICT(song_id) DO UPDATE SET
      title = excluded.title,
      artist = excluded.artist,
@@ -1124,7 +1109,6 @@ const CACHED_SONG_UPSERT_SQL = `INSERT INTO cached_songs
      sampling_rate = excluded.sampling_rate,
      format_captured_at = excluded.format_captured_at,
      downloaded_at = excluded.downloaded_at,
-     raw_json = COALESCE(excluded.raw_json, raw_json),
      sort_title = excluded.sort_title,
      sort_artist = excluded.sort_artist,
      ${coalesceAssignments(PROMOTED_SONG_COLUMNS)};`;
@@ -1140,13 +1124,15 @@ function cachedSongCommands(song: CachedSongRow, child?: Child): BatchCommand[] 
   // for the rationale. Applies the same pattern here for consistency so
   // nobody can accidentally reintroduce the cascade-delete footgun.
   //
-  // The 15 original columns describe the FILE and are written unconditionally
-  // (`redownloadTrack` legitimately clears bit_depth/sampling_rate). The
-  // promoted metadata columns are `COALESCE(excluded.x, x)` — the direct
-  // replacement for the `raw_json` COALESCE, because the write-back paths
-  // rebuild a row from memory and would otherwise null every one of them.
-  // `meta_v` is never touched here: a new download writes its metadata straight
-  // into the columns, so there is nothing left to promote from an envelope.
+  // The 14 file columns are written unconditionally (`redownloadTrack`
+  // legitimately clears bit_depth/sampling_rate). The promoted metadata columns
+  // are `COALESCE(excluded.x, x)`, because the write-back paths rebuild a row
+  // from memory and would otherwise null every one of them.
+  //
+  // `raw_json` and `meta_v` are absent from the statement entirely, so a write
+  // leaves both exactly as they are on disk — the legacy envelope survives for
+  // `convertLegacyMetadataAsync` and Migrations 18/20 without being read into
+  // memory, and a new download writes its metadata straight into the columns.
   //
   // The A–Z keys are DERIVED here from the same row that supplies `title`/`artist`,
   // through the same `db/sortKeys` derivation the `songs` table uses, and written
@@ -1171,7 +1157,6 @@ function cachedSongCommands(song: CachedSongRow, child?: Child): BatchCommand[] 
         song.samplingRate ?? null,
         song.formatCapturedAt,
         song.downloadedAt,
-        song.rawJson ?? null,
         keys.sort_title,
         keys.sort_artist,
         ...columnParams(PROMOTED_SONG_COLUMNS, song),
@@ -1251,13 +1236,14 @@ function cachedItemCommands(item: Omit<CachedItemRow, 'songIds'>): BatchCommand[
   // write touched its parent item. UPSERT updates the row in place with no
   // DELETE, preserving children.
   //
-  // `raw_json` / `meta_v` use the same shape as cached_songs — see that helper.
+  // `raw_json` / `meta_v` are off the statement — same shape as cached_songs,
+  // see that helper.
   const commands: BatchCommand[] = [];
   commands.push([
     `INSERT INTO cached_items
        (item_id, type, name, artist, cover_art_id, expected_song_count,
-        parent_album_id, last_sync_at, downloaded_at, raw_json, derived)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        parent_album_id, last_sync_at, downloaded_at, derived)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(item_id) DO UPDATE SET
          type = excluded.type,
          name = excluded.name,
@@ -1267,7 +1253,6 @@ function cachedItemCommands(item: Omit<CachedItemRow, 'songIds'>): BatchCommand[
          parent_album_id = excluded.parent_album_id,
          last_sync_at = excluded.last_sync_at,
          downloaded_at = excluded.downloaded_at,
-         raw_json = COALESCE(excluded.raw_json, raw_json),
          derived = excluded.derived;`,
     [
       item.itemId,
@@ -1279,7 +1264,6 @@ function cachedItemCommands(item: Omit<CachedItemRow, 'songIds'>): BatchCommand[
       item.parentAlbumId ?? null,
       item.lastSyncAt,
       item.downloadedAt,
-      item.rawJson ?? null,
       item.derived ? 1 : 0,
     ],
   ]);

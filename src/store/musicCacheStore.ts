@@ -320,8 +320,8 @@ function repackQueueMirror(
 
 /**
  * Mirror the disk write's metadata-preservation rules in memory: a write with no
- * metadata must not blank what the row already carries (on disk that's the
- * `raw_json` COALESCE plus "skip the component row").
+ * metadata must not blank what the row already carries (on disk that's "skip the
+ * component row").
  */
 function preserveItemMetadata(
   item: Omit<CachedItemMeta, 'songIds'>,
@@ -330,7 +330,6 @@ function preserveItemMetadata(
   if (!existing) return item;
   return {
     ...item,
-    rawJson: item.rawJson ?? existing.rawJson,
     albumMeta: item.albumMeta ?? existing.albumMeta,
     playlistMeta: item.playlistMeta ?? existing.playlistMeta,
   };
@@ -762,8 +761,8 @@ export async function clearMusicCacheTables(): Promise<void> {
  * Lazy-build memoisation for song envelopes, keyed by the ROW object. A row is
  * replaced with a fresh object on every upsert and dropped on reset/clear, so
  * its WeakMap entry (the built `Child`) becomes unreachable and GCs naturally —
- * no manual invalidation. Never key it off `rawJson` through a plain Map: that pins
- * every parsed envelope for the whole session.
+ * no manual invalidation. A plain Map keyed by song id would instead pin every
+ * built `Child` for the whole session.
  */
 const songEnvelopeCache = new WeakMap<object, Child>();
 

@@ -2371,8 +2371,8 @@ describe('download pipeline', () => {
 
     const cached = musicCacheStore.getState().cachedSongs['rich-1'];
     expect(cached).toBeDefined();
-    // No envelope written any more — the metadata lives in typed columns.
-    expect(cached.rawJson).toBeUndefined();
+    // No envelope carried any more — the metadata lives in typed columns.
+    expect('rawJson' in cached).toBe(false);
     expect(cached.track).toBe(4);
     expect(cached.discNumber).toBe(2);
     expect(cached.genre).toBe('Jazz');
@@ -2414,7 +2414,7 @@ describe('download pipeline', () => {
     await waitForQueueIdle();
 
     const partial = musicCacheStore.getState().cachedItems['album-env'];
-    expect(partial.rawJson).toBeUndefined();
+    expect('rawJson' in partial).toBe(false);
     expect(partial.albumMeta).toBeDefined();
     expect(partial.albumMeta!.name).toBe('Env Album');
     expect(partial.albumMeta!.genre).toBe('Classical');

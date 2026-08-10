@@ -1375,35 +1375,6 @@ describe('getSongEnvelope', () => {
     expect(c.artist).toBe('Unknown Artist');
   });
 
-  // The envelope survives on disk for the future column drop, and the store still
-  // carries it — but no runtime reader may consult it. A row whose columns and
-  // whose retained envelope disagree must answer from the columns.
-  it('never reads the retained envelope, even alongside stale column data', () => {
-    musicCacheStore.setState({
-      cachedSongs: {
-        s1: {
-          ...makeSong('s1', { track: 7, genre: 'Jazz' }),
-          rawJson: '{"id":"s1","isDir":false,"title":"Stale","track":99,"genre":"Rock"}',
-        },
-      } as any,
-    });
-    const c = getSongEnvelope('s1');
-    expect(c.track).toBe(7);
-    expect(c.genre).toBe('Jazz');
-    expect(c.title).not.toBe('Stale');
-  });
-
-  // A malformed envelope used to make this return null, dropping the song from
-  // every genre mix. Columns are the only source now, so it is simply ignored.
-  it('still answers from the columns when the retained envelope is malformed', () => {
-    musicCacheStore.setState({
-      cachedSongs: {
-        s1: { ...makeSong('s1', { track: 4 }), rawJson: '{not-json' },
-      } as any,
-    });
-    expect(getSongEnvelope('s1')?.track).toBe(4);
-  });
-
   it('memoises per row object; repeated calls return the same Child', () => {
     musicCacheStore.setState({
       cachedSongs: { s1: makeSong('s1', { track: 7, genre: 'Rock' }) } as any,
