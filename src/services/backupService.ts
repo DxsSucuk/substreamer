@@ -263,6 +263,9 @@ export async function createBackup(): Promise<void> {
     scrobblesMeta = await writeBackupDataset(scrobblesFileName(stem), scrobbles, scrobbles.length);
   }
 
+  // The stores, not the repositories, for the same reason the bookmarks read below gives:
+  // each holds the complete set whichever source it hydrates from, including before
+  // migration 42 has moved its KV blob into rows.
   const overrides = mbidOverrideStore.getState().overrides;
   const overrideCount = Object.keys(overrides).length;
   if (overrideCount > 0) {
@@ -471,8 +474,10 @@ export async function restoreBackup(
       mbidOverrideCount = result.added;
       mbidOverrideSkipped = result.skipped;
     } else {
-      mbidOverrideStore.setState({ overrides });
-      mbidOverrideCount = Object.keys(overrides).length;
+      // Through the store's action, never `setState`: replace mode has to clear the
+      // existing rows and write the file's in their place, and the action owns both
+      // halves (plus dropping malformed entries).
+      mbidOverrideCount = mbidOverrideStore.getState().replaceOverrides(overrides);
     }
   }
 
@@ -492,15 +497,9 @@ export async function restoreBackup(
       scrobbleExclusionCount = result.added;
       scrobbleExclusionSkipped = result.skipped;
     } else {
-      scrobbleExclusionStore.setState({
-        excludedAlbums: data.excludedAlbums,
-        excludedArtists: data.excludedArtists,
-        excludedPlaylists: data.excludedPlaylists,
-      });
-      scrobbleExclusionCount =
-        Object.keys(data.excludedAlbums).length +
-        Object.keys(data.excludedArtists).length +
-        Object.keys(data.excludedPlaylists).length;
+      // Through the store's action, never `setState` — same reason as the overrides
+      // above: the existing rows have to go before the file's are written.
+      scrobbleExclusionCount = scrobbleExclusionStore.getState().replaceExclusions(data);
     }
   }
 

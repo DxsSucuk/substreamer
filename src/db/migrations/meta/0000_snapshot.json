@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "d5ea2bc5-486f-42d7-9b72-bc6fc4ed2eb1",
+  "id": "4ddbf233-8996-4242-9fdd-84d1f3338f24",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "album_artists": {
@@ -5069,6 +5069,52 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
+    "mbid_overrides": {
+      "name": "mbid_overrides",
+      "columns": {
+        "type": {
+          "name": "type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "entity_id": {
+          "name": "entity_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "entity_name": {
+          "name": "entity_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "mbid": {
+          "name": "mbid",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "mbid_overrides_type_entity_id_pk": {
+          "columns": [
+            "type",
+            "entity_id"
+          ],
+          "name": "mbid_overrides_type_entity_id_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
     "pending_scrobble_album_artists": {
       "name": "pending_scrobble_album_artists",
       "columns": {
@@ -7136,6 +7182,45 @@
       },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "scrobble_exclusions": {
+      "name": "scrobble_exclusions",
+      "columns": {
+        "type": {
+          "name": "type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "entity_id": {
+          "name": "entity_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "scrobble_exclusions_type_entity_id_pk": {
+          "columns": [
+            "type",
+            "entity_id"
+          ],
+          "name": "scrobble_exclusions_type_entity_id_pk"
+        }
+      },
       "uniqueConstraints": {},
       "checkConstraints": {}
     },

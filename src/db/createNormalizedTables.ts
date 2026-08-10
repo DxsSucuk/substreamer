@@ -176,6 +176,12 @@ export const MODEL_TABLES: readonly string[] = [
   'favorite_album_disc_titles',
   'favorite_artists',
   'favorite_artist_roles',
+  // The user's MBID corrections and scrobble opt-outs. User-AUTHORED, but keyed by
+  // server-scoped entity ids, so logout must drop them or an id colliding on the next
+  // server silently corrects — or silences — the wrong entity. Both stores are already
+  // in `resetAllStores`, so this reproduces what ships today.
+  'mbid_overrides',
+  'scrobble_exclusions',
 ];
 
 /**

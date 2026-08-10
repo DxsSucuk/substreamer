@@ -51,6 +51,7 @@ import { migrateFavoritesToColumns } from '../db/favoritesColumnsMigration';
 import { migrateDownloadQueueSongs } from '../store/persistence/downloadQueueSongsMigration';
 import { migrateGenresAndSharesFromKv } from '../store/persistence/genreShareMigration';
 import { migrateQueueSnapshotsFromKv } from '../store/persistence/queueSnapshotMigration';
+import { migrateUserDataFromKv } from '../store/persistence/userDataMigration';
 import { kvStorage } from '../store/persistence';
 
 /* ------------------------------------------------------------------ */
@@ -2176,6 +2177,19 @@ const MIGRATION_TASKS: MigrationTask[] = [
     },
   },
 
+  {
+    // 41 is reserved by the commented-out legacy-blob drop at the foot of this list.
+    id: 42,
+    name: 'Move MBID corrections and scrobble exclusions into their tables',
+    run: async (log) => {
+      // Both are user-AUTHORED with nowhere on the server to live, so neither may be
+      // dropped and refilled the way a server-owned cache can. Every entry is read back
+      // before the blob's copy is given up, and a failure THROWS so the next launch
+      // retries with the blob still there.
+      await migrateUserDataFromKv(log);
+    },
+  },
+
   // -------------------------------------------------------------------
   // TEMPLATE – How to add a new migration task:
   //
@@ -2212,12 +2226,12 @@ const MIGRATION_TASKS: MigrationTask[] = [
   // catch-up migration and THEN drops the tables — migrate-BEFORE-drop is mandatory so a
   // very-old upgrader still recovers their data before it's gone. Held back JUST IN CASE
   // until the final release is verified; uncomment to enable. It takes the NEXT free id
-  // — 41 — because a task numbered below the highest that has shipped never runs for
+  // — 43 — because a task numbered below the highest that has shipped never runs for
   // anyone who has already passed it (`getPendingTasks` returns `id > completedVersion`);
-  // 35 and 37 were both skipped that way as 36 and 38 shipped.
+  // 35, 37 and 41 were all skipped that way as 36, 38 and 42 shipped.
   //
   // {
-  //   id: 41,
+  //   id: 43,
   //   name: 'Migrate any remaining blob data, then drop the legacy blob tables',
   //   run: async (log) => {
   //     const { getDb } = require('../store/persistence/db') as { getDb: () => any };

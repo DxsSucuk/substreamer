@@ -1180,6 +1180,48 @@ export const shareEntries = sqliteTable(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
+// User-authored corrections and opt-outs — no server home, so this is the only copy
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One manual MusicBrainz correction the user made for an artist or an album.
+ *
+ * `(type, entity_id)` is the natural key: it is exactly what `mbidOverrideStore`'s
+ * `"artist:id"` / `"album:id"` map key encodes, so the map rebuilds from the columns
+ * without inventing anything. `mbid` is NOT NULL because an override without one has
+ * nothing to override with; `entity_name` is display text only.
+ */
+export const mbidOverrides = sqliteTable(
+  'mbid_overrides',
+  {
+    /** `artist` | `album`. */
+    type: text('type').notNull(),
+    entityId: text('entity_id').notNull(),
+    entityName: text('entity_name'),
+    mbid: text('mbid').notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.type, t.entityId] }) }),
+);
+
+/**
+ * One album, artist or playlist the user has excluded from scrobbling.
+ *
+ * ONE table with a `type` discriminator rather than three identical two-column tables —
+ * `scrobbleExclusionStore` holds three maps only because a KV blob has no other way to
+ * express it. `name` is display text for the exclusion browser.
+ */
+export const scrobbleExclusions = sqliteTable(
+  'scrobble_exclusions',
+  {
+    /** `album` | `artist` | `playlist`. */
+    type: text('type').notNull(),
+    entityId: text('entity_id').notNull(),
+    name: text('name'),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.type, t.entityId] }) }),
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Kept tables — permanent user data, NOT part of the library model
 //
 // The KV blob store (auth, settings, theme), scrobble history, the download tables and

@@ -752,6 +752,14 @@ CREATE TABLE `lyrics` (
 	`source` text
 );
 --> statement-breakpoint
+CREATE TABLE `mbid_overrides` (
+	`type` text NOT NULL,
+	`entity_id` text NOT NULL,
+	`entity_name` text,
+	`mbid` text NOT NULL,
+	PRIMARY KEY(`type`, `entity_id`)
+);
+--> statement-breakpoint
 CREATE TABLE `pending_scrobble_album_artists` (
 	`scrobble_id` text NOT NULL,
 	`pos` integer NOT NULL,
@@ -1058,6 +1066,13 @@ CREATE TABLE `scrobble_events` (
 --> statement-breakpoint
 CREATE INDEX `idx_scrobble_events_time` ON `scrobble_events` (`time`);--> statement-breakpoint
 CREATE INDEX `idx_scrobble_events_hour` ON `scrobble_events` (`hour`);--> statement-breakpoint
+CREATE TABLE `scrobble_exclusions` (
+	`type` text NOT NULL,
+	`entity_id` text NOT NULL,
+	`name` text,
+	PRIMARY KEY(`type`, `entity_id`)
+);
+--> statement-breakpoint
 CREATE TABLE `scrobble_genres` (
 	`scrobble_id` text NOT NULL,
 	`pos` integer NOT NULL,
