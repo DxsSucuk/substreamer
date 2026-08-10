@@ -68,7 +68,7 @@ const EMPTY_AGGREGATES: ImageCacheAggregates = {
 
 /**
  * Single-query derivation of every aggregate the store needs. Runs both scans
- * of `cached_images` on expo-sqlite's background thread.
+ * of `cached_images` on op-SQLite's pool thread.
  */
 export async function hydrateImageCacheAggregatesAsync(): Promise<ImageCacheAggregates> {
   const db = getDb();

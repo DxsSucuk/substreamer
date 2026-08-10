@@ -165,7 +165,7 @@ export async function getArtistInfoRow(db: InternalDb, id: string): Promise<Arti
         albumCount: sa.album_count ?? 0,
         userRating: sa.user_rating ?? undefined,
       })),
-    retrievedAt: num(row.retrieved_at) ?? 0,
+    retrievedAt: Number(row.retrieved_at),
   };
 }
 
@@ -203,9 +203,10 @@ export async function getArtistTopSongsRow(
   await hydrateSongRows(db, songRows);
   return {
     songs: songRows.map(songListRowToChild),
-    retrievedAt: num(row.retrieved_at) ?? 0,
-    listLength: num(row.list_length) ?? 0,
-    songCount: num(row.song_count) ?? 0,
+    // The three state columns are NOT NULL, unlike `artist_bio`'s.
+    retrievedAt: Number(row.retrieved_at),
+    listLength: Number(row.list_length),
+    songCount: Number(row.song_count),
   };
 }
 

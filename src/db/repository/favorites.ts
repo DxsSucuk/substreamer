@@ -497,7 +497,7 @@ async function allRemainder<T extends { starred?: Date }, R extends RemainderCor
   columns: string,
   items: RemainderItems<T, R>,
   f: StarredFilter,
-  order: string = STARRED_DESC,
+  order: string,
 ): Promise<{ entries: StarredEntry<T>[]; rows: R[] }> {
   const rows = await db.getAllAsync<R>(
     `SELECT ${columns} FROM ${REMAINDER[entity]} WHERE ${remainderWhere(entity, f)} ` +

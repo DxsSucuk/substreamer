@@ -116,6 +116,10 @@ describe('artist detail parts', () => {
     expect(await getArtistBase(db(), 'ar3')).not.toBeNull();
   });
 
+  it('getArtistBase is null for an artist that never synced at all', async () => {
+    expect(await getArtistBase(db(), 'nope')).toBeNull();
+  });
+
   it('getArtistInfoRow returns the server envelope + similar artists', async () => {
     await upsertArtists(db(), [artist('ar1', 'The Beatles')]);
     await upsertArtistInfo(
@@ -149,6 +153,19 @@ describe('artist detail parts', () => {
     expect(bio?.biography).toBeNull();     // ...and this artist has none
     expect(bio?.resolvedMbid).toBe('mb-1');
     expect(bio?.checkedAt).toBe(42);
+  });
+
+  it('getArtistBioRow maps an all-empty row to nulls, not undefined', async () => {
+    // Every column of `artist_bio` is nullable, and this is the row a MusicBrainz
+    // lookup that resolved nothing leaves behind. `checkedAt: null` is what makes the
+    // caller retry rather than treat it as a negative cache hit.
+    await upsertArtists(db(), [artist('ar1', 'The Beatles')]);
+    await upsertArtistBio(db(), 'ar1', { biography: null, resolvedMbid: null, checkedAt: null });
+    expect(await getArtistBioRow(db(), 'ar1')).toEqual({
+      biography: null,
+      resolvedMbid: null,
+      checkedAt: null,
+    });
   });
 
   it('getArtistTopSongsRow reports the junction order and the written count', async () => {

@@ -21,7 +21,8 @@ import {
 } from '@op-engineering/op-sqlite';
 import { Directory, Paths } from 'expo-file-system';
 
-/** Row-modification counts for a write; shape mirrors expo-sqlite's `SQLiteRunResult`. */
+/** Row-modification counts for a write, mapped from op-SQLite's
+ *  `rowsAffected` / `insertId` by {@link adapt}. */
 export interface RunResult {
   changes: number;
   lastInsertRowId: number;

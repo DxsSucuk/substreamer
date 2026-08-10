@@ -2,7 +2,7 @@
 // via the op-SQLite client) using jest.isolateModules + jest.doMock on
 // '@op-engineering/op-sqlite'. The client applies PRAGMAs and runs schema DDL
 // through op-SQLite's `executeSync`, so a jest.fn() spy on it captures the exact
-// statement sequence the previous expo-sqlite `execSync` spy used to.
+// statement sequence.
 
 import { KEPT_TABLES } from '../../../db/createNormalizedTables';
 import { NORMALIZED_DDL } from '../../../db/normalizedDdl';

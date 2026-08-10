@@ -3,12 +3,17 @@ import type { AlbumID3, Child } from 'subsonic-api';
 import { getDb } from '../../store/persistence/db';
 import { createLegacyBlobTables } from '../../test-utils/legacyBlobTables';
 import { ensureNormalizedSchema } from '../createNormalizedTables';
-import { migrateBlobsToNormalized } from '../migrateNormalized';
-import { countAlbums, listAlbums } from '../repository/albums';
+import { checkpointWalAsync, migrateBlobsToNormalized } from '../migrateNormalized';
+import { countAlbums, getAlbumInfoRow, listAlbums } from '../repository/albums';
 import { countArtists } from '../repository/artists';
 import { countPlaylists } from '../repository/playlists';
 import { countSongs } from '../repository/songs';
-import { getArtistBioRow, getArtistTopSongsRow, getPlaylistDetail } from '../repository/details';
+import {
+  getArtistBioRow,
+  getArtistInfoRow,
+  getArtistTopSongsRow,
+  getPlaylistDetail,
+} from '../repository/details';
 
 const db = () => getDb()!;
 
@@ -59,6 +64,7 @@ beforeEach(() => {
     'artist_info',
     'artist_bio',
     'artist_top_songs_state',
+    'album_info',
   ]) {
     db().runSync(`DELETE FROM ${t}`);
   }
@@ -68,6 +74,7 @@ beforeEach(() => {
     'substreamer-playlist-library',
     'substreamer-playlist-details',
     'substreamer-album-details',
+    'substreamer-album-info',
   ]) {
     db().runSync('DELETE FROM storage WHERE key = ?', [k]);
   }
@@ -308,6 +315,131 @@ describe('migrateBlobsToNormalized', () => {
     expect(bio?.resolvedMbid).toBe('mbid-123');
     expect(bio?.checkedAt).toBe(1_700_000_000_000);
   });
+
+  it('migrates artist detail: the getArtistInfo2 envelope + its similar artists', async () => {
+    putKv('substreamer-artist-details', {
+      artists: {
+        ar1: {
+          artist: { id: 'ar1', name: 'Solo' },
+          artistInfo: {
+            biography: 'Server bio.',
+            lastFmUrl: 'https://last.fm/x',
+            musicBrainzId: 'mb-1',
+            smallImageUrl: 'https://img/s',
+            mediumImageUrl: 'https://img/m',
+            largeImageUrl: 'https://img/l',
+            similarArtist: [{ id: 'ar9', name: 'Duo', albumCount: 1, coverArt: 'ca9' }],
+          },
+        },
+      },
+    });
+
+    await migrateBlobsToNormalized(db());
+
+    const info = await getArtistInfoRow(db(), 'ar1');
+    expect(info).toMatchObject({
+      biography: 'Server bio.',
+      lastFmUrl: 'https://last.fm/x',
+      musicBrainzId: 'mb-1',
+      smallImageUrl: 'https://img/s',
+      mediumImageUrl: 'https://img/m',
+      largeImageUrl: 'https://img/l',
+    });
+    expect(info?.similarArtist).toEqual([
+      { id: 'ar9', name: 'Duo', albumCount: 1, coverArt: 'ca9' },
+    ]);
+  });
+
+  it('records an empty artistInfo as a fetch that found nothing, not as never-fetched', async () => {
+    // The blob's optional fields are all absent on a server that returns a bare
+    // envelope. Every one must land as NULL — and a similar artist with no id is
+    // dropped rather than written as a reference to nothing.
+    putKv('substreamer-artist-details', {
+      artists: {
+        ar1: {
+          artist: { id: 'ar1', name: 'Solo' },
+          artistInfo: { similarArtist: [{ name: 'No id' }, { id: 'ar9' }] },
+        },
+      },
+    });
+
+    await migrateBlobsToNormalized(db());
+
+    const info = await getArtistInfoRow(db(), 'ar1');
+    expect(info).toMatchObject({
+      biography: null,
+      lastFmUrl: null,
+      musicBrainzId: null,
+      smallImageUrl: undefined,
+      mediumImageUrl: undefined,
+      largeImageUrl: undefined,
+    });
+    expect(info?.similarArtist).toEqual([
+      { id: 'ar9', name: '', albumCount: 0, coverArt: undefined, userRating: undefined },
+    ]);
+  });
+
+  it('migrates album info + the Wikipedia enrichment from its KV blob', async () => {
+    seedAlbum('a1', { name: 'Alpha' });
+    putKv('substreamer-album-info', {
+      entries: {
+        a1: {
+          albumInfo: {
+            notes: 'Server notes',
+            lastFmUrl: 'https://last.fm/a1',
+            musicBrainzId: 'mb-a1',
+            smallImageUrl: 'https://img/s',
+            mediumImageUrl: 'https://img/m',
+            largeImageUrl: 'https://img/l',
+          },
+          enrichedNotes: 'From Wikipedia',
+          enrichedNotesUrl: 'https://wiki/a1',
+          overrideMbid: 'mb-override',
+          retrievedAt: 1_700_000_000_000,
+        },
+      },
+    });
+
+    await migrateBlobsToNormalized(db());
+
+    expect(await getAlbumInfoRow(db(), 'a1')).toEqual({
+      notes: 'Server notes',
+      lastFmUrl: 'https://last.fm/a1',
+      musicBrainzId: 'mb-a1',
+      imageUrlSmall: 'https://img/s',
+      imageUrlMedium: 'https://img/m',
+      imageUrlLarge: 'https://img/l',
+      enrichedNotes: 'From Wikipedia',
+      enrichedNotesUrl: 'https://wiki/a1',
+      overrideMbid: 'mb-override',
+      retrievedAt: 1_700_000_000_000,
+    });
+  });
+
+  it('writes an album-info entry that carries nothing but a timestamp', async () => {
+    seedAlbum('a1', { name: 'Alpha' });
+    putKv('substreamer-album-info', { entries: { a1: {} } });
+
+    await migrateBlobsToNormalized(db());
+
+    const row = await getAlbumInfoRow(db(), 'a1');
+    expect(row).toMatchObject({ notes: null, lastFmUrl: null, enrichedNotes: null });
+    expect(row?.retrievedAt).toBeGreaterThan(0); // stamped now — the blob had none
+  });
+
+  it('skips album-info entries with no album row and no entry at all', async () => {
+    // `album_info.album_id` FKs to `albums`, so an entry for an album the user never
+    // synced cannot be written. It must not take the rest of the migration down.
+    seedAlbum('a1', { name: 'Alpha' });
+    putKv('substreamer-album-info', {
+      entries: { a1: { albumInfo: { notes: 'Kept' } }, ghost: { albumInfo: { notes: 'Lost' } }, '': {}, bad: null },
+    });
+
+    await migrateBlobsToNormalized(db());
+
+    expect((await getAlbumInfoRow(db(), 'a1'))?.notes).toBe('Kept');
+    expect(await getAlbumInfoRow(db(), 'ghost')).toBeNull();
+  });
 });
 
 // The legacy tables are no longer created at boot, so which of them exist depends on how
@@ -345,5 +477,26 @@ describe('migrateBlobsToNormalized — absent legacy tables', () => {
     expect(result.songs).toEqual({ source: 0, migrated: 0, skipped: 0 });
     expect(await countAlbums(db())).toBe(0);
     expect(await countSongs(db())).toBe(0);
+  });
+});
+
+describe('checkpointWalAsync', () => {
+  it('truncates the WAL and reports how long it took', async () => {
+    const log = jest.fn();
+    await expect(checkpointWalAsync(db(), log)).resolves.toBeGreaterThanOrEqual(0);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('WAL checkpointed'));
+  });
+
+  it('logs and returns rather than throwing when the checkpoint fails', async () => {
+    // A checkpoint can lose to another connection holding the DB. It runs
+    // fire-and-forget behind the migration, so a rejection here would surface as an
+    // unhandled one with nothing to catch it.
+    const log = jest.fn();
+    const failing = {
+      ...db(),
+      runAsync: () => Promise.reject(new Error('database is locked')),
+    } as unknown as ReturnType<typeof db>;
+    await expect(checkpointWalAsync(failing, log)).resolves.toBeGreaterThanOrEqual(0);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('WAL checkpoint failed'));
   });
 });

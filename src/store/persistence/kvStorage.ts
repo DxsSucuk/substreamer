@@ -90,7 +90,7 @@ export const kvStorageSync: StateStorage = {
 /**
  * **Asynchronous** Zustand `StateStorage` adapter — the default for the
  * persist stores. Identical semantics to {@link kvStorageSync} but the SQLite
- * IO runs on expo-sqlite's background thread (`getFirstAsync`/`runAsync`), so
+ * IO runs on op-SQLite's pool thread (`getFirstAsync`/`runAsync`), so
  * reads (boot hydration) and writes (every persisted mutation) never block
  * the JS thread.
  *

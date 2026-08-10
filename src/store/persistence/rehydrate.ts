@@ -37,12 +37,12 @@ export interface RehydrationResult {
  *
  * Each store hydrates independently — no FK-style dependency between them —
  * so they run **concurrently** via `Promise.all`. The per-store SQLite reads
- * (`getAllAsync`/`getFirstAsync`) execute on expo-sqlite's background IO
- * thread, and the JS-side JSON.parse / row-mapping is chunked with
- * `setTimeout(0)` yields inside each `hydrateFromDbAsync`, so boot hydration
- * never blocks the JS thread for long even on a large library. Concurrent
- * reads queue on the native IO dispatcher; correctness is unaffected because
- * each store writes only its own slice of state.
+ * (`getAllAsync`/`getFirstAsync`) execute on op-SQLite's pool thread, and the
+ * JS-side JSON.parse / row-mapping is chunked with `setTimeout(0)` yields
+ * inside each `hydrateFromDbAsync`, so boot hydration never blocks the JS
+ * thread for long even on a large library. Concurrent reads queue FIFO on that
+ * one pool thread; correctness is unaffected because each store writes only
+ * its own slice of state.
  *
  * **Not exported from `./index.ts`.** This module imports stores; stores
  * import from `./index.ts` for table helpers. Re-exporting here would

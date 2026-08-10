@@ -179,6 +179,27 @@ describe('performOfflineSearch', () => {
     expect((await performOfflineSearch('radiohead')).albums).toHaveLength(1);
   });
 
+  it('ranks several matching downloaded albums best-first', async () => {
+    seedCache({ a1: { name: 'Greatest Hits', tracks: [] }, a2: { name: 'Greatest', tracks: [] } });
+    await upsertAlbums(db(), [
+      albumFixture('a1', 'Greatest Hits', { artist: 'Artist' }),
+      albumFixture('a2', 'Greatest', { artist: 'Artist' }),
+    ]);
+
+    // The exact title wins over the one carrying extra words.
+    expect((await performOfflineSearch('greatest')).albums.map((a) => a.id)).toEqual(['a2', 'a1']);
+  });
+
+  it('ranks several matching downloaded playlists best-first', async () => {
+    seedCache({ p1: { name: 'Road Trip Mix', tracks: [] }, p2: { name: 'Road Trip', tracks: [] } });
+    await upsertPlaylists(db(), [
+      playlistFixture('p1', 'Road Trip Mix'),
+      playlistFixture('p2', 'Road Trip'),
+    ]);
+
+    expect((await performOfflineSearch('road trip')).albums.map((a) => a.id)).toEqual(['p2', 'p1']);
+  });
+
   it('excludes non-cached albums', async () => {
     // Album exists in the library but is NOT downloaded (no cached item) → excluded.
     await upsertAlbums(db(), [albumFixture('a1', 'Test Album', { artist: 'Artist' })]);
@@ -617,6 +638,39 @@ describe('searchLibrary — data-state routing', () => {
     expect(mockSearch3).not.toHaveBeenCalled();
   });
 
+  it('returns matching ALBUMS from the synced library, best-first', async () => {
+    mockSearchAlbums.mockResolvedValue([
+      { id: 'al2', name: 'Ten Again', display_artist: 'Pearl Jam' },
+      { id: 'al1', name: 'Ten', display_artist: 'Pearl Jam' },
+      { id: 'al9', name: 'Nothing Alike', display_artist: 'Nobody' },
+    ] as any);
+    const res = await searchLibrary('ten');
+    expect(res.albums.map((a) => a.id)).toEqual(['al1', 'al2']);
+    expect(res.albums[0].artist).toBe('Pearl Jam'); // mapped through albumListRowToAlbumID3
+  });
+
+  it('ranks several confidently-matching artists best-first', async () => {
+    const artistRow = (id: string, name: string) =>
+      ({ id, name, album_count: 1, cover_art: null, sort_name: null, sort_title: name.toLowerCase(), starred: null, user_rating: null, artist_image_url: null, music_brainz_id: null });
+    mockSearchArtists.mockResolvedValue([
+      artistRow('ar2', 'Pearl Jams'),
+      artistRow('ar1', 'Pearl Jam'),
+    ] as any);
+    const res = await searchLibrary('pearl jam');
+    expect(res.artists.map((a) => a.id)).toEqual(['ar1', 'ar2']);
+  });
+
+  it('a failing server call leaves the local results intact', async () => {
+    // The server half is wrapped so a 500 / dropped connection mid-search degrades to
+    // "local only" rather than failing the whole search.
+    syncStatusStore.setState({ librarySyncComplete: false, songSyncComplete: false });
+    mockSearchSongs.mockResolvedValue([localSong('loc')]);
+    mockSearch3.mockRejectedValue(new Error('Network error'));
+    const res = await searchLibrary('test song');
+    expect(mockSearch3).toHaveBeenCalled();
+    expect(res.songs.map((s) => s.id)).toEqual(['loc']);
+  });
+
   it('online + fully synced + weak/empty local hit → local only, NEVER the server (no blocking)', async () => {
     mockSearchSongs.mockResolvedValue([]); // nothing local
     const res = await searchLibrary('test song');
@@ -694,6 +748,14 @@ describe('findAlbum (voice album intent)', () => {
   it('matches on name alone when no artist is given', async () => {
     mockSearchAlbums.mockResolvedValue([{ id: 'a1', name: 'Ten', display_artist: 'Pearl Jam' }] as any);
     expect((await findAlbum('Ten'))?.id).toBe('a1');
+  });
+
+  it('picks the best of several surviving candidates, not the first', async () => {
+    mockSearchAlbums.mockResolvedValue([
+      { id: 'a-live', name: 'Ten Live', display_artist: 'Pearl Jam' },
+      { id: 'a-ten', name: 'Ten', display_artist: 'Pearl Jam' },
+    ] as any);
+    expect((await findAlbum('Ten', 'Pearl Jam'))?.id).toBe('a-ten');
   });
 });
 

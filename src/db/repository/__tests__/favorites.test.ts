@@ -445,6 +445,30 @@ describe('membership ids + names', () => {
     expect(page.rows.map((r) => r.id)).toEqual(['a2', 'a1']);
   });
 
+  it('carries the starred stamp into the album cursor so the next page resumes', async () => {
+    await upsertAlbums(db(), [album('a1'), album('a2')]);
+    await markStarredAlbums(db(), [
+      { id: 'a1', starredAt: 100 },
+      { id: 'a2', starredAt: 300 },
+    ]);
+    const p1 = await starredAlbumsPage(db(), { limit: 1 });
+    expect(p1.rows.map((r) => r.id)).toEqual(['a2']);
+    const p2 = await starredAlbumsPage(db(), { limit: 1, cursor: p1.nextCursor });
+    expect(p2.rows.map((r) => r.id)).toEqual(['a1']);
+  });
+
+  it('carries the starred stamp into the artist cursor so the next page resumes', async () => {
+    await upsertArtists(db(), [artist('ar1'), artist('ar2')]);
+    await markStarredArtists(db(), [
+      { id: 'ar1', starredAt: 100 },
+      { id: 'ar2', starredAt: 300 },
+    ]);
+    const p1 = await starredArtistsPage(db(), { limit: 1 });
+    expect(p1.rows.map((r) => r.id)).toEqual(['ar2']);
+    const p2 = await starredArtistsPage(db(), { limit: 1, cursor: p1.nextCursor });
+    expect(p2.rows.map((r) => r.id)).toEqual(['ar1']);
+  });
+
   it('returns every starred artist whole-set, newest first', async () => {
     await upsertArtists(db(), [artist('ar1'), artist('ar2')]);
     await markStarredArtists(db(), [

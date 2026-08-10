@@ -1,5 +1,18 @@
-import { defaultCollator } from '../../../utils/intl';
-import { __setDbForTests } from '../db';
+/**
+ * `imageCacheTable` against REAL SQL: the row↔object mapping, the composite-key
+ * upsert, the browser grouping, and the two degraded modes every function in the
+ * module has to survive — no db handle at all, and a handle that throws on every
+ * call.
+ *
+ * Runs against the generated schema (`src/db/normalizedDdl.ts`, created at import
+ * by `persistence/db.ts`) on the better-sqlite3-backed op-SQLite seam. Two things
+ * the module owns are only expressible there: the `(cover_art_id, size)` primary
+ * key the upsert conflicts on, and the `NOT IN (SELECT … FROM
+ * image_download_queue)` filter that keeps an in-flight cover out of the
+ * incomplete counts — both of which the previous hand-rolled fake emulated rather
+ * than exercised, the queue join not at all.
+ */
+import { __setDbForTests, getDb, type InternalDb } from '../db';
 import {
   bulkInsertCachedImages,
   clearAllCachedImages,
@@ -7,6 +20,7 @@ import {
   deleteCachedImageVariant,
   deleteCachedImagesForCoverArt,
   findIncompleteCovers,
+  getAllCachedCoverArtIds,
   getCachedImagesForCoverArtAsync,
   hasCachedImage,
   hydrateImageCacheAggregatesAsync,
@@ -15,177 +29,9 @@ import {
   type CachedImageRow,
 } from '../imageCacheTable';
 
-/** Fake DB that maps the small set of SQL statements used by imageCacheTable. */
-function makeFakeDb() {
-  // Composite key "coverArtId::size" → row
-  const rows = new Map<
-    string,
-    { cover_art_id: string; size: number; ext: string; bytes: number; cached_at: number }
-  >();
-  const rowKey = (coverArtId: string, size: number) => `${coverArtId}::${size}`;
-
-  function incompleteCovers(): string[] {
-    const byCover = new Map<string, number>();
-    for (const row of rows.values()) {
-      byCover.set(row.cover_art_id, (byCover.get(row.cover_art_id) ?? 0) + 1);
-    }
-    const out: string[] = [];
-    for (const [id, count] of byCover) {
-      if (count < 4) out.push(id);
-    }
-    out.sort();
-    return out;
-  }
-
-  const runSync = (rawSql: string, params: readonly unknown[] = []): void => {
-    const s = rawSql.replace(/\s+/g, ' ').trim();
-
-    if (s.startsWith('INSERT INTO cached_images')) {
-      const [coverArtId, size, ext, bytes, cachedAt] = params as [
-        string,
-        number,
-        string,
-        number,
-        number,
-      ];
-      rows.set(rowKey(coverArtId, size), {
-        cover_art_id: coverArtId,
-        size,
-        ext,
-        bytes,
-        cached_at: cachedAt,
-      });
-      return;
-    }
-    if (
-      s.startsWith('DELETE FROM cached_images WHERE cover_art_id = ? AND size = ?')
-    ) {
-      const [coverArtId, size] = params as [string, number];
-      rows.delete(rowKey(coverArtId, size));
-      return;
-    }
-    if (s.startsWith('DELETE FROM cached_images WHERE cover_art_id = ?')) {
-      const [coverArtId] = params as [string];
-      for (const key of [...rows.keys()]) {
-        if (rows.get(key)!.cover_art_id === coverArtId) rows.delete(key);
-      }
-      return;
-    }
-    if (s === 'DELETE FROM cached_images;') {
-      rows.clear();
-      return;
-    }
-    throw new Error(`unhandled SQL in fake: ${s}`);
-  };
-
-  const getFirstSync = <T,>(rawSql: string, params: readonly unknown[] = []): T | undefined => {
-    const s = rawSql.replace(/\s+/g, ' ').trim();
-    // Specific matches first — the per-coverArtId aggregate shares a prefix
-    // with the whole-table one, so order of checks matters here.
-    if (s.startsWith('SELECT COALESCE(SUM(bytes), 0) AS total_bytes, COUNT(*) AS file_count FROM cached_images WHERE cover_art_id = ?')) {
-      const [coverArtId] = params as [string];
-      let totalBytes = 0;
-      let count = 0;
-      for (const row of rows.values()) {
-        if (row.cover_art_id === coverArtId) {
-          totalBytes += row.bytes;
-          count++;
-        }
-      }
-      return { total_bytes: totalBytes, file_count: count } as T;
-    }
-    if (s.includes('COALESCE(SUM(bytes), 0) AS total_bytes') && s.includes('image_count')) {
-      let totalBytes = 0;
-      const covers = new Set<string>();
-      for (const row of rows.values()) {
-        totalBytes += row.bytes;
-        covers.add(row.cover_art_id);
-      }
-      return {
-        total_bytes: totalBytes,
-        file_count: rows.size,
-        image_count: covers.size,
-      } as T;
-    }
-    if (
-      s.includes('SELECT COUNT(*) AS c FROM ( SELECT cover_art_id FROM cached_images')
-      && s.includes('GROUP BY cover_art_id HAVING COUNT(*) < 4')
-    ) {
-      // Matches both the legacy form and the new form with the
-      // NOT IN (SELECT cover_art_id FROM image_download_queue) filter.
-      // Tests don't seed the queue, so the filter never excludes anything.
-      return { c: incompleteCovers().length } as T;
-    }
-    if (s.startsWith('SELECT 1 AS c FROM cached_images WHERE cover_art_id = ? AND size = ?')) {
-      const [coverArtId, size] = params as [string, number];
-      return rows.has(rowKey(coverArtId, size)) ? ({ c: 1 } as T) : undefined;
-    }
-    if (s.startsWith('SELECT COUNT(*) AS c FROM cached_images')) {
-      return { c: rows.size } as T;
-    }
-    return undefined;
-  };
-
-  const getAllSync = <T,>(rawSql: string, params: readonly unknown[] = []): T[] => {
-    const s = rawSql.replace(/\s+/g, ' ').trim();
-    if (
-      s.startsWith(
-        'SELECT cover_art_id, size, ext, bytes, cached_at FROM cached_images WHERE cover_art_id = ?',
-      )
-    ) {
-      const [coverArtId] = params as [string];
-      return [...rows.values()]
-        .filter((r) => r.cover_art_id === coverArtId)
-        .sort((a, b) => a.size - b.size) as T[];
-    }
-    if (
-      s.startsWith('SELECT cover_art_id, size, ext, bytes, cached_at FROM cached_images ORDER BY cover_art_id')
-    ) {
-      return [...rows.values()].sort(
-        (a, b) =>
-          defaultCollator.compare(a.cover_art_id, b.cover_art_id) || a.size - b.size,
-      ) as T[];
-    }
-    if (
-      s.startsWith('SELECT cover_art_id FROM cached_images')
-      && s.includes('GROUP BY cover_art_id HAVING COUNT(*) < 4')
-    ) {
-      // Matches both the legacy form and the new form with the
-      // NOT IN (SELECT cover_art_id FROM image_download_queue) filter.
-      return incompleteCovers().map((cover_art_id) => ({ cover_art_id })) as T[];
-    }
-    return [];
-  };
-
-  return {
-    rows,
-    getFirstSync,
-    getAllSync,
-    runSync,
-    execSync: () => {},
-    withTransactionSync: (fn: () => void) => fn(),
-    // Async delegates — the module now uses the async DB API.
-    runAsync: (sql: string, params?: readonly unknown[]) => Promise.resolve(runSync(sql, params) as any),
-    getFirstAsync: <T,>(sql: string, params?: readonly unknown[]) =>
-      Promise.resolve(getFirstSync<T>(sql, params)),
-    getAllAsync: <T,>(sql: string, params?: readonly unknown[]) =>
-      Promise.resolve(getAllSync<T>(sql, params)),
-    runAtomicBatchAsync: async (commands: ReadonlyArray<readonly [string, readonly unknown[]]>) => {
-      for (const [sql, params] of commands) runSync(sql, params);
-    },
-  };
-}
-
-let fakeDb: ReturnType<typeof makeFakeDb>;
-
-beforeEach(() => {
-  fakeDb = makeFakeDb();
-  __setDbForTests(fakeDb as any);
-});
-
-afterEach(() => {
-  __setDbForTests(null);
-});
+const handle = getDb();
+if (handle === null) throw new Error('test DB unavailable — the op-SQLite seam failed to open');
+const realDb: InternalDb = handle;
 
 function seedRow(overrides?: Partial<CachedImageRow>): CachedImageRow {
   return {
@@ -198,6 +44,26 @@ function seedRow(overrides?: Partial<CachedImageRow>): CachedImageRow {
   };
 }
 
+/** Put a cover in the download queue — the rows `findIncompleteCovers` excludes. */
+function queueCover(coverArtId: string): void {
+  realDb.runSync(
+    `INSERT INTO image_download_queue
+       (cover_art_id, scope, status, error, attempts, added_at, cycle_id)
+       VALUES (?, 'refresh-all', 'queued', NULL, 0, 1, 'cycle-A');`,
+    [coverArtId],
+  );
+}
+
+beforeEach(() => {
+  __setDbForTests(realDb);
+  realDb.runSync('DELETE FROM cached_images;');
+  realDb.runSync('DELETE FROM image_download_queue;');
+});
+
+afterEach(() => {
+  __setDbForTests(realDb);
+});
+
 describe('imageCacheTable — upsertCachedImage', () => {
   it('inserts a row and makes it queryable', async () => {
     await upsertCachedImage(seedRow());
@@ -206,21 +72,46 @@ describe('imageCacheTable — upsertCachedImage', () => {
     expect(await hasCachedImage('cover-1', 50)).toBe(false);
   });
 
-  it('upserts on conflict — second write replaces bytes / cachedAt / ext in place', async () => {
+  it('round-trips every column', async () => {
+    await upsertCachedImage(seedRow({ ext: 'webp', bytes: 4242, cachedAt: 99 }));
+    expect(await getCachedImagesForCoverArtAsync('cover-1')).toEqual([
+      { coverArtId: 'cover-1', size: 300, ext: 'webp', bytes: 4242, cachedAt: 99 },
+    ]);
+  });
+
+  it('conflicts on (cover_art_id, size) — a second write updates in place', async () => {
     await upsertCachedImage(seedRow({ bytes: 5000, cachedAt: 1000 }));
     await upsertCachedImage(seedRow({ bytes: 9999, cachedAt: 9999, ext: 'webp' }));
     expect(await countCachedImages()).toBe(1);
-    const entries = await getCachedImagesForCoverArtAsync('cover-1');
-    expect(entries).toHaveLength(1);
-    expect(entries[0].bytes).toBe(9999);
-    expect(entries[0].cachedAt).toBe(9999);
-    expect(entries[0].ext).toBe('webp');
+    expect(await getCachedImagesForCoverArtAsync('cover-1')).toEqual([
+      { coverArtId: 'cover-1', size: 300, ext: 'webp', bytes: 9999, cachedAt: 9999 },
+    ]);
+  });
+
+  it('treats a different size as a different row, not a conflict', async () => {
+    await upsertCachedImage(seedRow({ size: 300 }));
+    await upsertCachedImage(seedRow({ size: 600 }));
+    expect(await countCachedImages()).toBe(2);
   });
 
   it('drops writes when coverArtId or size is missing', async () => {
     await upsertCachedImage(seedRow({ coverArtId: '' }));
     await upsertCachedImage(seedRow({ size: 0 }));
     expect(await countCachedImages()).toBe(0);
+  });
+});
+
+describe('imageCacheTable — getCachedImagesForCoverArtAsync', () => {
+  it('returns that cover only, size-ascending', async () => {
+    await upsertCachedImage(seedRow({ coverArtId: 'a', size: 600 }));
+    await upsertCachedImage(seedRow({ coverArtId: 'a', size: 50 }));
+    await upsertCachedImage(seedRow({ coverArtId: 'a', size: 150 }));
+    await upsertCachedImage(seedRow({ coverArtId: 'b', size: 300 }));
+    expect((await getCachedImagesForCoverArtAsync('a')).map((r) => r.size)).toEqual([50, 150, 600]);
+  });
+
+  it('returns [] for a cover with no rows', async () => {
+    expect(await getCachedImagesForCoverArtAsync('nobody')).toEqual([]);
   });
 });
 
@@ -247,6 +138,17 @@ describe('imageCacheTable — hydrateImageCacheAggregatesAsync', () => {
       incompleteCount: 1, // 'b' has only size 600
     });
   });
+
+  it('does not count a cover that is still in the download queue as incomplete', async () => {
+    await upsertCachedImage(seedRow({ coverArtId: 'mid-refresh', size: 600, bytes: 10 }));
+    queueCover('mid-refresh');
+    expect(await hydrateImageCacheAggregatesAsync()).toEqual({
+      totalBytes: 10,
+      fileCount: 1,
+      imageCount: 1,
+      incompleteCount: 0,
+    });
+  });
 });
 
 describe('imageCacheTable — findIncompleteCovers', () => {
@@ -261,6 +163,30 @@ describe('imageCacheTable — findIncompleteCovers', () => {
 
   it('lists only covers with < 4 variants, sorted', async () => {
     expect(await findIncompleteCovers()).toEqual(['partial', 'source-only']);
+  });
+
+  it('excludes a cover the refresh worker already holds in the queue', async () => {
+    queueCover('partial');
+    expect(await findIncompleteCovers()).toEqual(['source-only']);
+  });
+});
+
+describe('imageCacheTable — getAllCachedCoverArtIds', () => {
+  it('returns each cover once, whatever its variant count', async () => {
+    await upsertCachedImage(seedRow({ coverArtId: 'b', size: 50 }));
+    await upsertCachedImage(seedRow({ coverArtId: 'b', size: 600 }));
+    await upsertCachedImage(seedRow({ coverArtId: 'a', size: 300 }));
+    expect(await getAllCachedCoverArtIds()).toEqual(['a', 'b']);
+  });
+
+  it('returns [] on an empty cache', async () => {
+    expect(await getAllCachedCoverArtIds()).toEqual([]);
+  });
+
+  it('ignores the download queue — every cached cover is re-downloadable', async () => {
+    await upsertCachedImage(seedRow({ coverArtId: 'a', size: 300 }));
+    queueCover('a');
+    expect(await getAllCachedCoverArtIds()).toEqual(['a']);
   });
 });
 
@@ -278,6 +204,11 @@ describe('imageCacheTable — deleteCachedImagesForCoverArt', () => {
 
   it('returns zero freed when coverArtId has no rows', async () => {
     expect(await deleteCachedImagesForCoverArt('unknown')).toEqual({ bytes: 0, count: 0 });
+  });
+
+  it('refuses an empty coverArtId rather than matching a row', async () => {
+    await upsertCachedImage(seedRow({ coverArtId: '', size: 300 }));
+    expect(await deleteCachedImagesForCoverArt('')).toEqual({ bytes: 0, count: 0 });
   });
 });
 
@@ -321,12 +252,28 @@ describe('imageCacheTable — listCachedImagesForBrowser', () => {
     expect(partial.complete).toBe(false);
   });
 
+  it('groups on the engine ordering, which is byte-wise — uppercase ids sort first', async () => {
+    await upsertCachedImage(seedRow({ coverArtId: 'Zed', size: 300 }));
+    await upsertCachedImage(seedRow({ coverArtId: 'Zed', size: 600 }));
+    await upsertCachedImage(seedRow({ coverArtId: 'apple', size: 300 }));
+    const entries = await listCachedImagesForBrowser('all');
+    expect(entries.map((e) => e.coverArtId)).toEqual(['Zed', 'apple', 'complete', 'partial']);
+    // Grouping is a single pass over the ordered rows, so each id appears once.
+    expect(entries.find((e) => e.coverArtId === 'Zed')!.files).toHaveLength(2);
+  });
+
   it('filter=complete excludes partials', async () => {
     const entries = await listCachedImagesForBrowser('complete');
     expect(entries.map((e) => e.coverArtId)).toEqual(['complete']);
   });
 
   it('filter=incomplete returns only partials', async () => {
+    const entries = await listCachedImagesForBrowser('incomplete');
+    expect(entries.map((e) => e.coverArtId)).toEqual(['partial']);
+  });
+
+  it('lists an in-queue cover — unlike the incomplete counts, the browser hides nothing', async () => {
+    queueCover('partial');
     const entries = await listCachedImagesForBrowser('incomplete');
     expect(entries.map((e) => e.coverArtId)).toEqual(['partial']);
   });
@@ -345,10 +292,15 @@ describe('imageCacheTable — listCachedImagesForBrowser', () => {
     expect(incomplete).not.toContain('__starred_cover__');
     expect(incomplete).not.toContain('__various_artists_cover__');
   });
+
+  it('returns [] on an empty table', async () => {
+    await clearAllCachedImages();
+    expect(await listCachedImagesForBrowser('all')).toEqual([]);
+  });
 });
 
 describe('imageCacheTable — bulkInsertCachedImages', () => {
-  it('inserts every valid row inside one transaction', async () => {
+  it('inserts every valid row', async () => {
     await bulkInsertCachedImages([
       seedRow({ coverArtId: 'a', size: 50 }),
       seedRow({ coverArtId: 'a', size: 150 }),
@@ -357,14 +309,34 @@ describe('imageCacheTable — bulkInsertCachedImages', () => {
     expect(await countCachedImages()).toBe(3);
   });
 
+  it('skips rows missing coverArtId or size and writes the rest', async () => {
+    await bulkInsertCachedImages([
+      seedRow({ coverArtId: '', size: 50 }),
+      seedRow({ coverArtId: 'a', size: 0 }),
+      seedRow({ coverArtId: 'a', size: 300 }),
+    ]);
+    expect(await countCachedImages()).toBe(1);
+    expect(await hasCachedImage('a', 300)).toBe(true);
+  });
+
   it('is idempotent on re-run (UPSERT)', async () => {
     const rows = [
       seedRow({ coverArtId: 'a', size: 50, bytes: 100 }),
       seedRow({ coverArtId: 'a', size: 150, bytes: 200 }),
     ];
     await bulkInsertCachedImages(rows);
-    await bulkInsertCachedImages(rows);
+    await bulkInsertCachedImages(rows.map((r) => ({ ...r, bytes: r.bytes * 2 })));
     expect(await countCachedImages()).toBe(2);
+    expect((await getCachedImagesForCoverArtAsync('a')).map((r) => r.bytes)).toEqual([200, 400]);
+  });
+
+  it('collapses a duplicate key WITHIN one batch — last write wins', async () => {
+    await bulkInsertCachedImages([
+      seedRow({ coverArtId: 'a', size: 300, bytes: 1 }),
+      seedRow({ coverArtId: 'a', size: 300, bytes: 2 }),
+    ]);
+    expect(await countCachedImages()).toBe(1);
+    expect((await getCachedImagesForCoverArtAsync('a'))[0].bytes).toBe(2);
   });
 
   it('no-op on empty input', async () => {
@@ -373,27 +345,63 @@ describe('imageCacheTable — bulkInsertCachedImages', () => {
   });
 });
 
-describe('imageCacheTable — null-handle safety', () => {
-  beforeEach(() => {
-    __setDbForTests(null);
-  });
+/* ------------------------------------------------------------------ */
+/*  Degraded modes                                                     */
+/* ------------------------------------------------------------------ */
 
-  it('every read returns its empty default, every write is a no-op', async () => {
-    expect(await hydrateImageCacheAggregatesAsync()).toEqual({
-      totalBytes: 0,
-      fileCount: 0,
-      imageCount: 0,
-      incompleteCount: 0,
+/**
+ * Reads return their safe default and writes resolve; nothing throws out of the
+ * module. Run twice — once with no handle, once with a handle whose every method
+ * throws or rejects.
+ */
+function describeDegraded(label: string, install: () => void): void {
+  describe(label, () => {
+    beforeEach(install);
+
+    it('every read returns its empty default', async () => {
+      expect(await hydrateImageCacheAggregatesAsync()).toEqual({
+        totalBytes: 0,
+        fileCount: 0,
+        imageCount: 0,
+        incompleteCount: 0,
+      });
+      expect(await countCachedImages()).toBe(0);
+      expect(await hasCachedImage('x', 300)).toBe(false);
+      expect(await getCachedImagesForCoverArtAsync('x')).toEqual([]);
+      expect(await getAllCachedCoverArtIds()).toEqual([]);
+      expect(await findIncompleteCovers()).toEqual([]);
+      expect(await listCachedImagesForBrowser('all')).toEqual([]);
+      expect(await deleteCachedImagesForCoverArt('x')).toEqual({ bytes: 0, count: 0 });
     });
-    expect(await countCachedImages()).toBe(0);
-    expect(await hasCachedImage('x', 300)).toBe(false);
-    expect(await getCachedImagesForCoverArtAsync('x')).toEqual([]);
-    expect(await findIncompleteCovers()).toEqual([]);
-    expect(await listCachedImagesForBrowser('all')).toEqual([]);
-    await expect(upsertCachedImage(seedRow())).resolves.toBeUndefined();
-    expect(await deleteCachedImagesForCoverArt('x')).toEqual({ bytes: 0, count: 0 });
-    await expect(deleteCachedImageVariant('x', 300)).resolves.toBeUndefined();
-    await expect(clearAllCachedImages()).resolves.toBeUndefined();
-    await expect(bulkInsertCachedImages([seedRow()])).resolves.toBeUndefined();
+
+    it('every write resolves without throwing', async () => {
+      await expect(upsertCachedImage(seedRow())).resolves.toBeUndefined();
+      await expect(deleteCachedImageVariant('x', 300)).resolves.toBeUndefined();
+      await expect(clearAllCachedImages()).resolves.toBeUndefined();
+      await expect(bulkInsertCachedImages([seedRow()])).resolves.toBeUndefined();
+    });
   });
+}
+
+describeDegraded('no db handle', () => {
+  __setDbForTests(null);
+});
+
+describeDegraded('db throws on every call', () => {
+  const boom = (): never => {
+    throw new Error('boom');
+  };
+  const rejects = (): Promise<never> => Promise.reject(new Error('boom'));
+  __setDbForTests({
+    getFirstSync: boom,
+    getAllSync: boom,
+    runSync: boom,
+    execSync: boom,
+    withTransactionSync: boom,
+    getFirstAsync: rejects,
+    getAllAsync: rejects,
+    runAsync: rejects,
+    runBatchAsync: rejects,
+    runAtomicBatchAsync: rejects,
+  } as unknown as InternalDb);
 });
