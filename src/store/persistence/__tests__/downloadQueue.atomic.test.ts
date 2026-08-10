@@ -46,7 +46,6 @@ const makeQueueRow = (overrides: Partial<DownloadQueueRow> = {}): DownloadQueueR
   completedSongs: 0,
   addedAt: 1_700_000_000_000,
   queuePosition: 1,
-  songsJson: '[]',
   ...overrides,
 });
 
@@ -111,8 +110,8 @@ describe('insertDownloadQueueItem (real SQL)', () => {
   it('assigns MAX + 1 and returns it, ignoring any slot on the input row', async () => {
     // Both drafts claim slot 1 — exactly what two enqueues off the same stale
     // in-memory snapshot would carry. SQL hands out 1 and 2.
-    const first = await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-a', queuePosition: 1 }));
-    const second = await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-b', queuePosition: 1 }));
+    const first = await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-a', queuePosition: 1 }), []);
+    const second = await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-b', queuePosition: 1 }), []);
     expect([first, second]).toEqual([1, 2]);
     expect(slotsOf()).toEqual([
       { queue_id: 'q-a', queue_position: 1 },
@@ -124,24 +123,24 @@ describe('insertDownloadQueueItem (real SQL)', () => {
     // The hydration race: the store's mirror is empty and would have guessed 1,
     // but the DB already holds a persisted queue.
     seedFour('ascending');
-    const assigned = await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-new', queuePosition: 1 }));
+    const assigned = await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-new', queuePosition: 1 }), []);
     expect(assigned).toBe(5);
     expect(positionsOf()).toEqual([1, 2, 3, 4, 5]);
   });
 
   it('two un-awaited appends serialize into distinct slots', async () => {
     const [a, b] = await Promise.all([
-      insertDownloadQueueItem(makeQueueRow({ queueId: 'q-a' })),
-      insertDownloadQueueItem(makeQueueRow({ queueId: 'q-b' })),
+      insertDownloadQueueItem(makeQueueRow({ queueId: 'q-a' }), []),
+      insertDownloadQueueItem(makeQueueRow({ queueId: 'q-b' }), []),
     ]);
     expect([a, b].sort()).toEqual([1, 2]);
     expect(positionsOf()).toEqual([1, 2]);
   });
 
   it('re-writing an existing queue_id keeps its slot', async () => {
-    await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-a' }));
-    await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-b' }));
-    const assigned = await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-a', totalSongs: 99 }));
+    await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-a' }), []);
+    await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-b' }), []);
+    const assigned = await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-a', totalSongs: 99 }), []);
     expect(assigned).toBe(1);
     expect(positionsOf()).toEqual([1, 2]);
     expect(
@@ -199,7 +198,7 @@ describe.each(['ascending', 'descending'] as const)(
       seedFour(order);
       await removeDownloadQueueItem('q-2');
       // `MAX + 1`, not "the first free slot" — 2 stays empty forever.
-      const assigned = await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-new' }));
+      const assigned = await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-new' }), []);
       expect(assigned).toBe(5);
       expect(positionsOf()).toEqual([1, 3, 4, 5]);
     });

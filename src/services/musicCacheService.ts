@@ -52,6 +52,10 @@ import {
   insertCachedItemSong,
   playlistMetaFromPlaylist,
   promotedSongFieldsFromChild,
+  readDownloadQueueAlbumIdsAsync,
+  readDownloadQueueSongRefsAsync,
+  readDownloadQueueSongsAsync,
+  readQueuedSongStatus,
 } from '../store/persistence/musicCacheTables';
 import { logImageCache } from './imageCacheLogger';
 import { processingOverlayStore } from '../store/processingOverlayStore';
@@ -644,18 +648,10 @@ function sweepStaleTopLevelDirs(
  * clean up partial transfers without touching fully-downloaded files.
  */
 async function cleanupTmpFilesForQueueItem(item: DownloadQueueItem): Promise<void> {
-  let songs: Child[] = [];
-  try {
-    songs = JSON.parse(item.songsJson) as Child[];
-  } catch {
-    return;
-  }
-
-  // Deduplicate the album directories we need to sweep.
-  const albumIds = new Set<string>();
-  for (const s of songs) {
-    albumIds.add(s.albumId || UNKNOWN_ALBUM_ID);
-  }
+  // Only the directories, straight out of SQL — a `.tmp` sweep never needed the songs.
+  const albumIds = new Set(
+    (await readDownloadQueueAlbumIdsAsync(item.queueId)).map((id) => id || UNKNOWN_ALBUM_ID),
+  );
 
   for (const albumId of albumIds) {
     const albumDir = new Directory(ensureCacheDir(), albumId);
@@ -744,22 +740,20 @@ export function isItemCached(itemId: string): boolean {
   return itemId in musicCacheStore.getState().cachedItems;
 }
 
-/** Check if a track is in any queued / downloading queue item. */
+/**
+ * Check if a track is in any queued / downloading queue item.
+ *
+ * One indexed point lookup. It reads SYNCHRONOUSLY because `useDownloadStatus` calls
+ * it from inside a zustand selector, which cannot await — and the alternative, holding
+ * every queued song id in memory, is the exact cost this table exists to remove
+ * (`fullLibraryDownloadService` queues one row per album in the library).
+ *
+ * A queue row whose songs Migration 39 has not converted yet answers `null`: the badge
+ * is missing until the chain runs, which it does on the splash before any song row
+ * renders. A missing badge, never a wrong download.
+ */
 export function getTrackQueueStatus(trackId: string): 'queued' | 'downloading' | null {
-  const queue = musicCacheStore.getState().downloadQueue;
-  for (const item of queue) {
-    if (item.status !== 'queued' && item.status !== 'downloading') continue;
-    let songs: Child[];
-    try {
-      songs = JSON.parse(item.songsJson) as Child[];
-    } catch {
-      continue;
-    }
-    if (songs.some((t) => t.id === trackId)) {
-      return item.status;
-    }
-  }
-  return null;
+  return readQueuedSongStatus(trackId);
 }
 
 /* ------------------------------------------------------------------ */
@@ -852,8 +846,8 @@ export async function enqueueAlbumDownload(
     }
 
     // Refresh `expectedSongCount` on the existing row with the fresh server
-    // total BEFORE enqueueing. The top-up queue row's `songsJson` only
-    // contains the missing delta, so the worker's derived count would be
+    // total BEFORE enqueueing. The top-up queue row's payload is only the
+    // missing delta, so the worker's derived count would be
     // wrong — `markItemComplete` preserves this existing value on merge.
     // Written unconditionally: the fresh metadata and the derived→real upgrade
     // both belong on the row, and this runs once per explicit album top-up.
@@ -872,15 +866,17 @@ export async function enqueueAlbumDownload(
     await ensureCoverBeforeBinary(topUpCover, awaitCover);
     cacheTrackCoverArt(missingSongs);
 
-    musicCacheStore.getState().enqueueTopUp({
-      itemId: albumId,
-      type: 'album',
-      name: album.name,
-      artist: album.artist ?? album.displayArtist,
-      coverArtId: topUpCover,
-      totalSongs: missingSongs.length,
-      songsJson: JSON.stringify(missingSongs),
-    });
+    musicCacheStore.getState().enqueueTopUp(
+      {
+        itemId: albumId,
+        type: 'album',
+        name: album.name,
+        artist: album.artist ?? album.displayArtist,
+        coverArtId: topUpCover,
+        totalSongs: missingSongs.length,
+      },
+      missingSongs,
+    );
 
     processQueue();
     return;
@@ -890,15 +886,17 @@ export async function enqueueAlbumDownload(
   await ensureCoverBeforeBinary(albumCover, awaitCover);
   cacheTrackCoverArt(album.song);
 
-  musicCacheStore.getState().enqueue({
-    itemId: albumId,
-    type: 'album',
-    name: album.name,
-    artist: album.artist ?? album.displayArtist,
-    coverArtId: albumCover,
-    totalSongs: album.song.length,
-    songsJson: JSON.stringify(album.song),
-  });
+  musicCacheStore.getState().enqueue(
+    {
+      itemId: albumId,
+      type: 'album',
+      name: album.name,
+      artist: album.artist ?? album.displayArtist,
+      coverArtId: albumCover,
+      totalSongs: album.song.length,
+    },
+    album.song,
+  );
 
   processQueue();
 }
@@ -925,14 +923,16 @@ export async function enqueuePlaylistDownload(
   await ensureCoverBeforeBinary(playlistCover, awaitCover);
   cacheTrackCoverArt(playlist.entry);
 
-  musicCacheStore.getState().enqueue({
-    itemId: playlistId,
-    type: 'playlist',
-    name: playlist.name,
-    coverArtId: playlistCover,
-    totalSongs: playlist.entry.length,
-    songsJson: JSON.stringify(playlist.entry),
-  });
+  musicCacheStore.getState().enqueue(
+    {
+      itemId: playlistId,
+      type: 'playlist',
+      name: playlist.name,
+      coverArtId: playlistCover,
+      totalSongs: playlist.entry.length,
+    },
+    playlist.entry,
+  );
 
   processQueue();
 }
@@ -1009,15 +1009,17 @@ export async function enqueueSongDownload(song: Child): Promise<void> {
   // Re-check after the awaits (see enqueueAlbumDownload) — avoid a duplicate row.
   if (musicCacheStore.getState().downloadQueue.some((q) => q.itemId === itemId)) return;
 
-  musicCacheStore.getState().enqueue({
-    itemId,
-    type: 'song',
-    name: song.title ?? 'Unknown',
-    artist: song.artist,
-    coverArtId: songCover,
-    totalSongs: 1,
-    songsJson: JSON.stringify([song]),
-  });
+  musicCacheStore.getState().enqueue(
+    {
+      itemId,
+      type: 'song',
+      name: song.title ?? 'Unknown',
+      artist: song.artist,
+      coverArtId: songCover,
+      totalSongs: 1,
+    },
+    [song],
+  );
 
   processQueue();
 }
@@ -1221,13 +1223,15 @@ async function ensurePartialAlbumEdge(
 async function downloadItem(queueItem: DownloadQueueItem, myId: number): Promise<void> {
   const { maxConcurrentDownloads } = musicCacheStore.getState();
 
-  let songs: Child[];
-  try {
-    songs = JSON.parse(queueItem.songsJson) as Child[];
-  } catch {
+  const songs = await readDownloadQueueSongsAsync(queueItem.queueId);
+  // An item with nothing to download is NOT a completed one. Without this the
+  // all-covered test below reads `0 === 0` and finalises the item, silently
+  // discarding a queued download — the failure the row-backed payload is gated
+  // against, reachable here through any read that comes back empty.
+  if (songs.length === 0) {
     musicCacheStore.getState().updateQueueItem(queueItem.queueId, {
       status: 'error',
-      error: 'Failed to parse songs',
+      error: 'Failed to read songs',
     });
     return;
   }
@@ -1981,15 +1985,17 @@ export function syncCachedItemTracks(
     return { cachedItems: rest };
   });
 
-  musicCacheStore.getState().enqueue({
-    itemId,
-    type: updated.type,
-    name: updated.name,
-    artist: updated.artist,
-    coverArtId: updated.coverArtId,
-    totalSongs: newSongs.length,
-    songsJson: JSON.stringify(newSongs),
-  });
+  musicCacheStore.getState().enqueue(
+    {
+      itemId,
+      type: updated.type,
+      name: updated.name,
+      artist: updated.artist,
+      coverArtId: updated.coverArtId,
+      totalSongs: newSongs.length,
+    },
+    newSongs,
+  );
 
   processQueue();
 }
@@ -2005,21 +2011,18 @@ export function syncCachedItemTracks(
  * wiped the item dir entirely) — it avoids throwing away work the user's
  * bandwidth paid for, and the partial-album row keeps it reachable.
  */
-export function cancelDownload(queueId: string): void {
+export async function cancelDownload(queueId: string): Promise<void> {
   const item = musicCacheStore.getState().downloadQueue.find(
     (q) => q.queueId === queueId,
   );
   if (!item) return;
 
+  // Read the ids BEFORE dropping the row: `download_queue_songs` FK-cascades off it,
+  // so the delete takes the payload with it. Two columns, not a rebuilt `Child`.
+  const songs = await readDownloadQueueSongRefsAsync(queueId);
+
   musicCacheStore.getState().removeFromQueue(queueId);
 
-  // Delete any .tmp remnants for songs in this queue item (best-effort).
-  let songs: Child[] = [];
-  try {
-    songs = JSON.parse(item.songsJson) as Child[];
-  } catch {
-    songs = [];
-  }
   // Group cancelled song ids by album, then sweep each album's .tmp remnants
   // off the JS thread: one directory listing per album + async deletes, rather
   // than a sync exists/delete per song×extension (which was O(songs²) on the
@@ -2070,10 +2073,13 @@ export function cancelDownload(queueId: string): void {
  * Cancel all queued and in-progress downloads, removing partial files.
  * Completed (cached) items are not affected.
  */
-export function clearDownloadQueue(): void {
+export async function clearDownloadQueue(): Promise<void> {
   const queue = [...musicCacheStore.getState().downloadQueue];
   for (const item of queue) {
-    cancelDownload(item.queueId);
+    // Serial: each cancel reads its payload before dropping the row, and the resume
+    // below must not restart an item that is still being cancelled.
+    // eslint-disable-next-line no-await-in-loop
+    await cancelDownload(item.queueId);
   }
   resumeIfSpaceAvailable();
 }
@@ -2087,11 +2093,12 @@ export function clearDownloadQueue(): void {
  * no/partial songs on disk); letting the active item finish means it commits a
  * clean complete row, and the untouched queued items never created rows at all.
  */
-export function clearQueuedDownloads(): void {
+export async function clearQueuedDownloads(): Promise<void> {
   const queue = [...musicCacheStore.getState().downloadQueue];
   for (const item of queue) {
     if (item.status === 'downloading') continue;
-    cancelDownload(item.queueId);
+    // eslint-disable-next-line no-await-in-loop
+    await cancelDownload(item.queueId);
   }
 }
 
@@ -2221,14 +2228,16 @@ export async function enqueueStarredSongsDownload(): Promise<void> {
     );
   }
 
-  musicCacheStore.getState().enqueue({
-    itemId: STARRED_SONGS_ITEM_ID,
-    type: 'favorites',
-    name: 'Favorite Songs',
-    coverArtId: STARRED_COVER_ART_ID,
-    totalSongs: songs.length,
-    songsJson: JSON.stringify(songs),
-  });
+  musicCacheStore.getState().enqueue(
+    {
+      itemId: STARRED_SONGS_ITEM_ID,
+      type: 'favorites',
+      name: 'Favorite Songs',
+      coverArtId: STARRED_COVER_ART_ID,
+      totalSongs: songs.length,
+    },
+    songs,
+  );
 
   processQueue();
 }

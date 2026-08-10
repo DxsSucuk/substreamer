@@ -17,7 +17,7 @@
  */
 import type { ArtistID3, Child, Contributor, MediaType, ReplayGain } from 'subsonic-api';
 
-import type { BatchCommand } from '@/db/client';
+import type { BatchCommand, InternalDb } from '@/db/client';
 
 /** The `Child` scalars a snapshot table stores, keyed camelCase. `created`/`starred`
  *  are epoch ms: SQLite has no date type and `Child` declares them `Date`. */
@@ -251,6 +251,262 @@ export function childSnapshotArrayCommands(spec: {
       ]);
     });
   return statements;
+}
+
+/* ------------------------------------------------------------------ */
+/*  The full-snapshot tables: columns, INSERT, SELECT                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * `ChildSnapshotRow` key → its column, for the tables that store the WHOLE `Child`
+ * (`queue_snapshot_songs`, `download_queue_songs`). Typed as a TOTAL record, so a
+ * field added to the mapping fails to compile until every such table stores it.
+ *
+ * `cached_songs` is not one of them — it renames five of these (see the file
+ * docblock) and drives its own projection from `PROMOTED_SONG_COLUMNS`.
+ */
+export const CHILD_SNAPSHOT_COLUMNS = {
+  id: 'song_id',
+  title: 'title',
+  artist: 'artist',
+  album: 'album',
+  coverArt: 'cover_art',
+  duration: 'duration',
+  albumId: 'album_id',
+  suffix: 'suffix',
+  bitRate: 'bit_rate',
+  bitDepth: 'bit_depth',
+  samplingRate: 'sampling_rate',
+  artistId: 'artist_id',
+  displayArtist: 'display_artist',
+  displayAlbumArtist: 'display_album_artist',
+  displayComposer: 'display_composer',
+  track: 'track',
+  discNumber: 'disc_number',
+  year: 'year',
+  genre: 'genre',
+  size: 'size',
+  contentType: 'content_type',
+  transcodedContentType: 'transcoded_content_type',
+  transcodedSuffix: 'transcoded_suffix',
+  channelCount: 'channel_count',
+  path: 'path',
+  userRating: 'user_rating',
+  averageRating: 'average_rating',
+  playCount: 'play_count',
+  created: 'created',
+  starred: 'starred',
+  played: 'played',
+  type: 'type',
+  bpm: 'bpm',
+  comment: 'comment',
+  sortName: 'sort_name',
+  musicBrainzId: 'music_brainz_id',
+  explicitStatus: 'explicit_status',
+  bookmarkPosition: 'bookmark_position',
+  isVideo: 'is_video',
+  isDir: 'is_dir',
+  parent: 'parent',
+  originalWidth: 'original_width',
+  originalHeight: 'original_height',
+  rgTrackGain: 'rg_track_gain',
+  rgAlbumGain: 'rg_album_gain',
+  rgTrackPeak: 'rg_track_peak',
+  rgAlbumPeak: 'rg_album_peak',
+  rgBaseGain: 'rg_base_gain',
+  rgFallbackGain: 'rg_fallback_gain',
+} as const satisfies Record<keyof ChildSnapshotRow, string>;
+
+type SnapshotKey = keyof typeof CHILD_SNAPSHOT_COLUMNS;
+
+const SNAPSHOT_KEYS = Object.keys(CHILD_SNAPSHOT_COLUMNS) as SnapshotKey[];
+
+/** Stored 0/1 by SQLite; `Child` declares them boolean. */
+const BOOL_KEYS: ReadonlySet<SnapshotKey> = new Set<SnapshotKey>(['isVideo', 'isDir']);
+
+/** Aliased to the `ChildSnapshotRow` keys, so a selected row IS the shape
+ *  {@link childSnapshotRowFromRaw} takes and there is no second name mapping to drift. */
+export const CHILD_SNAPSHOT_SELECT = SNAPSHOT_KEYS.map((k) =>
+  CHILD_SNAPSHOT_COLUMNS[k] === k ? k : `${CHILD_SNAPSHOT_COLUMNS[k]} AS ${k}`,
+).join(', ');
+
+/** The shared `Child` mapping plus the identity/core fields it deliberately omits. */
+export function childSnapshotRow(child: Child): ChildSnapshotRow {
+  return {
+    id: child.id,
+    title: child.title,
+    artist: child.artist,
+    album: child.album,
+    coverArt: child.coverArt,
+    duration: child.duration,
+    ...childSnapshotFields(child),
+  };
+}
+
+/**
+ * The INSERT for one full-snapshot song row. `key` names the owning columns → values
+ * in column order (`{snapshot_id, pos}`, `{queue_id, pos}`); the `Child` columns follow.
+ */
+export function childSnapshotInsertCommand(spec: {
+  table: string;
+  key: Readonly<Record<string, string | number>>;
+  child: Child;
+}): BatchCommand {
+  const keyCols = Object.keys(spec.key);
+  const row: Record<string, unknown> = { ...childSnapshotRow(spec.child) };
+  const columns = [...keyCols, ...SNAPSHOT_KEYS.map((k) => CHILD_SNAPSHOT_COLUMNS[k])];
+  return [
+    `INSERT INTO ${spec.table} (${columns.join(', ')}) ` +
+      `VALUES (${new Array(columns.length).fill('?').join(', ')});`,
+    [
+      ...Object.values(spec.key),
+      ...SNAPSHOT_KEYS.map((k) => {
+        const v = row[k];
+        if (v === undefined || v === null) return null;
+        if (BOOL_KEYS.has(k)) return v ? 1 : 0;
+        return v as string | number;
+      }),
+    ],
+  ];
+}
+
+/** Inverse of {@link childSnapshotInsertCommand}: a row selected through
+ *  {@link CHILD_SNAPSHOT_SELECT} back into the shape `childFromSnapshotRow` consumes,
+ *  NULL columns left absent. */
+export function childSnapshotRowFromRaw(raw: Record<string, unknown>): ChildSnapshotRow {
+  const out: Record<string, unknown> = {};
+  for (const k of SNAPSHOT_KEYS) {
+    const v = raw[k];
+    if (v === undefined || v === null) continue;
+    out[k] = BOOL_KEYS.has(k) ? v === 1 || v === true : v;
+  }
+  return { ...out, id: String(raw.id ?? ''), title: String(raw.title ?? '') } as ChildSnapshotRow;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Reading the five array tables back                                  */
+/* ------------------------------------------------------------------ */
+
+const ARRAY_TABLES = [
+  { field: 'genres', suffix: 'genres', cols: 'name' },
+  { field: 'artists', suffix: 'artists', cols: 'artist_id, artist_name' },
+  { field: 'albumArtists', suffix: 'album_artists', cols: 'artist_id, artist_name' },
+  {
+    field: 'contributors',
+    suffix: 'contributors',
+    cols: 'role, sub_role, artist_id, artist_name',
+  },
+  { field: 'moods', suffix: 'moods', cols: 'mood' },
+] as const;
+
+/**
+ * Which array rows to read and how to identify the song each belongs to.
+ * `keyColumns` are the columns naming that song — the owner key plus its position
+ * (`snapshot_id, song_pos` / `queue_id, song_pos`).
+ */
+export interface ChildSnapshotArrayScope {
+  tablePrefix: string;
+  keyColumns: readonly string[];
+  /** Restricts the owners, e.g. `queue_id = ?`. */
+  where: string;
+  params?: ReadonlyArray<string | number | null>;
+}
+
+/** The grouped arrays' key for one song: its {@link ChildSnapshotArrayScope.keyColumns}
+ *  values, NUL-joined. Callers build the same key from what they hold. */
+export const childSnapshotArrayKey = (values: ReadonlyArray<string | number>): string =>
+  values.map(String).join('\u0000');
+
+const arraySql = (scope: ChildSnapshotArrayScope, suffix: string, cols: string): string => {
+  const keys = scope.keyColumns.join(', ');
+  return (
+    `SELECT ${keys}, ${cols} FROM ${scope.tablePrefix}_${suffix} ` +
+    `WHERE ${scope.where} ORDER BY ${keys}, pos;`
+  );
+};
+
+/** Mutable twin of `ChildSnapshotArrays`, built by pushing the grouped rows. */
+interface MutableArrays {
+  genres?: string[];
+  artists?: { artistId: string | null; artistName: string | null }[];
+  albumArtists?: { artistId: string | null; artistName: string | null }[];
+  contributors?: {
+    role: string;
+    subRole: string | null;
+    artistId: string | null;
+    artistName: string | null;
+  }[];
+  moods?: string[];
+}
+
+type RawArrayRow = Record<string, unknown>;
+
+/** One SELECT per array table (never one per song — that would be 5×N round trips),
+ *  bucketed by the song each row belongs to. */
+function groupArrayRows(
+  scope: ChildSnapshotArrayScope,
+  results: readonly RawArrayRow[][],
+): Map<string, ChildSnapshotArrays> {
+  const out = new Map<string, MutableArrays>();
+  const bucket = (r: RawArrayRow): MutableArrays => {
+    const key = childSnapshotArrayKey(
+      scope.keyColumns.map((c) => r[c] as string | number),
+    );
+    let fields = out.get(key);
+    if (fields === undefined) {
+      fields = {};
+      out.set(key, fields);
+    }
+    return fields;
+  };
+  const credit = (r: RawArrayRow): { artistId: string | null; artistName: string | null } => ({
+    artistId: (r.artist_id ?? null) as string | null,
+    artistName: (r.artist_name ?? null) as string | null,
+  });
+  ARRAY_TABLES.forEach((table, i) => {
+    for (const r of results[i] ?? []) {
+      const fields = bucket(r);
+      if (table.field === 'genres') (fields.genres ??= []).push(r.name as string);
+      else if (table.field === 'artists') (fields.artists ??= []).push(credit(r));
+      else if (table.field === 'albumArtists') (fields.albumArtists ??= []).push(credit(r));
+      else if (table.field === 'moods') (fields.moods ??= []).push(r.mood as string);
+      else {
+        (fields.contributors ??= []).push({
+          role: r.role as string,
+          subRole: (r.sub_role ?? null) as string | null,
+          ...credit(r),
+        });
+      }
+    }
+  });
+  return out;
+}
+
+/** The five array tables' rows for the scoped songs, grouped by
+ *  {@link childSnapshotArrayKey}. */
+export function readChildSnapshotArraysSync(
+  db: InternalDb,
+  scope: ChildSnapshotArrayScope,
+): Map<string, ChildSnapshotArrays> {
+  return groupArrayRows(
+    scope,
+    ARRAY_TABLES.map((t) =>
+      db.getAllSync<RawArrayRow>(arraySql(scope, t.suffix, t.cols), scope.params ?? []),
+    ),
+  );
+}
+
+/** Async twin of {@link readChildSnapshotArraysSync} — the five queries in parallel. */
+export async function readChildSnapshotArraysAsync(
+  db: InternalDb,
+  scope: ChildSnapshotArrayScope,
+): Promise<Map<string, ChildSnapshotArrays>> {
+  const results = await Promise.all(
+    ARRAY_TABLES.map((t) =>
+      db.getAllAsync<RawArrayRow>(arraySql(scope, t.suffix, t.cols), scope.params ?? []),
+    ),
+  );
+  return groupArrayRows(scope, results);
 }
 
 /** `albumCount` is required by `ArtistID3` but is mutable current state of the

@@ -39,6 +39,7 @@ import {
   type CachedItemRow,
   type CachedSongRow,
   type DownloadQueueRow,
+  type LegacyDownloadQueueRow,
 } from '../store/persistence/musicCacheTables';
 import { replaceAllPendingScrobbles } from '../store/persistence/pendingScrobbleTable';
 import { backfillScrobbleColumnsAsync, replaceAllScrobbles } from '../store/persistence/scrobbleTable';
@@ -46,6 +47,7 @@ import {
   bulkInsertCachedImages,
   countCachedImages as countCachedImagesRow,
 } from '../store/persistence/imageCacheTable';
+import { migrateDownloadQueueSongs } from '../store/persistence/downloadQueueSongsMigration';
 import { migrateGenresAndSharesFromKv } from '../store/persistence/genreShareMigration';
 import { migrateQueueSnapshotsFromKv } from '../store/persistence/queueSnapshotMigration';
 import { kvStorage } from '../store/persistence';
@@ -340,7 +342,7 @@ async function migrateMusicCacheFromBlob(
     });
   }
 
-  const queueRows: DownloadQueueRow[] = v1DownloadQueue
+  const queueRows: LegacyDownloadQueueRow[] = v1DownloadQueue
     .filter((q: any) => q?.queueId && q?.itemId)
     .map((q: any, idx: number) => {
       const v2Type = mapV2Type(q.itemId, q.type);
@@ -351,7 +353,7 @@ async function migrateMusicCacheFromBlob(
         rawStatus === 'downloading'
           ? 'queued'
           : (rawStatus as DownloadQueueRow['status']);
-      const row: DownloadQueueRow = {
+      const row: LegacyDownloadQueueRow = {
         queueId: q.queueId,
         itemId: q.itemId,
         type: v2Type,
@@ -2144,6 +2146,18 @@ const MIGRATION_TASKS: MigrationTask[] = [
     },
   },
 
+  {
+    id: 39,
+    name: 'Move queued downloads’ songs into their table',
+    run: async (log) => {
+      // The queue's `Child[]` now lives in `download_queue_songs`. `songs_json` is
+      // KEPT and never rewritten: every row is verified back before its stored songs
+      // are used, and one that does not verify keeps reading the blob — losing a
+      // queued download would throw away hours of transfer.
+      await migrateDownloadQueueSongs(log);
+    },
+  },
+
   // -------------------------------------------------------------------
   // TEMPLATE – How to add a new migration task:
   //
@@ -2180,12 +2194,12 @@ const MIGRATION_TASKS: MigrationTask[] = [
   // catch-up migration and THEN drops the tables — migrate-BEFORE-drop is mandatory so a
   // very-old upgrader still recovers their data before it's gone. Held back JUST IN CASE
   // until the final release is verified; uncomment to enable. It takes the NEXT free id
-  // — 39 — because a task numbered below the highest that has shipped never runs for
+  // — 40 — because a task numbered below the highest that has shipped never runs for
   // anyone who has already passed it (`getPendingTasks` returns `id > completedVersion`);
   // 35 and 37 were both skipped that way as 36 and 38 shipped.
   //
   // {
-  //   id: 39,
+  //   id: 40,
   //   name: 'Migrate any remaining blob data, then drop the legacy blob tables',
   //   run: async (log) => {
   //     const { getDb } = require('../store/persistence/db') as { getDb: () => any };

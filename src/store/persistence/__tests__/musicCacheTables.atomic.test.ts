@@ -75,7 +75,6 @@ const makeQueueRow = (overrides: Partial<DownloadQueueRow> = {}): DownloadQueueR
   completedSongs: 0,
   addedAt: 1_700_000_000_000,
   queuePosition: 1,
-  songsJson: '[]',
   ...overrides,
 });
 
@@ -183,7 +182,7 @@ afterEach(() => {
 
 describe('markDownloadComplete (real SQL)', () => {
   it('drops the queue row and writes item + songs + dense 1..N edges', async () => {
-    await insertDownloadQueueItem(makeQueueRow());
+    await insertDownloadQueueItem(makeQueueRow(), []);
     await markDownloadComplete(
       'q-1',
       makeItem(),
@@ -316,7 +315,7 @@ describe('markDownloadComplete (real SQL)', () => {
   });
 
   it('rolls the WHOLE batch back when a statement fails — the queue row survives', async () => {
-    await insertDownloadQueueItem(makeQueueRow());
+    await insertDownloadQueueItem(makeQueueRow(), []);
     // 's-missing' has no `cached_songs` row and is not in `songs`, so its edge
     // violates the FK on `cached_item_songs.song_id`.
     await markDownloadComplete(

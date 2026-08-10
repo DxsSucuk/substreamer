@@ -146,14 +146,19 @@ export interface MusicCacheState {
   hasHydrated: boolean;
 
   /* Queue actions */
-  enqueue: (draft: DownloadQueueDraft) => void;
+  /** `songs` is the payload to download. It goes to `download_queue_songs` and is
+   *  NOT kept in memory — the queue mirror holds the item, never its tracks. */
+  enqueue: (draft: DownloadQueueDraft, songs: readonly Child[]) => void;
   /**
    * Variant of `enqueue` that skips the "already in cachedItems" short-circuit.
    * Used by `enqueueAlbumDownload` for top-up flows where the album already
    * has a partial `cached_items` row and we want to download the missing
    * songs. Still dedupes against an existing queue entry for the same itemId.
+   *
+   * `songs` is the missing DELTA, not the whole album — which is why
+   * `enqueueAlbumDownload` writes the real total to `expectedSongCount` first.
    */
-  enqueueTopUp: (draft: DownloadQueueDraft) => void;
+  enqueueTopUp: (draft: DownloadQueueDraft, songs: readonly Child[]) => void;
   removeFromQueue: (queueId: string) => void;
   reorderQueue: (fromIndex: number, toIndex: number) => void;
   updateQueueItem: (
@@ -243,6 +248,7 @@ function appendToQueue(
   set: StoreApi<MusicCacheState>['setState'],
   get: StoreApi<MusicCacheState>['getState'],
   draft: DownloadQueueDraft,
+  songs: readonly Child[],
   skipWhenCached: boolean,
 ): void {
   const queueId = generateQueueId();
@@ -269,7 +275,7 @@ function appendToQueue(
   });
   const row = get().downloadQueue.find((q) => q.queueId === queueId);
   if (row === undefined) return; // deduped
-  void insertDownloadQueueItem(row).then((assigned) => {
+  void insertDownloadQueueItem(row, songs).then((assigned) => {
     if (assigned === null || assigned === row.queuePosition) return;
     set((state) => ({
       downloadQueue: state.downloadQueue.map((q) =>
@@ -392,11 +398,11 @@ export const musicCacheStore = create<MusicCacheState>()((set, get) => ({
   hasHydrated: false,
 
   // Dedupe: skip if the same itemId is already queued or already cached.
-  enqueue: (draft) => appendToQueue(set, get, draft, true),
+  enqueue: (draft, songs) => appendToQueue(set, get, draft, songs, true),
 
   // Top-ups only dedupe against an existing queue entry — a partial `cachedItems`
   // row is expected and must not block the enqueue.
-  enqueueTopUp: (draft) => appendToQueue(set, get, draft, false),
+  enqueueTopUp: (draft, songs) => appendToQueue(set, get, draft, songs, false),
 
   removeFromQueue: (queueId) => {
     removeDownloadQueueItem(queueId);

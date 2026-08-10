@@ -31,7 +31,6 @@ function makeQueue(overrides: Partial<DownloadQueueRow> = {}): DownloadQueueRow 
     completedSongs: 0,
     addedAt: 0,
     queuePosition: 1,
-    songsJson: '[]',
     ...overrides,
   };
 }

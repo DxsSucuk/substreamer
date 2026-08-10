@@ -13,6 +13,10 @@
  *     `cached_playlists`   — 1:1 per-type metadata for an item
  *   - `cached_item_songs`  — many-to-many edges (refcount-via-COUNT)
  *   - `download_queue`     — persisted download queue
+ *   - `download_queue_songs`
+ *     + `download_queue_song_*`
+ *                          — a queued item's `Child[]` payload, positional, with the
+ *                            same five multi-valued mirrors
  *
  * Error-swallowing: every read returns a safe default ({}, [], 0) and every
  * write is a silent no-op on failure. Consumers never need to handle
@@ -21,9 +25,16 @@
 import type { AlbumID3, Child, Playlist } from 'subsonic-api';
 
 import {
+  childFromSnapshotRow,
   childGenreNames,
   childSnapshotArrayCommands,
+  childSnapshotArrayKey,
   childSnapshotFields,
+  childSnapshotInsertCommand,
+  childSnapshotRowFromRaw,
+  readChildSnapshotArraysAsync,
+  CHILD_SNAPSHOT_SELECT,
+  type ChildSnapshotArrays,
 } from '@/db/childSnapshot';
 import { getSortArticles } from '@/db/sortArticles';
 import { albumSortKeys, playlistSortTitle, songSortKeys } from '@/db/sortKeys';
@@ -198,7 +209,15 @@ export interface DownloadQueueRow {
   error?: string;
   addedAt: number;
   queuePosition: number;
-  /** JSON-serialized Child[] still needed at download time. */
+}
+
+/**
+ * A queue row as Migration 14 replays it: the v1 blob is still the payload, because
+ * Migration 20 rewrites `songs_json` afterwards to repair the lean entries v1 wrote.
+ * Everything since goes through {@link insertDownloadQueueItem} and stores rows.
+ */
+export interface LegacyDownloadQueueRow extends DownloadQueueRow {
+  /** JSON-serialized `Child[]`. */
   songsJson: string;
 }
 
@@ -318,6 +337,15 @@ const CACHED_SONG_CHILD_TABLES = [
   'cached_song_album_artists',
   'cached_song_contributors',
   'cached_song_moods',
+] as const;
+
+/** The same five for a QUEUED song's `Child`, deepest-first for truncation. */
+const DOWNLOAD_QUEUE_SONG_CHILD_TABLES = [
+  'download_queue_song_genres',
+  'download_queue_song_artists',
+  'download_queue_song_album_artists',
+  'download_queue_song_contributors',
+  'download_queue_song_moods',
 ] as const;
 
 const columnNames = <T>(defs: ReadonlyArray<ColumnDef<T>>): string =>
@@ -499,7 +527,6 @@ interface RawQueueRow {
   error: string | null;
   added_at: number;
   queue_position: number;
-  songs_json: string;
 }
 
 function mapSongRow(row: RawSongRow): CachedSongRow {
@@ -572,7 +599,6 @@ function mapQueueRow(row: RawQueueRow): DownloadQueueRow {
     completedSongs: row.completed_songs,
     addedAt: row.added_at,
     queuePosition: row.queue_position,
-    songsJson: row.songs_json,
   };
   if (row.artist !== null) out.artist = row.artist;
   if (row.cover_art_id !== null) out.coverArtId = row.cover_art_id;
@@ -775,16 +801,22 @@ export async function hydrateCachedItemsAsync(): Promise<Record<string, CachedIt
   }
 }
 
-/** Read the full download queue ordered by queue_position ASC, on the background
- *  thread. Used at launch and whenever the queue needs a full refresh. */
+/**
+ * Read the full download queue ordered by queue_position ASC, on the background
+ * thread. Used at launch and whenever the queue needs a full refresh.
+ *
+ * The songs are deliberately NOT projected: `fullLibraryDownloadService` enqueues one
+ * row per album, so selecting the payload here put the whole catalogue's tracks in JS
+ * from boot. They are read per queue item, at download time
+ * ({@link readDownloadQueueSongsAsync}).
+ */
 export async function hydrateDownloadQueueAsync(): Promise<DownloadQueueRow[]> {
   const db = getDb();
   if (db === null) return [];
   try {
     const rows = await db.getAllAsync<RawQueueRow>(
       `SELECT queue_id, item_id, type, name, artist, cover_art_id, status,
-              total_songs, completed_songs, error, added_at, queue_position,
-              songs_json
+              total_songs, completed_songs, error, added_at, queue_position
          FROM download_queue
          ORDER BY queue_position ASC;`,
     );
@@ -1394,9 +1426,302 @@ export async function reorderCachedItemSongs(
 /*  download_queue writes                                              */
 /* ------------------------------------------------------------------ */
 
-/** Everything a re-write of an existing `queue_id` may change. `queue_position` is
- *  deliberately absent: the two writers below disagree about who owns the slot, so
- *  each appends its own clause. */
+/**
+ * The statements that make a queue item's songs exactly `songs`. The leading DELETE is
+ * what makes a re-write with FEWER tracks correct — `pos` is positional, so without it
+ * a shorter payload leaves stale tail rows — and it cascades each removed song's five
+ * array rows with it.
+ *
+ * Entries with no id are dropped: `song_id` is NOT NULL and one would abort the whole
+ * batch, and the worker cannot download a song it has no id for.
+ */
+function downloadQueueSongCommands(
+  queueId: string,
+  songs: readonly Child[],
+): BatchCommand[] {
+  const commands: BatchCommand[] = [
+    ['DELETE FROM download_queue_songs WHERE queue_id = ?;', [queueId]],
+  ];
+  songs
+    .filter((s) => !!s?.id)
+    .forEach((child, pos) => {
+      commands.push(
+        childSnapshotInsertCommand({
+          table: 'download_queue_songs',
+          key: { queue_id: queueId, pos },
+          child,
+        }),
+        ...childSnapshotArrayCommands({
+          tablePrefix: 'download_queue_song',
+          key: { queue_id: queueId, song_pos: pos },
+          child,
+        }),
+      );
+    });
+  return commands;
+}
+
+/**
+ * Where one queue row's payload actually lives.
+ *
+ * The rows are authoritative ONLY when the row has as many of them as `total_songs`
+ * says it should. That is the whole safety gate: a row this release has not converted
+ * has none, and reading it through the child table would return ZERO songs — which
+ * `downloadItem` would take as "nothing left to fetch" and mark complete, silently
+ * discarding a download the user is waiting on.
+ *
+ * Per ROW, not per install: a row enqueued after the upgrade and a row a halted
+ * migration chain left behind coexist, and only the row itself knows which it is.
+ * `total_songs` is written at insert and never mutated afterwards
+ * ({@link updateDownloadQueueItem} touches status/completed/error only), so it is the
+ * payload's true length for every writer — including the top-up branch, whose payload
+ * is the missing-song DELTA rather than the album.
+ */
+interface QueuePayloadSource {
+  fromRows: boolean;
+  /** The legacy blob, for a row whose songs have not been converted. */
+  songsJson: string;
+}
+
+const PAYLOAD_SOURCE_SQL = `SELECT q.total_songs AS total_songs, q.songs_json AS songs_json,
+          (SELECT COUNT(*) FROM download_queue_songs s WHERE s.queue_id = q.queue_id) AS song_rows
+     FROM download_queue q
+    WHERE q.queue_id = ?;`;
+
+async function queuePayloadSource(
+  db: InternalDb,
+  queueId: string,
+): Promise<QueuePayloadSource | null> {
+  const row = await db.getFirstAsync<{
+    total_songs: number;
+    songs_json: string | null;
+    song_rows: number;
+  }>(PAYLOAD_SOURCE_SQL, [queueId]);
+  if (row === null || row === undefined) return null;
+  return {
+    fromRows: row.song_rows > 0 && row.song_rows === row.total_songs,
+    songsJson: row.songs_json ?? '',
+  };
+}
+
+/** The legacy blob as `Child[]`; `[]` when it is absent or unparseable. */
+export function parseLegacyQueuePayload(songsJson: string): Child[] {
+  if (!songsJson) return [];
+  try {
+    const parsed = JSON.parse(songsJson) as unknown;
+    return Array.isArray(parsed) ? (parsed as Child[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+const NO_ARRAYS: ChildSnapshotArrays = {};
+
+/**
+ * One queue item's payload as real `Child`s, in order — what the download worker
+ * needs. Falls back to `songs_json` for a row whose songs are not stored yet
+ * (see {@link QueuePayloadSource}).
+ */
+export async function readDownloadQueueSongsAsync(queueId: string): Promise<Child[]> {
+  const db = getDb();
+  if (db === null) return [];
+  try {
+    const source = await queuePayloadSource(db, queueId);
+    if (source === null) return [];
+    if (!source.fromRows) return parseLegacyQueuePayload(source.songsJson);
+    const [rows, arrays] = await Promise.all([
+      db.getAllAsync<Record<string, unknown>>(
+        `SELECT pos, ${CHILD_SNAPSHOT_SELECT} FROM download_queue_songs ` +
+          'WHERE queue_id = ? ORDER BY pos;',
+        [queueId],
+      ),
+      readChildSnapshotArraysAsync(db, {
+        tablePrefix: 'download_queue_song',
+        keyColumns: ['queue_id', 'song_pos'],
+        where: 'queue_id = ?',
+        params: [queueId],
+      }),
+    ]);
+    return rows.map((raw) =>
+      childFromSnapshotRow(
+        childSnapshotRowFromRaw(raw),
+        arrays.get(childSnapshotArrayKey([queueId, raw.pos as number])) ?? NO_ARRAYS,
+      ),
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** The distinct album ids a queue item's songs belong to — the directories a `.tmp`
+ *  sweep has to visit. One row per album, not one per song, and no `Child` rebuilt.
+ *  `null` album ids come back as `null` for the caller to map to its own sentinel. */
+export async function readDownloadQueueAlbumIdsAsync(
+  queueId: string,
+): Promise<Array<string | null>> {
+  const db = getDb();
+  if (db === null) return [];
+  try {
+    const source = await queuePayloadSource(db, queueId);
+    if (source === null) return [];
+    if (!source.fromRows) {
+      return [...new Set(parseLegacyQueuePayload(source.songsJson).map((s) => s.albumId ?? null))];
+    }
+    const rows = await db.getAllAsync<{ album_id: string | null }>(
+      'SELECT DISTINCT album_id FROM download_queue_songs WHERE queue_id = ?;',
+      [queueId],
+    );
+    return rows.map((r) => r.album_id);
+  } catch {
+    return [];
+  }
+}
+
+/** One queue item's `(song id, album id)` pairs — everything the cancel/cleanup
+ *  sweeps need, without rebuilding a `Child`. Two columns, not fifty. */
+export async function readDownloadQueueSongRefsAsync(
+  queueId: string,
+): Promise<Array<{ id: string; albumId?: string }>> {
+  const db = getDb();
+  if (db === null) return [];
+  try {
+    const source = await queuePayloadSource(db, queueId);
+    if (source === null) return [];
+    if (!source.fromRows) {
+      return parseLegacyQueuePayload(source.songsJson).map((s) => ({ id: s.id, albumId: s.albumId }));
+    }
+    const rows = await db.getAllAsync<{ song_id: string; album_id: string | null }>(
+      'SELECT song_id, album_id FROM download_queue_songs WHERE queue_id = ? ORDER BY pos;',
+      [queueId],
+    );
+    return rows.map((r) => ({ id: r.song_id, albumId: r.album_id ?? undefined }));
+  } catch {
+    return [];
+  }
+}
+
+/** Every queue row with what the payload gate needs to classify it: how many songs the
+ *  row says it has, how many are stored, and the blob for the ones that are not. */
+export interface DownloadQueuePayloadRow {
+  queueId: string;
+  totalSongs: number;
+  songRows: number;
+  songsJson: string;
+}
+
+/** The whole queue's payload state, for the one-time conversion. One query. */
+export async function readDownloadQueuePayloadRowsAsync(): Promise<DownloadQueuePayloadRow[]> {
+  const db = getDb();
+  if (db === null) return [];
+  try {
+    const rows = await db.getAllAsync<{
+      queue_id: string;
+      total_songs: number;
+      songs_json: string | null;
+      song_rows: number;
+    }>(
+      `SELECT q.queue_id AS queue_id, q.total_songs AS total_songs, q.songs_json AS songs_json,
+              (SELECT COUNT(*) FROM download_queue_songs s WHERE s.queue_id = q.queue_id) AS song_rows
+         FROM download_queue q;`,
+    );
+    return rows.map((r) => ({
+      queueId: r.queue_id,
+      totalSongs: r.total_songs,
+      songRows: r.song_rows,
+      songsJson: r.songs_json ?? '',
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Replace one queue item's stored songs, as ONE atomic batch — a half-written payload
+ * is a download that can never complete. Returns false when the write was dropped.
+ */
+export async function replaceDownloadQueueSongs(
+  queueId: string,
+  songs: readonly Child[],
+): Promise<boolean> {
+  const db = getDb();
+  if (db === null || !queueId) return false;
+  try {
+    await db.runAtomicBatchAsync(downloadQueueSongCommands(queueId, songs));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Drop one queue item's stored songs, leaving the row itself alone. The conversion
+ *  uses it to undo a write that did not verify, so the gate shuts and the blob stays
+ *  authoritative. */
+export async function deleteDownloadQueueSongs(queueId: string): Promise<void> {
+  const db = getDb();
+  if (db === null) return;
+  try {
+    await db.runAsync('DELETE FROM download_queue_songs WHERE queue_id = ?;', [queueId]);
+  } catch {
+    /* dropped */
+  }
+}
+
+/** The stored song ids for a queue item, in `pos` order — UNGATED, so the conversion's
+ *  read-back checks the rows themselves rather than whatever the gate would serve. */
+export async function readStoredQueueSongIdsAsync(queueId: string): Promise<string[] | null> {
+  const db = getDb();
+  if (db === null) return null;
+  try {
+    const rows = await db.getAllAsync<{ song_id: string }>(
+      'SELECT song_id FROM download_queue_songs WHERE queue_id = ? ORDER BY pos;',
+      [queueId],
+    );
+    return rows.map((r) => r.song_id);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Is this song in an ACTIVE queue item, and which? One indexed point lookup —
+ * `idx_download_queue_songs_song_id` seeks the song, the correlated lookup checks its
+ * item's status.
+ *
+ * SYNCHRONOUS because `useDownloadStatus` asks from inside a zustand selector, which
+ * cannot await. Bounded work on one row: the alternative — an in-memory index of every
+ * queued song id — is the resident-catalogue cost this table exists to remove.
+ * Answers `null` when the DB is unavailable, and for a row Migration 39 has not
+ * converted (a missing badge, never a wrong download).
+ *
+ * `ORDER BY queue_position` because a song can sit in two active items at once (an
+ * album and a playlist): the answer is the one nearest the front, as it was when this
+ * scanned the in-memory queue in slot order.
+ */
+const QUEUED_SONG_STATUS_SQL = `SELECT q.status AS status
+     FROM download_queue_songs s
+     JOIN download_queue q ON q.queue_id = s.queue_id
+    WHERE s.song_id = ? AND q.status IN ('queued', 'downloading')
+    ORDER BY q.queue_position
+    LIMIT 1;`;
+
+export function readQueuedSongStatus(songId: string): 'queued' | 'downloading' | null {
+  const db = getDb();
+  if (db === null || !songId) return null;
+  try {
+    const row = db.getFirstSync<{ status: string }>(QUEUED_SONG_STATUS_SQL, [songId]);
+    if (row?.status === 'queued' || row?.status === 'downloading') return row.status;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Everything a re-write of an existing `queue_id` may change. `queue_position` is
+ * deliberately absent: the two writers below disagree about who owns the slot, so each
+ * appends its own clause. So is `songs_json`, which the append form supplies as `''` —
+ * naming it here would let a re-write blank an unconverted row's only payload.
+ */
 const DOWNLOAD_QUEUE_CONFLICT_SET = `item_id = excluded.item_id,
          type = excluded.type,
          name = excluded.name,
@@ -1406,11 +1731,10 @@ const DOWNLOAD_QUEUE_CONFLICT_SET = `item_id = excluded.item_id,
          total_songs = excluded.total_songs,
          completed_songs = excluded.completed_songs,
          error = excluded.error,
-         added_at = excluded.added_at,
-         songs_json = excluded.songs_json`;
+         added_at = excluded.added_at`;
 
-/** Restore form: the caller supplies the slot. Only `bulkReplace` uses it, replaying a
- *  snapshot whose positions are already fixed. */
+/** Restore form: the caller supplies the slot AND the legacy blob. Only `bulkReplace`
+ *  uses it, replaying a Migration 14 snapshot whose positions are already fixed. */
 const RESTORE_DOWNLOAD_QUEUE_SQL = `INSERT INTO download_queue
        (queue_id, item_id, type, name, artist, cover_art_id, status,
         total_songs, completed_songs, error, added_at, queue_position,
@@ -1418,13 +1742,17 @@ const RESTORE_DOWNLOAD_QUEUE_SQL = `INSERT INTO download_queue
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(queue_id) DO UPDATE SET
          ${DOWNLOAD_QUEUE_CONFLICT_SET},
+         songs_json = excluded.songs_json,
          queue_position = excluded.queue_position;`;
 
 /**
  * Append form: the DATABASE picks the slot, so no JS read of an in-memory mirror can
- * hand out a position that is already taken. `RETURNING` gives the caller what was
- * actually assigned. A re-write of an existing `queue_id` keeps its current slot —
- * refreshing a queued item's payload must not send it to the back of the line.
+ * hand out a position that is already taken. A re-write of an existing `queue_id`
+ * keeps its current slot — refreshing a queued item's payload must not send it to the
+ * back of the line.
+ *
+ * No `RETURNING`: the row and its songs go in as one atomic batch, which returns
+ * nothing, so the assigned slot is read back by id afterwards.
  */
 const APPEND_DOWNLOAD_QUEUE_SQL = `INSERT INTO download_queue
        (queue_id, item_id, type, name, artist, cover_art_id, status,
@@ -1433,8 +1761,7 @@ const APPEND_DOWNLOAD_QUEUE_SQL = `INSERT INTO download_queue
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                (SELECT COALESCE(MAX(queue_position), 0) + 1 FROM download_queue), ?)
        ON CONFLICT(queue_id) DO UPDATE SET
-         ${DOWNLOAD_QUEUE_CONFLICT_SET}
-       RETURNING queue_position;`;
+         ${DOWNLOAD_QUEUE_CONFLICT_SET};`;
 
 /** The 11 binds shared by both forms, in column order, minus `queue_position`. */
 const downloadQueueParams = (
@@ -1453,10 +1780,10 @@ const downloadQueueParams = (
   item.addedAt,
 ];
 
-function downloadQueueUpsertCommand(item: DownloadQueueRow): BatchCommand {
-  // `download_queue` has no FK children so `INSERT OR REPLACE` would be safe
-  // here, but UPSERT is used anyway so every table in this file follows one
-  // pattern and nobody copies the wrong line onto a table that does have children.
+function downloadQueueUpsertCommand(item: LegacyDownloadQueueRow): BatchCommand {
+  // `INSERT OR REPLACE` is now unsafe here — `download_queue_songs` FK-cascades off
+  // this row, so DELETE-then-INSERT would take a queue item's whole payload with it
+  // (AGENTS.md §11). UPSERT was already the pattern; it is now load-bearing.
   return [
     RESTORE_DOWNLOAD_QUEUE_SQL,
     [...downloadQueueParams(item), item.queuePosition, item.songsJson],
@@ -1464,21 +1791,29 @@ function downloadQueueUpsertCommand(item: DownloadQueueRow): BatchCommand {
 }
 
 /**
- * Append a row at the end of the queue. Returns the `queue_position` SQL assigned,
- * or null when the write was dropped — the caller mirrors it into memory so the two
- * cannot drift.
+ * Append a row at the end of the queue with its songs, as ONE atomic batch — a queue
+ * item whose payload only half-landed is a download that can never complete.
+ *
+ * Returns the `queue_position` SQL assigned, or null when the write was dropped — the
+ * caller mirrors it into memory so the two cannot drift. `songs_json` is `NOT NULL` and
+ * stays on the table, so the write supplies `''`: the payload is in the rows now.
  */
 export async function insertDownloadQueueItem(
   item: Omit<DownloadQueueRow, 'queuePosition'>,
+  songs: readonly Child[],
 ): Promise<number | null> {
   const db = getDb();
   if (db === null) return null;
   if (!item.queueId) return null;
   try {
-    const row = await db.getFirstAsync<{ queue_position: number }>(APPEND_DOWNLOAD_QUEUE_SQL, [
-      ...downloadQueueParams(item),
-      item.songsJson,
+    await db.runAtomicBatchAsync([
+      [APPEND_DOWNLOAD_QUEUE_SQL, [...downloadQueueParams(item), '']],
+      ...downloadQueueSongCommands(item.queueId, songs),
     ]);
+    const row = await db.getFirstAsync<{ queue_position: number }>(
+      'SELECT queue_position FROM download_queue WHERE queue_id = ?;',
+      [item.queueId],
+    );
     return row?.queue_position ?? null;
   } catch {
     /* dropped */
@@ -1598,6 +1933,10 @@ const APPEND_CACHED_ITEM_SONG_SQL = `INSERT OR IGNORE INTO cached_item_songs (it
  * all songs, and append every edge — ONE `runAtomicBatchAsync`, so consumers
  * never observe a half-committed state and nothing can interleave mid-write.
  *
+ * The queue DELETE cascades `download_queue_songs` and its five array tables, so the
+ * payload goes with the item it belonged to. A row left in `error` status is NOT
+ * deleted (the user may still retry it), and keeps its songs for the same reason.
+ *
  * The vacated `queue_position` stays vacant, deliberately — see
  * `removeDownloadQueueItem`. This is the path that makes renumbering untenable:
  * the queue drains from the front, so a shift here would rewrite every remaining
@@ -1631,7 +1970,7 @@ export async function markDownloadComplete(
     }
     // Edges append after whatever the item already holds, so a top-up merging
     // into an existing row doesn't collide with its 1..K edges (the caller's
-    // positions are 1-based within the queue item's `songsJson`, not the cached
+    // positions are 1-based within the queue item's payload, not the cached
     // row). Sorting fixes the statement order, which fixes the resulting order.
     const sortedEdges = [...edges].sort((a, b) => a.position - b.position);
     for (const edge of sortedEdges) {
@@ -1652,7 +1991,7 @@ export async function bulkReplace(params: {
   items: Array<Omit<CachedItemRow, 'songIds'>>;
   songs: CachedSongRow[];
   edges: Array<{ itemId: string; position: number; songId: string }>;
-  queue: DownloadQueueRow[];
+  queue: LegacyDownloadQueueRow[];
 }): Promise<void> {
   const db = getDb();
   if (db === null) return;
@@ -1688,6 +2027,8 @@ export async function bulkReplace(params: {
 const truncateMusicCacheCommands = (): BatchCommand[] =>
   [
     ...CACHED_SONG_CHILD_TABLES,
+    ...DOWNLOAD_QUEUE_SONG_CHILD_TABLES,
+    'download_queue_songs',
     'cached_albums',
     'cached_playlists',
     'cached_item_songs',

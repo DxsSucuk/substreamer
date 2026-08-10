@@ -401,6 +401,113 @@ CREATE TABLE `download_queue` (
 --> statement-breakpoint
 CREATE INDEX `idx_download_queue_status` ON `download_queue` (`status`);--> statement-breakpoint
 CREATE UNIQUE INDEX `idx_download_queue_position_unique` ON `download_queue` (`queue_position`);--> statement-breakpoint
+CREATE TABLE `download_queue_song_album_artists` (
+	`queue_id` text NOT NULL,
+	`song_pos` integer NOT NULL,
+	`pos` integer NOT NULL,
+	`artist_id` text,
+	`artist_name` text,
+	PRIMARY KEY(`queue_id`, `song_pos`, `pos`),
+	FOREIGN KEY (`queue_id`,`song_pos`) REFERENCES `download_queue_songs`(`queue_id`,`pos`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `download_queue_song_artists` (
+	`queue_id` text NOT NULL,
+	`song_pos` integer NOT NULL,
+	`pos` integer NOT NULL,
+	`artist_id` text,
+	`artist_name` text,
+	PRIMARY KEY(`queue_id`, `song_pos`, `pos`),
+	FOREIGN KEY (`queue_id`,`song_pos`) REFERENCES `download_queue_songs`(`queue_id`,`pos`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `download_queue_song_contributors` (
+	`queue_id` text NOT NULL,
+	`song_pos` integer NOT NULL,
+	`pos` integer NOT NULL,
+	`role` text NOT NULL,
+	`sub_role` text,
+	`artist_id` text,
+	`artist_name` text,
+	PRIMARY KEY(`queue_id`, `song_pos`, `pos`),
+	FOREIGN KEY (`queue_id`,`song_pos`) REFERENCES `download_queue_songs`(`queue_id`,`pos`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `download_queue_song_genres` (
+	`queue_id` text NOT NULL,
+	`song_pos` integer NOT NULL,
+	`pos` integer NOT NULL,
+	`name` text NOT NULL,
+	PRIMARY KEY(`queue_id`, `song_pos`, `pos`),
+	FOREIGN KEY (`queue_id`,`song_pos`) REFERENCES `download_queue_songs`(`queue_id`,`pos`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `download_queue_song_moods` (
+	`queue_id` text NOT NULL,
+	`song_pos` integer NOT NULL,
+	`pos` integer NOT NULL,
+	`mood` text NOT NULL,
+	PRIMARY KEY(`queue_id`, `song_pos`, `pos`),
+	FOREIGN KEY (`queue_id`,`song_pos`) REFERENCES `download_queue_songs`(`queue_id`,`pos`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE TABLE `download_queue_songs` (
+	`queue_id` text NOT NULL,
+	`pos` integer NOT NULL,
+	`song_id` text NOT NULL,
+	`title` text,
+	`artist` text,
+	`album` text,
+	`cover_art` text,
+	`duration` integer,
+	`album_id` text,
+	`suffix` text,
+	`bit_rate` integer,
+	`bit_depth` integer,
+	`sampling_rate` integer,
+	`artist_id` text,
+	`display_artist` text,
+	`display_album_artist` text,
+	`display_composer` text,
+	`track` integer,
+	`disc_number` integer,
+	`year` integer,
+	`genre` text,
+	`size` integer,
+	`content_type` text,
+	`transcoded_content_type` text,
+	`transcoded_suffix` text,
+	`channel_count` integer,
+	`path` text,
+	`user_rating` integer,
+	`average_rating` real,
+	`play_count` integer,
+	`created` integer,
+	`starred` integer,
+	`played` text,
+	`type` text,
+	`bpm` integer,
+	`comment` text,
+	`sort_name` text,
+	`music_brainz_id` text,
+	`explicit_status` text,
+	`bookmark_position` integer,
+	`is_video` integer,
+	`is_dir` integer,
+	`parent` text,
+	`original_width` integer,
+	`original_height` integer,
+	`rg_track_gain` real,
+	`rg_album_gain` real,
+	`rg_track_peak` real,
+	`rg_album_peak` real,
+	`rg_base_gain` real,
+	`rg_fallback_gain` real,
+	PRIMARY KEY(`queue_id`, `pos`),
+	FOREIGN KEY (`queue_id`) REFERENCES `download_queue`(`queue_id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE INDEX `idx_download_queue_songs_song_id` ON `download_queue_songs` (`song_id`);--> statement-breakpoint
 CREATE TABLE `favorite_albums` (
 	`id` text PRIMARY KEY NOT NULL,
 	`starred` integer NOT NULL,

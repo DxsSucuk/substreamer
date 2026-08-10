@@ -141,7 +141,6 @@ function makeQueueDraft(itemId: string, totalSongs = 5): Omit<
     type: 'album',
     name: `Item ${itemId}`,
     totalSongs,
-    songsJson: '[]',
   };
 }
 
@@ -160,7 +159,6 @@ function seedMirror(slots: number[]): void {
       completedSongs: 0,
       addedAt: slot,
       queuePosition: slot,
-      songsJson: '[]',
     })),
   });
 }
@@ -215,7 +213,7 @@ beforeEach(() => {
 
 describe('enqueue', () => {
   it('appends a new queue row with generated id, queued status, and position 1', () => {
-    musicCacheStore.getState().enqueue(makeQueueDraft('album-1', 3));
+    musicCacheStore.getState().enqueue(makeQueueDraft('album-1', 3), []);
 
     const { downloadQueue } = musicCacheStore.getState();
     expect(downloadQueue).toHaveLength(1);
@@ -226,28 +224,28 @@ describe('enqueue', () => {
     expect(downloadQueue[0].itemId).toBe('album-1');
 
     expect(mockInsertDownloadQueueItem).toHaveBeenCalledTimes(1);
-    expect(mockInsertDownloadQueueItem).toHaveBeenCalledWith(downloadQueue[0]);
+    expect(mockInsertDownloadQueueItem).toHaveBeenCalledWith(downloadQueue[0], []);
   });
 
   it('assigns ascending queuePositions for consecutive enqueues', () => {
-    musicCacheStore.getState().enqueue(makeQueueDraft('a'));
-    musicCacheStore.getState().enqueue(makeQueueDraft('b'));
-    musicCacheStore.getState().enqueue(makeQueueDraft('c'));
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'), []);
+    musicCacheStore.getState().enqueue(makeQueueDraft('b'), []);
+    musicCacheStore.getState().enqueue(makeQueueDraft('c'), []);
     const { downloadQueue } = musicCacheStore.getState();
     expect(downloadQueue.map((q) => q.queuePosition)).toEqual([1, 2, 3]);
     expect(mockInsertDownloadQueueItem).toHaveBeenCalledTimes(3);
   });
 
   it('skips duplicate itemId already in the queue', () => {
-    musicCacheStore.getState().enqueue(makeQueueDraft('a'));
-    musicCacheStore.getState().enqueue(makeQueueDraft('a'));
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'), []);
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'), []);
     expect(musicCacheStore.getState().downloadQueue).toHaveLength(1);
     expect(mockInsertDownloadQueueItem).toHaveBeenCalledTimes(1);
   });
 
   it('skips itemId that is already a cached item', () => {
     musicCacheStore.setState({ cachedItems: { 'a': makeItem('a', ['s1']) } });
-    musicCacheStore.getState().enqueue(makeQueueDraft('a'));
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'), []);
     expect(musicCacheStore.getState().downloadQueue).toHaveLength(0);
     expect(mockInsertDownloadQueueItem).not.toHaveBeenCalled();
   });
@@ -257,7 +255,7 @@ describe('enqueue', () => {
     // so it guesses 1, while the DB already holds a persisted queue and hands back
     // 8. SQL is the authority; memory follows.
     mockInsertDownloadQueueItem.mockResolvedValueOnce(8);
-    musicCacheStore.getState().enqueue(makeQueueDraft('a'));
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'), []);
     expect(musicCacheStore.getState().downloadQueue[0].queuePosition).toBe(1);
 
     await Promise.resolve();
@@ -266,7 +264,7 @@ describe('enqueue', () => {
 
   it('leaves the in-memory row alone when the write was dropped', async () => {
     mockInsertDownloadQueueItem.mockResolvedValueOnce(null);
-    musicCacheStore.getState().enqueue(makeQueueDraft('a'));
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'), []);
 
     await Promise.resolve();
     expect(musicCacheStore.getState().downloadQueue[0].queuePosition).toBe(1);
@@ -279,8 +277,8 @@ describe('enqueue', () => {
 
 describe('removeFromQueue', () => {
   it('removes the matching row from SQL and in-memory queue', () => {
-    musicCacheStore.getState().enqueue(makeQueueDraft('a'));
-    musicCacheStore.getState().enqueue(makeQueueDraft('b'));
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'), []);
+    musicCacheStore.getState().enqueue(makeQueueDraft('b'), []);
     const qid = musicCacheStore.getState().downloadQueue[0].queueId;
 
     musicCacheStore.getState().removeFromQueue(qid);
@@ -336,7 +334,7 @@ describe('removeFromQueue', () => {
 describe('reorderQueue', () => {
   function seed(count: number) {
     for (let i = 0; i < count; i++) {
-      musicCacheStore.getState().enqueue(makeQueueDraft(`item-${i}`));
+      musicCacheStore.getState().enqueue(makeQueueDraft(`item-${i}`), []);
     }
     // Ignore the insertDownloadQueueItem calls from setup.
     mockInsertDownloadQueueItem.mockClear();
@@ -481,7 +479,7 @@ describe('reorderQueue', () => {
 
 describe('updateQueueItem', () => {
   it('writes the partial update to SQL and maps it in memory', () => {
-    musicCacheStore.getState().enqueue(makeQueueDraft('a'));
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'), []);
     const qid = musicCacheStore.getState().downloadQueue[0].queueId;
 
     musicCacheStore.getState().updateQueueItem(qid, {
@@ -499,8 +497,8 @@ describe('updateQueueItem', () => {
   });
 
   it('leaves non-matching rows alone', () => {
-    musicCacheStore.getState().enqueue(makeQueueDraft('a'));
-    musicCacheStore.getState().enqueue(makeQueueDraft('b'));
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'), []);
+    musicCacheStore.getState().enqueue(makeQueueDraft('b'), []);
     const [first, second] = musicCacheStore.getState().downloadQueue;
 
     musicCacheStore.getState().updateQueueItem(first.queueId, { status: 'error', error: 'boom' });
@@ -520,7 +518,7 @@ describe('enqueueTopUp', () => {
     musicCacheStore.setState({
       cachedItems: { 'album-1': makeItem('album-1', ['s1', 's2']) },
     });
-    musicCacheStore.getState().enqueueTopUp(makeQueueDraft('album-1', 3));
+    musicCacheStore.getState().enqueueTopUp(makeQueueDraft('album-1', 3), []);
     const queue = musicCacheStore.getState().downloadQueue;
     expect(queue).toHaveLength(1);
     expect(queue[0].itemId).toBe('album-1');
@@ -529,8 +527,8 @@ describe('enqueueTopUp', () => {
   });
 
   it('still dedupes against an existing queue entry for the same itemId', () => {
-    musicCacheStore.getState().enqueueTopUp(makeQueueDraft('album-1'));
-    musicCacheStore.getState().enqueueTopUp(makeQueueDraft('album-1'));
+    musicCacheStore.getState().enqueueTopUp(makeQueueDraft('album-1'), []);
+    musicCacheStore.getState().enqueueTopUp(makeQueueDraft('album-1'), []);
     expect(musicCacheStore.getState().downloadQueue).toHaveLength(1);
   });
 
@@ -538,7 +536,7 @@ describe('enqueueTopUp', () => {
     musicCacheStore.setState({
       cachedItems: { 'album-1': makeItem('album-1', ['s1']) },
     });
-    musicCacheStore.getState().enqueue(makeQueueDraft('album-1'));
+    musicCacheStore.getState().enqueue(makeQueueDraft('album-1'), []);
     expect(musicCacheStore.getState().downloadQueue).toHaveLength(0);
   });
 });
@@ -549,7 +547,7 @@ describe('enqueueTopUp', () => {
 
 describe('markItemComplete', () => {
   it('delegates to markDownloadComplete and mirrors item + songs in memory', () => {
-    musicCacheStore.getState().enqueue(makeQueueDraft('a'));
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'), []);
     const qid = musicCacheStore.getState().downloadQueue[0].queueId;
 
     const item = makeItem('a', []) as Omit<CachedItemMeta, 'songIds'>;
@@ -632,7 +630,7 @@ describe('markItemComplete', () => {
         },
       },
     });
-    musicCacheStore.getState().enqueue(makeQueueDraft('top-up-q'));
+    musicCacheStore.getState().enqueue(makeQueueDraft('top-up-q'), []);
     const qid = musicCacheStore.getState().downloadQueue[0].queueId;
 
     const item: Omit<CachedItemMeta, 'songIds'> = {
@@ -1256,7 +1254,6 @@ describe('hydrateFromDbAsync', () => {
         completedSongs: 0,
         addedAt: 1,
         queuePosition: 1,
-        songsJson: '[]',
       },
     ];
 
@@ -1497,7 +1494,7 @@ describe('revision', () => {
   });
 
   it('does NOT bump on a queue-only mutation — no downloaded list depends on it', () => {
-    musicCacheStore.getState().enqueue(makeQueueDraft('a'));
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'), []);
     const before = revision();
     musicCacheStore.getState().updateQueueItem(
       musicCacheStore.getState().downloadQueue[0].queueId,

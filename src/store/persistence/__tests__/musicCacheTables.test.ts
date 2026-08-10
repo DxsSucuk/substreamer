@@ -32,6 +32,14 @@ import {
   insertCachedItemSong,
   insertDownloadQueueItem,
   markDownloadComplete,
+  deleteDownloadQueueSongs,
+  readDownloadQueueAlbumIdsAsync,
+  readDownloadQueuePayloadRowsAsync,
+  readDownloadQueueSongRefsAsync,
+  readDownloadQueueSongsAsync,
+  readQueuedSongStatus,
+  readStoredQueueSongIdsAsync,
+  replaceDownloadQueueSongs,
   removeCachedItemSong,
   removeDownloadQueueItem,
   reorderCachedItemSongs,
@@ -42,6 +50,7 @@ import {
   type CachedItemRow,
   type CachedSongRow,
   type DownloadQueueRow,
+  type LegacyDownloadQueueRow,
 } from '../musicCacheTables';
 
 const handle = getDb();
@@ -102,16 +111,16 @@ function makeQueueRow(overrides: Partial<QueueInput> = {}): QueueInput {
     totalSongs: 10,
     completedSongs: 0,
     addedAt: 1_700_000_000_000,
-    songsJson: '[]',
     ...overrides,
   };
 }
 
-/** The restore form `bulkReplace` replays — the only caller that supplies a slot. */
+/** The restore form `bulkReplace` replays — the only caller that supplies a slot,
+ *  and the only one still handing over the legacy blob (Migration 14 replays v1). */
 const makeRestoreRow = (
   queuePosition: number,
   overrides: Partial<QueueInput> = {},
-): DownloadQueueRow => ({ ...makeQueueRow(overrides), queuePosition });
+): LegacyDownloadQueueRow => ({ ...makeQueueRow(overrides), queuePosition, songsJson: '[]' });
 
 /** An item plus its songs plus dense 1..N edges. The FKs make all three necessary. */
 async function seedHolder(itemId: string, songIds: string[]): Promise<void> {
@@ -348,7 +357,7 @@ describe('cached_items + edges', () => {
 
 describe('download_queue', () => {
   it('insertDownloadQueueItem + hydrateDownloadQueueAsync round-trips every field', async () => {
-    await insertDownloadQueueItem(makeQueueRow());
+    await insertDownloadQueueItem(makeQueueRow(), []);
     expect(await hydrateDownloadQueueAsync()).toEqual([
       {
         queueId: 'q-1',
@@ -362,7 +371,6 @@ describe('download_queue', () => {
         completedSongs: 0,
         addedAt: 1_700_000_000_000,
         queuePosition: 1,
-        songsJson: '[]',
       },
     ]);
   });
@@ -370,6 +378,7 @@ describe('download_queue', () => {
   it('leaves optional fields absent when the column is NULL', async () => {
     await insertDownloadQueueItem(
       makeQueueRow({ artist: undefined, coverArtId: undefined, error: undefined }),
+      [],
     );
     const row = (await hydrateDownloadQueueAsync())[0];
     expect(row.artist).toBeUndefined();
@@ -378,16 +387,16 @@ describe('download_queue', () => {
   });
 
   it('drops a write missing queueId, and reports it as unassigned', async () => {
-    expect(await insertDownloadQueueItem(makeQueueRow({ queueId: '' }))).toBeNull();
+    expect(await insertDownloadQueueItem(makeQueueRow({ queueId: '' }), [])).toBeNull();
     expect(countDownloadQueueItems()).toBe(0);
   });
 
   it('hydrates in queue_position order, not insertion order', async () => {
     // Appended a, b, c — so insertion order and slot order agree. The reorder
     // separates them, which is what makes the ORDER BY observable.
-    await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-a' }));
-    await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-b' }));
-    await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-c' }));
+    await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-a' }), []);
+    await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-b' }), []);
+    await insertDownloadQueueItem(makeQueueRow({ queueId: 'q-c' }), []);
     await reorderDownloadQueue(3, 1);
     const hydrated = await hydrateDownloadQueueAsync();
     expect(hydrated.map((q) => q.queueId)).toEqual(['q-c', 'q-a', 'q-b']);
@@ -396,7 +405,7 @@ describe('download_queue', () => {
 
   describe('updateDownloadQueueItem', () => {
     beforeEach(async () => {
-      await insertDownloadQueueItem(makeQueueRow());
+      await insertDownloadQueueItem(makeQueueRow(), []);
     });
 
     it('updates status only', async () => {
@@ -452,7 +461,7 @@ describe('download_queue', () => {
 describe('bulkReplace', () => {
   it('wipes all four tables and re-inserts the supplied state', async () => {
     await seedHolder('old-item', ['old-song']);
-    await insertDownloadQueueItem(makeQueueRow({ queueId: 'old-q' }));
+    await insertDownloadQueueItem(makeQueueRow({ queueId: 'old-q' }), []);
 
     await bulkReplace({
       items: [makeItem({ itemId: 'alb-new' }), makeItem({ itemId: 'pl-new', type: 'playlist' })],
@@ -511,7 +520,7 @@ describe('bulkReplace', () => {
 
   it('truncates to empty tables for empty inputs', async () => {
     await seedHolder('alb-1', ['s1']);
-    await insertDownloadQueueItem(makeQueueRow());
+    await insertDownloadQueueItem(makeQueueRow(), []);
 
     await bulkReplace({ items: [], songs: [], edges: [], queue: [] });
 
@@ -557,7 +566,7 @@ describe('clearAllMusicCacheRows', () => {
     await upsertCachedItem(
       makeItem({ itemId: 'pl-1', type: 'playlist', playlistMeta: { name: 'Road Trip' } }),
     );
-    await insertDownloadQueueItem(makeQueueRow());
+    await insertDownloadQueueItem(makeQueueRow(), []);
 
     await clearAllMusicCacheRows();
 
@@ -592,6 +601,14 @@ function describeDegraded(label: string, install: () => void): void {
       expect(countCachedItems()).toBe(0);
       expect(countCachedItemSongs()).toBe(0);
       expect(countDownloadQueueItems()).toBe(0);
+      expect(await readDownloadQueueSongsAsync('q-1')).toEqual([]);
+      expect(await readDownloadQueueSongRefsAsync('q-1')).toEqual([]);
+      expect(await readDownloadQueueAlbumIdsAsync('q-1')).toEqual([]);
+      expect(await readDownloadQueuePayloadRowsAsync()).toEqual([]);
+      expect(readQueuedSongStatus('s1')).toBeNull();
+      // Null, NOT `[]`: the conversion reads this back to decide whether a queued
+      // download's songs landed, and an unreadable DB must not look like "they did not".
+      expect(await readStoredQueueSongIdsAsync('q-1')).toBeNull();
     });
 
     it('every write resolves without throwing', async () => {
@@ -602,7 +619,7 @@ function describeDegraded(label: string, install: () => void): void {
       await expect(insertCachedItemSong('alb-1', 1, 's1')).resolves.toBeUndefined();
       await expect(removeCachedItemSong('alb-1', 1)).resolves.toBeUndefined();
       await expect(reorderCachedItemSongs('alb-1', 1, 2)).resolves.toBeUndefined();
-      await expect(insertDownloadQueueItem(makeQueueRow())).resolves.toBeNull();
+      await expect(insertDownloadQueueItem(makeQueueRow(), [])).resolves.toBeNull();
       await expect(removeDownloadQueueItem('q-1')).resolves.toBeUndefined();
       await expect(
         updateDownloadQueueItem('q-1', { status: 'downloading' }),
@@ -614,6 +631,8 @@ function describeDegraded(label: string, install: () => void): void {
       await expect(
         bulkReplace({ items: [], songs: [], edges: [], queue: [] }),
       ).resolves.toBeUndefined();
+      await expect(replaceDownloadQueueSongs('q-1', [])).resolves.toBe(false);
+      await expect(deleteDownloadQueueSongs('q-1')).resolves.toBeUndefined();
       await expect(clearAllMusicCacheRows()).resolves.toBeUndefined();
     });
   });

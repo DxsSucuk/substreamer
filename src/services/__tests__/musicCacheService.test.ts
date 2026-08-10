@@ -185,6 +185,9 @@ jest.mock('../../store/persistence/musicCacheTables', () => {
   // rows). Tracked here because the SQL layer's REAL-ref count and the
   // orphan-pruning both hinge on it. Any item NOT in this set is REAL.
   const derivedItems = new Set<string>();
+  // The queued payload, keyed by queueId — the fake's stand-in for
+  // `download_queue_songs`. Written by the append, dropped with the queue row.
+  const queueSongs = new Map<string, Array<Record<string, unknown>>>();
   const isDerived = (itemId: string) => derivedItems.has(itemId);
   return {
     // Hydrate helpers — return empty; tests seed in-memory state directly.
@@ -273,11 +276,22 @@ jest.mock('../../store/persistence/musicCacheTables', () => {
     reorderCachedItemSongs: jest.fn(),
     // download_queue writes. The append echoes the store's optimistic slot back —
     // SQL assigns it for real, and here memory and disk agree.
-    insertDownloadQueueItem: jest.fn(async (row: { queuePosition: number }) => row.queuePosition),
-    removeDownloadQueueItem: jest.fn(),
+    insertDownloadQueueItem: jest.fn(
+      async (
+        row: { queueId: string; queuePosition: number },
+        songs: Array<Record<string, unknown>>,
+      ) => {
+        queueSongs.set(row.queueId, [...songs]);
+        return row.queuePosition;
+      },
+    ),
+    removeDownloadQueueItem: jest.fn((queueId: string) => {
+      queueSongs.delete(queueId);
+    }),
     updateDownloadQueueItem: jest.fn(),
     reorderDownloadQueue: jest.fn(),
     markDownloadComplete: jest.fn((queueId, item, songs, incomingEdges) => {
+      queueSongs.delete(queueId);
       // An explicit finished download is a REAL holder.
       if (item?.derived) derivedItems.add(item.itemId);
       else derivedItems.delete(item.itemId);
@@ -285,10 +299,23 @@ jest.mock('../../store/persistence/musicCacheTables', () => {
         edges.push({ itemId: item.itemId, position: e.position, songId: e.songId });
       }
     }),
+    // The four gated readers. The fake has one source, so there is no gate: a
+    // queueId with no payload answers empty, exactly as an unreadable row would.
+    readDownloadQueueSongsAsync: jest.fn(async (queueId: string) => [
+      ...(queueSongs.get(queueId) ?? []),
+    ]),
+    readDownloadQueueAlbumIdsAsync: jest.fn(async (queueId: string) => [
+      ...new Set((queueSongs.get(queueId) ?? []).map((s: any) => s.albumId ?? null)),
+    ]),
+    readDownloadQueueSongRefsAsync: jest.fn(async (queueId: string) =>
+      (queueSongs.get(queueId) ?? []).map((s: any) => ({ id: s.id, albumId: s.albumId })),
+    ),
+    readQueuedSongStatus: jest.fn(() => null),
     bulkReplace: jest.fn(),
     clearAllMusicCacheRows: jest.fn(() => {
       edges.length = 0;
       derivedItems.clear();
+      queueSongs.clear();
     }),
     convertLegacyMetadataAsync: jest.fn(async () => {}),
     childGenreNames: actual.childGenreNames,
@@ -298,7 +325,8 @@ jest.mock('../../store/persistence/musicCacheTables', () => {
     // Test helpers
     __edges: edges,
     __derivedItems: derivedItems,
-    __resetEdges: () => { edges.length = 0; derivedItems.clear(); },
+    __queueSongs: queueSongs,
+    __resetEdges: () => { edges.length = 0; derivedItems.clear(); queueSongs.clear(); },
     __setDbForTests: jest.fn(),
   };
 });
@@ -435,6 +463,10 @@ function seedItem(itemId: string, opts: {
       },
     },
   }));
+}
+
+function seedQueuePayload(queueId: string, songs: any[]) {
+  persistenceMock.__queueSongs.set(queueId, songs);
 }
 
 function seedSong(song: any) {
@@ -642,7 +674,7 @@ describe('clearQueuedDownloads', () => {
       ],
     } as any);
 
-    clearQueuedDownloads();
+    await clearQueuedDownloads();
 
     const remaining = musicCacheStore.getState().downloadQueue;
     expect(remaining.map((q) => q.queueId)).toEqual(['q1']);
@@ -651,93 +683,24 @@ describe('clearQueuedDownloads', () => {
 
   it('no-ops on an empty queue', async () => {
     musicCacheStore.setState({ downloadQueue: [] } as any);
-    clearQueuedDownloads();
+    await clearQueuedDownloads();
     expect(musicCacheStore.getState().downloadQueue).toEqual([]);
   });
 });
 
 describe('getTrackQueueStatus', () => {
-  it('returns null when track is not in queue', async () => {
-    expect(getTrackQueueStatus('track-1')).toBeNull();
-  });
+  const mockReadQueuedSongStatus = jest.requireMock(
+    '../../store/persistence/musicCacheTables',
+  ).readQueuedSongStatus as jest.Mock;
 
-  it('returns queued status when track is in queued item', async () => {
-    musicCacheStore.setState({
-      downloadQueue: [
-        {
-          queueId: 'q1',
-          itemId: 'album-1',
-          type: 'album',
-          name: 'X',
-          status: 'queued',
-          totalSongs: 1,
-          completedSongs: 0,
-          addedAt: 0,
-          queuePosition: 1,
-          songsJson: JSON.stringify([{ id: 'track-1' }]),
-        },
-      ],
-    } as any);
-    expect(getTrackQueueStatus('track-1')).toBe('queued');
-  });
-
-  it('returns downloading status', async () => {
-    musicCacheStore.setState({
-      downloadQueue: [
-        {
-          queueId: 'q1',
-          itemId: 'album-1',
-          type: 'album',
-          name: 'X',
-          status: 'downloading',
-          totalSongs: 1,
-          completedSongs: 0,
-          addedAt: 0,
-          queuePosition: 1,
-          songsJson: JSON.stringify([{ id: 'track-1' }]),
-        },
-      ],
-    } as any);
+  it('answers from the indexed queue-song lookup', () => {
+    mockReadQueuedSongStatus.mockReturnValueOnce('downloading');
     expect(getTrackQueueStatus('track-1')).toBe('downloading');
+    expect(mockReadQueuedSongStatus).toHaveBeenCalledWith('track-1');
   });
 
-  it('returns null for completed/error items', async () => {
-    musicCacheStore.setState({
-      downloadQueue: [
-        {
-          queueId: 'q1',
-          itemId: 'album-1',
-          type: 'album',
-          name: 'X',
-          status: 'error',
-          totalSongs: 1,
-          completedSongs: 0,
-          addedAt: 0,
-          queuePosition: 1,
-          songsJson: JSON.stringify([{ id: 'track-1' }]),
-        },
-      ],
-    } as any);
-    expect(getTrackQueueStatus('track-1')).toBeNull();
-  });
-
-  it('skips items whose songsJson is invalid', async () => {
-    musicCacheStore.setState({
-      downloadQueue: [
-        {
-          queueId: 'q1',
-          itemId: 'album-1',
-          type: 'album',
-          name: 'X',
-          status: 'queued',
-          totalSongs: 1,
-          completedSongs: 0,
-          addedAt: 0,
-          queuePosition: 1,
-          songsJson: 'not json',
-        },
-      ],
-    } as any);
+  it('returns null when the track is in no active queue item', () => {
+    mockReadQueuedSongStatus.mockReturnValueOnce(null);
     expect(getTrackQueueStatus('track-1')).toBeNull();
   });
 });
@@ -788,10 +751,10 @@ describe('recoverStalledDownloadsAsync', () => {
           completedSongs: 0,
           addedAt: 0,
           queuePosition: 1,
-          songsJson: JSON.stringify([makeChild('t1', { albumId: 'a-sweep' })]),
         },
       ],
     } as any);
+    seedQueuePayload('q1', [makeChild('t1', { albumId: 'a-sweep' })]);
     mockListDirectoryAsync.mockResolvedValue(['t1.mp3.tmp', 't1.mp3']);
     mockFileExists = true;
 
@@ -985,7 +948,7 @@ describe('enqueueAlbumDownload', () => {
     expect(queue).toHaveLength(1);
     expect(queue[0].itemId).toBe('album-1');
     expect(queue[0].totalSongs).toBe(3);
-    const songs = JSON.parse(queue[0].songsJson) as Array<{ id: string }>;
+    const songs = persistenceMock.__queueSongs.get(queue[0].queueId) as Array<{ id: string }>;
     expect(songs.map((s) => s.id).sort()).toEqual(['t3', 't4', 't5']);
     // downloadedAt on the existing cached_items row is untouched.
     expect(musicCacheStore.getState().cachedItems['album-1'].downloadedAt).toBe(111);
@@ -1871,7 +1834,7 @@ describe('syncCachedItemTracks', () => {
 
 describe('cancelDownload', () => {
   it('no-op for missing id', async () => {
-    cancelDownload('missing');
+    await cancelDownload('missing');
   });
 
   it('removes item from queue', async () => {
@@ -1885,7 +1848,7 @@ describe('cancelDownload', () => {
       ],
     } as any);
 
-    cancelDownload('q1');
+    await cancelDownload('q1');
     expect(musicCacheStore.getState().downloadQueue).toHaveLength(0);
   });
 
@@ -1907,13 +1870,13 @@ describe('cancelDownload', () => {
       .mockResolvedValueOnce(['album-a'])
       .mockResolvedValueOnce(['s.mp3']);
 
-    cancelDownload('q1');
+    await cancelDownload('q1');
     await new Promise((r) => setTimeout(r, 50));
 
     expect(musicCacheStore.getState().totalBytes).toBe(1000);
   });
 
-  it('handles invalid songsJson gracefully', async () => {
+  it('handles a queue item with no stored payload gracefully', async () => {
     musicCacheStore.setState({
       downloadQueue: [
         {
@@ -1923,7 +1886,7 @@ describe('cancelDownload', () => {
         },
       ],
     } as any);
-    expect(() => cancelDownload('q1')).not.toThrow();
+    await expect(cancelDownload('q1')).resolves.toBeUndefined();
   });
 });
 
@@ -1947,7 +1910,7 @@ describe('clearDownloadQueue', () => {
         },
       ],
     } as any);
-    clearDownloadQueue();
+    await clearDownloadQueue();
     expect(musicCacheStore.getState().downloadQueue).toHaveLength(0);
   });
 });
@@ -2533,13 +2496,15 @@ describe('download pipeline', () => {
     expect(musicCacheStore.getState().cachedItems['a2']).toBeDefined();
   });
 
-  it('handles invalid songsJson as error', async () => {
+  it('errors a queue item whose payload reads back empty — never completes it', async () => {
+    // The data-loss guard. A row whose songs cannot be read has nothing to download,
+    // and "downloaded all 0 of 0" would finalise the item and discard a queued
+    // download the user is waiting on.
     musicCacheStore.setState({
       downloadQueue: [
         {
           queueId: 'q-bad', itemId: 'album-bad', type: 'album', name: 'X', status: 'queued',
-          totalSongs: 0, completedSongs: 0, addedAt: 0, queuePosition: 1,
-          songsJson: 'not json',
+          totalSongs: 3, completedSongs: 0, addedAt: 0, queuePosition: 1,
         },
       ],
     } as any);
@@ -2548,7 +2513,8 @@ describe('download pipeline', () => {
     await waitForQueueIdle();
 
     const q = musicCacheStore.getState().downloadQueue.find((x: any) => x.queueId === 'q-bad');
-    if (q) expect(q.status).toBe('error');
+    expect(q?.status).toBe('error');
+    expect(musicCacheStore.getState().cachedItems['album-bad']).toBeUndefined();
   });
 
   it('retry-once-on-null: second downloadSong call succeeds', async () => {

@@ -15,13 +15,17 @@
  * Writes become silent no-ops when `getDb()` returns null (DB init failed) — callers
  * don't need to handle exceptions.
  */
-import { getDb, type BatchCommand, type InternalDb } from './db';
+import { getDb, type BatchCommand } from './db';
 import {
   childFromSnapshotRow,
   childSnapshotArrayCommands,
-  childSnapshotFields,
+  childSnapshotArrayKey,
+  childSnapshotInsertCommand,
+  childSnapshotRowFromRaw,
+  readChildSnapshotArraysAsync,
+  readChildSnapshotArraysSync,
+  CHILD_SNAPSHOT_SELECT,
   type ChildSnapshotArrays,
-  type ChildSnapshotRow,
 } from '../../db/childSnapshot';
 
 import type { Child } from 'subsonic-api';
@@ -47,124 +51,6 @@ export interface QueueSnapshotMeta {
 /** A snapshot with its songs rebuilt into real `Child` objects. */
 export interface QueueSnapshot extends QueueSnapshotMeta {
   tracks: Child[];
-}
-
-/* ------------------------------------------------------------------ */
-/*  Column mapping                                                     */
-/* ------------------------------------------------------------------ */
-
-/**
- * `ChildSnapshotRow` key → its column. Typed as a TOTAL record, so a field added to
- * the shared mapping fails to compile until it is stored here — a queue snapshot has
- * to reproduce the whole `Child`, unlike the scrobble tables which take a subset.
- */
-const SONG_COLUMNS = {
-  id: 'song_id',
-  title: 'title',
-  artist: 'artist',
-  album: 'album',
-  coverArt: 'cover_art',
-  duration: 'duration',
-  albumId: 'album_id',
-  suffix: 'suffix',
-  bitRate: 'bit_rate',
-  bitDepth: 'bit_depth',
-  samplingRate: 'sampling_rate',
-  artistId: 'artist_id',
-  displayArtist: 'display_artist',
-  displayAlbumArtist: 'display_album_artist',
-  displayComposer: 'display_composer',
-  track: 'track',
-  discNumber: 'disc_number',
-  year: 'year',
-  genre: 'genre',
-  size: 'size',
-  contentType: 'content_type',
-  transcodedContentType: 'transcoded_content_type',
-  transcodedSuffix: 'transcoded_suffix',
-  channelCount: 'channel_count',
-  path: 'path',
-  userRating: 'user_rating',
-  averageRating: 'average_rating',
-  playCount: 'play_count',
-  created: 'created',
-  starred: 'starred',
-  played: 'played',
-  type: 'type',
-  bpm: 'bpm',
-  comment: 'comment',
-  sortName: 'sort_name',
-  musicBrainzId: 'music_brainz_id',
-  explicitStatus: 'explicit_status',
-  bookmarkPosition: 'bookmark_position',
-  isVideo: 'is_video',
-  isDir: 'is_dir',
-  parent: 'parent',
-  originalWidth: 'original_width',
-  originalHeight: 'original_height',
-  rgTrackGain: 'rg_track_gain',
-  rgAlbumGain: 'rg_album_gain',
-  rgTrackPeak: 'rg_track_peak',
-  rgAlbumPeak: 'rg_album_peak',
-  rgBaseGain: 'rg_base_gain',
-  rgFallbackGain: 'rg_fallback_gain',
-} as const satisfies Record<keyof ChildSnapshotRow, string>;
-
-type SongKey = keyof typeof SONG_COLUMNS;
-
-const SONG_KEYS = Object.keys(SONG_COLUMNS) as SongKey[];
-
-/** Stored 0/1 by SQLite; `Child` declares them boolean. */
-const BOOL_KEYS: ReadonlySet<SongKey> = new Set<SongKey>(['isVideo', 'isDir']);
-
-/** Aliased to the `ChildSnapshotRow` keys, so a selected row IS the shape
- *  `childFromSnapshotRow` takes and there is no second name mapping to drift. */
-const SONG_SELECT = [
-  'pos',
-  ...SONG_KEYS.map((k) => (SONG_COLUMNS[k] === k ? k : `${SONG_COLUMNS[k]} AS ${k}`)),
-].join(', ');
-
-const INSERT_SONG_SQL =
-  `INSERT INTO queue_snapshot_songs (snapshot_id, pos, ${SONG_KEYS.map((k) => SONG_COLUMNS[k]).join(', ')}) ` +
-  `VALUES (${new Array(2 + SONG_KEYS.length).fill('?').join(', ')});`;
-
-/** The shared `Child` mapping plus the identity/core fields it deliberately omits. */
-function songRow(child: Child): ChildSnapshotRow {
-  return {
-    id: child.id,
-    title: child.title,
-    artist: child.artist,
-    album: child.album,
-    coverArt: child.coverArt,
-    duration: child.duration,
-    ...childSnapshotFields(child),
-  };
-}
-
-function songParams(snapshotId: string, pos: number, child: Child): (string | number | null)[] {
-  const row: Record<string, unknown> = { ...songRow(child) };
-  return [
-    snapshotId,
-    pos,
-    ...SONG_KEYS.map((k) => {
-      const v = row[k];
-      if (v === undefined || v === null) return null;
-      if (BOOL_KEYS.has(k)) return v ? 1 : 0;
-      return v as string | number;
-    }),
-  ];
-}
-
-/** Inverse of {@link songParams}: a selected row back into the shape
- *  `childFromSnapshotRow` consumes, NULL columns left absent. */
-function rowToSnapshotRow(raw: Record<string, unknown>): ChildSnapshotRow {
-  const out: Record<string, unknown> = {};
-  for (const k of SONG_KEYS) {
-    const v = raw[k];
-    if (v === undefined || v === null) continue;
-    out[k] = BOOL_KEYS.has(k) ? v === 1 || v === true : v;
-  }
-  return { ...out, id: String(raw.id ?? ''), title: String(raw.title ?? '') } as ChildSnapshotRow;
 }
 
 /* ------------------------------------------------------------------ */
@@ -227,7 +113,11 @@ function snapshotTrackCommands(snapshotId: string, tracks: readonly Child[]): Ba
   ];
   usable.forEach((child, pos) => {
     commands.push(
-      [INSERT_SONG_SQL, songParams(snapshotId, pos, child)],
+      childSnapshotInsertCommand({
+        table: 'queue_snapshot_songs',
+        key: { snapshot_id: snapshotId, pos },
+        child,
+      }),
       ...childSnapshotArrayCommands({
         tablePrefix: 'queue_snapshot_song',
         key: { snapshot_id: snapshotId, song_pos: pos },
@@ -363,111 +253,20 @@ const metaFromRow = (r: SnapshotRow): QueueSnapshotMeta => ({
 const META_SELECT =
   'id, kind, name, created_at, current_index, position_sec, track_count FROM queue_snapshots';
 
-/** Mutable twin of `ChildSnapshotArrays`, built by pushing the grouped rows. */
-interface MutableArrays {
-  genres?: string[];
-  artists?: { artistId: string | null; artistName: string | null }[];
-  albumArtists?: { artistId: string | null; artistName: string | null }[];
-  contributors?: {
-    role: string;
-    subRole: string | null;
-    artistId: string | null;
-    artistName: string | null;
-  }[];
-  moods?: string[];
-}
-
-/** Every array row carries the song it belongs to: the snapshot plus the position. */
-type ArrayRow<T> = T & { snapshot_id: string; song_pos: number };
-
-type CreditCols = { artist_id: string | null; artist_name: string | null };
-
-/** The five array tables' rows for whatever set of snapshots the caller selected. */
-interface SnapshotArrayRows {
-  genres: ArrayRow<{ name: string }>[];
-  artists: ArrayRow<CreditCols>[];
-  albumArtists: ArrayRow<CreditCols>[];
-  contributors: ArrayRow<CreditCols & { role: string; sub_role: string | null }>[];
-  moods: ArrayRow<{ mood: string }>[];
-}
-
-/** ONE query per array table, whatever the snapshot count — a per-song query would
- *  be 5×N round trips on the restore path. `where` restricts the snapshots. */
-const arraySql = (table: string, cols: string, where: string): string =>
-  `SELECT snapshot_id, song_pos, ${cols} FROM queue_snapshot_song_${table} ` +
-  `WHERE ${where} ORDER BY snapshot_id, song_pos, pos;`;
-
-function arrayRowsSync(
-  db: InternalDb,
+/** The array tables key a song by `(snapshot_id, song_pos)`; the shared reader groups
+ *  on those two columns. ONE query per table whatever the snapshot count — a per-song
+ *  query would be 5×N round trips on the restore path. */
+const arrayScope = (
   where: string,
-  params: readonly unknown[],
-): SnapshotArrayRows {
-  const q = <T>(table: string, cols: string): ArrayRow<T>[] =>
-    db.getAllSync<ArrayRow<T>>(arraySql(table, cols, where), params);
-  return {
-    genres: q<{ name: string }>('genres', 'name'),
-    artists: q<CreditCols>('artists', 'artist_id, artist_name'),
-    albumArtists: q<CreditCols>('album_artists', 'artist_id, artist_name'),
-    contributors: q<CreditCols & { role: string; sub_role: string | null }>(
-      'contributors',
-      'role, sub_role, artist_id, artist_name',
-    ),
-    moods: q<{ mood: string }>('moods', 'mood'),
-  };
-}
-
-async function arrayRowsAsync(
-  db: InternalDb,
-  where: string,
-  params: readonly unknown[],
-): Promise<SnapshotArrayRows> {
-  const q = <T>(table: string, cols: string): Promise<ArrayRow<T>[]> =>
-    db.getAllAsync<ArrayRow<T>>(arraySql(table, cols, where), params);
-  const [genres, artists, albumArtists, contributors, moods] = await Promise.all([
-    q<{ name: string }>('genres', 'name'),
-    q<CreditCols>('artists', 'artist_id, artist_name'),
-    q<CreditCols>('album_artists', 'artist_id, artist_name'),
-    q<CreditCols & { role: string; sub_role: string | null }>(
-      'contributors',
-      'role, sub_role, artist_id, artist_name',
-    ),
-    q<{ mood: string }>('moods', 'mood'),
-  ]);
-  return { genres, artists, albumArtists, contributors, moods };
-}
-
-/** Group the flat array rows by snapshot, then by song position. */
-function groupArrays(rows: SnapshotArrayRows): Map<string, Map<number, ChildSnapshotArrays>> {
-  const out = new Map<string, Map<number, MutableArrays>>();
-  const bucket = (r: { snapshot_id: string; song_pos: number }): MutableArrays => {
-    let bySong = out.get(r.snapshot_id);
-    if (bySong === undefined) {
-      bySong = new Map<number, MutableArrays>();
-      out.set(r.snapshot_id, bySong);
-    }
-    let fields = bySong.get(r.song_pos);
-    if (fields === undefined) {
-      fields = {};
-      bySong.set(r.song_pos, fields);
-    }
-    return fields;
-  };
-  const credit = (r: CreditCols): { artistId: string | null; artistName: string | null } => ({
-    artistId: r.artist_id,
-    artistName: r.artist_name,
-  });
-  for (const r of rows.genres) (bucket(r).genres ??= []).push(r.name);
-  for (const r of rows.artists) (bucket(r).artists ??= []).push(credit(r));
-  for (const r of rows.albumArtists) (bucket(r).albumArtists ??= []).push(credit(r));
-  for (const r of rows.contributors) {
-    (bucket(r).contributors ??= []).push({ role: r.role, subRole: r.sub_role, ...credit(r) });
-  }
-  for (const r of rows.moods) (bucket(r).moods ??= []).push(r.mood);
-  return out;
-}
+  params: ReadonlyArray<string | number | null>,
+): Parameters<typeof readChildSnapshotArraysSync>[1] => ({
+  tablePrefix: 'queue_snapshot_song',
+  keyColumns: ['snapshot_id', 'song_pos'],
+  where,
+  params,
+});
 
 const NO_ARRAYS: ChildSnapshotArrays = {};
-const NO_SONG_ARRAYS = new Map<number, ChildSnapshotArrays>();
 
 /**
  * Read one snapshot with its full `Child[]`, SYNCHRONOUSLY — `restorePersistedQueue`
@@ -481,16 +280,15 @@ export function readSnapshotSync(snapshotId: string): QueueSnapshot | null {
     const meta = db.getFirstSync<SnapshotRow>(`SELECT ${META_SELECT} WHERE id = ?;`, [snapshotId]);
     if (meta === undefined || meta === null) return null;
     const rows = db.getAllSync<Record<string, unknown>>(
-      `SELECT ${SONG_SELECT} FROM queue_snapshot_songs WHERE snapshot_id = ? ORDER BY pos;`,
+      `SELECT pos, ${CHILD_SNAPSHOT_SELECT} FROM queue_snapshot_songs ` +
+        'WHERE snapshot_id = ? ORDER BY pos;',
       [snapshotId],
     );
-    const arrays =
-      groupArrays(arrayRowsSync(db, 'snapshot_id = ?', [snapshotId])).get(snapshotId) ??
-      NO_SONG_ARRAYS;
+    const arrays = readChildSnapshotArraysSync(db, arrayScope('snapshot_id = ?', [snapshotId]));
     const tracks = rows.map((raw) =>
       childFromSnapshotRow(
-        rowToSnapshotRow(raw),
-        arrays.get(raw.pos as number) ?? NO_ARRAYS,
+        childSnapshotRowFromRaw(raw),
+        arrays.get(childSnapshotArrayKey([snapshotId, raw.pos as number])) ?? NO_ARRAYS,
       ),
     );
     return { ...metaFromRow(meta), tracks };
@@ -567,14 +365,13 @@ export async function readBookmarkSnapshots(): Promise<QueueSnapshot[] | null> {
   try {
     const metas = await listBookmarks();
     if (metas.length === 0) return [];
-    const [rows, arrayRows] = await Promise.all([
+    const [rows, arrays] = await Promise.all([
       db.getAllAsync<Record<string, unknown>>(
-        `SELECT snapshot_id, ${SONG_SELECT} FROM queue_snapshot_songs ` +
+        `SELECT snapshot_id, pos, ${CHILD_SNAPSHOT_SELECT} FROM queue_snapshot_songs ` +
           `WHERE ${BOOKMARK_SNAPSHOTS} ORDER BY snapshot_id, pos;`,
       ),
-      arrayRowsAsync(db, BOOKMARK_SNAPSHOTS, []),
+      readChildSnapshotArraysAsync(db, arrayScope(BOOKMARK_SNAPSHOTS, [])),
     ]);
-    const arrays = groupArrays(arrayRows);
     const tracks = new Map<string, Child[]>();
     for (const raw of rows) {
       const snapshotId = String(raw.snapshot_id);
@@ -585,8 +382,8 @@ export async function readBookmarkSnapshots(): Promise<QueueSnapshot[] | null> {
       }
       list.push(
         childFromSnapshotRow(
-          rowToSnapshotRow(raw),
-          arrays.get(snapshotId)?.get(raw.pos as number) ?? NO_ARRAYS,
+          childSnapshotRowFromRaw(raw),
+          arrays.get(childSnapshotArrayKey([snapshotId, raw.pos as number])) ?? NO_ARRAYS,
         ),
       );
     }

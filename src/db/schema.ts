@@ -1480,6 +1480,179 @@ export const downloadQueue = sqliteTable(
   }),
 );
 
+/**
+ * A queued download's songs, positional — the `Child[]` that `songs_json` used to
+ * hold. A FULL `Child` snapshot, like `queue_snapshot_songs`: this IS the payload the
+ * worker downloads, so it must not depend on `songs` (a resync or a reap would empty a
+ * queued download).
+ *
+ * `download_queue` fills one row per album across a full-library download, so the blob
+ * put the entire catalogue's tracks both on disk and — via the boot hydrate — resident
+ * in JS. Column names/types come from the shared mapping in `./childSnapshot.ts`.
+ */
+export const downloadQueueSongs = sqliteTable(
+  'download_queue_songs',
+  {
+    queueId: text('queue_id')
+      .notNull()
+      .references(() => downloadQueue.queueId, { onDelete: 'cascade' }),
+    pos: integer('pos').notNull(),
+    songId: text('song_id').notNull(),
+    title: text('title'),
+    artist: text('artist'),
+    album: text('album'),
+    coverArt: text('cover_art'),
+    duration: integer('duration'),
+    albumId: text('album_id'),
+    suffix: text('suffix'),
+    bitRate: integer('bit_rate'),
+    bitDepth: integer('bit_depth'),
+    samplingRate: integer('sampling_rate'),
+    artistId: text('artist_id'),
+    displayArtist: text('display_artist'),
+    displayAlbumArtist: text('display_album_artist'),
+    displayComposer: text('display_composer'),
+    track: integer('track'),
+    discNumber: integer('disc_number'),
+    year: integer('year'),
+    genre: text('genre'),
+    size: integer('size'),
+    contentType: text('content_type'),
+    transcodedContentType: text('transcoded_content_type'),
+    transcodedSuffix: text('transcoded_suffix'),
+    channelCount: integer('channel_count'),
+    path: text('path'),
+    userRating: integer('user_rating'),
+    averageRating: real('average_rating'),
+    playCount: integer('play_count'),
+    created: integer('created'),
+    starred: integer('starred'),
+    played: text('played'),
+    type: text('type'),
+    bpm: integer('bpm'),
+    comment: text('comment'),
+    sortName: text('sort_name'),
+    musicBrainzId: text('music_brainz_id'),
+    explicitStatus: text('explicit_status'),
+    bookmarkPosition: integer('bookmark_position'),
+    isVideo: integer('is_video', { mode: 'boolean' }),
+    isDir: integer('is_dir', { mode: 'boolean' }),
+    parent: text('parent'),
+    originalWidth: integer('original_width'),
+    originalHeight: integer('original_height'),
+    rgTrackGain: real('rg_track_gain'),
+    rgAlbumGain: real('rg_album_gain'),
+    rgTrackPeak: real('rg_track_peak'),
+    rgAlbumPeak: real('rg_album_peak'),
+    rgBaseGain: real('rg_base_gain'),
+    rgFallbackGain: real('rg_fallback_gain'),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.queueId, t.pos] }),
+    // `readQueuedSongStatus` answers "is this song queued?" from a zustand selector,
+    // so it must be a seek and not a scan of every queued track in the library.
+    songIdx: index('idx_download_queue_songs_song_id').on(t.songId),
+  }),
+);
+
+// The queued Child's multi-valued fields, mirroring `queue_snapshot_song_*`. Carried
+// because a queued `Child` becomes a `cached_songs` row when the download completes,
+// and `cached_song_*` is rebuilt from it — dropping them here would write array-less
+// rows for every track downloaded after a restart.
+//
+// Keyed `(queue_id, song_pos)` — the owning SONG row, not the queue item — so a
+// rewrite with fewer tracks cascades the surplus arrays away.
+
+export const downloadQueueSongGenres = sqliteTable(
+  'download_queue_song_genres',
+  {
+    queueId: text('queue_id').notNull(),
+    songPos: integer('song_pos').notNull(),
+    pos: integer('pos').notNull(),
+    name: text('name').notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.queueId, t.songPos, t.pos] }),
+    songFk: foreignKey({
+      columns: [t.queueId, t.songPos],
+      foreignColumns: [downloadQueueSongs.queueId, downloadQueueSongs.pos],
+    }).onDelete('cascade'),
+  }),
+);
+
+export const downloadQueueSongArtists = sqliteTable(
+  'download_queue_song_artists',
+  {
+    queueId: text('queue_id').notNull(),
+    songPos: integer('song_pos').notNull(),
+    pos: integer('pos').notNull(),
+    artistId: text('artist_id'),
+    artistName: text('artist_name'),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.queueId, t.songPos, t.pos] }),
+    songFk: foreignKey({
+      columns: [t.queueId, t.songPos],
+      foreignColumns: [downloadQueueSongs.queueId, downloadQueueSongs.pos],
+    }).onDelete('cascade'),
+  }),
+);
+
+export const downloadQueueSongAlbumArtists = sqliteTable(
+  'download_queue_song_album_artists',
+  {
+    queueId: text('queue_id').notNull(),
+    songPos: integer('song_pos').notNull(),
+    pos: integer('pos').notNull(),
+    artistId: text('artist_id'),
+    artistName: text('artist_name'),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.queueId, t.songPos, t.pos] }),
+    songFk: foreignKey({
+      columns: [t.queueId, t.songPos],
+      foreignColumns: [downloadQueueSongs.queueId, downloadQueueSongs.pos],
+    }).onDelete('cascade'),
+  }),
+);
+
+export const downloadQueueSongContributors = sqliteTable(
+  'download_queue_song_contributors',
+  {
+    queueId: text('queue_id').notNull(),
+    songPos: integer('song_pos').notNull(),
+    pos: integer('pos').notNull(),
+    role: text('role').notNull(),
+    subRole: text('sub_role'),
+    artistId: text('artist_id'),
+    artistName: text('artist_name'),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.queueId, t.songPos, t.pos] }),
+    songFk: foreignKey({
+      columns: [t.queueId, t.songPos],
+      foreignColumns: [downloadQueueSongs.queueId, downloadQueueSongs.pos],
+    }).onDelete('cascade'),
+  }),
+);
+
+export const downloadQueueSongMoods = sqliteTable(
+  'download_queue_song_moods',
+  {
+    queueId: text('queue_id').notNull(),
+    songPos: integer('song_pos').notNull(),
+    pos: integer('pos').notNull(),
+    mood: text('mood').notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.queueId, t.songPos, t.pos] }),
+    songFk: foreignKey({
+      columns: [t.queueId, t.songPos],
+      foreignColumns: [downloadQueueSongs.queueId, downloadQueueSongs.pos],
+    }).onDelete('cascade'),
+  }),
+);
+
 /** Per-variant record of on-disk cover art. No FK — cover art ids come from the server
  *  and aren't owned by any local table. At most one row per (id, size). */
 export const cachedImages = sqliteTable(

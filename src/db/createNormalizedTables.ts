@@ -196,6 +196,12 @@ export const KEPT_TABLES: readonly string[] = [
   'cached_playlists',
   'cached_item_songs',
   'download_queue',
+  'download_queue_songs',
+  'download_queue_song_genres',
+  'download_queue_song_artists',
+  'download_queue_song_album_artists',
+  'download_queue_song_contributors',
+  'download_queue_song_moods',
   'cached_images',
   'image_download_queue',
 ];

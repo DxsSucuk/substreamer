@@ -69,7 +69,6 @@ function makeQueueItem(overrides: Partial<DownloadQueueItem> = {}): DownloadQueu
     completedSongs: 0,
     addedAt: 0,
     queuePosition: 1,
-    songsJson: '[]',
     ...overrides,
   };
 }
