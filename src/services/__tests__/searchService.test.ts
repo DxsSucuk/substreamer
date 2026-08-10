@@ -62,7 +62,7 @@ function resetStores() {
 
 /**
  * Seed `musicCacheStore` from a compact {itemId: {name, tracks: [...]}}
- * description. Each track's genre / genres land in the PROMOTED COLUMNS —
+ * description. A track's fields land verbatim on the row as PROMOTED COLUMNS —
  * the post-conversion shape every hydrated row has — which is what
  * `getSongEnvelope()` reads at runtime.
  */
@@ -78,14 +78,10 @@ function seedCache(
       if (!songIds.includes(t.id)) songIds.push(t.id);
       if (!cachedSongs[t.id]) {
         cachedSongs[t.id] = {
-          id: t.id,
-          title: t.title,
-          artist: t.artist,
+          ...t,
           albumId: t.albumId ?? itemId,
           srcAlbumId: t.albumId ?? itemId,
           duration: t.duration ?? 0,
-          ...(t.genre ? { genre: t.genre } : {}),
-          ...(t.genres ? { genres: t.genres } : {}),
         };
       }
     }
@@ -96,6 +92,37 @@ function seedCache(
     };
   }
   musicCacheStore.setState({ cachedItems, cachedSongs } as any);
+}
+
+/**
+ * A downloaded track with the promoted columns populated the way a real cached row
+ * has them: the `src*` twins describe the SERVER's track, the same-named columns the
+ * downloaded file. `album` is the song's own, which the parent item name overrides.
+ */
+const fullTrack = () => ({
+  id: 't1', title: 'Shoegaze Anthem', artist: 'A', album: 'Real Album',
+  albumId: 'server-album', coverArt: 'songcover', duration: 200,
+  suffix: 'mp3', bitRate: 320,
+  srcSuffix: 'flac', srcBitRate: 1000, srcBitDepth: 24, srcSamplingRate: 96000,
+  size: 41_000_000, genres: ['Shoegaze'], genre: 'Shoegaze', track: 3, year: 1991,
+  rgTrackGain: -6.5, rgAlbumPeak: 0.99,
+});
+
+/** The fields the song-details modal renders — the whole point of #12. */
+function expectFullMetadata(song: any) {
+  expect(song.suffix).toBe('flac');
+  expect(song.bitRate).toBe(1000);
+  expect(song.bitDepth).toBe(24);
+  expect(song.samplingRate).toBe(96000);
+  expect(song.size).toBe(41_000_000);
+  expect(song.genres).toEqual(['Shoegaze']);
+  expect(song.replayGain).toEqual({
+    trackGain: -6.5, albumGain: undefined, trackPeak: undefined,
+    albumPeak: 0.99, baseGain: undefined, fallbackGain: undefined,
+  });
+  expect(song.track).toBe(3);
+  expect(song.year).toBe(1991);
+  expect(song.albumId).toBe('server-album');
 }
 
 beforeAll(() => ensureNormalizedSchema(db()));
@@ -250,6 +277,58 @@ describe('performOfflineSearch', () => {
     expect((await performOfflineSearch('track')).songs[0].album).toBe('Parent Item Name');
   });
 
+  /* #12: hits used to be a hand-rolled 7-field projection, so the details modal had
+   * nothing to render. They now come off the promoted columns via `getSongEnvelope`. */
+  it('carries the full downloaded metadata onto a hit', async () => {
+    seedCache({ a1: { name: 'Album', tracks: [fullTrack()] } });
+
+    const song = (await performOfflineSearch('shoegaze anthem')).songs[0];
+
+    expectFullMetadata(song);
+  });
+
+  it('keeps the parent item name as `album` for a playlist-downloaded song', async () => {
+    seedCache({ pl1: { name: 'Road Trip', tracks: [fullTrack()] } });
+
+    const song = (await performOfflineSearch('shoegaze anthem')).songs[0];
+
+    expect(song.album).toBe('Road Trip');
+    expect(song.album).not.toBe('Real Album');
+  });
+
+  it('skips a songId whose cached row is gone', async () => {
+    seedCache({
+      a1: { name: 'Album', tracks: [{ id: 't1', title: 'Ghost Song', artist: 'A', duration: 200 }] },
+    });
+    const state = musicCacheStore.getState();
+    musicCacheStore.setState({
+      ...state,
+      cachedItems: { ...state.cachedItems, a1: { ...state.cachedItems.a1, songIds: ['t99'] } },
+    } as any);
+
+    expect((await performOfflineSearch('ghost')).songs).toEqual([]);
+  });
+
+  /* The row snapshot is taken before the scan's yields, so a song deleted while the
+   * scan is parked resolves from the snapshot but no longer has an envelope. */
+  it('drops a song whose row is deleted mid-scan', async () => {
+    // 1024 tracks so the scan yields exactly as it reaches the only matching one.
+    const tracks = Array.from({ length: 1024 }, (_, i) => ({
+      id: `t${i}`, title: i === 1023 ? 'Zephyr Quartet' : `Filler ${i}`, artist: 'A', duration: 200,
+    }));
+    seedCache({ a1: { name: 'Album', tracks } });
+
+    expect((await performOfflineSearch('zephyr')).songs.map((s) => s.id)).toEqual(['t1023']);
+
+    seedCache({ a1: { name: 'Album', tracks } });
+    const wipeRows = () => {
+      musicCacheStore.setState({ ...musicCacheStore.getState(), cachedSongs: {} } as any);
+      return false; // not an abort — let the scan run on with the rows gone
+    };
+
+    expect((await performOfflineSearch('zephyr', wipeRows)).songs).toEqual([]);
+  });
+
   it('always returns empty artists array', async () => {
     expect((await performOfflineSearch('anything')).artists).toEqual([]);
   });
@@ -367,6 +446,13 @@ describe('getOfflineSongsByGenre', () => {
 
     expect(getOfflineSongsByGenre('Rock')).toHaveLength(0);
   });
+
+  /* #12: the genre-filtered mixes get the same full `Child` as the unfiltered ones. */
+  it('carries the full downloaded metadata', () => {
+    seedCache({ a1: { name: 'Album', tracks: [fullTrack()] } });
+
+    expectFullMetadata(getOfflineSongsByGenre('shoegaze')[0]);
+  });
 });
 
 /** The ONE pass the Tuned-In builder replaced N per-genre walks with. */
@@ -452,6 +538,32 @@ describe('getOfflineSongsAll', () => {
 
   it('is empty when nothing is downloaded', () => {
     expect(getOfflineSongsAll()).toEqual([]);
+  });
+
+  it('skips a songId whose cached row is gone', () => {
+    seedCache({ a1: { name: 'Album', tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200 }] } });
+    const state = musicCacheStore.getState();
+    musicCacheStore.setState({
+      ...state,
+      cachedItems: { ...state.cachedItems, a1: { ...state.cachedItems.a1, songIds: ['t1', 't99'] } },
+    } as any);
+
+    expect(getOfflineSongsAll().map((s) => s.id)).toEqual(['t1']);
+  });
+
+  /* #12 again, on the path the Tuned In offline mixes read. */
+  it('carries the full downloaded metadata', () => {
+    seedCache({ a1: { name: 'Album', tracks: [fullTrack()] } });
+
+    expectFullMetadata(getOfflineSongsAll()[0]);
+  });
+
+  it('keeps the parent item name as `album` for a playlist-downloaded song', () => {
+    seedCache({ pl1: { name: 'Road Trip', tracks: [fullTrack()] } });
+
+    const song = getOfflineSongsAll()[0];
+    expect(song.album).toBe('Road Trip');
+    expect(song.album).not.toBe('Real Album');
   });
 });
 

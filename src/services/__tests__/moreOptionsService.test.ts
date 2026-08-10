@@ -37,11 +37,9 @@ jest.mock('../../store/offlineModeStore', () => ({
   },
 }));
 
-jest.mock('../../store/musicCacheStore', () => ({
-  musicCacheStore: {
-    getState: jest.fn(() => ({ cachedItems: {} })),
-  },
-}));
+// The REAL music-cache store, so the offline artist path builds its `Child`s through
+// the real `getSongEnvelope` projection — a fake here would assert nothing about it.
+jest.mock('../../store/persistence/kvStorage', () => require('../../store/persistence/__mocks__/kvStorage'));
 
 jest.mock('../../store/persistence/db', () => ({
   getDb: jest.fn(() => ({})),
@@ -169,8 +167,15 @@ const mockCreateNewPlaylist = createNewPlaylist as jest.Mock;
 const mockAddToQueue = addToQueue as jest.Mock;
 const mockPlayTrack = playTrack as jest.Mock;
 
+/** Seed the real music-cache store; `cachedSongs` rows are promoted-column shaped. */
+const seedCache = (
+  cachedItems: Record<string, unknown> = {},
+  cachedSongs: Record<string, unknown> = {},
+) => musicCacheStore.setState({ cachedItems, cachedSongs } as any);
+
 beforeEach(() => {
   jest.clearAllMocks();
+  seedCache();
   (favoritesStore.getState as jest.Mock).mockReturnValue({
     songIds: new Set<string>(),
     albumIds: new Set<string>(),
@@ -738,12 +743,12 @@ describe('playMoreByArtist', () => {
     });
 
     it('plays songs from cached items matching artist name', async () => {
-      (musicCacheStore.getState as jest.Mock).mockReturnValue({
-        cachedItems: {
+      seedCache(
+        {
           alb1: { itemId: 'alb1', name: 'Album One', coverArtId: 'cov1', songIds: ['s1', 's2', 's4', 's5'] },
           alb2: { itemId: 'alb2', name: 'Album Two', coverArtId: 'cov2', songIds: ['s3', 's6'] },
         },
-        cachedSongs: {
+        {
           s1: { id: 's1', title: 'Song 1', artist: 'Artist A', duration: 200, bytes: 1000 },
           s2: { id: 's2', title: 'Song 2', artist: 'Other', duration: 180, bytes: 900 },
           s3: { id: 's3', title: 'Song 3', artist: 'Artist A', duration: 210, bytes: 1100 },
@@ -751,7 +756,7 @@ describe('playMoreByArtist', () => {
           s5: { id: 's5', title: 'Song 5', artist: 'Artist A', duration: 220, bytes: 1050 },
           s6: { id: 's6', title: 'Song 6', artist: 'Artist A', duration: 230, bytes: 1200 },
         },
-      });
+      );
 
       await playMoreByArtist('ar1', 'Artist A');
 
@@ -769,14 +774,10 @@ describe('playMoreByArtist', () => {
     });
 
     it('shows error when no offline songs match', async () => {
-      (musicCacheStore.getState as jest.Mock).mockReturnValue({
-        cachedItems: {
-          alb1: { itemId: 'alb1', name: 'Album One', coverArtId: 'cov1', songIds: ['s1'] },
-        },
-        cachedSongs: {
-          s1: { id: 's1', title: 'Song 1', artist: 'Other', duration: 200, bytes: 1000 },
-        },
-      });
+      seedCache(
+        { alb1: { itemId: 'alb1', name: 'Album One', coverArtId: 'cov1', songIds: ['s1'] } },
+        { s1: { id: 's1', title: 'Song 1', artist: 'Other', duration: 200, bytes: 1000 } },
+      );
 
       await playMoreByArtist('ar1', 'Artist A');
 
@@ -785,7 +786,7 @@ describe('playMoreByArtist', () => {
     });
 
     it('shows error when cache is empty', async () => {
-      (musicCacheStore.getState as jest.Mock).mockReturnValue({ cachedItems: {}, cachedSongs: {} });
+      seedCache();
 
       await playMoreByArtist('ar1', 'Artist A');
 
@@ -793,16 +794,26 @@ describe('playMoreByArtist', () => {
       expect(mockPlayTrack).not.toHaveBeenCalled();
     });
 
+    it('skips a songId whose cached row is gone', async () => {
+      seedCache(
+        { alb1: { itemId: 'alb1', name: 'Album One', coverArtId: 'cov1', songIds: ['s1', 'gone'] } },
+        { s1: { id: 's1', title: 'Song 1', artist: 'Artist A', duration: 200, bytes: 1000 } },
+      );
+
+      await playMoreByArtist('ar1', 'Artist A');
+
+      // One real match → below the 5-song floor, and no crash on the dangling id.
+      expect(mockOverlayShowError).toHaveBeenCalledWith('Not enough offline songs by Artist A');
+    });
+
     it('shows error when fewer than 5 offline songs match', async () => {
-      (musicCacheStore.getState as jest.Mock).mockReturnValue({
-        cachedItems: {
-          alb1: { itemId: 'alb1', name: 'Album One', coverArtId: 'cov1', songIds: ['s1', 's2'] },
-        },
-        cachedSongs: {
+      seedCache(
+        { alb1: { itemId: 'alb1', name: 'Album One', coverArtId: 'cov1', songIds: ['s1', 's2'] } },
+        {
           s1: { id: 's1', title: 'Song 1', artist: 'Artist A', duration: 200, bytes: 1000 },
           s2: { id: 's2', title: 'Song 2', artist: 'Artist A', duration: 180, bytes: 900 },
         },
-      });
+      );
 
       await playMoreByArtist('ar1', 'Artist A');
 
@@ -822,17 +833,55 @@ describe('playMoreByArtist', () => {
           bytes: 1000,
         };
       }
-      (musicCacheStore.getState as jest.Mock).mockReturnValue({
-        cachedItems: {
-          alb1: { itemId: 'alb1', name: 'Album', coverArtId: 'cov', songIds },
-        },
-        cachedSongs,
-      });
+      seedCache({ alb1: { itemId: 'alb1', name: 'Album', coverArtId: 'cov', songIds } }, cachedSongs);
 
       await playMoreByArtist('ar1', 'Artist A');
 
       const [, queue] = mockPlayTrack.mock.calls[0];
       expect(queue.length).toBe(20);
+    });
+
+    /* The #12 defect: the offline artist sheet used to hand-roll a 7-field `Child`,
+     * so the details modal had nothing to render. */
+    it('carries the full downloaded metadata, with album/coverArt still from the item', async () => {
+      const cachedSongs: Record<string, any> = {
+        s1: {
+          id: 's1', title: 'Song 1', artist: 'Artist A', album: 'Real Album',
+          albumId: 'dir1', coverArt: 'songcover', duration: 200, bytes: 1000,
+          suffix: 'mp3', bitRate: 320,
+          srcAlbumId: 'server-album', srcSuffix: 'flac', srcBitRate: 1000,
+          srcBitDepth: 24, srcSamplingRate: 96000, size: 41_000_000,
+          genres: ['Shoegaze'], genre: 'Shoegaze', track: 3, year: 1991,
+          rgTrackGain: -6.5, rgAlbumPeak: 0.99,
+        },
+      };
+      // Four filler tracks so the set clears the 5-song floor.
+      for (let i = 2; i <= 5; i++) {
+        cachedSongs[`s${i}`] = { id: `s${i}`, title: `Song ${i}`, artist: 'Artist A', duration: 200, bytes: 1000 };
+      }
+      // A PLAYLIST download: `album` must show the playlist, not the song's own album.
+      seedCache(
+        { pl1: { itemId: 'pl1', name: 'Road Trip', coverArtId: 'plcover', songIds: Object.keys(cachedSongs) } },
+        cachedSongs,
+      );
+
+      await playMoreByArtist('ar1', 'Artist A');
+
+      const [, queue] = mockPlayTrack.mock.calls[0];
+      const song = queue.find((s: any) => s.id === 's1');
+      expect(song.suffix).toBe('flac');
+      expect(song.bitRate).toBe(1000);
+      expect(song.size).toBe(41_000_000);
+      expect(song.genres).toEqual(['Shoegaze']);
+      expect(song.replayGain).toEqual({
+        trackGain: -6.5, albumGain: undefined, trackPeak: undefined,
+        albumPeak: 0.99, baseGain: undefined, fallbackGain: undefined,
+      });
+      expect(song.track).toBe(3);
+      expect(song.year).toBe(1991);
+      // The two overrides the item still owns.
+      expect(song.album).toBe('Road Trip');
+      expect(song.coverArt).toBe('plcover');
     });
   });
 });
@@ -936,15 +985,13 @@ describe('playAllByArtist', () => {
     });
 
     it('plays offline songs sorted by year when shuffle=false', async () => {
-      (musicCacheStore.getState as jest.Mock).mockReturnValue({
-        cachedItems: {
-          alb1: { itemId: 'alb1', name: 'Album', coverArtId: 'cov', songIds: ['s1', 's2'] },
-        },
-        cachedSongs: {
+      seedCache(
+        { alb1: { itemId: 'alb1', name: 'Album', coverArtId: 'cov', songIds: ['s1', 's2'] } },
+        {
           s1: { id: 's1', title: 'Song 1', artist: 'A', duration: 200, bytes: 1000 },
           s2: { id: 's2', title: 'Song 2', artist: 'A', duration: 180, bytes: 900 },
         },
-      });
+      );
 
       await playAllByArtist('ar1', 'A', false);
 
@@ -954,7 +1001,7 @@ describe('playAllByArtist', () => {
     });
 
     it('shows error when no offline songs match', async () => {
-      (musicCacheStore.getState as jest.Mock).mockReturnValue({ cachedItems: {}, cachedSongs: {} });
+      seedCache();
 
       await playAllByArtist('ar1', 'A', false);
 
@@ -1014,13 +1061,11 @@ describe('handleDownloadSong', () => {
 describe('handleRemoveSongDownload', () => {
   const mockDelete = mockDeleteCachedItem as jest.Mock;
   const mockRemoveAlbumSong = mockRemoveCachedAlbumSong as jest.Mock;
-  const mockGetState = musicCacheStore.getState as jest.Mock;
-
   /** Make `cachedItems` report the given ids as present. */
   const withCachedItems = (...ids: string[]) => {
     const cachedItems: Record<string, unknown> = {};
     for (const id of ids) cachedItems[id] = { type: 'album' };
-    mockGetState.mockReturnValue({ cachedItems });
+    seedCache(cachedItems);
   };
 
   it('no-ops on falsy song', () => {
@@ -1046,7 +1091,7 @@ describe('handleRemoveSongDownload', () => {
   });
 
   it('removes the song from its parent album (reverts album to partial)', async () => {
-    mockGetState.mockReturnValue({ cachedItems: {} }); // no explicit song: item
+    seedCache(); // no explicit song: item
     mockRemoveAlbumSong.mockResolvedValueOnce(true);
     const song = { id: 's1', title: 'Cool Song', albumId: 'alb1' } as any;
     await handleRemoveSongDownload(song);
@@ -1056,7 +1101,7 @@ describe('handleRemoveSongDownload', () => {
   });
 
   it('shows error overlay when nothing was removed', async () => {
-    mockGetState.mockReturnValue({ cachedItems: {} });
+    seedCache();
     mockRemoveAlbumSong.mockResolvedValueOnce(false);
     const song = { id: 's1', title: 'Cool Song', albumId: 'alb1' } as any;
     await handleRemoveSongDownload(song);

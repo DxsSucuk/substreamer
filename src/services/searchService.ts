@@ -31,35 +31,6 @@ export async function performOnlineSearch(query: string): Promise<SearchResults>
 }
 
 /**
- * Construct a Child from a cached_songs row + its parent cached_item.
- *
- * Carries every field the cached row holds, including `coverArt`, which song
- * cover-art resolution reads. Never narrow a reconstruction to today's consumers.
- */
-function childFromCachedSong(
-  track: {
-    id: string;
-    title: string;
-    artist?: string;
-    albumId: string;
-    duration: number;
-    coverArt?: string;
-  },
-  parentItemName?: string,
-): Child {
-  return {
-    id: track.id,
-    albumId: track.albumId,
-    title: track.title,
-    artist: track.artist,
-    album: parentItemName,
-    duration: track.duration,
-    coverArt: track.coverArt,
-    isDir: false,
-  };
-}
-
-/**
  * Offline search over the cached library.
  *
  * The per-song scan can sweep the entire downloaded catalog (tens of thousands of
@@ -127,11 +98,15 @@ export async function performOfflineSearch(
       if (seen.has(songId)) continue;
       const track = cachedSongs[songId];
       if (!track) continue;
+      // Score off the row, not the envelope: building one per candidate would
+      // rebuild the whole downloaded catalog on every keystroke.
       const s = rel(track.title, track.artist);
-      if (s >= REJECT) {
-        seen.add(songId);
-        scored.push({ c: childFromCachedSong(track, item.name), s });
-      }
+      if (s < REJECT) continue;
+      // The snapshot above predates the awaits, so a song deleted mid-scan is gone here.
+      const envelope = getSongEnvelope(songId);
+      if (!envelope) continue;
+      seen.add(songId);
+      scored.push({ c: { ...envelope, album: item.name }, s });
     }
   }
   scored.sort((a, b) => b.s - a.s);
@@ -373,17 +348,16 @@ export async function findArtistSongs(name: string): Promise<Child[]> {
  * Every downloaded song, optionally filtered by genre.
  *
  * Iterates `cachedItems` (downloaded items including the `__starred__`
- * aggregate) → `songIds` → `cachedSongs`. Dedup by song id so a track
+ * aggregate) → `songIds` → `getSongEnvelope()`. Dedup by song id so a track
  * that lives under multiple cached items appears once.
  *
- * Genre filtering reads each song's full `Child` via `getSongEnvelope()`
- * (built from the row's promoted columns + its `genres` projection, memoised on
- * the row), since the lean `childFromCachedSong` projection carries no genre.
- * For text-only paths (no genre filter) we never call it, so it stays free.
+ * `album` is overridden with the containing item's name, so a playlist-downloaded
+ * song shows the playlist rather than its own album — the display these callers
+ * have always had.
  */
 function collectOfflineSongs(genreFilter?: string): Child[] {
   const g = genreFilter?.toLowerCase();
-  const { cachedItems, cachedSongs } = musicCacheStore.getState();
+  const { cachedItems } = musicCacheStore.getState();
 
   const out: Child[] = [];
   const seen = new Set<string>();
@@ -391,15 +365,11 @@ function collectOfflineSongs(genreFilter?: string): Child[] {
   for (const item of Object.values(cachedItems)) {
     for (const songId of item.songIds) {
       if (seen.has(songId)) continue;
-      const track = cachedSongs[songId];
-      if (!track) continue;
-      if (g) {
-        const envelope = getSongEnvelope(songId);
-        const names = envelope ? getGenreNames(envelope) : [];
-        if (!names.some((name) => name.toLowerCase() === g)) continue;
-      }
+      const envelope = getSongEnvelope(songId);
+      if (!envelope) continue;
+      if (g && !getGenreNames(envelope).some((name) => name.toLowerCase() === g)) continue;
       seen.add(songId);
-      out.push(childFromCachedSong(track, item.name));
+      out.push({ ...envelope, album: item.name });
     }
   }
 
