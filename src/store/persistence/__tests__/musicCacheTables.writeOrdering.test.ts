@@ -1,67 +1,16 @@
 /**
- * Write ORDER against the engine's real submission model, which the default seam does
- * not reproduce.
+ * Write ORDER through the music-cache tables, against the submission model the seam
+ * reproduces (`src/db/testing/opSqliteBetterSqlite3.ts`): a batch is parked on
+ * op-SQLite's transaction lock and started a macrotask later, while a read — or a
+ * bare `runAsync` write — reaches the engine at call time and overtakes it.
  *
- * op-sqlite's JS layer (`enhanceDB` in `@op-engineering/op-sqlite/src/functions.ts`)
- * parks every `executeBatch` on a transaction lock and only submits it to the native
- * pool from a `setImmediate`, whereas `execute` — every read, and every `runAsync`
- * write — reaches the pool at call time. Batches therefore run in submission order
- * among themselves, and a bare statement OVERTAKES every batch still on the lock.
- *
- * Two consequences this suite pins, both of which shipped as live bugs:
+ * Two consequences pinned here, both of which shipped as live bugs:
  *   - a queue item's payload is unreadable until its write lands, so the download
  *     worker has to wait for it rather than reading straight after the enqueue;
  *   - an edge sent bare would land before the item/song batches it FKs to, and
  *     `PRAGMA foreign_keys = ON` would reject it — silently, the writes swallow.
- *
- * Per AGENTS.md §11 the seam proves SQL semantics, never native concurrency; what is
- * modelled here is the JS-side submission order, which is ordinary JS scheduling.
  */
-jest.mock('@op-engineering/op-sqlite', () => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { createOpSqliteMock } = require('../../../db/testing/opSqliteBetterSqlite3');
-  const base = createOpSqliteMock();
-
-  const openMemory = (opts: Record<string, unknown>) => {
-    const db = base.open({ ...(opts ?? {}), location: ':memory:' });
-    // `enhanceDB`'s transaction lock: one batch at a time, each started from a
-    // `setImmediate`. `execute` is left alone — it applies at call time.
-    const waiting: Array<() => void> = [];
-    let running = false;
-    const pump = (): void => {
-      if (running || waiting.length === 0) return;
-      running = true;
-      const start = waiting.shift()!;
-      setImmediate(() => {
-        start();
-        running = false;
-        pump();
-      });
-    };
-    return {
-      ...db,
-      executeBatch: (commands: unknown[]) =>
-        new Promise((resolve, reject) => {
-          waiting.push(() => {
-            try {
-              resolve(db.executeBatch(commands as never));
-            } catch (e) {
-              reject(e as Error);
-            }
-          });
-          pump();
-        }),
-    };
-  };
-
-  return {
-    ...base,
-    open: openMemory,
-    openSync: openMemory,
-    openAsync: (o: Record<string, unknown>) => Promise.resolve(openMemory(o)),
-  };
-});
-
+import { settleDbWrites } from '../../../test-utils/settleDbWrites';
 import { musicCacheStore, whenQueuePayloadWritten } from '../../musicCacheStore';
 import { getDb } from '../db';
 import {
@@ -116,18 +65,13 @@ const makeQueueRow = (
 
 const child = (id: string): Child => ({ id, title: `Track ${id}` }) as Child;
 
-/** Drain the batch lock: every pending batch runs on its own macrotask. */
-const settleWrites = async (): Promise<void> => {
-  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
-};
-
 beforeEach(async () => {
   const db = getDb()!;
   for (const t of ['cached_item_songs', 'download_queue', 'cached_items', 'cached_songs']) {
     db.runSync(`DELETE FROM ${t};`);
   }
   musicCacheStore.setState({ downloadQueue: [], cachedItems: {}, cachedSongs: {} } as never);
-  await settleWrites();
+  await settleDbWrites();
 });
 
 describe('a batch is not visible to anything issued before it lands', () => {
@@ -165,7 +109,7 @@ describe('an edge lands after the item and song it references', () => {
     void upsertCachedItem(makeItem('alb-1'));
 
     await insertCachedItemSong('alb-1', 1, 's-1');
-    await settleWrites();
+    await settleDbWrites();
 
     expect(countCachedItemSongs()).toBe(1);
   });
@@ -175,7 +119,7 @@ describe('an edge lands after the item and song it references', () => {
     await upsertCachedItem(makeItem('alb-1'));
 
     await insertCachedItemSong('alb-1', 1, 's-1');
-    await settleWrites();
+    await settleDbWrites();
 
     expect(countCachedItemSongs()).toBe(1);
   });

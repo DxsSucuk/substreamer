@@ -80,6 +80,7 @@ jest.mock('../../deviceIdentityStore', () => ({
   getDeviceShortId: () => 'dev1',
 }));
 
+import { settleDbWrites } from '../../../test-utils/settleDbWrites';
 import { __setDbForTests, getDb, type InternalDb } from '../db';
 import { readMbidOverrides } from '../mbidOverrideTable';
 import { readScrobbleExclusions } from '../scrobbleExclusionTable';
@@ -157,9 +158,9 @@ function seedBackupFile(suffix: 'mbid' | 'exclusions', payload: unknown): void {
   seededPayloads.set(`${STEM}.${suffix}.gz`, payload);
 }
 
-/** The store write-throughs are fire-and-forget; the seam resolves synchronously, so one
- *  macrotask drains the chain. */
-const settle = (): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, 0));
+/** The store's write-throughs are fire-and-forget, and a batch is parked on
+ *  op-SQLite's transaction lock — one macrotask each. */
+const settle = settleDbWrites;
 
 const overrideIds = (): string[] =>
   realDb

@@ -78,6 +78,7 @@ jest.mock('../../deviceIdentityStore', () => ({
 
 import type { Child } from 'subsonic-api';
 
+import { settleDbWrites } from '../../../test-utils/settleDbWrites';
 import { __setDbForTests, getDb, type InternalDb } from '../db';
 import {
   readSnapshotSync,
@@ -187,9 +188,9 @@ const countRows = (table: string, snapshotId: string): number =>
     snapshotId,
   ])?.c ?? 0;
 
-/** The store's write-through is fire-and-forget; the seam resolves synchronously, so
- *  one macrotask drains the chain. */
-const settle = (): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, 0));
+/** The store's write-throughs are fire-and-forget, and a batch is parked on
+ *  op-SQLite's transaction lock — one macrotask each. */
+const settle = settleDbWrites;
 
 /** Seed bookmarks the way the app does, through the store, so SQL holds them too. */
 async function seedExisting(...bookmarks: PlayQueueBookmark[]): Promise<void> {

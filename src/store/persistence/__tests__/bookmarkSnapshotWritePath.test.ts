@@ -10,6 +10,7 @@ jest.mock('../kvStorage', () => require('../__mocks__/kvStorage'));
 
 import type { Child } from 'subsonic-api';
 
+import { settleDbWrites } from '../../../test-utils/settleDbWrites';
 import { __setDbForTests, getDb, type InternalDb } from '../db';
 import {
   readSnapshotSync,
@@ -99,9 +100,9 @@ const songRows = (snapshotId: string): unknown[] =>
     snapshotId,
   ]);
 
-/** The store's actions write through fire-and-forget; the seam resolves every promise
- *  synchronously, so one macrotask drains the whole chain. */
-const settle = (): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, 0));
+/** The store's write-throughs are fire-and-forget, and a batch is parked on
+ *  op-SQLite's transaction lock — one macrotask each. */
+const settle = settleDbWrites;
 
 /** Drop the in-memory map and rebuild it from SQL — a cold start, with the same call
  *  `rehydrateAllStores` makes. */

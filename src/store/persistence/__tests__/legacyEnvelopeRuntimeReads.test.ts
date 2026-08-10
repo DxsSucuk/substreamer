@@ -15,6 +15,7 @@
 jest.mock('../../../services/subsonicService');
 jest.mock('../kvStorage', () => require('../__mocks__/kvStorage'));
 
+import { settleDbWrites } from '../../../test-utils/settleDbWrites';
 import { __setDbForTests, getDb, type InternalDb } from '../db';
 import {
   convertLegacyMetadataAsync,
@@ -154,11 +155,15 @@ async function withFailingWrites<T>(body: () => Promise<T>): Promise<T> {
   }
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  // `reset()` fires its truncate un-awaited, and a batch is parked on op-SQLite's
+  // transaction lock — drain it before seeding, or it lands ON TOP of the rows the
+  // test inserts synchronously.
+  musicCacheStore.getState().reset();
+  await settleDbWrites();
   realDb.runSync('DELETE FROM cached_item_songs;');
   realDb.runSync('DELETE FROM cached_items;');
   realDb.runSync('DELETE FROM cached_songs;');
-  musicCacheStore.getState().reset();
 });
 
 /* ------------------------------------------------------------------ */

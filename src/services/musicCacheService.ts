@@ -2027,6 +2027,13 @@ export async function cancelDownload(queueId: string): Promise<void> {
   );
   if (!item) return;
 
+  // The enqueue publishes to the mirror before its rows reach SQL, so a cancel tapped
+  // while that write is still parked would read an empty payload and DELETE nothing —
+  // and the insert, landing afterwards, would put the cancelled item back for the next
+  // hydrate. Resolves immediately when no write is in flight. Same wait, same reason as
+  // the worker's claim in `processQueue`.
+  await whenQueuePayloadWritten(queueId);
+
   // Read the ids BEFORE dropping the row: `download_queue_songs` FK-cascades off it,
   // so the delete takes the payload with it. Two columns, not a rebuilt `Child`.
   const songs = await readDownloadQueueSongRefsAsync(queueId);

@@ -14,6 +14,7 @@
  */
 import type { Child } from 'subsonic-api';
 
+import { settleDbWrites } from '../../test-utils/settleDbWrites';
 import { __setDbForTests, getDb, type InternalDb } from '../../store/persistence/db';
 import {
   clearPersistedQueue,
@@ -89,10 +90,10 @@ const liveRow = (): { current_index: number; position_sec: number | null; track_
     'live',
   ]);
 
-/** Let the fire-and-forget writes reach the seam. */
-async function drain(): Promise<void> {
-  for (let i = 0; i < 10; i++) await Promise.resolve();
-}
+/** Let the fire-and-forget writes reach the seam. Microtasks are not enough: a batch
+ *  is parked on op-SQLite's transaction lock and started from a `setImmediate`, which
+ *  this suite's fake timers own. */
+const drain = settleDbWrites;
 
 /** Fire the queue debounce and let its write land. */
 async function flushDebounce(): Promise<void> {
@@ -149,7 +150,10 @@ function countingDb(): { db: InternalDb; sql: string[] } {
 }
 
 beforeAll(() => {
-  jest.useFakeTimers();
+  // The debounce window is what this suite steps through; `setImmediate` is op-SQLite's
+  // transaction lock, not a timer under test, so it stays real and `drain()` costs no
+  // clock movement.
+  jest.useFakeTimers({ doNotFake: ['setImmediate'] });
 });
 
 afterAll(() => {

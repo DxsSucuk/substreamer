@@ -12,10 +12,12 @@
  * its RELEASE, so recovering from the JS `catch` would leave the savepoint open across a
  * round trip to JS and let the pool commit other writers' work inside it, to be discarded
  * by the ROLLBACK. The recovery is therefore enqueued unconditionally in the same tick —
- * on the success path it is a no-op that fails with "no such savepoint". The seam runs
- * `executeBatch` synchronously (no pool, no window), so only that ordering is checkable
- * here; the hazard itself is device-only.
+ * on the success path it is a no-op that fails with "no such savepoint". The seam parks
+ * both on op-SQLite's transaction lock, so the ISSUE order and the RUN order are both
+ * checkable here; what stays device-only is the native pool draining underneath.
  */
+import { settleDbWrites } from '../../test-utils/settleDbWrites';
+
 import { awaitDbWritesIdle, openDbConnection } from '../client';
 
 import type { SQLBatchTuple } from '@op-engineering/op-sqlite';
@@ -44,7 +46,7 @@ describe('runAtomicBatchAsync', () => {
     conn.raw.close();
   });
 
-  it('issues BOTH batches SYNCHRONOUSLY so nothing can be queued between them', () => {
+  it('issues BOTH batches SYNCHRONOUSLY so nothing can be queued between them', async () => {
     const conn = freshDb();
     const spy = jest.spyOn(conn.raw, 'executeBatch');
 
@@ -59,6 +61,9 @@ describe('runAtomicBatchAsync', () => {
       'ROLLBACK TO op_batch',
       'RELEASE op_batch',
     ]);
+    // Both are still parked on the lock — close underneath them and they run against a
+    // closed connection, in whichever test happens to be running by then.
+    await settleDbWrites();
     conn.raw.close();
   });
 

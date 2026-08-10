@@ -1886,6 +1886,22 @@ describe('cancelDownload', () => {
     expect(musicCacheStore.getState().totalBytes).toBe(1000);
   });
 
+  it('waits for the payload write, so a cancel cannot be undone by its own insert', async () => {
+    musicCacheStore.getState().enqueue(
+      { itemId: 'album-cancel-race', type: 'album', name: 'Race', totalSongs: 1 },
+      [makeChild('cancel-t1', { albumId: 'album-cancel-race' })],
+    );
+    const { queueId } = musicCacheStore.getState().downloadQueue[0];
+
+    // Same tick as the enqueue: the payload write is still parked on the batch lock, so
+    // a DELETE issued now matches nothing and the insert lands behind it.
+    await cancelDownload(queueId);
+    await new Promise((r) => setImmediate(r));
+
+    expect(persistenceMock.__queueSongs.has(queueId)).toBe(false);
+    expect(musicCacheStore.getState().downloadQueue).toHaveLength(0);
+  });
+
   it('handles a queue item with no stored payload gracefully', async () => {
     musicCacheStore.setState({
       downloadQueue: [

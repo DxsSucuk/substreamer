@@ -118,6 +118,36 @@ describe('op-SQLite ⇄ better-sqlite3 test seam', () => {
     db.close();
   });
 
+  it('a batch is deferred a macrotask; a read issued after it runs FIRST', async () => {
+    const db = memory();
+    await db.execute('CREATE TABLE albums (id TEXT PRIMARY KEY)');
+
+    const write = db.executeBatch([['INSERT INTO albums VALUES (?)', ['a1']]]);
+    // Same tick as the un-awaited batch: the row is not there yet.
+    expect((await db.execute('SELECT COUNT(*) AS n FROM albums')).rows[0].n).toBe(0);
+
+    await write;
+    expect((await db.execute('SELECT COUNT(*) AS n FROM albums')).rows[0].n).toBe(1);
+    db.close();
+  });
+
+  it('batches run in submission order, one at a time, behind bare writes', async () => {
+    const db = memory();
+    await db.execute('CREATE TABLE log (seq INTEGER PRIMARY KEY AUTOINCREMENT, tag TEXT)');
+
+    const first = db.executeBatch([['INSERT INTO log (tag) VALUES (?)', ['batch-1']]]);
+    const second = db.executeBatch([['INSERT INTO log (tag) VALUES (?)', ['batch-2']]]);
+    await db.execute('INSERT INTO log (tag) VALUES (?)', ['bare']);
+    await Promise.all([first, second]);
+
+    expect((await db.execute('SELECT tag FROM log ORDER BY seq')).rows.map((r) => r.tag)).toEqual([
+      'bare',
+      'batch-1',
+      'batch-2',
+    ]);
+    db.close();
+  });
+
   it('id-sorted batch insert (the bulk-sync write path) lands every row', async () => {
     const db = memory();
     await db.execute('CREATE TABLE albums (id TEXT PRIMARY KEY, name TEXT)');

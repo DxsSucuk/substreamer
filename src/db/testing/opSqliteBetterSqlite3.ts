@@ -13,6 +13,8 @@
  *
  * Faithful to op-SQLite's semantics that matter for us:
  *  - `execute` is async, `executeSync` is sync, both return the `QueryResult` shape.
+ *  - `executeBatch`/`transaction` are deferred behind a lock; everything else applies
+ *    at call time (see {@link makeDb}'s lock).
  *  - reactive queries fire on **transaction commit** (or `flushPendingReactiveQueries`),
  *    keyed on the written table — NOT on bare writes. This mirrors op-SQLite so the
  *    reactive layer is exercised the same way in tests as on device.
@@ -87,6 +89,45 @@ function makeDb(bs: Database.Database, dbPath: string): DB {
     };
   };
 
+  /**
+   * op-SQLite's JS-side transaction lock, mirroring `enhanceDB`
+   * (`@op-engineering/op-sqlite/src/functions.ts:46-70`, used at `:95-133` and
+   * `:205-290`). `executeBatch` and `transaction` do NOT reach the engine when you
+   * call them: each parks on the queue and the head is started from a `setImmediate`
+   * (`:66-68`), one at a time. `execute`/`executeSync`/`executeRaw` pass straight
+   * through to the binding at call time (`:142-191`).
+   *
+   * So a read — or a bare `runAsync` write — issued AFTER a batch is applied BEFORE
+   * it. That is ordinary JS scheduling, not native concurrency, so it belongs in the
+   * seam: applying batches synchronously here hid two shipped write-ordering bugs.
+   */
+  const lock = { queue: [] as Array<() => void>, inProgress: false };
+
+  const startNextTransaction = (): void => {
+    if (lock.inProgress) return;
+    const start = lock.queue.shift();
+    if (!start) return;
+    lock.inProgress = true;
+    setImmediate(start);
+  };
+
+  const onTransactionLock = <T>(work: () => Promise<T>): Promise<T> => {
+    const guarded = async (): Promise<T> => {
+      try {
+        return await work();
+      } finally {
+        lock.inProgress = false;
+        startNextTransaction();
+      }
+    };
+    return new Promise<T>((resolve, reject) => {
+      lock.queue.push(() => {
+        guarded().then(resolve).catch(reject);
+      });
+      startNextTransaction();
+    });
+  };
+
   const fireReactive = (): void => {
     if (dirtyTables.size === 0) return;
     const touched = new Set(dirtyTables);
@@ -108,34 +149,36 @@ function makeDb(bs: Database.Database, dbPath: string): DB {
     // it is not) and make a caller's own outer transaction a nested-BEGIN error.
     // `runAtomicBatchAsync` gets its atomicity by passing SAVEPOINT/RELEASE as ordinary
     // commands, which `run()` routes through `bs.exec` — so it is modelled faithfully.
-    executeBatch: async (commands: SQLBatchTuple[]) => {
-      let rowsAffected = 0;
-      for (const [query, params] of commands) {
-        if (Array.isArray(params) && Array.isArray(params[0])) {
-          for (const p of params as Scalar[][]) rowsAffected += run(query, p).rowsAffected;
-        } else {
-          rowsAffected += run(query, params as Scalar[] | undefined).rowsAffected;
+    executeBatch: (commands: SQLBatchTuple[]) =>
+      onTransactionLock(async () => {
+        let rowsAffected = 0;
+        for (const [query, params] of commands) {
+          if (Array.isArray(params) && Array.isArray(params[0])) {
+            for (const p of params as Scalar[][]) rowsAffected += run(query, p).rowsAffected;
+          } else {
+            rowsAffected += run(query, params as Scalar[] | undefined).rowsAffected;
+          }
         }
-      }
-      fireReactive();
-      return { rowsAffected };
-    },
-    transaction: async (fn: (tx: Transaction) => Promise<void>) => {
-      bs.exec('BEGIN');
-      const tx: Transaction = {
-        execute: (query, params) => Promise.resolve(run(query, params)),
-        commit: () => Promise.resolve({ rows: [], rowsAffected: 0 }),
-        rollback: () => ({ rows: [], rowsAffected: 0 }),
-      };
-      try {
-        await fn(tx);
-        bs.exec('COMMIT');
         fireReactive();
-      } catch (e) {
-        try { bs.exec('ROLLBACK'); } catch { /* ignore */ }
-        throw e;
-      }
-    },
+        return { rowsAffected };
+      }),
+    transaction: (fn: (tx: Transaction) => Promise<void>) =>
+      onTransactionLock(async () => {
+        bs.exec('BEGIN');
+        const tx: Transaction = {
+          execute: (query, params) => Promise.resolve(run(query, params)),
+          commit: () => Promise.resolve({ rows: [], rowsAffected: 0 }),
+          rollback: () => ({ rows: [], rowsAffected: 0 }),
+        };
+        try {
+          await fn(tx);
+          bs.exec('COMMIT');
+          fireReactive();
+        } catch (e) {
+          try { bs.exec('ROLLBACK'); } catch { /* ignore */ }
+          throw e;
+        }
+      }),
     reactiveExecute: ({ query, arguments: args, fireOn, callback }) => {
       const sub: ReactiveSub = {
         query,

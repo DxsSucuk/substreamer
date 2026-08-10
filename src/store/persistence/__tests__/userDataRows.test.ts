@@ -12,6 +12,7 @@
  */
 jest.mock('../kvStorage', () => require('../__mocks__/kvStorage'));
 
+import { settleDbWrites } from '../../../test-utils/settleDbWrites';
 import { __setDbForTests, getDb, type InternalDb } from '../db';
 import { clearKvStorage, kvStorage } from '../kvStorage';
 import { flushAllPersistStorages } from '../debouncedStorage';
@@ -89,9 +90,9 @@ const log = (message: string): void => {
   logs.push(message);
 };
 
-/** The store write-throughs are fire-and-forget; the seam resolves synchronously, so one
- *  macrotask drains the chain. */
-const settle = (): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, 0));
+/** The store's write-throughs are fire-and-forget, and a batch is parked on
+ *  op-SQLite's transaction lock — one macrotask each. */
+const settle = settleDbWrites;
 
 const partializeOf = (store: { persist: unknown }): ((state: unknown) => unknown) =>
   (store.persist as { getOptions: () => { partialize: (s: unknown) => unknown } })
