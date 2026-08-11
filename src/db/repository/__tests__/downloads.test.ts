@@ -443,7 +443,7 @@ const seedSongWithAlbums = (
 };
 
 describe('listDownloadedSongs', () => {
-  it('projects exactly the seven fields the song rows render', async () => {
+  it('projects exactly the fields the song rows render', async () => {
     seedSongWithAlbums('s1', 'dir-1', 'srv-1');
     const rows = await listDownloadedSongs(db());
     expect(rows).toHaveLength(1);
@@ -451,9 +451,24 @@ describe('listDownloadedSongs', () => {
     expect(Object.keys(rows[0]).sort()).toEqual(
       [
         'album_id', 'artist', 'cover_art', 'duration', 'id', 'sort_artist', 'sort_name',
-        'sort_title', 'title',
+        'sort_title', 'title', 'user_rating',
       ].sort(),
     );
+  });
+
+  it('carries the star rating the rows display', async () => {
+    seedSongWithAlbums('s1', 'dir-1', 'srv-1');
+    db().runSync('UPDATE cached_songs SET user_rating = 4 WHERE song_id = ?;', ['s1']);
+    const [row] = await listDownloadedSongs(db());
+    expect(row.user_rating).toBe(4);
+    expect(downloadedSongRowToChild(row).userRating).toBe(4);
+  });
+
+  it('leaves an unrated song without a rating rather than a zero', async () => {
+    seedSongWithAlbums('s1', 'dir-1', 'srv-1');
+    const [row] = await listDownloadedSongs(db());
+    expect(row.user_rating).toBeNull();
+    expect(downloadedSongRowToChild(row).userRating).toBeUndefined();
   });
 
   it('adapts to the Child the song rows render', async () => {

@@ -139,6 +139,7 @@ describe('useDownloadedSongs', () => {
       sort_name: 'Alpha Sorted',
       sort_title: 'alpha sorted',
       sort_artist: 'artist a',
+      user_rating: null,
     });
   });
 

@@ -220,6 +220,10 @@ export interface DownloadedSongRow {
   album_id: string;
   duration: number;
   cover_art: string | null;
+  /** The row's own star rating. Projected because the rows RENDER it — without it a
+   *  rated song shows no stars under the Downloaded filter while showing them in the
+   *  unfiltered list, which reads the same rating from `songs`. */
+  user_rating: number | null;
 }
 
 export interface DownloadedSongFilter {
@@ -251,7 +255,7 @@ export async function listDownloadedSongs(
 ): Promise<DownloadedSongRow[]> {
   return db.getAllAsync<DownloadedSongRow>(
     'SELECT "song_id" AS "id", "title", "artist", "sort_name", "sort_title", "sort_artist", ' +
-      'COALESCE("src_album_id", "album_id") AS "album_id", "duration", "cover_art" ' +
+      'COALESCE("src_album_id", "album_id") AS "album_id", "duration", "cover_art", "user_rating" ' +
       `FROM cached_songs ORDER BY ${songOrderBy(f.sortOrder)}`,
   );
 }
@@ -266,6 +270,7 @@ export function downloadedSongRowToChild(r: DownloadedSongRow): Child {
     duration: r.duration,
     coverArt: r.cover_art ?? undefined,
     sortName: r.sort_name ?? undefined,
+    userRating: r.user_rating ?? undefined,
     isDir: false,
   };
 }
