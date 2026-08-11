@@ -11,6 +11,7 @@ import { onAppForeground } from '../utils/onAppForeground';
 
 import { completedScrobbleStore } from '../store/completedScrobbleStore';
 import { existingScrobbleIds } from '../store/persistence/scrobbleTable';
+import { completeSongFromCache } from '../store/musicCacheStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { pendingScrobbleStore } from '../store/pendingScrobbleStore';
 import { scrobbleExclusionStore } from '../store/scrobbleExclusionStore';
@@ -107,9 +108,15 @@ export async function sendNowPlaying(song: Child, playlistId?: string): Promise<
  * Record a completed-playback scrobble.  The item is added to the
  * persisted pending queue and processing is triggered immediately.
  * Skipped silently when the song matches a scrobble exclusion.
+ *
+ * Whatever fed the queue may have built the track from a narrow list projection, so
+ * the gaps are filled from the downloaded row here — a scrobble is a permanent record
+ * and this is the last point before it is written. It also decides the exclusion
+ * correctly, which reads `artistId`. In-memory, so no DB round trip on the audio path.
  */
-export function addCompletedScrobble(song: Child, playlistId?: string): void {
-  if (!song?.id || !song.title) return;
+export function addCompletedScrobble(incoming: Child, playlistId?: string): void {
+  if (!incoming?.id || !incoming.title) return;
+  const song = completeSongFromCache(incoming);
   if (isExcluded(song, playlistId)) return;
   // Bump local play-count + last-played so the UI reflects the play before the
   // server round-trip. Below the exclusion gate, so excluded plays skip it.

@@ -1397,6 +1397,73 @@ describe('getSongEnvelope', () => {
   });
 });
 
+describe('completeSongFromCache', () => {
+  /* eslint-disable @typescript-eslint/no-require-imports */
+  const { completeSongFromCache } = require('../musicCacheStore');
+  /* eslint-enable @typescript-eslint/no-require-imports */
+
+  /** What a list projection built to render a row hands on: no album, no file facts. */
+  const thin = (id = 's1'): any => ({ id, title: `Song ${id}`, duration: 180, isDir: false });
+
+  beforeEach(() => {
+    musicCacheStore.setState({ cachedSongs: {}, cachedItems: {} } as any);
+  });
+
+  it('fills the gaps from the downloaded row', () => {
+    musicCacheStore.setState({
+      cachedSongs: {
+        s1: makeSong('s1', {
+          album: 'The Album',
+          srcAlbumId: 'server-album',
+          srcSuffix: 'flac',
+          srcBitRate: 1000,
+          size: 41_000_000,
+          year: 1991,
+          genre: 'Shoegaze',
+        }),
+      } as any,
+    });
+
+    const song = completeSongFromCache(thin());
+
+    expect(song.album).toBe('The Album');
+    expect(song.albumId).toBe('server-album');
+    expect(song.suffix).toBe('flac');
+    expect(song.bitRate).toBe(1000);
+    expect(song.size).toBe(41_000_000);
+    expect(song.year).toBe(1991);
+    expect(song.genre).toBe('Shoegaze');
+  });
+
+  it('returns the same object when nothing is held for the song', () => {
+    const incoming = thin('unknown');
+    expect(completeSongFromCache(incoming)).toBe(incoming);
+  });
+
+  it('never overwrites a value the incoming object already has', () => {
+    musicCacheStore.setState({
+      cachedSongs: {
+        s1: makeSong('s1', { album: 'The Album', srcSuffix: 'flac', size: 41_000_000 }),
+      } as any,
+    });
+
+    // A playlist download shows the playlist as the album — a deliberate override.
+    const song = completeSongFromCache({ ...thin(), album: 'Road Trip' } as any);
+
+    expect(song.album).toBe('Road Trip');
+    expect(song.suffix).toBe('flac');
+  });
+
+  it('leaves an already-complete track untouched, without a lookup', () => {
+    musicCacheStore.setState({
+      cachedSongs: { s1: makeSong('s1', { album: 'The Album' }) } as any,
+    });
+    const incoming = { ...thin(), album: 'Server Album', suffix: 'mp3', size: 1 } as any;
+
+    expect(completeSongFromCache(incoming)).toBe(incoming);
+  });
+});
+
 /* ------------------------------------------------------------------ */
 /*  revision                                                           */
 /* ------------------------------------------------------------------ */

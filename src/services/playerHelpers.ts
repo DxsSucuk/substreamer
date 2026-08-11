@@ -8,7 +8,7 @@ import { type PlayerState, type RepeatMode, type TrackItem } from 'react-native-
 
 import i18n from '../i18n/i18n';
 import { type EffectiveFormat } from '../types/audio';
-import { musicCacheStore } from '../store/musicCacheStore';
+import { completeSongFromCache, musicCacheStore } from '../store/musicCacheStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { imageCacheDiagnosticsStore } from '../store/imageCacheDiagnosticsStore';
 import { playbackSettingsStore, type RepeatModeSetting } from '../store/playbackSettingsStore';
@@ -137,16 +137,24 @@ export function childToTrack(
  * entries that aren't currently playable. Preserves source order so callers
  * can translate desired indices onto the filtered queue by looking up the
  * original Child.
+ *
+ * This is the one funnel every queue entry point shares (play, add to queue, play
+ * next, the boot restore, shuffle, the car), so it is where a track built from a
+ * narrow list projection is completed: rendering a row needs a handful of columns,
+ * but the queue feeds the lock screen, the details sheet and the permanent
+ * listening history.
  */
 export async function buildPlayableQueue(queue: readonly Child[]): Promise<{
   rnTracks: TrackItem[];
   filteredQueue: Child[];
 }> {
+  const songs = queue.map(completeSongFromCache);
+
   // Resolve local cover artwork up front (async, DB-authoritative — off the JS
   // thread), deduped by album coverArtId so a 500-track album resolves one URI,
   // not 500. Then build the tracks synchronously from the resolved map.
   const ids = Array.from(
-    new Set(queue.map((c) => resolveSongCoverArt(c)).filter((v): v is string => !!v)),
+    new Set(songs.map((c) => resolveSongCoverArt(c)).filter((v): v is string => !!v)),
   );
   const artEntries = await Promise.all(
     ids.map(async (id) => [id, await resolveCachedImageUri(id, 600)] as const),
@@ -155,7 +163,7 @@ export async function buildPlayableQueue(queue: readonly Child[]): Promise<{
 
   const rnTracks: TrackItem[] = [];
   const filteredQueue: Child[] = [];
-  for (const child of queue) {
+  for (const child of songs) {
     const coverArtId = resolveSongCoverArt(child);
     const track = childToTrack(child, (coverArtId ? artMap.get(coverArtId) : null) ?? null);
     if (track) {

@@ -14,6 +14,7 @@ import { useSongCoverArt } from '../hooks/useSongCoverArt';
 import { useTheme } from '../hooks/useTheme';
 import { type Child } from '../services/subsonicService';
 import { playTrack } from '../services/playerService';
+import { completeSongFromCache } from '../store/musicCacheStore';
 import { moreOptionsStore } from '../store/moreOptionsStore';
 
 const COVER_SIZE = 300;
@@ -38,8 +39,10 @@ export const SongCard = memo(function SongCard({
   const rating = useRating(song.id, song.userRating);
   const songCoverArtId = useSongCoverArt(song);
 
+  // See `TrackRow.handleLongPress` — the card can be built from the same narrow list
+  // projection, and the sheet reads far more of the track than a card renders.
   const onLongPress = useCallback(() => {
-    moreOptionsStore.getState().show({ type: 'song', item: song });
+    moreOptionsStore.getState().show({ type: 'song', item: completeSongFromCache(song) });
   }, [song]);
 
   // Derive the tap action from props so this memoized card doesn't re-render

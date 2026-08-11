@@ -876,8 +876,9 @@ function childFromPromotedColumns(row: CachedSongMeta): Child {
 
 /**
  * Return the full Subsonic `Child` for a cached song. Synchronous by contract —
- * both consumers (`searchService`, feeding Tuned-In's offline mixes) are sync,
- * so this reads the in-memory row and never touches the DB.
+ * its callers (search, the offline mixes, and `completeSongFromCache` on the
+ * playback and scrobble paths) are sync, so this reads the in-memory row and
+ * never touches the DB.
  *
  * Built from the promoted columns alone; `null` when there is no row. The legacy
  * `raw_json` envelope is NOT read here — `hydrateFromDbAsync` awaits the
@@ -893,4 +894,29 @@ export function getSongEnvelope(songId: string): Child | null {
   const child = childFromPromotedColumns(row);
   songEnvelopeCache.set(row, child);
   return child;
+}
+
+/**
+ * Cheap "this came off a narrow list projection" probe. A `Child` describing a real
+ * track carries the file's own facts; a row projection built to render a list drops
+ * them. Wrong in the safe direction — a false positive costs one map lookup.
+ */
+const isPartialSong = (song: Child): boolean =>
+  song.album === undefined || song.suffix === undefined || song.size === undefined;
+
+/**
+ * Fill the gaps in a partial `Child` from the downloaded row held for the same song
+ * id. The incoming object WINS on every key where it has a value, so a caller's
+ * deliberate override survives; a song with no cached row is returned unchanged, as
+ * is one that already looks complete.
+ *
+ * In-memory only, so this is safe on the playback and scrobble paths.
+ */
+export function completeSongFromCache(song: Child): Child {
+  if (!isPartialSong(song)) return song;
+  const cached = getSongEnvelope(song.id);
+  if (!cached) return song;
+  // Only the keys the incoming object has a value for; the cached row fills the rest.
+  const present = Object.fromEntries(Object.entries(song).filter(([, v]) => v !== undefined));
+  return { ...cached, ...present };
 }

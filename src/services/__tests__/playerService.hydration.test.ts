@@ -93,6 +93,8 @@ jest.mock('../musicCacheService', () => ({
 
 jest.mock('../../store/musicCacheStore', () => ({
   musicCacheStore: { getState: jest.fn(() => ({ cachedSongs: {} })) },
+  // Nothing downloaded here, so the queue builder's completion pass is a pass-through.
+  completeSongFromCache: (song: unknown) => song,
 }));
 
 const mockOfflineMode = { offlineMode: false };

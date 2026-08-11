@@ -14,6 +14,7 @@ import { useSongCoverArt } from '../hooks/useSongCoverArt';
 import { addSongToQueue, toggleStar } from '../services/moreOptionsService';
 import { playTrack } from '../services/playerService';
 import { addToPlaylistStore } from '../store/addToPlaylistStore';
+import { completeSongFromCache } from '../store/musicCacheStore';
 import { type MoreOptionsSource, moreOptionsStore } from '../store/moreOptionsStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { playerStore } from '../store/playerStore';
@@ -73,8 +74,13 @@ export const TrackRow = memo(function TrackRow({ track, trackNumber, colors, onP
     addToPlaylistStore.getState().showSong(track);
   }, [track]);
 
+  // The row may have been built from a narrow list projection. The sheet gates
+  // "Go to Artist" on `artistId` and renders the details modal off this object, so
+  // the track is completed as the sheet opens — one song, not one per rendered row.
   const handleLongPress = useCallback(() => {
-    moreOptionsStore.getState().show({ type: 'song', item: track }, optionsSource);
+    moreOptionsStore
+      .getState()
+      .show({ type: 'song', item: completeSongFromCache(track) }, optionsSource);
   }, [track, optionsSource]);
 
   // Derive the tap action from props rather than take an inline closure from the

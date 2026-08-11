@@ -14,6 +14,7 @@ jest.mock('../playStatsService', () => ({
 }));
 
 import { completedScrobbleStore } from '../../store/completedScrobbleStore';
+import { musicCacheStore } from '../../store/musicCacheStore';
 import { pendingScrobbleStore } from '../../store/pendingScrobbleStore';
 import { scrobbleExclusionStore } from '../../store/scrobbleExclusionStore';
 import { getApi } from '../subsonicService';
@@ -32,6 +33,7 @@ beforeEach(() => {
   pendingScrobbleStore.setState({ pendingScrobbles: [] });
   completedScrobbleStore.setState({ recentScrobbles: [], stats: { totalPlays: 0, totalListeningSeconds: 0, uniqueArtists: {} } });
   scrobbleExclusionStore.setState({ excludedAlbums: {}, excludedArtists: {}, excludedPlaylists: {} });
+  musicCacheStore.setState({ cachedSongs: {} } as any);
   mockGetApi.mockReturnValue(null);
   mockApplyLocalPlay.mockClear();
 });
@@ -137,6 +139,79 @@ describe('addCompletedScrobble', () => {
       expect(mockApplyLocalPlay).toHaveBeenCalledTimes(1);
       expect(pendingScrobbleStore.getState().pendingScrobbles).toHaveLength(1);
     });
+  });
+});
+
+/**
+ * The last gate before a permanent record: whatever projection fed the queue, a track
+ * we hold a downloaded row for is written whole. A song we hold nothing for is written
+ * exactly as it arrives.
+ */
+describe('addCompletedScrobble — completing a partial track', () => {
+  /** A downloaded row as the writer stores it; the `src*` twins are the SERVER's. */
+  const downloadedRow = {
+    id: 's1',
+    title: 'Song',
+    artist: 'The Artist',
+    album: 'The Album',
+    albumId: 'dir-1',
+    bytes: 1,
+    duration: 210,
+    suffix: 'mp3',
+    formatCapturedAt: 0,
+    downloadedAt: 0,
+    srcAlbumId: 'srv-1',
+    srcSuffix: 'flac',
+    srcBitRate: 1000,
+    artistId: 'ar-1',
+    year: 1991,
+    genre: 'Shoegaze',
+    size: 41_000_000,
+  };
+
+  /** What a narrow list projection hands the player. */
+  const partial = { id: 's1', title: 'Song', artist: 'The Artist', duration: 210 };
+
+  const queued = () => pendingScrobbleStore.getState().pendingScrobbles[0].song as any;
+
+  it('fills the gaps from the downloaded row', () => {
+    musicCacheStore.setState({ cachedSongs: { s1: downloadedRow } } as any);
+
+    addCompletedScrobble(partial as any);
+
+    expect(queued().album).toBe('The Album');
+    expect(queued().year).toBe(1991);
+    expect(queued().genre).toBe('Shoegaze');
+    expect(queued().suffix).toBe('flac');
+    expect(queued().bitRate).toBe(1000);
+    expect(queued().size).toBe(41_000_000);
+  });
+
+  it('writes a song we hold nothing for exactly as it arrived', () => {
+    addCompletedScrobble(partial as any);
+
+    expect(queued()).toEqual(partial);
+  });
+
+  it('never overwrites a value the incoming track already has', () => {
+    musicCacheStore.setState({ cachedSongs: { s1: downloadedRow } } as any);
+
+    // A playlist download shows the playlist as the album — a deliberate override.
+    addCompletedScrobble({ ...partial, album: 'Road Trip' } as any);
+
+    expect(queued().album).toBe('Road Trip');
+    expect(queued().suffix).toBe('flac');
+  });
+
+  it('decides the artist exclusion on the completed track', () => {
+    musicCacheStore.setState({ cachedSongs: { s1: downloadedRow } } as any);
+    scrobbleExclusionStore.getState().addExclusion('artist', 'ar-1', 'The Artist');
+
+    // The incoming projection carries no `artistId`, so the exclusion only matches
+    // once the track is completed.
+    addCompletedScrobble(partial as any);
+
+    expect(pendingScrobbleStore.getState().pendingScrobbles).toHaveLength(0);
   });
 });
 
