@@ -24,7 +24,8 @@ let mockDb: Row[] = [];
 function mockBuildAnalytics() {
   const artistCounts: Record<string, { count: number; artistId?: string }> = {};
   const albumCounts: Record<string, { artist: string; coverArt?: string; count: number; albumId?: string }> = {};
-  const songCounts: Record<string, { song: Child; count: number }> = {};
+  const songStats: Record<string, { count: number; duration?: number; year?: number }> = {};
+  const latestSong = new Map<string, Child>();
   const genreCounts: Record<string, number> = {};
   const hourBuckets = new Array<number>(24).fill(0);
   const dayCounts: Record<string, number> = {};
@@ -40,17 +41,31 @@ function mockBuildAnalytics() {
     al.count++;
     if (s.song.coverArt) al.coverArt = s.song.coverArt;
     if (!al.albumId && s.song.albumId) al.albumId = s.song.albumId;
-    (songCounts[s.song.id] ??= { song: s.song, count: 0 }).count++;
-    songCounts[s.song.id].song = s.song;
+    (songStats[s.song.id] ??= { count: 0 }).count++;
+    songStats[s.song.id].duration = s.song.duration ?? undefined;
+    songStats[s.song.id].year = s.song.year ?? undefined;
+    latestSong.set(s.song.id, s.song);
     const genre = getPrimaryGenre(s.song);
     if (genre) genreCounts[genre] = (genreCounts[genre] ?? 0) + 1;
     hourBuckets[new Date(s.time).getHours()]++;
     const dk = dateKey(s.time);
     dayCounts[dk] = (dayCounts[dk] ?? 0) + 1;
   }
+  const topSongs = Object.entries(songStats)
+    .sort(([, a], [, b]) => b.count - a.count)
+    .slice(0, 10)
+    .map(([id, v]) => ({ song: latestSong.get(id)!, count: v.count }));
   return {
     stats: { totalPlays: mockDb.length, totalListeningSeconds, uniqueArtists },
-    aggregates: { artistCounts, albumCounts, songCounts, genreCounts, hourBuckets, dayCounts },
+    aggregates: {
+      artistCounts,
+      albumCounts,
+      songStats,
+      topSongs,
+      genreCounts,
+      hourBuckets,
+      dayCounts,
+    },
   };
 }
 
@@ -113,7 +128,8 @@ beforeEach(() => {
     aggregates: {
       artistCounts: {},
       albumCounts: {},
-      songCounts: {},
+      songStats: {},
+      topSongs: [],
       genreCounts: {},
       hourBuckets: new Array(24).fill(0),
       dayCounts: {},

@@ -894,7 +894,7 @@ export function TunedInScreen() {
         generateMixes({
           hourBuckets: aggregates.hourBuckets,
           genreCounts: aggregates.genreCounts,
-          songCounts: aggregates.songCounts,
+          songStats: aggregates.songStats,
           artistCounts: aggregates.artistCounts,
           scrobbles,
           favoritesSeed,

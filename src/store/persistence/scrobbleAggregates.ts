@@ -5,11 +5,16 @@
  * hours/days), never by total plays, so memory stays flat as history grows and a
  * long history cannot OOM.
  *
+ * Per-song results carry counts and two scalars, not a `Child`. Only the ranked
+ * `topSongs` are reconstructed whole — those are the ones rendered, played and opened
+ * in the details modal, and assembling a full `Child` (five child-table reads each)
+ * for every song ever played is what made My Listening janky on a large history.
+ *
  * Produces the `ListeningStats` / `AnalyticsAggregates` shapes the analytics
  * consumers (My Listening, Tuned In) read. Pass `sinceMs` to scope to a period
  * (7d/30d/90d); `0` = all time.
  */
-import { getDb } from './db';
+import { getDb, type InternalDb } from './db';
 import {
   rowToScrobble,
   SCROBBLE_SELECT,
@@ -27,17 +32,58 @@ export interface ScrobbleAnalytics {
   aggregates: AnalyticsAggregates;
 }
 
+/** How many songs `topSongs` reconstructs whole. My Listening's "most played songs"
+ *  card is the only consumer and renders all of them. */
+const TOP_SONG_COUNT = 10;
+
 const emptyResult = (): ScrobbleAnalytics => ({
   stats: { totalPlays: 0, totalListeningSeconds: 0, uniqueArtists: {} },
   aggregates: {
     artistCounts: {},
     albumCounts: {},
-    songCounts: {},
+    songStats: {},
+    topSongs: [],
     genreCounts: {},
     hourBuckets: new Array<number>(24).fill(0),
     dayCounts: {},
   },
 });
+
+/** One row per unique song: its play count, the two fields the whole-history
+ *  consumers read, and the id of the play those came from. */
+interface SongStatRow {
+  scrobbleId: string;
+  songId: string;
+  duration: number | null;
+  year: number | null;
+  c: number;
+}
+
+/**
+ * The most-played songs, each rebuilt as a complete `Child`. My Listening plays these
+ * rows and opens them in the track-details modal, so a projection will not do — but
+ * only the ranked few need one. One PK lookup for their representative plays plus the
+ * shared child-table fetch, whatever the history size.
+ */
+async function topSongsFromStats(
+  db: InternalDb,
+  rows: readonly SongStatRow[],
+): Promise<AnalyticsAggregates['topSongs']> {
+  const top = [...rows].sort((a, b) => b.c - a.c).slice(0, TOP_SONG_COUNT);
+  if (top.length === 0) return [];
+  const full = await db.getAllAsync<ScrobbleSnapshotRow>(
+    `SELECT ${SCROBBLE_SELECT} FROM scrobble_events WHERE id IN (SELECT value FROM json_each(?));`,
+    [JSON.stringify(top.map((r) => r.scrobbleId))],
+  );
+  const songs = new Map(
+    (await scrobblesWithArrays(db, 'scrobble', full)).map((s) => [s.id, s.song]),
+  );
+  // Re-ordered to the ranking: the id list binds unordered.
+  return top.flatMap((r) => {
+    const song = songs.get(r.scrobbleId);
+    return song === undefined ? [] : [{ song, count: r.c }];
+  });
+}
 
 /**
  * Compute stats + aggregates for the window `time >= sinceMs` (0 = all time).
@@ -74,20 +120,25 @@ export async function computeScrobbleAnalytics(sinceMs = 0): Promise<ScrobbleAna
             `FROM scrobble_events ${whereOf('album IS NOT NULL')} GROUP BY album, artist`,
           p,
         ),
-        // One row per song: the play count plus the MOST RECENT play's snapshot,
-        // taken whole. A `GROUP BY` with `MAX(col)` takes each scalar from an
-        // arbitrary row of the group, so the child rows keyed by that row's scrobble
-        // id would belong to a different play — one play's genres against another
-        // play's metadata in the details modal.
-        db.getAllAsync<ScrobbleSnapshotRow & { c: number }>(
-          `SELECT * FROM (
-             SELECT ${SCROBBLE_SELECT},
+        // One row per song: the play count, the two fields every-song consumers read,
+        // and the id of the MOST RECENT play — the representative whose snapshot the
+        // top entries are rebuilt from. A `GROUP BY` with `MAX(col)` takes each scalar
+        // from an arbitrary row of the group, so the child rows keyed by that row's
+        // scrobble id would belong to a different play — one play's genres against
+        // another play's metadata in the details modal.
+        //
+        // The representative is picked over every play, then dropped if it is a row no
+        // reader accepts (missing `song_id`/`title`) — the order the reconstruction
+        // itself applies.
+        db.getAllAsync<SongStatRow>(
+          `SELECT scrobbleId, songId, duration, year, c FROM (
+             SELECT scrobble_events.id AS scrobbleId, song_id AS songId, duration, year, title,
                     COUNT(*) OVER (PARTITION BY song_id) AS c,
                     ROW_NUMBER() OVER (
                       PARTITION BY song_id ORDER BY time DESC, scrobble_events.id DESC
                     ) AS rn
                FROM scrobble_events ${whereOf('song_id IS NOT NULL')}
-           ) WHERE rn = 1`,
+           ) WHERE rn = 1 AND songId <> '' AND title IS NOT NULL AND title <> ''`,
           p,
         ),
         db.getAllAsync<{ genre: string; c: number }>(
@@ -125,11 +176,15 @@ export async function computeScrobbleAnalytics(sinceMs = 0): Promise<ScrobbleAna
       };
     }
 
-    const songCounts: AnalyticsAggregates['songCounts'] = {};
-    const playCounts = new Map(songRows.map((r) => [r.scrobbleId, r.c]));
-    for (const s of await scrobblesWithArrays(db, 'scrobble', songRows)) {
-      songCounts[s.song.id] = { song: s.song, count: playCounts.get(s.id) ?? 0 };
+    const songStats: AnalyticsAggregates['songStats'] = {};
+    for (const r of songRows) {
+      songStats[r.songId] = {
+        count: r.c,
+        duration: r.duration ?? undefined,
+        year: r.year ?? undefined,
+      };
     }
+    const topSongs = await topSongsFromStats(db, songRows);
 
     const genreCounts: Record<string, number> = {};
     for (const r of genreRows) genreCounts[r.genre] = r.c;
@@ -146,7 +201,15 @@ export async function computeScrobbleAnalytics(sinceMs = 0): Promise<ScrobbleAna
         totalListeningSeconds: statRow?.secs ?? 0,
         uniqueArtists,
       },
-      aggregates: { artistCounts, albumCounts, songCounts, genreCounts, hourBuckets, dayCounts },
+      aggregates: {
+        artistCounts,
+        albumCounts,
+        songStats,
+        topSongs,
+        genreCounts,
+        hourBuckets,
+        dayCounts,
+      },
     };
   } catch {
     return emptyResult();

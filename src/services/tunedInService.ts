@@ -128,12 +128,12 @@ function extractPrimaryGenre(song: { genre?: string; genres?: unknown[] }): stri
 /* ------------------------------------------------------------------ */
 
 export function getTopDecade(
-  songCounts: Record<string, { song: Child; count: number }>,
+  songStats: Record<string, { count: number; year?: number }>,
 ): { decade: number; fromYear: number; toYear: number } | null {
   const decadeCounts: Record<number, number> = {};
 
-  for (const entry of Object.values(songCounts)) {
-    const year = entry.song.year;
+  for (const entry of Object.values(songStats)) {
+    const year = entry.year;
     if (!year || year < 1950) continue;
     const decade = Math.floor(year / 10) * 10;
     decadeCounts[decade] = (decadeCounts[decade] ?? 0) + entry.count;
@@ -180,7 +180,7 @@ export function getTopDecade(
 interface GenerateMixesInput {
   hourBuckets: number[];
   genreCounts: Record<string, number>;
-  songCounts: Record<string, { song: Child; count: number }>;
+  songStats: Record<string, { count: number; year?: number }>;
   artistCounts: Record<string, { count: number; artistId?: string }>;
   scrobbles: Array<{ time: number; song: { genre?: string; genres?: unknown[]; artist?: string; artistId?: string } }>;
   /** One random starred song to seed "Favorites Radio", or null when there are none.
@@ -191,7 +191,7 @@ interface GenerateMixesInput {
 }
 
 export function generateMixes(input: GenerateMixesInput): MixDefinition[] {
-  const { hourBuckets, genreCounts, songCounts, artistCounts, scrobbles, favoritesSeed, isOnline, listLength = 20 } = input;
+  const { hourBuckets, genreCounts, songStats, artistCounts, scrobbles, favoritesSeed, isOnline, listLength = 20 } = input;
   const mixes: MixDefinition[] = [];
 
   // 1. "Right Now" — Time-of-Day Mix (always shown)
@@ -288,7 +288,7 @@ export function generateMixes(input: GenerateMixesInput): MixDefinition[] {
 
   // 3. "Time Machine" — Decade Mix (online only)
   if (isOnline) {
-    const pickedDecade = getTopDecade(songCounts);
+    const pickedDecade = getTopDecade(songStats);
     if (pickedDecade) {
       const decadeLabel = `${pickedDecade.decade}s`;
       mixes.push({

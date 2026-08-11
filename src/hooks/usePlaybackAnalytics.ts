@@ -252,13 +252,9 @@ export function usePlaybackAnalytics(
     if (!agg) return EMPTY_PERIOD_DEPENDENT;
 
     let totalListeningSeconds = 0;
-    for (const entry of Object.values(agg.songCounts)) {
-      totalListeningSeconds += (entry.song.duration ?? 0) * entry.count;
+    for (const entry of Object.values(agg.songStats)) {
+      totalListeningSeconds += (entry.duration ?? 0) * entry.count;
     }
-
-    const topSongs = Object.values(agg.songCounts)
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 10);
 
     const topArtists = Object.entries(agg.artistCounts)
       .map(([artist, val]) => ({ artist, count: val.count, artistId: val.artistId }))
@@ -296,7 +292,9 @@ export function usePlaybackAnalytics(
       uniqueAlbums: Object.keys(agg.albumCounts).length,
       dailyActivity,
       hourlyDistribution: agg.hourBuckets,
-      topSongs,
+      // Already ranked and bounded by the SQL layer — the only entries carrying a
+      // full `Child`.
+      topSongs: agg.topSongs,
       topArtists,
       topAlbums,
       genreBreakdown,

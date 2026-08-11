@@ -183,10 +183,11 @@ describe('insertScrobble — child rows written, envelope not', () => {
     expectFullArrays(row.song);
   });
 
-  it('reads back through computeScrobbleAnalytics songCounts with all five arrays', async () => {
+  it('reads back through computeScrobbleAnalytics topSongs with all five arrays', async () => {
     const { aggregates } = await computeScrobbleAnalytics(0);
-    expect(aggregates.songCounts['s-full'].count).toBe(1);
-    expectFullArrays(aggregates.songCounts['s-full'].song);
+    expect(aggregates.songStats['s-full'].count).toBe(1);
+    expect(aggregates.topSongs[0].count).toBe(1);
+    expectFullArrays(aggregates.topSongs[0].song);
   });
 
   it('reads back through loadScrobblesSince — scalars only, by design', async () => {

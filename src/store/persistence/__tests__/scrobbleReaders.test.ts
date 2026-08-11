@@ -98,17 +98,23 @@ const seedTitleless = (id: string, songId: string, time = TIME): void => {
   );
 };
 
-/** Delegating handle that records every statement, so a per-row query shows up as a
- *  query count that grows with the row count. */
-const countingDb = (): { db: InternalDb; queries: string[] } => {
-  const queries: string[] = [];
+interface RecordedQuery {
+  sql: string;
+  params?: readonly unknown[];
+}
+
+/** Delegating handle that records every statement and its binds, so a per-row query
+ *  shows up as a query count that grows with the row count — and a query whose bind
+ *  list grows shows up in the params. */
+const countingDb = (): { db: InternalDb; queries: RecordedQuery[] } => {
+  const queries: RecordedQuery[] = [];
   const db = {
     getAllAsync: <T,>(sql: string, params?: readonly unknown[]): Promise<T[]> => {
-      queries.push(sql);
+      queries.push({ sql, params });
       return realDb.getAllAsync<T>(sql, params);
     },
     getFirstAsync: <T,>(sql: string, params?: readonly unknown[]): Promise<T | null> => {
-      queries.push(sql);
+      queries.push({ sql, params });
       return realDb.getFirstAsync<T>(sql, params);
     },
   } as unknown as InternalDb;
@@ -207,10 +213,12 @@ describe('scrobble readers — full round trip through the columns', () => {
     expectFullSong(rows[0].song);
   });
 
-  it('computeScrobbleAnalytics songCounts reconstructs every consumer field', async () => {
+  it('computeScrobbleAnalytics topSongs reconstructs every consumer field', async () => {
     const { aggregates } = await computeScrobbleAnalytics(0);
-    expect(aggregates.songCounts['s-full'].count).toBe(1);
-    expectFullSong(aggregates.songCounts['s-full'].song);
+    expect(aggregates.songStats['s-full']).toEqual({ count: 1, duration: 210, year: 1999 });
+    expect(aggregates.topSongs).toHaveLength(1);
+    expect(aggregates.topSongs[0].count).toBe(1);
+    expectFullSong(aggregates.topSongs[0].song);
   });
 
   it('loadScrobblesSince reconstructs the scalars its consumer reads, without the arrays', async () => {
@@ -269,9 +277,10 @@ describe('scrobble readers — loadScrobblesSince requires song_id ONLY', () => 
     expect(rows.map((r) => r.id)).toEqual(['sc-good']);
   });
 
-  it('computeScrobbleAnalytics songCounts drops it', async () => {
+  it('computeScrobbleAnalytics drops it from songStats and topSongs', async () => {
     const { aggregates } = await computeScrobbleAnalytics(0);
-    expect(Object.keys(aggregates.songCounts)).toEqual(['s-good']);
+    expect(Object.keys(aggregates.songStats)).toEqual(['s-good']);
+    expect(aggregates.topSongs.map((e) => e.song.id)).toEqual(['s-good']);
     // The row still counts as a play — only the reconstructed song is withheld.
     expect(aggregates.artistCounts.Ghost.count).toBe(1);
   });
@@ -292,7 +301,8 @@ describe('scrobble readers — loadScrobblesSince requires song_id ONLY', () => 
     expect(await loadRecentScrobbles(10)).toEqual([]);
     expect(await hydrateScrobblesAsync()).toEqual([]);
     const { aggregates } = await computeScrobbleAnalytics(0);
-    expect(aggregates.songCounts).toEqual({});
+    expect(aggregates.songStats).toEqual({});
+    expect(aggregates.topSongs).toEqual([]);
     // loadScrobblesSince too, despite requiring no title: the stamp's `song_id` is a
     // marker, not a song, and Heavy Rotation's only guard is a truthy `song.id`
     // (`tunedInService.generateMixes`) — it would render an untitled, unplayable row.
@@ -301,10 +311,10 @@ describe('scrobble readers — loadScrobblesSince requires song_id ONLY', () => 
 });
 
 /* ------------------------------------------------------------------ */
-/*  songCounts: scalars and child rows from the SAME play              */
+/*  Per-song results: scalars and child rows from the SAME play        */
 /* ------------------------------------------------------------------ */
 
-describe('scrobble readers — songCounts takes one representative play', () => {
+describe('scrobble readers — per-song results take one representative play', () => {
   /** Two plays of one song with metadata that changed between them. The titles and
    *  genres are chosen so a `MAX(col)` group aggregate would pick the OLDER play's
    *  scalars while the child rows came from the newer one. */
@@ -315,6 +325,8 @@ describe('scrobble readers — songCounts takes one representative play', () => 
     genres: [{ name: 'Zydeco' }],
     moods: ['old'],
     bitRate: 128,
+    duration: 111,
+    year: 1979,
   } as unknown as Child;
   const newer = {
     ...simpleSong('s-rep'),
@@ -323,6 +335,8 @@ describe('scrobble readers — songCounts takes one representative play', () => 
     genres: [{ name: 'Ambient' }],
     moods: ['new'],
     bitRate: 960,
+    duration: 222,
+    year: 1991,
   } as unknown as Child;
 
   beforeEach(async () => {
@@ -333,7 +347,7 @@ describe('scrobble readers — songCounts takes one representative play', () => 
 
   it('pairs the scalars and the child rows from the most recent play', async () => {
     const { aggregates } = await computeScrobbleAnalytics(0);
-    const entry = aggregates.songCounts['s-rep'];
+    const entry = aggregates.topSongs[0];
 
     expect(entry.count).toBe(2);
     expect(entry.song.title).toBe('Alpha');
@@ -344,12 +358,18 @@ describe('scrobble readers — songCounts takes one representative play', () => 
     expect(entry.song.moods).toEqual(['new']);
   });
 
+  it('takes the cheap per-song scalars from that same play', async () => {
+    const { aggregates } = await computeScrobbleAnalytics(0);
+    expect(aggregates.songStats['s-rep']).toEqual({ count: 2, duration: 222, year: 1991 });
+  });
+
   it('follows the window when sinceMs excludes the newer play', async () => {
     const { aggregates } = await computeScrobbleAnalytics(TIME - 1000);
-    expect(aggregates.songCounts['s-rep'].count).toBe(2);
+    expect(aggregates.songStats['s-rep'].count).toBe(2);
 
     const older_only = await computeScrobbleAnalytics(TIME + 120_000);
-    expect(older_only.aggregates.songCounts['s-rep']).toBeUndefined();
+    expect(older_only.aggregates.songStats['s-rep']).toBeUndefined();
+    expect(older_only.aggregates.topSongs).toEqual([]);
   });
 
   it('scopes the representative to the window', async () => {
@@ -359,9 +379,49 @@ describe('scrobble readers — songCounts takes one representative play', () => 
     await backfillScrobbleColumnsAsync();
 
     const { aggregates } = await computeScrobbleAnalytics(TIME + 30_000);
-    expect(aggregates.songCounts['s-rep'].count).toBe(1);
-    expect(aggregates.songCounts['s-rep'].song.title).toBe('Alpha');
-    expect(aggregates.songCounts['s-rep'].song.genres).toEqual(['Ambient']);
+    expect(aggregates.songStats['s-rep']).toEqual({ count: 1, duration: 222, year: 1991 });
+    expect(aggregates.topSongs[0].song.title).toBe('Alpha');
+    expect(aggregates.topSongs[0].song.genres).toEqual(['Ambient']);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  topSongs: ranked, bounded, and every one of them playable          */
+/* ------------------------------------------------------------------ */
+
+describe('scrobble readers — topSongs', () => {
+  // 15 songs played 15, 14, … 1 times: distinct counts, so the ranking is exact and
+  // the ten that survive the bound are known.
+  beforeEach(async () => {
+    realDb.runSync('DELETE FROM scrobble_events;');
+    let k = 0;
+    for (let i = 0; i < 15; i++) {
+      const song = { ...(fullSong as object), id: `s-${i}`, title: `Song ${i}` };
+      for (let p = 0; p < 15 - i; p++) seedLegacy(`sc-${i}-${p}`, song, TIME + k++ * 1000);
+    }
+    await backfillScrobbleColumnsAsync();
+  });
+
+  it('ranks by play count and stops at ten', async () => {
+    const { aggregates } = await computeScrobbleAnalytics(0);
+    expect(Object.keys(aggregates.songStats)).toHaveLength(15);
+    expect(aggregates.topSongs.map((e) => e.song.id)).toEqual([
+      's-0', 's-1', 's-2', 's-3', 's-4', 's-5', 's-6', 's-7', 's-8', 's-9',
+    ]);
+    expect(aggregates.topSongs.map((e) => e.count)).toEqual([15, 14, 13, 12, 11, 10, 9, 8, 7, 6]);
+  });
+
+  it('gives every ranked entry a complete Child, not a projection', async () => {
+    // My Listening hands these straight to `playTrack` and the details modal.
+    const { aggregates } = await computeScrobbleAnalytics(0);
+    for (const entry of aggregates.topSongs) {
+      expect(entry.song.suffix).toBe('flac');
+      expect(entry.song.bitRate).toBe(960);
+      expect(entry.song.size).toBe(12_345_678);
+      expect(entry.song.genres).toEqual(['Rock', 'Indie']);
+      expect(entry.song.replayGain).toEqual({ trackGain: -7.5, trackPeak: 0.98 });
+    }
+    expectFullSong({ ...aggregates.topSongs[0].song, id: 's-full', title: 'Full Song' });
   });
 });
 
@@ -383,7 +443,7 @@ describe('scrobble readers — bounded query count', () => {
   };
 
   /** Runs `fn` against a counting handle and returns the statements it issued. */
-  const countFor = async (n: number, fn: () => Promise<unknown>): Promise<string[]> => {
+  const countFor = async (n: number, fn: () => Promise<unknown>): Promise<RecordedQuery[]> => {
     await seedMany(n);
     const { db, queries } = countingDb();
     __setDbForTests(db);
@@ -396,11 +456,12 @@ describe('scrobble readers — bounded query count', () => {
     // 1 page query + 1 per child table, whatever the row count.
     ['loadRecentScrobbles', () => loadRecentScrobbles(500), 6],
     ['hydrateScrobblesAsync', () => hydrateScrobblesAsync(), 6],
-    // 7 aggregate queries + the 5 child tables for the representative rows.
-    ['computeScrobbleAnalytics', () => computeScrobbleAnalytics(0), 12],
+    // 7 aggregate queries + 1 lookup for the top songs' representative rows + the
+    // 5 child tables for those.
+    ['computeScrobbleAnalytics', () => computeScrobbleAnalytics(0), 13],
     // The one reader that skips the child tables entirely.
     ['loadScrobblesSince', () => loadScrobblesSince(0), 1],
-  ])('%s issues %d queries for 3 rows and for 60', async (_label, fn, expected) => {
+  ])('%s issues a fixed number of queries for 3 rows and for 60', async (_label, fn, expected) => {
     const few = await countFor(3, fn);
     const many = await countFor(60, fn);
 
@@ -414,8 +475,26 @@ describe('scrobble readers — bounded query count', () => {
     expect(await hydrateScrobblesAsync()).toHaveLength(60);
     expect(await loadScrobblesSince(0)).toHaveLength(60);
     const { aggregates } = await computeScrobbleAnalytics(0);
-    expect(Object.keys(aggregates.songCounts)).toHaveLength(60);
-    expect(aggregates.songCounts['s-59'].song.genres).toEqual(['Rock', 'Indie']);
+    // Every song is counted; only the ranked ten are reconstructed.
+    expect(Object.keys(aggregates.songStats)).toHaveLength(60);
+    expect(aggregates.topSongs).toHaveLength(10);
+    for (const entry of aggregates.topSongs) {
+      expect(entry.song.genres).toEqual(['Rock', 'Indie']);
+    }
+  });
+
+  it('binds a child-table id list bounded by the top songs, not by unique songs', async () => {
+    // The statement count alone would not catch it: the five child queries take an
+    // id list, and it used to hold every unique song ever played.
+    const idsBound = (queries: RecordedQuery[]): number[] =>
+      queries
+        .filter((q) => /FROM scrobble_(genres|artists|album_artists|contributors|moods)/.test(q.sql))
+        .map((q) => (JSON.parse(String(q.params?.[0] ?? '[]')) as string[]).length);
+
+    expect(idsBound(await countFor(3, () => computeScrobbleAnalytics(0)))).toEqual([3, 3, 3, 3, 3]);
+    expect(idsBound(await countFor(60, () => computeScrobbleAnalytics(0)))).toEqual(
+      [10, 10, 10, 10, 10],
+    );
   });
 });
 

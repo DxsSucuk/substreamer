@@ -17,7 +17,8 @@ import { getPrimaryGenre } from '../../utils/genreHelpers';
 function buildAgg(list: ScrobbleRecord[]): AnalyticsAggregates {
   const artistCounts: AnalyticsAggregates['artistCounts'] = {};
   const albumCounts: AnalyticsAggregates['albumCounts'] = {};
-  const songCounts: AnalyticsAggregates['songCounts'] = {};
+  const songStats: AnalyticsAggregates['songStats'] = {};
+  const latestSong = new Map<string, ScrobbleRecord['song']>();
   const genreCounts: Record<string, number> = {};
   const hourBuckets = new Array<number>(24).fill(0);
   const dayCounts: Record<string, number> = {};
@@ -41,30 +42,35 @@ function buildAgg(list: ScrobbleRecord[]): AnalyticsAggregates {
         count: 1,
         albumId: s.song.albumId ?? undefined,
       };
-    const sc = songCounts[s.song.id];
-    if (sc) {
-      sc.count++;
-      sc.song = s.song;
-    } else songCounts[s.song.id] = { song: s.song, count: 1 };
+    // Latest play wins for the per-song scalars, as the SQL representative row does.
+    const sc = songStats[s.song.id];
+    if (sc) sc.count++;
+    else songStats[s.song.id] = { count: 1 };
+    songStats[s.song.id].duration = s.song.duration ?? undefined;
+    songStats[s.song.id].year = s.song.year ?? undefined;
+    latestSong.set(s.song.id, s.song);
     const genre = getPrimaryGenre(s.song);
     if (genre) genreCounts[genre] = (genreCounts[genre] ?? 0) + 1;
     hourBuckets[new Date(s.time).getHours()]++;
     const dk = dateKey(s.time);
     dayCounts[dk] = (dayCounts[dk] ?? 0) + 1;
   }
-  return { artistCounts, albumCounts, songCounts, genreCounts, hourBuckets, dayCounts };
+  // The ranked, bounded, fully-reconstructed slice the SQL layer hands over.
+  const topSongs = Object.entries(songStats)
+    .sort(([, a], [, b]) => b.count - a.count)
+    .slice(0, 10)
+    .map(([id, v]) => ({ song: latestSong.get(id)!, count: v.count }));
+  return { artistCounts, albumCounts, songStats, topSongs, genreCounts, hourBuckets, dayCounts };
 }
 
 const PERIOD_DAYS_MAP: Record<TimePeriod, number | null> = { '7d': 7, '30d': 30, '90d': 90, all: null };
 
 /** Adapter: build period + all-time aggregates from a scrobble list (as SQL does
- *  in prod) and drive the aggregate-based hook. The trailing `_agg` arg absorbs
- *  the legacy all-time-aggregates param some call sites still pass. */
+ *  in prod) and drive the aggregate-based hook. */
 function renderAnalytics(
   list: ScrobbleRecord[],
   period: TimePeriod,
   pending?: Pick<ScrobbleRecord, 'time'>[],
-  _agg?: unknown,
 ) {
   const days = PERIOD_DAYS_MAP[period];
   const cutoff = days ? Date.now() - days * 86_400_000 : 0;
@@ -530,56 +536,8 @@ describe('usePlaybackAnalytics with aggregates', () => {
     { id: '3', song: mockSong('s2', 'Artist B', 'Album Y', 240), time: ts(2025, 1, 13) },
   ];
 
-  function buildAggregatesFromScrobbles(records: ScrobbleRecord[]): AnalyticsAggregates {
-    const artistCounts: Record<string, { count: number; artistId?: string }> = {};
-    const albumCounts: Record<string, { artist: string; coverArt?: string; count: number; albumId?: string }> = {};
-    const songCounts: Record<string, { song: ScrobbleRecord['song']; count: number }> = {};
-    const genreCounts: Record<string, number> = {};
-    const hourBuckets = new Array<number>(24).fill(0);
-    const dayCounts: Record<string, number> = {};
-
-    for (const s of records) {
-      const artist = s.song.artist ?? 'Unknown';
-      const existingArtist = artistCounts[artist];
-      if (existingArtist) {
-        existingArtist.count++;
-        if (!existingArtist.artistId && s.song.artistId) existingArtist.artistId = s.song.artistId;
-      } else {
-        artistCounts[artist] = { count: 1, artistId: s.song.artistId ?? undefined };
-      }
-
-      const albumKey = `${s.song.album ?? 'Unknown'}::${artist}`;
-      const existing = albumCounts[albumKey];
-      if (existing) {
-        existing.count++;
-        if (s.song.coverArt) existing.coverArt = s.song.coverArt;
-        if (!existing.albumId && s.song.albumId) existing.albumId = s.song.albumId;
-      } else {
-        albumCounts[albumKey] = {
-          artist,
-          coverArt: s.song.coverArt ?? undefined,
-          count: 1,
-          albumId: s.song.albumId ?? undefined,
-        };
-      }
-
-      const existingSong = songCounts[s.song.id];
-      if (existingSong) { existingSong.count++; existingSong.song = s.song; }
-      else songCounts[s.song.id] = { song: s.song, count: 1 };
-
-      hourBuckets[new Date(s.time).getHours()]++;
-
-      const dk = dateKey(s.time);
-      dayCounts[dk] = (dayCounts[dk] ?? 0) + 1;
-    }
-
-    return { artistCounts, albumCounts, songCounts, genreCounts, hourBuckets, dayCounts } as AnalyticsAggregates;
-  }
-
   it('uses aggregates for "all" period and produces same results', () => {
-    const aggregates = buildAggregatesFromScrobbles(scrobbles);
-
-    const { result: withAgg } = renderAnalytics(scrobbles, 'all', undefined, aggregates);
+    const { result: withAgg } = renderAnalytics(scrobbles, 'all');
     const { result: withoutAgg } = renderAnalytics(scrobbles, 'all');
 
     expect(withAgg.current.totalPlays).toBe(withoutAgg.current.totalPlays);
@@ -598,26 +556,21 @@ describe('usePlaybackAnalytics with aggregates', () => {
       time: ts(2024, 12, 1),
     };
     const allScrobbles = [...scrobbles, oldScrobble];
-    const aggregates = buildAggregatesFromScrobbles(allScrobbles);
-
-    const { result } = renderAnalytics(allScrobbles, '7d', undefined, aggregates);
+    const { result } = renderAnalytics(allScrobbles, '7d');
     // Period-filtered: only recent 3 scrobbles
     expect(result.current.totalPlays).toBe(3);
   });
 
   it('uses aggregates dayCounts for heatmap', () => {
-    const aggregates = buildAggregatesFromScrobbles(scrobbles);
-
-    const { result } = renderAnalytics(scrobbles, '7d', undefined, aggregates);
+    const { result } = renderAnalytics(scrobbles, '7d');
     // Heatmap should have entries for 16 weeks
     expect(result.current.heatmapData.length).toBe(16 * 7);
   });
 
   it('uses aggregates dayCounts for streaks', () => {
-    const aggregates = buildAggregatesFromScrobbles(scrobbles);
     const pending = [{ time: ts(2025, 1, 15) }];
 
-    const { result } = renderAnalytics(scrobbles, 'all', pending, aggregates);
+    const { result } = renderAnalytics(scrobbles, 'all', pending);
     expect(result.current.currentStreak).toBe(3);
   });
 });

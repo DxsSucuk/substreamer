@@ -165,15 +165,15 @@ describe('getTopGenreForHour', () => {
 
 describe('getTopDecade', () => {
   it('returns a valid decade or null from the candidates (weighted random)', () => {
-    const songCounts = {
-      s1: { song: makeSong({ year: 1992 }), count: 5 },
-      s2: { song: makeSong({ year: 1995 }), count: 8 },
-      s3: { song: makeSong({ year: 2005 }), count: 3 },
+    const songStats = {
+      s1: { year: 1992, count: 5 },
+      s2: { year: 1995, count: 8 },
+      s3: { year: 2005, count: 3 },
     };
     // Run multiple times to account for randomness
     const decades = new Set<number | null>();
     for (let i = 0; i < 100; i++) {
-      const result = getTopDecade(songCounts);
+      const result = getTopDecade(songStats);
       decades.add(result?.decade ?? null);
     }
     // Should only produce valid candidates or null (generic fallback)
@@ -183,11 +183,11 @@ describe('getTopDecade', () => {
   });
 
   it('returns null when no songs have year data', () => {
-    const songCounts = {
-      s1: { song: makeSong(), count: 5 },
-      s2: { song: makeSong(), count: 3 },
+    const songStats = {
+      s1: { count: 5 },
+      s2: { count: 3 },
     };
-    expect(getTopDecade(songCounts)).toBeNull();
+    expect(getTopDecade(songStats)).toBeNull();
   });
 
   it('returns null for empty song counts', () => {
@@ -195,23 +195,23 @@ describe('getTopDecade', () => {
   });
 
   it('ignores songs with year < 1950', () => {
-    const songCounts = {
-      s1: { song: makeSong({ year: 1920 }), count: 100 },
-      s2: { song: makeSong({ year: 2010 }), count: 2 },
+    const songStats = {
+      s1: { year: 1920, count: 100 },
+      s2: { year: 2010, count: 2 },
     };
     // Only the 2010s is valid; null (generic fallback) also possible
-    const result = getTopDecade(songCounts);
+    const result = getTopDecade(songStats);
     if (result !== null) {
       expect(result).toEqual({ decade: 2010, fromYear: 2010, toYear: 2019 });
     }
   });
 
   it('returns a valid decade or null when counts are tied', () => {
-    const songCounts = {
-      s1: { song: makeSong({ year: 1985 }), count: 5 },
-      s2: { song: makeSong({ year: 1995 }), count: 5 },
+    const songStats = {
+      s1: { year: 1985, count: 5 },
+      s2: { year: 1995, count: 5 },
     };
-    const result = getTopDecade(songCounts);
+    const result = getTopDecade(songStats);
     if (result !== null) {
       expect([1980, 1990]).toContain(result.decade);
       expect(result.toYear - result.fromYear).toBe(9);
@@ -219,13 +219,13 @@ describe('getTopDecade', () => {
   });
 
   it('favors higher-count decades over many runs', () => {
-    const songCounts = {
-      s1: { song: makeSong({ year: 1992 }), count: 100 },
-      s2: { song: makeSong({ year: 2005 }), count: 1 },
+    const songStats = {
+      s1: { year: 1992, count: 100 },
+      s2: { year: 2005, count: 1 },
     };
     const results = new Map<string, number>();
     for (let i = 0; i < 500; i++) {
-      const r = getTopDecade(songCounts);
+      const r = getTopDecade(songStats);
       const key = r?.decade?.toString() ?? 'null';
       results.set(key, (results.get(key) ?? 0) + 1);
     }
@@ -234,13 +234,13 @@ describe('getTopDecade', () => {
   });
 
   it('sometimes returns null (generic fallback) even when decades exist', () => {
-    const songCounts = {
-      s1: { song: makeSong({ year: 1992 }), count: 10 },
-      s2: { song: makeSong({ year: 2005 }), count: 10 },
+    const songStats = {
+      s1: { year: 1992, count: 10 },
+      s2: { year: 2005, count: 10 },
     };
     let nullCount = 0;
     for (let i = 0; i < 500; i++) {
-      if (getTopDecade(songCounts) === null) nullCount++;
+      if (getTopDecade(songStats) === null) nullCount++;
     }
     // Generic fallback should appear sometimes but not dominate
     expect(nullCount).toBeGreaterThan(0);
@@ -256,7 +256,7 @@ describe('generateMixes', () => {
   const baseInput = {
     hourBuckets: new Array(24).fill(0),
     genreCounts: {} as Record<string, number>,
-    songCounts: {} as Record<string, { song: Child; count: number }>,
+    songStats: {} as Record<string, { count: number; year?: number }>,
     artistCounts: {} as Record<string, { count: number; artistId?: string }>,
     scrobbles: [] as any[],
     favoritesSeed: null as { id: string; title?: string } | null,
@@ -311,9 +311,9 @@ describe('generateMixes', () => {
   it('includes Time Machine when song history has years', () => {
     const input = {
       ...baseInput,
-      songCounts: {
-        s1: { song: makeSong({ year: 1985 }), count: 10 },
-        s2: { song: makeSong({ year: 1988 }), count: 8 },
+      songStats: {
+        s1: { year: 1985, count: 10 },
+        s2: { year: 1988, count: 8 },
       },
     };
     const mixes = generateMixes(input);

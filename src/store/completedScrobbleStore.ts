@@ -30,7 +30,13 @@ export interface ListeningStats {
 export interface AnalyticsAggregates {
   artistCounts: Record<string, { count: number; artistId?: string }>;
   albumCounts: Record<string, { artist: string; coverArt?: string; count: number; albumId?: string }>;
-  songCounts: Record<string, { song: Child; count: number }>;
+  /** Every unique song played: its play count plus the two fields the whole-set
+   *  consumers read — `duration` for the listening total, `year` for the decade mix.
+   *  Deliberately NOT a `Child` per song; see `topSongs`. */
+  songStats: Record<string, { count: number; duration?: number; year?: number }>;
+  /** The most-played songs, ranked, bounded, each a COMPLETE `Child` — they are
+   *  played from My Listening and opened in the track-details modal. */
+  topSongs: { song: Child; count: number }[];
   genreCounts: Record<string, number>;
   hourBuckets: number[];
   dayCounts: Record<string, number>;
@@ -45,7 +51,8 @@ const EMPTY_STATS: ListeningStats = {
 const EMPTY_AGGREGATES: AnalyticsAggregates = {
   artistCounts: {},
   albumCounts: {},
-  songCounts: {},
+  songStats: {},
+  topSongs: [],
   genreCounts: {},
   hourBuckets: new Array(24).fill(0),
   dayCounts: {},
