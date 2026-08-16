@@ -7,6 +7,10 @@ export { type DownloadProgressEvent, type DirectoryEntry, type StatResult } from
 /**
  * List directory contents asynchronously on a native background thread.
  * Returns an array of entry names (not full paths).
+ *
+ * A MISSING path resolves to `[]`; a path that exists but cannot be read
+ * REJECTS. Callers that delete state for whatever they don't see must treat an
+ * empty array as "genuinely empty" and a rejection as "no reliable view".
  */
 export function listDirectoryAsync(uri: string): Promise<string[]> {
   return ExpoAsyncFsModule.listDirectoryAsync(uri);
@@ -17,6 +21,8 @@ export function listDirectoryAsync(uri: string): Promise<string[]> {
  * off-thread native call. Avoids a sync `File.exists`/`File.size` stat per
  * child on the JS thread (those are sync-only in expo-file-system). `size` is
  * 0 for directories.
+ *
+ * Same missing-vs-unreadable contract as {@link listDirectoryAsync}.
  */
 export function listDirectoryWithSizesAsync(
   uri: string,

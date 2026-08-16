@@ -374,6 +374,10 @@ export async function listCachedImagesForBrowser(
 /*  Bulk insert — used by the migration and by reconciliation          */
 /* ------------------------------------------------------------------ */
 
+/** Rows per batch, matching the repository-layer norm. Keeps a whole-cache
+ *  write off the pool thread as one enormous savepoint. */
+const WRITE_CHUNK = 500;
+
 export async function bulkInsertCachedImages(rows: readonly CachedImageRow[]): Promise<void> {
   const db = getDb();
   if (db === null) return;
@@ -382,9 +386,60 @@ export async function bulkInsertCachedImages(rows: readonly CachedImageRow[]): P
     const commands = rows
       .filter((row) => row.coverArtId && row.size)
       .map(cachedImageUpsertCommand);
-    await db.runAtomicBatchAsync(commands);
+    for (let i = 0; i < commands.length; i += WRITE_CHUNK) {
+      // eslint-disable-next-line no-await-in-loop
+      await db.runAtomicBatchAsync(commands.slice(i, i + WRITE_CHUNK));
+    }
   } catch {
     /* dropped */
+  }
+}
+
+/**
+ * Delete many variants in chunked batches. The row-at-a-time
+ * {@link deleteCachedImageVariant} serializes one round trip per row through the
+ * write mutex, which reconciliation can reach at whole-cache scale.
+ */
+export async function deleteCachedImageVariants(
+  pairs: readonly { coverArtId: string; size: number }[],
+): Promise<void> {
+  const db = getDb();
+  if (db === null) return;
+  if (pairs.length === 0) return;
+  try {
+    const commands: BatchCommand[] = pairs.map((p) => [
+      'DELETE FROM cached_images WHERE cover_art_id = ? AND size = ?;',
+      [p.coverArtId, p.size],
+    ]);
+    for (let i = 0; i < commands.length; i += WRITE_CHUNK) {
+      // eslint-disable-next-line no-await-in-loop
+      await db.runAtomicBatchAsync(commands.slice(i, i + WRITE_CHUNK));
+    }
+  } catch {
+    /* dropped */
+  }
+}
+
+/**
+ * Every (cover_art_id, size, ext) row, for reconciliation's single snapshot.
+ *
+ * Returns `null` — not `[]` — when the table cannot be read, including a null
+ * handle. Reconciliation treats an empty array as "no rows exist" and would
+ * rewrite the whole cache from disk off a swallowed error, so the two cases
+ * must stay distinguishable here.
+ */
+export async function getAllCachedImageRows(): Promise<
+  { coverArtId: string; size: number; ext: string }[] | null
+> {
+  const db = getDb();
+  if (db === null) return null;
+  try {
+    const rows = await db.getAllAsync<{ cover_art_id: string; size: number; ext: string }>(
+      'SELECT cover_art_id, size, ext FROM cached_images;',
+    );
+    return rows.map((r) => ({ coverArtId: r.cover_art_id, size: r.size, ext: r.ext }));
+  } catch {
+    return null;
   }
 }
 
