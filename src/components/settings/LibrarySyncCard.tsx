@@ -1,6 +1,6 @@
 import Ionicons from '@react-native-vector-icons/ionicons/static';
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
 import { useTheme } from '../../hooks/useTheme';
@@ -74,6 +74,7 @@ export function LibrarySyncCard() {
   // A sync is actively running when either the album-list fetch or the song
   // fetch is in progress.
   const isSyncing = librarySyncPhase === 'fetching' || songSyncPhase === 'syncing';
+  const forceLegacySync = syncStatusStore((st) => st.forceLegacySync);
   const fullyComplete = librarySyncComplete && songSyncComplete;
   // Started but neither running nor finished (e.g. paused, or interrupted).
   const isPaused = !isSyncing && !fullyComplete && displayAlbums > 0;
@@ -89,6 +90,12 @@ export function LibrarySyncCard() {
   // No confirm: the resync overwrites rows in place rather than dropping them, so
   // nothing is destroyed, the library stays browsable throughout, and Pause is right
   // there. The card hint carries the warning instead.
+  // Clears the probed strategy on both edges (see the store), so the next sync
+  // re-derives instead of resuming the previous transport.
+  const handleToggleLegacySync = useCallback((next: boolean) => {
+    syncStatusStore.getState().setForceLegacySync(next);
+  }, []);
+
   const handleForceResync = useCallback(() => {
     if (offlineMode) return;
     void forceFullResync();
@@ -211,6 +218,22 @@ export function LibrarySyncCard() {
           </View>
         )}
 
+        <View style={[styles.legacyRow, { borderTopColor: colors.border }]}>
+          <View style={styles.legacyLabelWrap}>
+            <Text style={[settingsStyles.infoLabel, { color: colors.textPrimary }]}>
+              {t('legacySync')}
+            </Text>
+            <Text style={[styles.legacyHint, { color: colors.textSecondary }]}>
+              {t('legacySyncHint')}
+            </Text>
+          </View>
+          <Switch
+            value={forceLegacySync}
+            onValueChange={handleToggleLegacySync}
+            disabled={isSyncing || isPaused}
+          />
+        </View>
+
         <View style={settingsStyles.actionRow}>
           {showSync && (
             <Pressable
@@ -242,6 +265,22 @@ export function LibrarySyncCard() {
 }
 
 const styles = StyleSheet.create({
+  legacyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingTop: 12,
+    marginTop: 4,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  legacyLabelWrap: {
+    flex: 1,
+  },
+  legacyHint: {
+    fontSize: 12,
+    marginTop: 2,
+  },
   statusRow: {
     flexDirection: 'row',
     alignItems: 'center',

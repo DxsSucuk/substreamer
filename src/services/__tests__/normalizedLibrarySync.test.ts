@@ -631,3 +631,60 @@ describe('playlist detail reconcile', () => {
     expect(mockFetchPlaylistDetail).toHaveBeenCalledWith('p1');
   });
 });
+
+describe('runNormalizedLibrarySync — forced legacy transport', () => {
+  // The probe mock always answers true (fast path available), so any run that takes
+  // the walk here did so because the user override said to.
+  it('takes the walk even though the probe reports the fast path', async () => {
+    syncStatusStore.setState({ forceLegacySync: true, syncStrategy: null });
+
+    await runNormalizedLibrarySync({ full: true });
+
+    expect(syncStatusStore.getState().songSyncStrategy).toBe('basic');
+    expect(mockSearchSongsPage).not.toHaveBeenCalled();
+  });
+
+  it('overrides a persisted fast-path strategy', async () => {
+    // The resume value would otherwise route the run straight back onto search3.
+    syncStatusStore.setState({ forceLegacySync: true, syncStrategy: 'search3' });
+
+    await runNormalizedLibrarySync({ full: true });
+
+    expect(syncStatusStore.getState().songSyncStrategy).toBe('basic');
+    expect(mockSearchSongsPage).not.toHaveBeenCalled();
+  });
+
+  it('does not persist the forced transport as the probed strategy', async () => {
+    // `syncStrategy` means "what the probe found". Writing 'basic' into it would
+    // survive the user turning the override back off.
+    syncStatusStore.setState({ forceLegacySync: true, syncStrategy: null });
+
+    await runNormalizedLibrarySync({ full: true });
+
+    expect(syncStatusStore.getState().syncStrategy).toBeNull();
+  });
+
+  it('returns to the probed fast path once the override is cleared', async () => {
+    syncStatusStore.setState({ forceLegacySync: true, syncStrategy: null });
+    await runNormalizedLibrarySync({ full: true });
+    expect(syncStatusStore.getState().songSyncStrategy).toBe('basic');
+
+    syncStatusStore.getState().setForceLegacySync(false);
+    await runNormalizedLibrarySync({ full: true });
+
+    expect(syncStatusStore.getState().songSyncStrategy).toBe('search3');
+  });
+});
+
+describe('setForceLegacySync — clears the derived transports', () => {
+  it('drops both strategies on each edge so the next sync re-derives', () => {
+    syncStatusStore.setState({ syncStrategy: 'search3', songSyncStrategy: 'search3' });
+
+    syncStatusStore.getState().setForceLegacySync(true);
+
+    expect(syncStatusStore.getState().forceLegacySync).toBe(true);
+    expect(syncStatusStore.getState().syncStrategy).toBeNull();
+    expect(syncStatusStore.getState().songSyncStrategy).toBeNull();
+  });
+});
+

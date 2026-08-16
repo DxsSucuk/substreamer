@@ -41,7 +41,7 @@ import { clearAlbumCoverArtCache } from '@/hooks/useSongCoverArt';
 import { offlineModeStore } from '@/store/offlineModeStore';
 import { ratingStore } from '@/store/ratingStore';
 import { serverInfoStore } from '@/store/serverInfoStore';
-import { syncStatusStore } from '@/store/syncStatusStore';
+import { syncStatusStore, type SyncStrategy } from '@/store/syncStatusStore';
 import { runPool } from '@/utils/promisePool';
 import { withTimeout } from '@/utils/withTimeout';
 import { fireAndForget } from '@/utils/fireAndForget';
@@ -552,8 +552,13 @@ async function doNormalizedSync(
       await clearPlaylistDetailMarkers(db);
     }
 
-    // Transport: the persisted resume strategy; else probe once and persist.
-    let strat = syncStatusStore.getState().syncStrategy;
+    // Transport: the user override wins outright, else the persisted resume
+    // strategy, else probe once and persist. The override is deliberately not
+    // persisted as `syncStrategy` — that field means "what the probe found", and
+    // toggling the override off has to re-probe rather than inherit 'basic'.
+    let strat: SyncStrategy | null = syncStatusStore.getState().forceLegacySync
+      ? 'basic'
+      : syncStatusStore.getState().syncStrategy;
     if (strat == null) {
       strat = (await probeEmptySearch3()) ? 'search3' : 'basic';
       if (genChanged()) return;

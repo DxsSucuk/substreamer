@@ -83,6 +83,10 @@ export interface SyncStatusState extends LastKnownMarkers {
   /** Transport for the whole library sync (album list + songs), from the
    *  empty-query `search3` probe. Persisted for resume routing. */
   syncStrategy: SyncStrategy | null;
+  /** User override: always take the per-album walk instead of probing for the
+   *  empty-query `search3` fast path. For servers whose probe succeeds but whose
+   *  fast-path data is unusable, where detection cannot help. */
+  forceLegacySync: boolean;
 
   // --- Song sync (populates the normalized `songs` table) ---
   /** Strategy the song fetch actually uses — normally `syncStrategy`, but forced
@@ -182,6 +186,7 @@ export interface SyncStatusState extends LastKnownMarkers {
   resetLibrarySync: () => void;
   // Strategy + song-sync actions
   setSyncStrategy: (strategy: SyncStrategy | null) => void;
+  setForceLegacySync: (force: boolean) => void;
   setSongSyncStrategy: (strategy: SyncStrategy | null) => void;
   setSongSyncCursor: (cursor: number) => void;
   /** Mark an artist/playlist list refresh as started, or finished (stamps lastFetchedAt). */
@@ -233,6 +238,7 @@ export const syncStatusStore = create<SyncStatusState>()(
       librarySyncLastFetchedAt: null,
 
       syncStrategy: null,
+      forceLegacySync: false,
       songSyncStrategy: null,
       artistLibraryLoading: false,
       artistLibraryLastFetchedAt: null,
@@ -305,6 +311,11 @@ export const syncStatusStore = create<SyncStatusState>()(
           fullSyncCompletedAt: null,
         }),
       setSyncStrategy: (strategy) => set({ syncStrategy: strategy }),
+      // Clear both derived strategies so the next sync re-derives in EITHER
+      // direction: turning this off must re-probe rather than resume the
+      // 'basic' the override forced.
+      setForceLegacySync: (force) =>
+        set({ forceLegacySync: force, syncStrategy: null, songSyncStrategy: null }),
       setSongSyncStrategy: (strategy) => set({ songSyncStrategy: strategy }),
       setSongSyncCursor: (cursor) => set({ songSyncCursor: cursor }),
       setListRefresh: (kind, loading) =>
@@ -404,6 +415,7 @@ export const syncStatusStore = create<SyncStatusState>()(
         librarySyncCursor: state.librarySyncCursor,
         librarySyncLastFetchedAt: state.librarySyncLastFetchedAt,
         syncStrategy: state.syncStrategy,
+        forceLegacySync: state.forceLegacySync,
         songSyncStrategy: state.songSyncStrategy,
         songSyncCursor: state.songSyncCursor,
         fullWalkPending: state.fullWalkPending,
