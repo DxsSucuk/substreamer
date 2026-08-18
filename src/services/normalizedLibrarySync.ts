@@ -883,9 +883,17 @@ async function doNormalizedSync(
 
     const nAlbums = await countAlbums(db);
     const nSongs = await countSongs(db);
+    // Row totals and this run's own numbers are different questions, and on a server
+    // whose enumeration is short of its true library the two diverge permanently: rows
+    // survive every resync, so the totals hold whatever any earlier run reached. Note a
+    // RESUMED run reports the walk's position, which includes what it resumed from.
+    const st = syncStatusStore.getState();
+    const albumsThisRun = st.librarySyncCursor;
+    const songsThisRun = st.songSyncFetched;
     // eslint-disable-next-line no-console
     logLibrarySync(
-      `run done albums=${nAlbums} songs=${nSongs} albumMs=${Math.round(albumMs)} `
+      `run done albums=${nAlbums} albumsThisRun=${albumsThisRun} songs=${nSongs} `
+        + `songsThisRun=${songsThisRun} albumMs=${Math.round(albumMs)} `
         + `songMs=${Math.round(songMs)} totalMs=${Math.round(nowMs() - tStart)}`,
     );
     void flushLibrarySyncLog();
@@ -893,11 +901,15 @@ async function doNormalizedSync(
       reason,
       full,
       albums: nAlbums,
+      albumsThisRun,
       songs: nSongs,
+      songsThisRun,
       albumMs: Math.round(albumMs),
       songMs: Math.round(songMs),
       totalMs: Math.round(nowMs() - tStart),
-      songsPerSec: songMs > 0 ? Math.round(nSongs / (songMs / 1000)) : 0,
+      // Rate of THIS run's work. Against the row total it reads as a throughput figure
+      // for songs the run never fetched — wildly overstated on an incremental sync.
+      songsPerSec: songMs > 0 ? Math.round(songsThisRun / (songMs / 1000)) : 0,
     });
   } catch (e) {
     // eslint-disable-next-line no-console

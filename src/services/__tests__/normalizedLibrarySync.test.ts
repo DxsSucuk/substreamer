@@ -1,6 +1,6 @@
 import type { AlbumID3, Child } from 'subsonic-api';
 
-import { countAlbums } from '../../db/repository/albums';
+import { countAlbums, upsertAlbums } from '../../db/repository/albums';
 import { countSongs } from '../../db/repository/songs';
 import { getDb } from '../../store/persistence/db';
 import { syncStatusStore } from '../../store/syncStatusStore';
@@ -915,6 +915,43 @@ describe('the paging contract: request N at an offset, a short reply is the end'
     await runNormalizedLibrarySync({});
     expect(mockGetAlbumsPageByName.mock.calls[0][0]).toBe(500);
   });
+});
+
+describe('the done log separates this run from what the DB happens to hold', () => {
+  it('reports the walk\'s own counts alongside the row totals', async () => {
+    // Rows survive every resync, so on a server whose fast-path enumeration is short of
+    // its real library the totals keep whatever an earlier run reached. Reporting only
+    // the totals reads as "this run fetched everything" when it did not.
+    __setPageSizesForTest({ album: 5, song: 10, basic: 5 });
+    syncStatusStore.setState({ syncStrategy: 'search3' });
+    // Stand in for a previous run that reached further than this one will.
+    await upsertAlbums(db(), [
+      { id: 'old1', name: 'Older 1', created: new Date('2019-01-01'), duration: 1, songCount: 0 },
+      { id: 'old2', name: 'Older 2', created: new Date('2019-01-01'), duration: 1, songCount: 0 },
+    ] as unknown as AlbumID3[], undefined, []);
+    const logged: unknown[] = [];
+    const spy = jest.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      if (args[0] === '[normalized-sync] done') logged.push(args[1]);
+    });
+
+    await runNormalizedLibrarySync({});
+    spy.mockRestore();
+
+    expect(logged).toHaveLength(1);
+    const done = logged[0] as {
+      albums: number; albumsThisRun: number; songsThisRun: number;
+      songMs: number; songsPerSec: number;
+    };
+    expect(done.albums).toBe(7); // 5 walked + the 2 already held
+    expect(done.albumsThisRun).toBe(5); // what this run actually enumerated
+    expect(done.songsThisRun).toBe(10);
+    // The throughput figure follows this run too. Derived from the row total it would
+    // rate songs the run never fetched.
+    expect(done.songsPerSec).toBe(
+      done.songMs > 0 ? Math.round(done.songsThisRun / (done.songMs / 1000)) : 0,
+    );
+  });
+
 });
 
 describe('one retry, then pause with a reason', () => {
