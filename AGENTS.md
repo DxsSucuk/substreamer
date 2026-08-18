@@ -34,6 +34,27 @@ These rules override everything else in this file when in conflict:
 - Surface assumptions out loud: "I'm assuming you want X, Y, Z. If that's wrong, say so." Do not bury assumptions inside the implementation.
 - If two approaches exist, present both with tradeoffs. Do not pick one silently. Exception: trivial tasks (typo, rename, log line) where the diff fits in one sentence.
 
+### Server behaviour: READ THE SOURCE, never assume
+
+Every Subsonic-compatible server we support is open source, and local read-only clones live in
+`reference/` (gitignored — see `reference/README.md`). **Never guess, infer or "reason about" what
+a server does when the answer can be read.** Never write a defensive branch for a failure mode you
+have not confirmed exists in a real implementation.
+
+- Establishing a behaviour means citing `reference/<server>/<file>:<line>`, not an observation, a
+  plausible mechanism, or an existing code comment.
+- A comment in OUR code is not evidence. Comments record what someone believed at the time. Two
+  such comments in the sync path ("search3 is not reliably pageable", "a server that ignores
+  `albumOffset` returns the same first page forever") were both agent-written assumptions, both
+  wrong, and both shaped real design decisions for weeks before anyone checked.
+- Rationale written as assertion is how this spreads. Write "guards an UNVERIFIED failure mode —
+  never observed" rather than a confident description of a server that may not exist.
+- When a real server genuinely misbehaves, cite its source too, and treat it as that server's bug —
+  do not generalise one server's defect into a rule about the API.
+
+`plans/research-search3-paging-behaviour.md` is the worked example: five servers read from source,
+which disproved both assumptions and identified the actual defect in the one server that had one.
+
 ### The planning cycle
 
 For anything beyond a trivial fix, plan before you touch code, and get the plan approved before you implement:

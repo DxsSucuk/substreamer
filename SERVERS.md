@@ -9,6 +9,11 @@ This file is a living reference — add new sections as new server-specific beha
 is discovered. Every claim should cite the source code, an issue/PR, or a primary
 documentation page so a future reader can verify it.
 
+**Read-only clones of the servers we support live in `reference/`** (gitignored — see
+`reference/README.md` for the folder layout and refresh commands). Behaviour recorded here is read
+from those sources and cited as `reference/<server>/<path>:<line>`. Do not record an observation,
+an inferred mechanism, or a comment from our own code as a finding — see `AGENTS.md` §1.
+
 ---
 
 ## Authentication
@@ -99,6 +104,187 @@ Ampache's Subsonic API was originally based on Subsonic 1.11.0, which only suppo
 - **Streaming redirect issues.** If playback starts then immediately fails with a 301/302 error, set `local_web_path = "http://localhost"` in `ampache.cfg.php` (community workaround for reverse-proxy setups where Ampache miscalculates its own URL during stream redirects).
 
 **Sources:** [Ampache Subsonic API documentation](https://ampache.org/api/subsonic/), [`SubsonicApiApplication.php`](https://github.com/ampache/ampache/blob/develop/src/Module/Api/SubsonicApiApplication.php), [`AuthenticationManager.php`](https://github.com/ampache/ampache/blob/develop/src/Module/Authentication/AuthenticationManager.php), [ampache/ampache#1389](https://github.com/ampache/ampache/issues/1389), [ampache/ampache#1324](https://github.com/ampache/ampache/issues/1324), [ampache/ampache#541](https://github.com/ampache/ampache/issues/541).
+
+---
+
+## Library enumeration and paging
+
+How each server implements `search3` (the fast full-library path) and `getAlbumList2` (the
+per-album path), established by reading the sources in `reference/` on 2026-08-17.
+
+### The contract
+
+`search3`'s `albumOffset` / `songOffset` / `artistOffset` are documented as *"the search result
+offset. Used for paging"* — a row position. OpenSubsonic additionally requires:
+
+> "Servers must support an **empty query** and return all the data to allow clients to properly
+> access all the media information for offline sync."
+> — [OpenSubsonic search3](https://opensubsonic.netlify.app/docs/endpoints/search3/)
+
+The client model is therefore: request up to N, advance the offset by N, **fewer than N returned
+means the end of results**.
+
+### Paging implementation
+
+| Server | Mechanism | Honours offset | `getAlbumList2` size cap | Source |
+|---|---|---|---|---|
+| Navidrome | SQL `LIMIT`/`OFFSET` | yes | **500** (`min(size, 500)`) | `persistence/sql_search.go:95-105`, `server/subsonic/album_lists.go` |
+| Gonic | GORM `Offset`/`Limit` | yes | **none** — passes `size` straight through | `server/ctrlsubsonic/handlers_by_tags.go:203,275-276` |
+| Airsonic | Lucene, bounded loop | yes | **500** (`Math.min(size, 500)`) | `SearchServiceImpl.java:75-81`, `SubsonicRESTController.java:1122,1167` |
+| Airsonic-Advanced | identical to Airsonic | yes | **500** | same paths |
+| Nextcloud Music | SQL `LIMIT`/`OFFSET` | yes | **500** — *"the API spec limits the maximum amount to 500"* | `SubsonicController.php:1686`, `:1903-1914` |
+| Ampache | `limit`/`offset` into its Search engine | yes | none seen | `Module/Api/OpenSubsonic_Api.php:4457-4490` |
+| MiniMediaSonicServer | **primary-key range, no `LIMIT`** | **no** | none seen | `SearchSyncRepository.cs:41,97,193` |
+
+`search3`'s `albumCount`/`songCount` are uncapped on every server read.
+
+### A short page means end-of-results
+
+The API exposes no total count, so "fewer rows returned than requested" is the only termination
+signal a client has. **Request N with an offset; fewer than N back means the end.** A short page,
+or an empty response after a full page, is the end of results.
+
+On the empty-query path the server returns ALL items, so the result set is the whole library.
+Term searches return a smaller set, but page identically: full pages until the last one.
+
+A server that returns fewer than requested while more results remain is broken. Report it; do not
+design the client around it.
+
+Verified exact — a hard `LIMIT` with no post-filtering — on every path we use:
+
+| Server | Path | Evidence |
+|---|---|---|
+| Navidrome | `search3`, `getAlbumList2` | LEFT JOINs only; `missing=false` applied inside both query phases — `persistence/sql_search.go:92-110` |
+| Gonic | `search3`, `getAlbumList2` | `Group("albums.id")` so `LIMIT` counts groups — `spec/queries.go:104` |
+| Airsonic / Advanced | `getAlbumList2` | straight to `albumDao.getAlphabeticalAlbums(offset, size, …)` — `SubsonicRESTController.java:1136-1140` |
+| Nextcloud Music | `getAlbumList2`, `search3` | plain `LIMIT`/`OFFSET` — `Db/AlbumMapper.php:248-255` |
+| Ampache | `search3` | `LIMIT <offset>, <count>` — `Database/Query/Search.php:482-489` |
+
+**Known violation — MiniMediaSonicServer `getAlbumList2`.** `LIMIT @limit` closes the
+`candidate_albums` CTE (`AlbumRepository.cs:71`), then the outer query applies
+`JOIN artists a ON a.artistid = ca.artistid` (`:91`) — an INNER join dropping rows *after* the
+limit. Same defect class as its `search3` range bug.
+
+
+### Response when the offset is past the end
+
+Relevant because a library whose size is an exact multiple of the page size produces a legitimate
+zero-result request. **No server returns an error**, and none omits the enclosing `searchResult3`.
+Two shapes exist:
+
+| Server | Empty result | Why |
+|---|---|---|
+| Navidrome | `album` key **absent** | `json:"album,omitempty"` — `responses.go:346` |
+| Gonic | `album` key **absent** | `json:"album,omitempty"` — `spec.go:360` |
+| Airsonic / Advanced | `album` key **absent** | MOXy JAXB omits empty collections — `JAXBWriter.java:86-95` |
+| Nextcloud Music | `"album": []` | `array_map` over an empty array — `SubsonicController.php:1940-1944` |
+| MiniMediaSonicServer | `"album": []` | `DefaultIgnoreCondition = WhenWritingNull`, lists initialised to `[]` — `SubsonicResults.cs:19`, `SearchResult3.cs` |
+| Ampache | `album` key **absent** | `if (!empty($albums)) { $json['album'] = ... }` — `OpenSubsonic_Json_Data.php:1336-1343` |
+
+**There is variance, and both shapes must be handled.** Four servers omit the key
+(Navidrome, Gonic, Airsonic/Advanced, Ampache); two emit an empty array (Nextcloud, MiniMedia).
+
+The enclosing `searchResult3` is always present, even when every list is empty: Navidrome and Gonic
+declare it `*SearchResult3 json:"searchResult3,omitempty"` but always assign a non-nil struct, so it
+serialises as `{}` rather than being omitted (`responses.go:28`, `spec.go:85`).
+
+Ours handles all of it via optional chaining plus a fallback, on every page fetcher —
+`searchResult3?.album ?? []`, `searchResult3?.song ?? []`, `albumList2?.album ?? []`
+(`src/services/subsonicService.ts:612,632,650,670`). Key absent, `[]`, and a missing
+`searchResult3` all collapse to an empty page.
+
+### Page sizes we request
+
+`search3` counts are uncapped on every server read, so the fast path uses **1000** for albums and
+songs. `getAlbumList2` has a documented spec maximum of **500**, which we honour on the slow path
+for every server — Gonic does not enforce it, but the spec is the contract.
+
+### Empty-query (`query=""`) support
+
+Our client sends `query=` (present, empty) — `modules/subsonic-api/src/index.ts:239` skips only
+`null`/`undefined`.
+
+| Server | `query=` | `query=""` | Notes |
+|---|---|---|---|
+| Navidrome | yes | yes | `StringOr` maps empty to the default `""`; `doSearch` matches `q == ""` or `q == '""'` — `sql_search.go:60-63`. A missing param also works. |
+| Gonic | yes* | yes | `isAll` matches `""` only (`handlers_by_tags.go:228`); a bare empty string falls through to `LIKE '%%'`. A **missing** param returns error 10. |
+| MiniMediaSonicServer | yes | yes | Controller normalises `""` and `''` to empty — `Search3Controller.cs:26-29` |
+| Airsonic | **no** | **no** | Lucene tokenises an empty string to zero clauses, added as `Occur.MUST`, matching nothing — `QueryFactory.search` |
+| Airsonic-Advanced | **no** | **no** | identical |
+| Nextcloud Music | likely | likely | `LIKE`-based; not traced to the mapper, so not asserted |
+| Ampache | yes | yes | `parseSearchQuery('')` returns zero tokens (`SubsonicApiApplication.php:106-108`); `search3` calls `Search::run($data, $user)` with `$require_rules` defaulting to **false**, documented as *"require a valid rule to return search items (instead of returning all items)"* — so no rules returns everything (`Database/Query/Search.php:461,467,561`) |
+
+\* Gonic reaches the same result by a slower route: `query=` misses the `isAll` fast path and runs a
+full `LIKE '%%'` scan, which also excludes rows with a NULL title that the `isAll` branch (no
+`WHERE` at all) would include. **Prefer sending `query=""`.**
+
+Airsonic and Airsonic-Advanced predate the OpenSubsonic empty-query requirement, which is why a
+capability probe before using the fast path is necessary — this is a real capability difference.
+
+All six servers we page against therefore support the empty query except Airsonic and
+Airsonic-Advanced, which the probe correctly routes around.
+
+### Known defect: MiniMediaSonicServer paging
+
+All three empty-query paths — artists (`:41`), albums (`:97`), tracks (`:193`) of
+`MiniMediaSonicServer.Application/Repositories/SearchSyncRepository.cs` — use:
+
+```sql
+where al.record_id >= @offset
+  and al.record_id <= @offset + @count
+```
+
+No `LIMIT`, no `OFFSET`, no `ORDER BY`. `offset` is treated as a primary-key value rather than a
+row position. Consequences:
+
+1. Returns `count + 1` rows (the range is inclusive at both ends).
+2. Duplicates one row at every page boundary — the page at offset N ends at id `N+count`, and the
+   next request at offset `N+count` starts at that same id.
+3. A short page does **not** mean end-of-results; it means that id range was sparse. Conformant
+   clients therefore truncate the library.
+4. No `ORDER BY`, so page ordering is not guaranteed even once the range issue is fixed.
+
+Suggested fix: `ORDER BY record_id LIMIT @count OFFSET @offset`. The same project's
+`AlbumRepository.cs:59-71` already does this correctly for `getAlbumList2/alphabeticalByName` —
+it ranges over a **dense** rank column *and* applies a real `LIMIT`, which is why the per-album
+path pages cleanly on this server while `search3` does not.
+
+Workaround for users: **Legacy sync** in Settings → Library & Data, which enumerates via
+`getAlbumList2`.
+
+
+### Ampache
+
+Key behaviours, read from source. Auth is covered separately above.
+
+| Aspect | Behaviour | Source |
+|---|---|---|
+| `search3` paging | `LIMIT <offset>, <count>` — positional, correct | `Database/Query/Search.php:469,482-489` |
+| Empty query | Returns **all** items. `parseSearchQuery('')` yields zero tokens, and `Search::run` defaults `$require_rules = false`, which is explicitly documented as returning all items when no rules are set | `SubsonicApiApplication.php:106-108`, `Search.php:461,561` |
+| `query=""` | Same — the quoted-empty token is skipped as an empty value, so it also produces zero rules | `SubsonicApiApplication.php:122-125` |
+| Empty result | `album` key **absent** — the emitter only sets it when the list is non-empty | `OpenSubsonic_Json_Data.php:1336-1343` |
+| `search3` count cap | none seen | `OpenSubsonic_Api.php:4457-4462` |
+| Post-limit filtering | `$album->isNew()` rows are skipped inside the emitter loop — see the short-page section above | `OpenSubsonic_Json_Data.php:1340-1342` |
+
+Ampache exposes both `Subsonic_Api.php` (legacy) and `OpenSubsonic_Api.php`; the behaviours above
+are from the OpenSubsonic implementation, which is what an OpenSubsonic-capable client reaches.
+
+### Server identification
+
+Useful when a report has to be attributed to an implementation:
+
+| Signal | Navidrome | Gonic | Airsonic | MiniMedia |
+|---|---|---|---|---|
+| Entity id format | 22-char base62 (`model/id/id.go`; canonicalised by migration `20260720015443_uniform_canonical_ids.go`) | integer | integer | dashed UUID |
+| `type` in ping | `navidrome` | `gonic` | `airsonic` | `subsonic` |
+| OpenSubsonic extensions | 7 (`transcodeOffset`, `formPost`, `songLyrics`, `indexBasedQueue`, `transcoding`, `playbackReport`, `topSongsByArtistId`) plus `sonicSimilarity` when a provider is configured — `server/subsonic/opensubsonic.go` | — | none (pre-OpenSubsonic) | `formPost`, `indexBasedQueue`, `sonicSimilarity` |
+
+**Sources:** [OpenSubsonic search3](https://opensubsonic.netlify.app/docs/endpoints/search3/),
+[Navidrome](https://github.com/navidrome/navidrome), [Gonic](https://github.com/sentriz/gonic),
+[Airsonic](https://github.com/airsonic/airsonic),
+[Airsonic-Advanced](https://github.com/airsonic-advanced/airsonic-advanced),
+[ownCloud/Nextcloud Music](https://github.com/owncloud/music),
+[MiniMediaSonicServer](https://github.com/MusicMoveArr/MiniMediaSonicServer).
 
 ---
 

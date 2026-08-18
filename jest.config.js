@@ -16,6 +16,11 @@ const transformIgnorePatterns = [
   '/node_modules/@react-native/babel-preset/',
 ];
 
+// `reference/` holds read-only clones of the Subsonic servers we support, used to check
+// their behaviour against real source. `testMatch` already excludes them, but Jest still
+// walks the tree for snapshots and reports theirs as ours.
+const modulePathIgnorePatterns = ['<rootDir>/reference/'];
+
 module.exports = {
   projects: [
     {
@@ -38,6 +43,7 @@ module.exports = {
       ],
       setupFilesAfterEnv: ['<rootDir>/src/test-utils/asyncTimeouts.ts'],
       transformIgnorePatterns,
+      modulePathIgnorePatterns,
     },
     {
       preset: 'jest-expo/android',
@@ -59,6 +65,7 @@ module.exports = {
       ],
       setupFilesAfterEnv: ['<rootDir>/src/test-utils/asyncTimeouts.ts'],
       transformIgnorePatterns,
+      modulePathIgnorePatterns,
     },
   ],
   collectCoverageFrom: [
