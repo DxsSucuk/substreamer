@@ -6,9 +6,6 @@ import { useTranslation } from 'react-i18next';
 import { useTheme } from '../../hooks/useTheme';
 import { settingsStyles } from '../../styles/settingsStyles';
 import { cancelAllSyncs, forceFullResync, resumeSync } from '../../services/dataSyncService';
-import { countAlbums } from '../../db/repository/albums';
-import { countSongs } from '../../db/repository/songs';
-import { getDb } from '../../store/persistence/db';
 import { offlineModeStore } from '../../store/offlineModeStore';
 import { syncStatusStore } from '../../store/syncStatusStore';
 import { OfflineNotice } from './OfflineNotice';
@@ -21,7 +18,7 @@ export function LibrarySyncCard() {
   const { colors } = useTheme();
 
   const offlineMode = offlineModeStore((s) => s.offlineMode);
-  const libraryLastFetchedAt = syncStatusStore((s) => s.librarySyncLastFetchedAt);
+  const lastSyncAt = syncStatusStore((s) => s.fullSyncCompletedAt);
   const librarySyncPhase = syncStatusStore((s) => s.librarySyncPhase);
   const songSyncPhase = syncStatusStore((s) => s.detailSyncPhase);
   const librarySyncComplete = syncStatusStore((s) => s.librarySyncComplete);
@@ -36,7 +33,6 @@ export function LibrarySyncCard() {
   // song phase can fall back to the per-album walk at runtime even on a search3 server.
   const songSyncStrategy = syncStatusStore((s) => s.songSyncStrategy);
   const syncStrategy = syncStatusStore((s) => s.syncStrategy);
-  const transport = songSyncStrategy ?? syncStrategy;
 
   // One-time blob→normalized migration progress (bar + % + counts on the card).
   const isMigrating = migPhase === 'migrating';
@@ -47,37 +43,43 @@ export function LibrarySyncCard() {
 
   // Counts reflect the NORMALIZED model (the target-state sync's output), refreshed
   // as the sync progresses. Null until the first query resolves (shown as 0).
-  const [normAlbums, setNormAlbums] = useState<number | null>(null);
-  const [normSongs, setNormSongs] = useState<number | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    const db = getDb();
-    if (!db) return undefined;
-    void (async () => {
-      try {
-        const [a, s] = await Promise.all([countAlbums(db), countSongs(db)]);
-        if (!cancelled) {
-          setNormAlbums(a);
-          setNormSongs(s);
-        }
-      } catch {
-        /* ignore */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [albumsProcessed, albumsTotal, songSyncComplete, librarySyncComplete]);
-  const displayAlbums = normAlbums ?? 0;
-  const displaySongs = normSongs ?? 0;
 
   // A sync is actively running when either the album-list fetch or the song
   // fetch is in progress.
   const isSyncing = librarySyncPhase === 'fetching' || songSyncPhase === 'syncing';
   const forceLegacySync = syncStatusStore((st) => st.forceLegacySync);
+  const albumSyncStrategy = syncStatusStore((st) => st.albumSyncStrategy);
+  const librarySyncCursor = syncStatusStore((st) => st.librarySyncCursor);
+  const songSyncFetched = syncStatusStore((st) => st.songSyncFetched);
+  const lastSyncError = syncStatusStore((st) => st.lastSyncError);
+
+  // The transport actually in use, chosen by phase. `syncStrategy` is only what the
+  // probe found; either phase can fall back at runtime, and `songSyncStrategy` is
+  // persisted so it would otherwise mask the album transport on a resume.
+  const albumPhaseActive = librarySyncPhase === 'fetching';
+  const transport = albumPhaseActive
+    ? (albumSyncStrategy ?? syncStrategy)
+    : (songSyncStrategy ?? syncStrategy);
+
+  // This card is sync STATUS, so both rows are the current sync's progress and reset
+  // to 0 when one starts. A row count cannot serve: a resync overwrites in place
+  // rather than dropping, so COUNT(*) sits at the previous total for the whole run.
+  // The local library totals are deliberately not shown here — the app stays fully
+  // usable during a long sync precisely because that data is left alone.
+  const displayAlbums = librarySyncCursor;
+  const displaySongs = songSyncFetched;
   const fullyComplete = librarySyncComplete && songSyncComplete;
   // Started but neither running nor finished (e.g. paused, or interrupted).
-  const isPaused = !isSyncing && !fullyComplete && displayAlbums > 0;
+  // A run that has made progress but is neither running nor finished. Uses the
+  // cursors rather than a row count, which would read as "paused" on any install
+  // that simply has a library.
+  // A request failure pauses at whatever offset it reached — including 0, which is
+  // where the field instance (a 500 on the first page) lands. Without the phase test
+  // there would be no Resume button and no explanation in exactly that case.
+  const errorPaused = librarySyncPhase === 'paused-error' || songSyncPhase === 'paused-error';
+  const isPaused =
+    errorPaused
+    || (!isSyncing && !fullyComplete && (librarySyncCursor > 0 || songSyncFetched > 0));
   const showSync = !isSyncing && !isPaused;
 
   const stageText =
@@ -152,9 +154,9 @@ export function LibrarySyncCard() {
           <Text style={[settingsStyles.infoValue, { color: colors.textSecondary }]}>{displaySongs}</Text>
         </View>
         <View style={[settingsStyles.infoRow, { borderBottomColor: colors.border }]}>
-          <Text style={[settingsStyles.infoLabel, { color: colors.textPrimary }]}>{t('lastFetched')}</Text>
+          <Text style={[settingsStyles.infoLabel, { color: colors.textPrimary }]}>{t('lastSync')}</Text>
           <Text style={[settingsStyles.infoValue, { color: colors.textSecondary }]}>
-            {formatShortDateTime(libraryLastFetchedAt ? new Date(libraryLastFetchedAt) : null)}
+            {formatShortDateTime(lastSyncAt ? new Date(lastSyncAt) : null)}
           </Text>
         </View>
 
@@ -173,7 +175,7 @@ export function LibrarySyncCard() {
           </View>
         )}
 
-        {!isMigrating && isSyncing && (albumsTotal > 0 || songSyncFinalizing) && (
+        {!isMigrating && isSyncing && !albumPhaseActive && (albumsTotal > 0 || songSyncFinalizing) && (
           <View style={styles.progressBlock}>
             <View style={styles.statusRow}>
               <ActivityIndicator size="small" color={colors.primary} />
@@ -210,11 +212,50 @@ export function LibrarySyncCard() {
           </View>
         )}
 
-        {/* Indeterminate fallback (e.g. the album-LIST fetch, before songs). */}
-        {!isMigrating && isSyncing && albumsTotal === 0 && !songSyncFinalizing && stageText != null && (
+        {/* Paused by the user. The album loop exits on its generation guard without
+            setting a phase, so nothing else would say why the spinner stopped. */}
+        {!isMigrating && isPaused && (
           <View style={styles.statusRow}>
-            <ActivityIndicator size="small" color={colors.primary} />
-            <Text style={[styles.statusText, { color: colors.textSecondary }]}>{stageText}</Text>
+            <Ionicons
+              name={errorPaused ? 'alert-circle-outline' : 'pause-circle-outline'}
+              size={16}
+              color={colors.textSecondary}
+            />
+            <View style={styles.legacyLabelWrap}>
+              <Text style={[styles.statusText, { color: colors.textSecondary }]}>
+                {errorPaused ? t('syncPausedError') : t('syncPausedByUser')}
+              </Text>
+              {errorPaused && lastSyncError != null && (
+                <Text style={[styles.legacyHint, { color: colors.textSecondary }]} numberOfLines={2}>
+                  {lastSyncError}
+                </Text>
+              )}
+            </View>
+          </View>
+        )}
+
+        {/* Indeterminate: the album-LIST fetch, which has no known total until it
+            ends. Carries the transport row too — the album phase is exactly when a
+            runtime fallback happens, and the determinate block above never renders
+            then, so a transport row only there would be invisible for it. */}
+        {!isMigrating && isSyncing && (albumPhaseActive || albumsTotal === 0) && !songSyncFinalizing && stageText != null && (
+          <View style={styles.progressBlock}>
+            <View style={styles.statusRow}>
+              <ActivityIndicator size="small" color={colors.primary} />
+              <Text style={[styles.statusText, { color: colors.textSecondary }]}>{stageText}</Text>
+            </View>
+            {transport && (
+              <View style={styles.transportRow}>
+                <Ionicons
+                  name={transport === 'basic' ? 'albums-outline' : 'flash-outline'}
+                  size={12}
+                  color={colors.textSecondary}
+                />
+                <Text style={[styles.transportText, { color: colors.textSecondary }]}>
+                  {transport === 'basic' ? t('syncTransportBasic') : t('syncTransportFast')}
+                </Text>
+              </View>
+            )}
           </View>
         )}
 

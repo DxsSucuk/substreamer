@@ -269,7 +269,6 @@ beforeEach(() => {
     inFlight: new Map(),
     librarySyncPhase: 'idle',
     librarySyncComplete: false,
-    librarySyncCount: 0,
     librarySyncCursor: 0,
     librarySyncLastFetchedAt: null,
     syncStrategy: null,
@@ -886,3 +885,25 @@ describe('dataSyncService — deferredDataSyncInit', () => {
     expect(mockFetchAlbum).not.toHaveBeenCalled();
   });
 });
+
+describe('pausing a running sync', () => {
+  it('takes the album phase out of "fetching" so the card can offer Resume', () => {
+    // The album loop exits on its generation guard WITHOUT setting a phase. Left in
+    // 'fetching' the card keeps spinning, `isSyncing` stays true, the Pause button
+    // never becomes Resume, and the user cannot restart what they just paused.
+    syncStatusStore.setState({ librarySyncPhase: 'fetching' });
+
+    cancelAllSyncs('user-cancel');
+
+    expect(syncStatusStore.getState().librarySyncPhase).toBe('idle');
+  });
+
+  it('leaves the phase alone for a force-resync, which sets its own', () => {
+    syncStatusStore.setState({ librarySyncPhase: 'fetching' });
+
+    cancelAllSyncs('force-resync');
+
+    expect(syncStatusStore.getState().librarySyncPhase).toBe('fetching');
+  });
+});
+

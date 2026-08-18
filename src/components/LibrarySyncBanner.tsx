@@ -61,7 +61,7 @@ function getVariant(
     return {
       icon: 'sync',
       iconColor: ACCENT_BLUE,
-      label: total > 0 ? `${t('syncingLibrary')} ${pct}%` : t('syncingLibrary'),
+      label: total > 0 ? `${t('syncingSongs')} ${pct}%` : t('syncingSongs'),
       tappable: true,
     };
   }
@@ -73,7 +73,12 @@ function getVariant(
       tappable: false,
     };
   }
-  if (phase === 'paused-auth-error' || phase === 'paused-metered' || phase === 'error') {
+  if (
+    phase === 'paused-auth-error'
+    || phase === 'paused-metered'
+    || phase === 'paused-error'
+    || phase === 'error'
+  ) {
     return {
       icon: 'alert-circle',
       iconColor: ERROR_RED,
@@ -106,9 +111,11 @@ function getMigrationVariant(
 }
 
 /**
- * Variant for the album-LIST fetch (paginated into `library_albums`), shown
- * BEFORE the detail walk. `librarySyncCount` climbs as pages arrive. Suppressed
- * below `MIN_TOTAL_TO_SHOW` so a small library (one instant page) doesn't flash.
+ * Variant for the album-LIST fetch, shown BEFORE the detail walk. The count is the
+ * walk's cursor — albums PROCESSED — not a row count, so it keeps moving on a pass
+ * that re-covers albums already stored. Suppressed below `MIN_TOTAL_TO_SHOW` so a
+ * small library (one instant page) doesn't flash.
+ *
  */
 function getListVariant(
   phase: LibrarySyncPhase,
@@ -120,7 +127,7 @@ function getListVariant(
     return {
       icon: 'sync',
       iconColor: ACCENT_BLUE,
-      label: `${t('fetchingLibrary')} ${count}`,
+      label: `${t('syncingAlbums')} ${count}`,
       tappable: true,
     };
   }
@@ -130,6 +137,14 @@ function getListVariant(
       iconColor: WARNING_AMBER,
       label: t('syncPausedOffline'),
       tappable: false,
+    };
+  }
+  if (phase === 'paused-error') {
+    return {
+      icon: 'alert-circle',
+      iconColor: WARNING_AMBER,
+      label: t('syncPausedError'),
+      tappable: true,
     };
   }
   return null;
@@ -142,7 +157,7 @@ export const LibrarySyncBanner = memo(function LibrarySyncBanner() {
   const total = syncStatusStore((s) => s.detailSyncTotal);
   const completed = syncStatusStore((s) => s.detailSyncCompleted);
   const listPhase = syncStatusStore((s) => s.librarySyncPhase);
-  const listCount = syncStatusStore((s) => s.librarySyncCount);
+  const listCount = syncStatusStore((s) => s.librarySyncCursor);
   const migPhase = syncStatusStore((s) => s.normalizedMigrationPhase);
   const migDone = syncStatusStore((s) => s.normalizedMigrationDone);
   const migTotal = syncStatusStore((s) => s.normalizedMigrationTotal);

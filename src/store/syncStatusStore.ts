@@ -27,12 +27,13 @@ export type DetailSyncPhase =
   | 'paused-offline'
   | 'paused-auth-error'
   | 'paused-metered'
+  | 'paused-error'
   | 'error';
 
 /** Phase of the album-LIST fetch (distinct from the song fetch above). The
  *  list is fetched into `library_albums`; this drives the "Fetching library… N
  *  albums" banner and the "already fetched?" gate. */
-export type LibrarySyncPhase = 'idle' | 'fetching' | 'paused-offline';
+export type LibrarySyncPhase = 'idle' | 'fetching' | 'paused-offline' | 'paused-error';
 
 /** Which transport the library sync is using, decided by a capability probe
  *  (`search3` empty-query supported?). `search3` = fast paged `search3`
@@ -69,11 +70,23 @@ export interface SyncStatusState extends LastKnownMarkers {
    *  gate skips a full re-fetch when this is set and rows exist; an
    *  interrupted fetch leaves it false so the pager resumes from `COUNT(*)`. */
   librarySyncComplete: boolean;
-  /** Albums fetched so far in the current/last list sync — banner display. */
-  librarySyncCount: number;
-  /** Resume cursor for the album-LIST fetch: the next offset to request on the
-   *  fast paged-`search3` path (advanced by each committed page). */
+  /** Resume cursor for the album-LIST fetch: the next offset to request
+   *  (advanced by each committed page). Doubles as the banner's progress number —
+   *  the walk's position, which unlike a row count keeps moving when a pass
+   *  re-covers albums already stored. */
   librarySyncCursor: number;
+  /** Which transport produced {@link librarySyncCursor}. A `search3` offset and a
+   *  `getAlbumList2` offset index different sequences, so resuming one against the
+   *  other silently skips albums. The album phase zeroes the cursor when this does
+   *  not match the transport it is about to use. */
+  librarySyncCursorTransport: SyncStrategy | null;
+  /** Transport the ALBUM phase is actually using — `syncStrategy` is only what the
+   *  probe found, and the phase can fall back at runtime. Display + resume routing.
+   *  Mirrors {@link songSyncStrategy}. */
+  albumSyncStrategy: SyncStrategy | null;
+  /** Message from the request failure that paused the run, shown on the sync card so
+   *  the user knows why. Cleared when a run starts. */
+  lastSyncError: string | null;
   /** Epoch ms of the last completed album-list fetch — settings display.
    *  Persisted here (not in `albumLibraryStore`, which is row-based and keeps
    *  no persisted scalar). */
@@ -105,6 +118,10 @@ export interface SyncStatusState extends LastKnownMarkers {
 
   /** Resume cursor for the fast paged-`search3` song loop (`songOffset`). */
   songSyncCursor: number;
+  /** Songs fetched by the CURRENT sync, across both song transports. Distinct from
+   *  the local song total: a resync overwrites rows in place, so a row count cannot
+   *  show a sync's progress. Reset with the song phase. */
+  songSyncFetched: number;
   /** A FULL resync asked for a total re-walk of every album's songs. The basic walk
    *  skips albums that already have songs and a resync does not drop the tables, so
    *  without this flag a full resync would be a no-op. Persisted so an interrupted
@@ -180,8 +197,14 @@ export interface SyncStatusState extends LastKnownMarkers {
   resetDetailSync: () => void;
   // Album-list sync actions
   setLibrarySyncPhase: (phase: LibrarySyncPhase) => void;
-  setLibrarySyncProgress: (count: number) => void;
-  setLibrarySyncCursor: (cursor: number) => void;
+  /** Advance the resume cursor, stamping the transport that produced it. */
+  setLibrarySyncCursor: (cursor: number, transport: SyncStrategy) => void;
+  /** Enter the album phase on `transport`, atomically discarding a cursor left by a
+   *  DIFFERENT transport. One `set()`: a split write can leave a matching tag against
+   *  a foreign offset, and the next run then reads an empty page, believes the library
+   *  ended, and marks it complete while permanently truncated. */
+  startAlbumPhase: (transport: SyncStrategy) => void;
+  setLastSyncError: (message: string | null) => void;
   markLibrarySyncComplete: () => void;
   resetLibrarySync: () => void;
   // Strategy + song-sync actions
@@ -189,6 +212,7 @@ export interface SyncStatusState extends LastKnownMarkers {
   setForceLegacySync: (force: boolean) => void;
   setSongSyncStrategy: (strategy: SyncStrategy | null) => void;
   setSongSyncCursor: (cursor: number) => void;
+  setSongSyncFetched: (fetched: number) => void;
   /** Mark an artist/playlist list refresh as started, or finished (stamps lastFetchedAt). */
   setListRefresh: (kind: 'artists' | 'playlists', loading: boolean) => void;
   markSongSyncComplete: () => void;
@@ -233,18 +257,21 @@ export const syncStatusStore = create<SyncStatusState>()(
 
       librarySyncPhase: 'idle',
       librarySyncComplete: false,
-      librarySyncCount: 0,
       librarySyncCursor: 0,
       librarySyncLastFetchedAt: null,
 
       syncStrategy: null,
       forceLegacySync: false,
+      librarySyncCursorTransport: null,
+      albumSyncStrategy: null,
+      lastSyncError: null,
       songSyncStrategy: null,
       artistLibraryLoading: false,
       artistLibraryLastFetchedAt: null,
       playlistLibraryLoading: false,
       playlistLibraryLastFetchedAt: null,
       songSyncCursor: 0,
+      songSyncFetched: 0,
       fullWalkPending: false,
       songSyncComplete: false,
       songGapRepairAttempted: false,
@@ -291,13 +318,27 @@ export const syncStatusStore = create<SyncStatusState>()(
           bannerDismissedAt: null,
         }),
       setLibrarySyncPhase: (phase) => set({ librarySyncPhase: phase }),
-      setLibrarySyncProgress: (count) => set({ librarySyncCount: count }),
-      setLibrarySyncCursor: (cursor) => set({ librarySyncCursor: cursor }),
+      setLibrarySyncCursor: (cursor, transport) =>
+        set({ librarySyncCursor: cursor, librarySyncCursorTransport: transport }),
+      startAlbumPhase: (transport) =>
+        set((s) =>
+          s.librarySyncCursorTransport === transport
+            ? { albumSyncStrategy: transport }
+            : {
+                librarySyncCursor: 0,
+                librarySyncCursorTransport: transport,
+                albumSyncStrategy: transport,
+              },
+        ),
+      setLastSyncError: (message) => set({ lastSyncError: message }),
       markLibrarySyncComplete: () =>
         set((s) => ({
           librarySyncComplete: true,
           librarySyncPhase: 'idle',
           librarySyncLastFetchedAt: Date.now(),
+          // A completed phase must not carry a runtime fallback into the next run —
+          // that would pin the slow path with nothing to re-probe it.
+          albumSyncStrategy: null,
           // Full sync is complete only once BOTH the album list and songs are done.
           fullSyncCompletedAt: s.songSyncComplete ? Date.now() : s.fullSyncCompletedAt,
         })),
@@ -305,19 +346,32 @@ export const syncStatusStore = create<SyncStatusState>()(
         set({
           librarySyncPhase: 'idle',
           librarySyncComplete: false,
-          librarySyncCount: 0,
           librarySyncCursor: 0,
-          librarySyncLastFetchedAt: null,
-          fullSyncCompletedAt: null,
+          librarySyncCursorTransport: null,
+          // Clearing this is the ONLY way back to the fast path once a runtime
+          // fallback has pinned the slow one, so a full resync must re-probe.
+          albumSyncStrategy: null,
+          // `librarySyncLastFetchedAt` / `fullSyncCompletedAt` are deliberately NOT
+          // cleared: they describe the last COMPLETED sync, which the card keeps
+          // showing while a new one runs.
         }),
       setSyncStrategy: (strategy) => set({ syncStrategy: strategy }),
       // Clear both derived strategies so the next sync re-derives in EITHER
       // direction: turning this off must re-probe rather than resume the
       // 'basic' the override forced.
       setForceLegacySync: (force) =>
-        set({ forceLegacySync: force, syncStrategy: null, songSyncStrategy: null }),
+        set({
+          forceLegacySync: force,
+          syncStrategy: null,
+          songSyncStrategy: null,
+          // The cursor itself is left alone: it is tagged with the transport that
+          // produced it, so the next album phase discards it if the transport changed.
+          // Clearing it here would race a running loop's next page write.
+          albumSyncStrategy: null,
+        }),
       setSongSyncStrategy: (strategy) => set({ songSyncStrategy: strategy }),
       setSongSyncCursor: (cursor) => set({ songSyncCursor: cursor }),
+      setSongSyncFetched: (fetched) => set({ songSyncFetched: fetched }),
       setListRefresh: (kind, loading) =>
         set(
           kind === 'artists'
@@ -361,6 +415,7 @@ export const syncStatusStore = create<SyncStatusState>()(
         set({
           songSyncStrategy: null,
           songSyncCursor: 0,
+          songSyncFetched: 0,
           // The full resync is the "start over" hatch — ask the server about the empty
           // albums again rather than carrying a stale verdict across it.
           songGapRepairAttempted: false,
@@ -374,7 +429,8 @@ export const syncStatusStore = create<SyncStatusState>()(
           detailSyncPhase: 'idle',
           detailSyncTotal: 0,
           detailSyncCompleted: 0,
-          fullSyncCompletedAt: null,
+          // `fullSyncCompletedAt` is deliberately NOT cleared: it describes the last
+          // COMPLETED sync, which the card keeps showing while a new one runs.
         }),
       setNormalizedMigration: (phase, done, total) =>
         set({
@@ -411,13 +467,15 @@ export const syncStatusStore = create<SyncStatusState>()(
         // persisted.
         librarySyncPhase: state.librarySyncPhase,
         librarySyncComplete: state.librarySyncComplete,
-        librarySyncCount: state.librarySyncCount,
         librarySyncCursor: state.librarySyncCursor,
+        librarySyncCursorTransport: state.librarySyncCursorTransport,
+        albumSyncStrategy: state.albumSyncStrategy,
         librarySyncLastFetchedAt: state.librarySyncLastFetchedAt,
         syncStrategy: state.syncStrategy,
         forceLegacySync: state.forceLegacySync,
         songSyncStrategy: state.songSyncStrategy,
         songSyncCursor: state.songSyncCursor,
+        songSyncFetched: state.songSyncFetched,
         fullWalkPending: state.fullWalkPending,
         // `loading` is deliberately NOT persisted (see the field docs) — only the
         // timestamps, which the list screens use to tell "never fetched" from "empty".

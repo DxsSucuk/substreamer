@@ -165,13 +165,16 @@ describe('syncStatusStore', () => {
       expect(syncStatusStore.getState().fullSyncCompletedAt).toBeGreaterThan(0);
     });
 
-    it('resetting either sync clears fullSyncCompletedAt', () => {
+    it('keeps fullSyncCompletedAt across a reset — it describes the LAST COMPLETED sync', () => {
+      // The resets run at the START of a resync. The settings card shows this as
+      // "Last sync", and it has to keep reading the previous completed run until the
+      // new one finishes — otherwise starting a sync blanks the only record of when
+      // the library was last known good.
       syncStatusStore.setState({ fullSyncCompletedAt: 123 });
       syncStatusStore.getState().resetSongSync();
-      expect(syncStatusStore.getState().fullSyncCompletedAt).toBeNull();
-      syncStatusStore.setState({ fullSyncCompletedAt: 123 });
+      expect(syncStatusStore.getState().fullSyncCompletedAt).toBe(123);
       syncStatusStore.getState().resetLibrarySync();
-      expect(syncStatusStore.getState().fullSyncCompletedAt).toBeNull();
+      expect(syncStatusStore.getState().fullSyncCompletedAt).toBe(123);
     });
 
     it('bumpLibraryUpdated stamps libraryLastUpdatedAt', () => {
@@ -209,7 +212,7 @@ describe('syncStatusStore', () => {
       expect(syncStatusStore.getState().fullResyncEpoch).toBeNull();
     });
 
-    it('survives the resets that clear fullSyncCompletedAt', () => {
+    it('survives the resets that start a full resync', () => {
       // The resets run at the START of a full resync. Clearing the epoch there would let
       // an interrupted run destroy an authorisation an earlier completed run earned —
       // and every later write only ever carries a FRESHER stamp, so it stays valid.
@@ -217,7 +220,6 @@ describe('syncStatusStore', () => {
       syncStatusStore.getState().recordFullResyncEpoch(1234);
       syncStatusStore.getState().resetLibrarySync();
       syncStatusStore.getState().resetSongSync();
-      expect(syncStatusStore.getState().fullSyncCompletedAt).toBeNull();
       expect(syncStatusStore.getState().fullResyncEpoch).toBe(1234);
     });
   });

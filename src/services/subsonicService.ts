@@ -594,9 +594,10 @@ export async function probeEmptySearch3(): Promise<boolean> {
 }
 
 /**
- * Fetch one page of albums via empty-query `search3` (fast path). Paged with
- * `albumOffset` in bulk chunks (`search3.albumCount` is uncapped). The caller
- * loops until a page returns 0.
+ * Fetch one page of albums via empty-query `search3` (fast path), paged with
+ * `albumOffset`. `albumCount` is uncapped on every server read (see SERVERS.md),
+ * unlike `getAlbumList2`'s documented 500 maximum. The caller pages until a page
+ * comes back shorter than it asked for.
  */
 export async function searchAlbumsPage(count: number, offset: number): Promise<AlbumID3[]> {
   const api = getApi();

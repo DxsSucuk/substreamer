@@ -36,7 +36,10 @@ export function useLibrarySyncBackgroundNotification() {
       // Only the slow basic-path walk warrants a background notification; the
       // fast paged-search3 song sync is done in seconds.
       const st = syncStatusStore.getState();
-      const isWalking = st.detailSyncPhase === 'syncing' && st.songSyncStrategy === 'basic';
+      // The album phase falls back to the same per-album list, and is just as long.
+      const isWalking =
+        (st.detailSyncPhase === 'syncing' && st.songSyncStrategy === 'basic')
+        || (st.librarySyncPhase === 'fetching' && st.albumSyncStrategy === 'basic');
 
       if (next === 'background' && isWalking) {
         const { granted } = await Notifications.requestPermissionsAsync();

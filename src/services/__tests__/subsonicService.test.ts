@@ -862,6 +862,34 @@ describe('probeEmptySearch3 + paged search3 fetchers', () => {
     });
   });
 
+  // SERVERS.md records both out-of-bounds shapes: Navidrome/gonic/MiniMedia serialise
+  // an empty `album: []`, Airsonic and Nextcloud omit the key entirely. Both mean the
+  // same thing, and the sync loop's end-of-library test is `page.length === 0` — so a
+  // missing key reaching it as `undefined` would throw rather than end the walk.
+  it.each([
+    ['an empty array (Navidrome, gonic, MiniMedia)', { album: [] }],
+    ['an omitted key (Airsonic, Nextcloud)', {}],
+  ])('searchAlbumsPage reads an out-of-bounds page returning %s as empty', async (_label, searchResult3) => {
+    const { default: SubsonicAPI } = require('subsonic-api');
+    SubsonicAPI.prototype.search3 = jest.fn().mockResolvedValue({ searchResult3 });
+    const { searchAlbumsPage, getApi } = require('../subsonicService');
+    getApi();
+
+    await expect(searchAlbumsPage(500, 999999)).resolves.toEqual([]);
+  });
+
+  it.each([
+    ['an empty array', { song: [] }],
+    ['an omitted key', {}],
+  ])('searchSongsPage reads an out-of-bounds page returning %s as empty', async (_label, searchResult3) => {
+    const { default: SubsonicAPI } = require('subsonic-api');
+    SubsonicAPI.prototype.search3 = jest.fn().mockResolvedValue({ searchResult3 });
+    const { searchSongsPage, getApi } = require('../subsonicService');
+    getApi();
+
+    await expect(searchSongsPage(500, 999999)).resolves.toEqual([]);
+  });
+
   it('searchSongsPage pages by songOffset and returns songs', async () => {
     const { default: SubsonicAPI } = require('subsonic-api');
     SubsonicAPI.prototype.search3 = jest.fn().mockResolvedValue({

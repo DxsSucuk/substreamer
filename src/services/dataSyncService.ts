@@ -530,6 +530,7 @@ export async function onAlbumReferenced(albumId: string): Promise<void> {
  * and playlists; albums and songs wait for the epoch reap.
  */
 export async function forceFullResync(): Promise<void> {
+  syncStatusStore.getState().setLastSyncError(null);
   cancelAllSyncs('force-resync');
   // Clear the persisted transport so the run re-probes search3 vs basic — a server
   // upgrade is one of the things "start over" is meant to recover from.
@@ -544,6 +545,7 @@ export async function forceFullResync(): Promise<void> {
  * sync — both resume from their persisted cursors, no clear.
  */
 export async function resumeSync(): Promise<void> {
+  syncStatusStore.getState().setLastSyncError(null);
   if (offlineModeStore.getState().offlineMode) return;
   // One call resumes BOTH phases from their persisted cursors — the normalized sync
   // runs the album list then the song phase itself, so there is no separate song step.
@@ -697,6 +699,7 @@ export async function recoverStalledSync(): Promise<void> {
     'paused-offline',
     'paused-auth-error',
     'paused-metered',
+    'paused-error',
     'error',
   ];
   // An interrupted ALBUM phase leaves `detailSyncPhase` at 'idle' — only
@@ -727,6 +730,11 @@ export function cancelAllSyncs(reason: 'force-resync' | 'user-cancel'): void {
   // trigger (app foreground, pull-to-refresh, scan).
   if (reason === 'user-cancel') {
     syncStatusStore.getState().resetDetailSync();
+    // The ALBUM loop exits on the generation guard without setting a phase, so
+    // without this the card keeps spinning on "Fetching album list…", `isSyncing`
+    // stays true, and the Pause button never becomes Resume — leaving the user no
+    // way to restart the run they just paused.
+    syncStatusStore.getState().setLibrarySyncPhase('idle');
   }
 }
 

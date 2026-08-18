@@ -13,7 +13,10 @@ const TAG = 'library-sync';
  */
 export function useLibrarySyncKeepAwake() {
   const isWalking = syncStatusStore(
-    (s) => s.detailSyncPhase === 'syncing' && s.songSyncStrategy === 'basic',
+    (s) =>
+      (s.detailSyncPhase === 'syncing' && s.songSyncStrategy === 'basic')
+      // The album phase falls back to the same per-album list, and is just as long.
+      || (s.librarySyncPhase === 'fetching' && s.albumSyncStrategy === 'basic'),
   );
 
   useEffect(() => {

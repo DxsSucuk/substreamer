@@ -44,19 +44,19 @@ describe('LibrarySyncBanner', () => {
   it('renders null when phase is idle', () => {
     const { queryByText } = render(<LibrarySyncBanner />);
     // "null" in this harness means no pill label rendered
-    expect(queryByText(/Syncing library/i)).toBeNull();
+    expect(queryByText(/Syncing songs/i)).toBeNull();
   });
 
   it('hides on tiny libraries below the display threshold', () => {
     setSyncState({ detailSyncPhase: 'syncing', detailSyncTotal: 10 });
     const { queryByText } = render(<LibrarySyncBanner />);
-    expect(queryByText(/Syncing library/i)).toBeNull();
+    expect(queryByText(/Syncing songs/i)).toBeNull();
   });
 
-  it('shows the progress label when syncing a meaningful-sized library', () => {
+  it('names the SONG phase as songs, not as library work', () => {
     setSyncState({ detailSyncPhase: 'syncing', detailSyncTotal: 500 });
     const { getByText } = render(<LibrarySyncBanner />);
-    expect(getByText(/Syncing library/i)).toBeTruthy();
+    expect(getByText(/Syncing songs/i)).toBeTruthy();
   });
 
   it('shows the paused-offline variant with its own copy', () => {
@@ -75,7 +75,7 @@ describe('LibrarySyncBanner', () => {
     setSyncState({ detailSyncPhase: 'syncing', detailSyncTotal: 500 });
     setSyncState({ bannerDismissedAt: Date.now() });
     const { queryByText } = render(<LibrarySyncBanner />);
-    expect(queryByText(/Syncing library/i)).toBeNull();
+    expect(queryByText(/Syncing songs/i)).toBeNull();
   });
 
   it('reappears when phase returns to idle (resetting bannerDismissedAt via setDetailSyncPhase)', () => {
@@ -86,5 +86,27 @@ describe('LibrarySyncBanner', () => {
       syncStatusStore.getState().setDetailSyncPhase('idle');
     });
     expect(syncStatusStore.getState().bannerDismissedAt).toBe(null);
+  });
+
+  it('shows the album-phase cursor, so a pass over known albums still moves', () => {
+    // The album phase reports the walk's position, not a row count: a row count
+    // cannot tell "re-writing albums we already hold" from "doing nothing".
+    setSyncState({ librarySyncPhase: 'fetching', librarySyncCursor: 1200 });
+    const { getByText } = render(<LibrarySyncBanner />);
+    expect(getByText(/1200/)).toBeTruthy();
+  });
+
+  it('suppresses the album phase on a library below the display threshold', () => {
+    setSyncState({ librarySyncPhase: 'fetching', librarySyncCursor: 10 });
+    const { queryByText } = render(<LibrarySyncBanner />);
+    expect(queryByText(/Syncing albums/i)).toBeNull();
+  });
+
+  it('surfaces a sync paused by request errors, so it does not just look stopped', () => {
+    // Distinct from paused-offline: nothing will resume this one on its own, so the
+    // banner has to say why and stay tappable through to the sync card.
+    setSyncState({ librarySyncPhase: 'paused-error', librarySyncCursor: 1200 });
+    const { getByText } = render(<LibrarySyncBanner />);
+    expect(getByText(/paused/i)).toBeTruthy();
   });
 });

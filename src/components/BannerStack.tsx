@@ -63,7 +63,8 @@ export const BannerStack = memo(function BannerStack() {
   const isSyncError =
     syncPhase === 'error'
     || syncPhase === 'paused-auth-error'
-    || syncPhase === 'paused-metered';
+    || syncPhase === 'paused-metered'
+    || syncPhase === 'paused-error';
   if (isSyncError) return <LibrarySyncBanner />;
 
   // Album-LIST fetch progress (paginated `library_albums` sync) shares this slot — it
@@ -75,6 +76,7 @@ export const BannerStack = memo(function BannerStack() {
     || syncPhase === 'paused-offline'
     || listSyncPhase === 'fetching'
     || listSyncPhase === 'paused-offline'
+    || listSyncPhase === 'paused-error'
   ) {
     return <LibrarySyncBanner />;
   }

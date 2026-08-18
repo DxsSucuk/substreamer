@@ -18,7 +18,7 @@ import type { AlbumID3, Child, Playlist } from 'subsonic-api';
 
 import type { InternalDb } from '@/db/client';
 import { resetNormalizedSchema } from '@/db/createNormalizedTables';
-import { countAlbums, listAlbumIds, sumAlbumSongCounts, upsertAlbums } from '@/db/repository/albums';
+import { albumIdsPresent, countAlbums, listAlbumIds, sumAlbumSongCounts, upsertAlbums } from '@/db/repository/albums';
 import { deleteArtistsNotIn, upsertArtists } from '@/db/repository/artists';
 import {
   clearPlaylistDetailMarkers,
@@ -42,6 +42,11 @@ import { offlineModeStore } from '@/store/offlineModeStore';
 import { ratingStore } from '@/store/ratingStore';
 import { serverInfoStore } from '@/store/serverInfoStore';
 import { syncStatusStore, type SyncStrategy } from '@/store/syncStatusStore';
+import {
+  flushLibrarySyncLog,
+  logLibrarySync,
+  readLibrarySyncLogFlag,
+} from './librarySyncLogger';
 import { runPool } from '@/utils/promisePool';
 import { withTimeout } from '@/utils/withTimeout';
 import { fireAndForget } from '@/utils/fireAndForget';
@@ -61,9 +66,23 @@ import {
   searchSongsPage,
 } from './subsonicService';
 
-const ALBUM_PAGE = 1000; // search3 albumCount per page (uncapped); basic path caps at 500
-const SONG_PAGE = 1000;
-const BASIC_PAGE = 500; // getAlbumList2 spec cap
+// Page sizes. `search3` counts are uncapped on every server read; `getAlbumList2` has a
+// documented spec maximum of 500 which we honour everywhere. See SERVERS.md.
+//
+// `let` rather than `const` solely so tests can shrink them: paging behaviour is defined
+// by "a page shorter than requested is the last one", which a fixture cannot express
+// without either 1000-row fixtures or an adjustable page size.
+let ALBUM_PAGE = 1000;
+let SONG_PAGE = 1000;
+let BASIC_PAGE = 500;
+
+/** Test-only: shrink the page sizes so a small fixture can produce a FULL page and
+ *  therefore a real multi-page enumeration. Pass no argument to restore. */
+export function __setPageSizesForTest(sizes?: { album?: number; song?: number; basic?: number }): void {
+  ALBUM_PAGE = sizes?.album ?? 1000;
+  SONG_PAGE = sizes?.song ?? 1000;
+  BASIC_PAGE = sizes?.basic ?? 500;
+}
 /** Update the progress bar every N song pages — the bar doesn't need per-page precision. */
 const PROGRESS_EVERY = 5;
 /** Concurrent per-album `getAlbum` fetches during the basic-server song walk. */
@@ -133,6 +152,8 @@ async function doBasicSongWalk(
 ): Promise<'done' | 'bailed'> {
   const genChanged = (): boolean => syncStatusStore.getState().generation !== capturedGen;
   const isOffline = (): boolean => offlineModeStore.getState().offlineMode;
+  // Seeded from the store so a resumed walk keeps counting up rather than restarting.
+  let walkSongsFetched = syncStatusStore.getState().songSyncFetched;
 
   const allIds = await listAlbumIds(db);
   // A full resync must re-fetch EVERY album's songs. A full resync does not drop the
@@ -179,6 +200,10 @@ async function doBasicSongWalk(
         // that still has album-shaped holes in it.
         if (!album.song || album.song.length === 0) return undefined;
         await upsertSongs(db, album.song, undefined, articles);
+        // The walk has no song offset of its own, so accumulate what it wrote —
+        // the card's Songs row is this sync's progress, not the local total.
+        walkSongsFetched += album.song.length;
+        syncStatusStore.getState().setSongSyncFetched(walkSongsFetched);
         await deleteAlbumSongsNotIn(db, id, album.song.map((s) => s.id), album.songCount);
         done += 1;
         if (done % PROGRESS_EVERY === 0) syncStatusStore.getState().setDetailSyncCompleted(done);
@@ -237,6 +262,10 @@ async function runSearch3SongPhase(
   // downstream can see the damage.
   let firstPage = true;
   let songPage = 0;
+  // Guards the same server behaviour the album loop guards. `null` is what protects
+  // the first page of a run — `songOffset` is seeded from the persisted cursor and is
+  // non-zero on a resume.
+  let prevFirstSongId: string | null = null;
   const corroborate = createEmptyPageCorroborator();
   for (;;) {
     if (genChanged()) return 'bailed';
@@ -244,8 +273,17 @@ async function runSearch3SongPhase(
       syncStatusStore.getState().setDetailSyncPhase('paused-offline');
       return 'bailed';
     }
+    const tSongPage = nowMs();
     // eslint-disable-next-line no-await-in-loop
-    const page: Child[] = await searchSongsPage(SONG_PAGE, songOffset);
+    const fetched = await fetchPageWithRetry(
+      () => searchSongsPage(SONG_PAGE, songOffset),
+      `song page offset=${songOffset}`,
+    );
+    if (!fetched.ok) {
+      pauseForError(fetched.error, 'song');
+      return 'bailed';
+    }
+    const page: Child[] = fetched.page;
 
     // An empty page means "end of library" ONLY if we actually had an API to ask. With
     // no usable API (mid-logout, pre-auth-restore) the page fns resolve [] without
@@ -256,10 +294,29 @@ async function runSearch3SongPhase(
       // the library when the answer repeats: believing a single hiccup costs the user
       // every song after this offset, permanently, under a `complete` flag.
       // eslint-disable-next-line no-await-in-loop
-      if (await corroborate.shouldRetry()) continue;
+      if (await corroborate.shouldRetry()) {
+        // The retry re-requests the SAME offset — clear the tracker so the duplicate
+        // check below cannot misread the repeat as the end.
+        prevFirstSongId = null;
+        continue;
+      }
       return 'done';
     }
     corroborate.reset();
+    // Duplicate page. Unlike the album loop this delegates rather than ending: the
+    // per-album walk is a genuinely different mechanism that recovers the full song
+    // set, so ending here would truncate. UNVERIFIED against any real implementation —
+    // the empty and short checks fire first on every server in reference/.
+    if (page[0]?.id != null && page[0].id === prevFirstSongId) {
+      syncStatusStore.getState().setSongSyncStrategy('basic');
+      logLibrarySync(
+        `song repeated first id=${page[0].id} offset=${songOffset} — per-album walk`,
+      );
+      // eslint-disable-next-line no-await-in-loop
+      const walk = await doBasicSongWalk(db, articles, capturedGen);
+      return walk === 'done' && !genChanged() && !isOffline() ? 'done' : 'bailed';
+    }
+    prevFirstSongId = page[0]?.id ?? null;
     if (firstPage) {
       firstPage = false;
       const missing = page.filter((s) => !s.albumId).length;
@@ -268,6 +325,9 @@ async function runSearch3SongPhase(
         // card: this branch turns a ~40-request paged sync into thousands of per-album
         // fetches, which would otherwise read as unexplained slowness.
         syncStatusStore.getState().setSongSyncStrategy('basic');
+        logLibrarySync(
+          `song missing albumId (${missing}/${page.length}) — per-album walk`,
+        );
         // eslint-disable-next-line no-console
         console.warn(
           `[normalized-sync] search3 songs missing albumId (${missing}/${page.length}) — falling back to the per-album walk`,
@@ -279,8 +339,24 @@ async function runSearch3SongPhase(
     }
     // eslint-disable-next-line no-await-in-loop
     await upsertSongs(db, page, undefined, articles);
-    songOffset += page.length;
+    const songPageStart = songOffset;
+    // Advance by what we asked for — see the album loop.
+    songOffset += SONG_PAGE;
     syncStatusStore.getState().setSongSyncCursor(songOffset);
+    syncStatusStore.getState().setSongSyncFetched(songOffset);
+    if (songPage % PROGRESS_EVERY === 0) {
+      logLibrarySync(
+        `song page offset=${songPageStart} got=${page.length} `
+          + `ms=${Math.round(nowMs() - tSongPage)}`,
+      );
+    }
+    // Short page = end of results, after the upsert and the advance. Correct the
+    // counters to the true total on the way out.
+    if (page.length < SONG_PAGE) {
+      syncStatusStore.getState().setSongSyncCursor(songPageStart + page.length);
+      syncStatusStore.getState().setSongSyncFetched(songPageStart + page.length);
+      return 'done';
+    }
     if (songPage % PROGRESS_EVERY === 0) {
       syncStatusStore.getState().setDetailSyncCompleted(albumsUpTo(songOffset));
     }
@@ -514,6 +590,41 @@ export function runNormalizedLibrarySync(
   return run;
 }
 
+/** One retry after a short pause, then give up. Transient network blips and the odd
+ *  500 should not end an hour-long sync; a second failure is treated as real and
+ *  pauses the run so the user can resume from the persisted cursor. */
+const PAGE_RETRY_DELAY_MS = 2000;
+
+async function fetchPageWithRetry<T>(
+  fetch: () => Promise<T>,
+  label: string,
+): Promise<{ ok: true; page: T } | { ok: false; error: string }> {
+  try {
+    return { ok: true, page: await fetch() };
+  } catch (first) {
+    logLibrarySync(`${label} error (1/2) — retrying: ${errText(first)}`);
+    await new Promise<void>((r) => setTimeout(r, PAGE_RETRY_DELAY_MS));
+    try {
+      return { ok: true, page: await fetch() };
+    } catch (second) {
+      return { ok: false, error: errText(second) };
+    }
+  }
+}
+
+const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** Park the run in a resumable paused state with the reason attached. Returns rather
+ *  than throwing on purpose — the outer catch force-writes `error`/`idle`, which would
+ *  overwrite the pause and lose the explanation. */
+function pauseForError(message: string, phase: 'album' | 'song'): void {
+  logLibrarySync(`run PAUSED (${phase}) after retry — ${message}`);
+  const st = syncStatusStore.getState();
+  st.setLastSyncError(message);
+  if (phase === 'album') st.setLibrarySyncPhase('paused-error');
+  else st.setDetailSyncPhase('paused-error');
+}
+
 async function doNormalizedSync(
   {
     full = false,
@@ -525,6 +636,11 @@ async function doNormalizedSync(
   const db = getDb();
   if (!db) return;
   if (offlineModeStore.getState().offlineMode) return;
+
+  // Snapshot the diagnostic flag ONCE for the run. The store writes the same cached
+  // flag whenever the Logging screen mounts, so re-reading it per call could have a
+  // deliberate mid-run toggle clobbered back to the file's value.
+  const syncLogOn = readLibrarySyncLogFlag();
 
   const capturedGen = syncStatusStore.getState().generation;
   const genChanged = (): boolean => syncStatusStore.getState().generation !== capturedGen;
@@ -565,6 +681,14 @@ async function doNormalizedSync(
       syncStatusStore.getState().setSyncStrategy(strat);
     }
 
+    logLibrarySync(
+      `run start reason=${reason} full=${full} probe=${strat} `
+        + `forceLegacy=${syncStatusStore.getState().forceLegacySync} `
+        + `albumCursor=${syncStatusStore.getState().librarySyncCursor} `
+        + `songCursor=${syncStatusStore.getState().songSyncCursor} `
+        + `albums=${await countAlbums(db)} songs=${await countSongs(db)}`,
+    );
+
     // The effective ignored-article list (server's, else the local default) — the
     // same list the alphabet scroller uses, so stored sort keys match its sections.
     const articles = serverInfoStore.getState().ignoredArticles ?? undefined;
@@ -572,8 +696,25 @@ async function doNormalizedSync(
     // ── Album phase → normalized `albums` ──────────────────────────────────────
     const tAlbum0 = nowMs();
     syncStatusStore.getState().setLibrarySyncPhase('fetching');
+    // A previous run may have fallen back to the per-album list mid-phase. That has
+    // to survive the resume, or we restart the fast path, hit whatever stopped it,
+    // and re-walk everything again. Read it BEFORE announcing the phase, or the
+    // announcement overwrites what we are about to read.
+    const resumedAlbumTransport = syncStatusStore.getState().albumSyncStrategy;
+    const useBasic = (resumedAlbumTransport ?? strat) === 'basic';
+    const transport: SyncStrategy = useBasic ? 'basic' : 'search3';
+    // The fast path is uncapped on every server we support; getAlbumList2 has a
+    // documented spec maximum of 500 that we honour everywhere. See SERVERS.md.
+    const requested = useBasic ? BASIC_PAGE : ALBUM_PAGE;
+    // Discards a cursor left by the OTHER transport, atomically. Seed `albumOffset`
+    // only afterwards — reading it first would resume at the foreign offset the
+    // discard exists to throw away.
+    syncStatusStore.getState().startAlbumPhase(transport);
     let albumOffset = syncStatusStore.getState().librarySyncCursor;
-    let useBasic = strat === 'basic';
+    logLibrarySync(
+      `album-phase start transport=${useBasic ? 'basic' : 'search3'} offset=${albumOffset} `
+        + `resumed=${resumedAlbumTransport ?? 'none'} probe=${strat}`,
+    );
     let prevFirstId: string | null = null;
     const corroborate = createEmptyPageCorroborator();
     for (;;) {
@@ -582,10 +723,22 @@ async function doNormalizedSync(
         syncStatusStore.getState().setLibrarySyncPhase('paused-offline');
         return;
       }
+      const tPage = nowMs();
       // eslint-disable-next-line no-await-in-loop
-      const page: AlbumID3[] = useBasic
-        ? await getAlbumsPageByName(BASIC_PAGE, albumOffset)
-        : await searchAlbumsPage(ALBUM_PAGE, albumOffset);
+      const fetched = await fetchPageWithRetry(
+        () => (useBasic ? getAlbumsPageByName(requested, albumOffset) : searchAlbumsPage(requested, albumOffset)),
+        `album page offset=${albumOffset}`,
+      );
+      if (!fetched.ok) {
+        // Twice in a row is not a blip. Pause rather than fail: the cursor is already
+        // persisted per page, so Resume picks up exactly here.
+        pauseForError(fetched.error, 'album');
+        return;
+      }
+      const page: AlbumID3[] = fetched.page;
+      // ── Termination, in this order. `page.length === 0` also satisfies `< requested`,
+      // so checking short first would make this branch — and the API-null bail and the
+      // corroborator inside it — unreachable.
       if (page.length === 0) {
         // End of library ONLY if we actually had an API to ask — the page fns resolve
         // [] without throwing when there is none (mid-logout, pre-auth-restore), and
@@ -595,17 +748,22 @@ async function doNormalizedSync(
         // proxied, rate limited) reads exactly like exhaustion, and believing one latches
         // a truncated album library 'complete'.
         // eslint-disable-next-line no-await-in-loop
-        if (await corroborate.shouldRetry()) continue;
+        if (await corroborate.shouldRetry()) {
+          // The retry re-requests the SAME offset, so a server answering empty-then-data
+          // could return the page before the empty one. Clear the tracker or the
+          // duplicate check below would misread that as the end.
+          prevFirstId = null;
+          continue;
+        }
         break;
       }
       corroborate.reset();
-      // Ignore-offset guard: a server that ignores `albumOffset` returns the same
-      // first page forever. Detect via an unchanged first id and switch to basic.
-      if (!useBasic && albumOffset > 0 && page[0]?.id === prevFirstId) {
-        useBasic = true;
-        albumOffset = 0; // restart basic; upserts are idempotent
-        prevFirstId = null;
-        continue;
+      // Defensive end-of-results: a page identical to the previous one. No server in
+      // reference/ behaves this way — the empty and short checks fire first — but this
+      // loop is otherwise unbounded. UNVERIFIED against any real implementation.
+      if (page[0]?.id != null && page[0].id === prevFirstId) {
+        logLibrarySync(`album duplicate page at offset=${albumOffset} — treating as end of results`);
+        break;
       }
       prevFirstId = page[0]?.id ?? null;
       // Correct any stale optimistic rating override against the server value. Per page
@@ -613,12 +771,38 @@ async function doNormalizedSync(
       ratingStore.getState().reconcileRatings(
         page.map((a) => ({ id: a.id, serverRating: a.userRating ?? 0 })),
       );
+      // How many of this page are actually new — the number that separates "the sync
+      // is stuck" from "this pass is re-covering albums we already hold". Exact and
+      // index-backed, and only computed when the diagnostic log is on. Ids are deduped
+      // because a repeating server can send the same id twice in one page, which would
+      // otherwise under-count matches and overstate `new`.
+      let newInPage = -1;
+      if (syncLogOn) {
+        const ids = [...new Set(page.map((a) => a.id))];
+        // eslint-disable-next-line no-await-in-loop
+        newInPage = ids.length - (await albumIdsPresent(db, ids)).size;
+      }
       // eslint-disable-next-line no-await-in-loop
       await upsertAlbums(db, page, undefined, articles);
-      albumOffset += page.length;
-      syncStatusStore.getState().setLibrarySyncCursor(albumOffset);
-      // eslint-disable-next-line no-await-in-loop
-      syncStatusStore.getState().setLibrarySyncProgress(await countAlbums(db));
+      const pageStart = albumOffset;
+      // Advance by what we ASKED for, not by what came back. Those are the same on any
+      // server that honours the contract; where they differ, advancing by the reply
+      // lets a server's own paging bug drive our cursor.
+      albumOffset += requested;
+      // The cursor IS the progress number. A row count cannot tell "re-writing rows
+      // we already hold" from "doing nothing", so a pass over known albums looked
+      // like a stall for as long as it ran.
+      syncStatusStore.getState().setLibrarySyncCursor(albumOffset, transport);
+      logLibrarySync(
+        `album page offset=${pageStart} got=${page.length} new=${newInPage} `
+          + `ms=${Math.round(nowMs() - tPage)} first=${page[0]?.id ?? '-'} last=${page[page.length - 1]?.id ?? '-'}`,
+      );
+      // Short page = end of results. AFTER the upsert and the advance, so the final
+      // page is stored; the cursor is corrected to the true total on the way out.
+      if (page.length < requested) {
+        syncStatusStore.getState().setLibrarySyncCursor(pageStart + page.length, transport);
+        break;
+      }
       // eslint-disable-next-line no-await-in-loop
       await new Promise<void>((r) => setTimeout(r, 0));
     }
@@ -700,6 +884,11 @@ async function doNormalizedSync(
     const nAlbums = await countAlbums(db);
     const nSongs = await countSongs(db);
     // eslint-disable-next-line no-console
+    logLibrarySync(
+      `run done albums=${nAlbums} songs=${nSongs} albumMs=${Math.round(albumMs)} `
+        + `songMs=${Math.round(songMs)} totalMs=${Math.round(nowMs() - tStart)}`,
+    );
+    void flushLibrarySyncLog();
     console.log('[normalized-sync] done', {
       reason,
       full,
@@ -711,6 +900,14 @@ async function doNormalizedSync(
       songsPerSec: songMs > 0 ? Math.round(nSongs / (songMs / 1000)) : 0,
     });
   } catch (e) {
+    // eslint-disable-next-line no-console
+    logLibrarySync(
+      `run FAILED phase=${syncStatusStore.getState().librarySyncPhase}/`
+        + `${syncStatusStore.getState().detailSyncPhase} `
+        + `albumCursor=${syncStatusStore.getState().librarySyncCursor} `
+        + `songCursor=${syncStatusStore.getState().songSyncCursor} err=${e instanceof Error ? e.message : String(e)}`,
+    );
+    void flushLibrarySyncLog();
     // eslint-disable-next-line no-console
     console.warn('[normalized-sync] failed', e);
     syncStatusStore.getState().setDetailSyncPhase('error');

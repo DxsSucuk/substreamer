@@ -614,7 +614,7 @@ describe('scheduleRefresh — library-change gate', () => {
     tp.setBrowseSnapshot.mockClear();
 
     // A sync writes the cursor constantly; only the library stamp means "data changed".
-    syncStatusStore.getState().setLibrarySyncCursor(500);
+    syncStatusStore.getState().setLibrarySyncCursor(500, 'search3');
     await jest.advanceTimersByTimeAsync(30_000);
     expect(tp.setBrowseSnapshot).not.toHaveBeenCalled();
   });
