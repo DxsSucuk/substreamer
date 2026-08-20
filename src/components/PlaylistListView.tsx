@@ -1,5 +1,5 @@
 import { FlashList, type FlashListRef } from '@shopify/flash-list';
-import { useCallback, useMemo, useRef } from 'react';
+import { useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -23,6 +23,10 @@ import { PlaylistCard } from './PlaylistCard';
 import { PlaylistRow } from './PlaylistRow';
 import { closeOpenRow } from './SwipeableRow';
 import { AlphabetScroller } from './AlphabetScroller';
+import { addStatusBarTapListener, setArmed } from 'expo-scroll-to-top';
+
+import { isOverlayOpen } from '../store/overlayStore';
+
 
 export type PlaylistLayout = 'list' | 'grid';
 
@@ -106,6 +110,15 @@ export interface PlaylistListViewProps<T extends { id: string }> {
   onEndReached?: () => void;
   /** Near the top → load + prepend the previous keyset page (after an A-Z jump). */
   onStartReached?: () => void;
+  /** iOS status-bar tap. Fires once the native scroll has FINISHED, so the list is already
+   *  at offset 0 — after an A-Z seek that is the sought letter, not the start of the data.
+   *  The screen drives the transition and needs two things from the list: where it
+   *  currently sits, and a way to move it once the prepend has shifted it. */
+  /** iOS status-bar tap, delivered by `StatusBarTapTarget` — the list itself declines it,
+   *  so nothing has scrolled when this runs. Return true if the window was reset (the
+   *  remount lands at the top by itself); false means the list was already showing the
+   *  start of the data and just needs scrolling. */
+  onScrollToTop?: () => boolean | Promise<boolean>;
   /** A-Z tap seeks via the DB (replace the window) instead of scrolling the array. */
   onSeekLetter?: (letter: string) => void;
   /** The full set of active alphabet letters — the loaded window can't reveal them
@@ -130,6 +143,7 @@ export function PlaylistListView<T extends { id: string }>({
   contentInsetTop = 0,
   onEndReached,
   onStartReached,
+  onScrollToTop,
   onSeekLetter,
   activeLetters: activeLettersProp,
 }: PlaylistListViewProps<T>) {
@@ -148,6 +162,36 @@ export function PlaylistListView<T extends { id: string }>({
     },
     [scrollY],
   );
+
+  // The status-bar tap arrives from `expo-scroll-to-top`, which declines it natively so
+  // nothing has scrolled by the time this runs. A screen that reset its window needs no
+  // scroll; one that was already showing the start of its data does.
+  const handleScrollToTop = useCallback(async () => {
+    // A tap belongs to whatever is on top. The native side has already declined it, so
+    // returning here makes it a true no-op rather than scrolling a hidden list.
+    if (isOverlayOpen()) return;
+    const reset = await onScrollToTop?.();
+    if (!reset) {
+      listRef.current?.scrollToOffset({ offset: 0, animated: true });
+    }
+  }, [onScrollToTop]);
+
+  // Subscribe ONCE, through a ref. Keying the effect on the handler would re-arm and
+  // re-subscribe whenever it were rebuilt, briefly leaving two subscriptions live and
+  // firing the tap twice.
+  const scrollToTopRef = useRef(handleScrollToTop);
+  scrollToTopRef.current = handleScrollToTop;
+  useEffect(() => {
+    if (!onScrollToTop) return undefined;
+    setArmed(true);
+    const off = addStatusBarTapListener(() => {
+      void scrollToTopRef.current();
+    });
+    return () => {
+      setArmed(false);
+      off();
+    };
+  }, [onScrollToTop]);
 
   const listKey = scrollToTopTrigger ? `${layout}:${scrollToTopTrigger}` : layout;
 

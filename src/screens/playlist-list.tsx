@@ -59,13 +59,29 @@ function KeysetPlaylistList({
   const prevCursorRef = useRef<Cursor | null>(null); // backward (start)
   const doneRef = useRef(false);
   const busyRef = useRef(false);
+  // Bumped by every load that REPLACES the window (first page, letter seek, top seek).
+  // A paging load that was already in flight when one of those ran must not write its
+  // rows or cursors afterwards — it belongs to a window that no longer exists.
+  const loadGenRef = useRef(0);
+  // Whether the loaded window begins at the START of the library. `prevCursorRef` cannot
+  // answer this: after the first page it holds row 0's own cursor, which is non-null and
+  // looks identical to a window that starts mid-library after a letter seek.
+  const atLibraryStartRef = useRef(true);
+  // Held across the whole prepend -> scroll -> trim transition. `busyRef` cannot do this
+  // job: every pager clears it in its own `finally`, so an in-flight load would drop the
+  // guard part-way through.
+  const transitionRef = useRef(false);
 
   const loadFirstPage = useCallback(async () => {
+    const gen = (loadGenRef.current += 1);
     busyRef.current = true;
     try {
       const db = getDb();
       if (!db) return;
       const page = await listPlaylists(db, { cursor: null, limit: PAGE });
+      // A newer load superseded this one — its rows belong to a window that is gone.
+      if (gen !== loadGenRef.current) return;
+      atLibraryStartRef.current = true;
       cursorRef.current = page.nextCursor;
       doneRef.current = !page.nextCursor;
       prevCursorRef.current = page.rows.length > 0 ? playlistCursorOf(page.rows[0]) : null;
@@ -77,12 +93,15 @@ function KeysetPlaylistList({
   }, []);
 
   const loadMore = useCallback(async () => {
+    if (transitionRef.current) return;
     if (busyRef.current || doneRef.current) return;
+    const gen = loadGenRef.current;
     busyRef.current = true;
     try {
       const db = getDb();
       if (!db) return;
       const page = await listPlaylists(db, { cursor: cursorRef.current, limit: PAGE });
+      if (gen !== loadGenRef.current) return false;
       cursorRef.current = page.nextCursor;
       if (!page.nextCursor) doneRef.current = true;
       setRows((r) => [...r, ...page.rows]);
@@ -93,13 +112,17 @@ function KeysetPlaylistList({
 
   const loadPrevious = useCallback(async () => {
     const before = prevCursorRef.current;
+    if (transitionRef.current) return;
     if (busyRef.current || !before) return;
+    const gen = loadGenRef.current;
     busyRef.current = true;
     try {
       const db = getDb();
       if (!db) return;
       const page = await listPlaylistsBefore(db, { before, limit: PAGE });
+      if (gen !== loadGenRef.current) return;
       prevCursorRef.current = page.prevCursor;
+      if (page.prevCursor === null) atLibraryStartRef.current = true;
       if (page.rows.length > 0) setRows((r) => [...page.rows, ...r]);
     } finally {
       busyRef.current = false;
@@ -107,11 +130,15 @@ function KeysetPlaylistList({
   }, []);
 
   const seekLetter = useCallback(async (letter: string) => {
+    const gen = (loadGenRef.current += 1);
     busyRef.current = true;
     try {
       const db = getDb();
       if (!db) return;
       const page = await listPlaylists(db, { letter, limit: PAGE });
+      // A newer seek superseded this one — same reasoning.
+      if (gen !== loadGenRef.current) return;
+      atLibraryStartRef.current = false;
       cursorRef.current = page.nextCursor;
       doneRef.current = !page.nextCursor;
       prevCursorRef.current = page.rows.length > 0 ? playlistCursorOf(page.rows[0]) : null;
@@ -123,6 +150,33 @@ function KeysetPlaylistList({
   }, []);
 
   // Initial window load on mount.
+  // iOS status-bar tap, delivered by `StatusBarTapTarget` — the list itself declines it,
+  // so nothing has scrolled when we get here. Reset to the first page exactly the way a
+  // letter seek does: replace the window, bump the tick. No traversal to flash through.
+  const seekTop = useCallback(async (): Promise<boolean> => {
+    // Already showing the first page: there is no window to replace, so report that and
+    // let the list scroll itself — otherwise the tap does nothing at all.
+    if (atLibraryStartRef.current || transitionRef.current) return false;
+    transitionRef.current = true;
+    try {
+      const db = getDb();
+      if (!db) return false;
+      const gen = (loadGenRef.current += 1);
+      const page = await listPlaylists(db, { cursor: null, limit: PAGE });
+      // A newer load superseded this one; it has already moved the list.
+      if (gen !== loadGenRef.current) return true;
+      cursorRef.current = page.nextCursor;
+      doneRef.current = !page.nextCursor;
+      prevCursorRef.current = page.rows.length > 0 ? playlistCursorOf(page.rows[0]) : null;
+      atLibraryStartRef.current = true;
+      setRows(page.rows);
+      setSeekTick((t) => t + 1);
+      return true;
+    } finally {
+      transitionRef.current = false;
+    }
+  }, []);
+
   useEffect(() => {
     void loadFirstPage();
   }, [loadFirstPage]);
@@ -182,6 +236,7 @@ function KeysetPlaylistList({
       onEndReached={loadMore}
       onStartReached={loadPrevious}
       onSeekLetter={seekLetter}
+      onScrollToTop={seekTop}
       onRefresh={handleRefresh}
       refreshing={refreshing}
       scrollToTopTrigger={`seek:${seekTick}`}

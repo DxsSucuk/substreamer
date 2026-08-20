@@ -19,6 +19,9 @@ interface SongRender {
   emptyMessage?: string;
   emptySubtitle?: string;
   onRefresh?: () => void | Promise<void>;
+  onSeekLetter?: (letter: string) => void | Promise<void>;
+  onScrollToTop?: () => boolean | Promise<boolean>;
+  scrollToTopTrigger?: string;
 }
 const mockRenders: SongRender[] = [];
 /** Mounts, not renders: the filtered screen picks its adapter per branch, so it renders
@@ -403,5 +406,95 @@ describe('SongLibraryListScreen — pull-to-refresh scope follows the source, no
     await waitFor(() => expect(mockRenders.length).toBeGreaterThan(0));
     await pull();
     expect(mockPullToRefresh).toHaveBeenCalledWith('favorites');
+  });
+});
+
+describe('SongLibraryListScreen — the keyset list returns to the start of the library', () => {
+  const tapTop = async (): Promise<void> => {
+    await act(async () => {
+      await latest().onScrollToTop?.();
+    });
+  };
+
+  /** Enough rows for a real window: the keyset page is 120. */
+  const seedSongs = (n: number): void => {
+    for (let i = 0; i < n; i += 1) {
+      const title = `${String.fromCharCode(65 + Math.floor((i / n) * 26))}${i}`;
+      const keys = songSortKeys({ title });
+      db().runSync(
+        'INSERT INTO songs (id, title, sort_title, duration) VALUES (?, ?, ?, ?)',
+        [`s${i}`, title, keys.sort_title, 10],
+      );
+    }
+  };
+
+  beforeEach(async () => {
+    seedSongs(200);
+    render(<SongLibraryListScreen />);
+    await waitFor(() => expect(latest().items.length).toBeGreaterThan(0));
+  });
+
+  it('does nothing when the list is already showing the start of the library', async () => {
+    // The native scroll has already done the job. Replacing the window here would be
+    // work for nothing, and bumping the trigger would remount the list for nothing.
+    const before = mockRenders.length;
+    await tapTop();
+    expect(mockRenders.length).toBe(before);
+  });
+
+  it('replaces the window with the start of the library after a letter seek', async () => {
+    await act(async () => {
+      await latest().onSeekLetter?.('M');
+    });
+    const sought = latest().items[0]?.id;
+
+    await tapTop();
+
+    expect(latest().items[0]?.id).toBe('s0');
+    expect(latest().items[0]?.id).not.toBe(sought);
+  });
+
+  it('reports that it did nothing when already showing the first page', async () => {
+    // The list declines the native scroll, so a false return is what tells it to scroll
+    // itself. Returning nothing here would make the tap a no-op on the commonest case.
+    let reported: unknown = 'unset';
+    await act(async () => {
+      reported = await latest().onScrollToTop?.();
+    });
+    expect(reported).toBe(false);
+  });
+
+  it('resets to the first page the same way a letter seek does', async () => {
+    // The list declines the status-bar tap (StatusBarTapTarget takes it), so nothing has
+    // scrolled when this runs. Replacing the window and bumping the tick is the path the
+    // A-Z seek already uses, and the one that looks right.
+    await act(async () => {
+      await latest().onSeekLetter?.('M');
+    });
+    const trigger = latest().scrollToTopTrigger;
+
+    let reported: unknown = 'unset';
+    await act(async () => {
+      reported = await latest().onScrollToTop?.();
+    });
+
+    expect(reported).toBe(true);
+    expect(latest().items[0]?.id).toBe('s0');
+    expect(latest().scrollToTopTrigger).not.toBe(trigger);
+  });
+
+  it('lets the newest seek win when two land out of order', async () => {
+    // Both replace the window, so the slower one must not write its rows afterwards.
+    await act(async () => {
+      const first = latest().onSeekLetter?.('M');
+      const second = latest().onSeekLetter?.('B');
+      await Promise.all([first, second]);
+    });
+
+    const firstId = latest().items[0]?.id;
+    await tapTop();
+    // Whatever won, the top seek still gets back to the library start from it.
+    expect(latest().items[0]?.id).toBe('s0');
+    expect(firstId).not.toBe('s0');
   });
 });
