@@ -579,6 +579,26 @@ describe('dataSyncService — deferred startup prefetches', () => {
     expect(mockFetchGenres).toHaveBeenCalled();
   });
 
+  it('does not restart a sync that stopped on request errors', async () => {
+    // This is the boot path, distinct from recoverStalledSync's foreground one. An error
+    // pause always leaves the sync incomplete, so EVERY condition in the gate is true and
+    // the next launch would restart it — which is what made the pause look like it never
+    // happened. Resume and Restart on the sync card are the way out.
+    albumLibraryState.albums = [{ id: 'a1' }];
+    syncStatusStore.setState({
+      librarySyncPhase: 'paused-error',
+      librarySyncComplete: false,
+      songSyncComplete: false,
+    });
+
+    await onStartup();
+    await jest.advanceTimersByTimeAsync(2000);
+
+    expect(mockRunNormalizedLibrarySync).not.toHaveBeenCalled();
+    // Still paused after the launch, not quietly reset.
+    expect(syncStatusStore.getState().librarySyncPhase).toBe('paused-error');
+  });
+
   it('does NOT refresh playlists on startup when offline', async () => {
     offlineState.offline = true;
     playlistLibraryState.playlists = [{ id: 'p1' }];
@@ -701,6 +721,23 @@ describe('dataSyncService — recoverStalledSync', () => {
     await recoverStalledSync();
     expect(mockFetchAlbum).not.toHaveBeenCalled();
     expect(syncStatusStore.getState().detailSyncPhase).toBe('paused-offline');
+  });
+
+  it.each([
+    ['the SONG phase', { detailSyncPhase: 'paused-error' as const }],
+    ['the ALBUM phase', { librarySyncPhase: 'paused-error' as const }],
+  ])('leaves a sync paused by request errors alone when %s stopped', async (_label, patch) => {
+    // The pause exists to tell the user WHY and hand them the controls. Resuming it on
+    // foreground or boot hides that and runs straight back into the failing request.
+    // An error-paused album phase also satisfies the `albumPhaseStalled` test below,
+    // so both this and the phase list have to honour it.
+    albumLibraryState.albums = [{ id: 'a1' }];
+    syncStatusStore.setState({ ...patch, songSyncStrategy: 'basic', librarySyncComplete: false });
+
+    await recoverStalledSync();
+
+    expect(mockFetchAllAlbums).not.toHaveBeenCalled();
+    expect(mockFetchAlbum).not.toHaveBeenCalled();
   });
 
   it('resumes from error phase so users can retry after a failure', async () => {

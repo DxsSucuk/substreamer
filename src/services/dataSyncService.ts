@@ -81,6 +81,15 @@ export type PullToRefreshScope =
   | 'all';
 
 /**
+ * The sync retried a failing request, failed again, and stopped to tell the user why.
+ * Every automatic (re)start has to honour that, or the pause is invisible — the sync
+ * restarts itself and runs straight back into the request that failed.
+ */
+function isErrorPaused(s: ReturnType<typeof syncStatusStore.getState>): boolean {
+  return s.detailSyncPhase === 'paused-error' || s.librarySyncPhase === 'paused-error';
+}
+
+/**
  * Subset relationship for scope composition. `'all'` is the superset of every
  * other scope; all non-'all' pull scopes are leaves (mutually disjoint).
  */
@@ -238,11 +247,15 @@ async function startupOrResumeFlow(): Promise<void> {
       // `songGapRepairAttempted` short-circuits it once the sync's per-album repair has
       // asked the server about those albums and been told there is nothing — otherwise the
       // empty albums fire a sync on every launch and every online-resume, forever.
+      // An error pause is a deliberate stop, and it always leaves the sync incomplete —
+      // so every condition below is true and this gate would restart it on the spot,
+      // straight back into the request that failed. Resume/Restart are the way out.
       const needsLibraryFetch =
-        !sync.librarySyncComplete ||
-        !sync.songSyncComplete ||
-        rowCount === 0 ||
-        (!sync.songGapRepairAttempted && gateDb ? await hasAlbumWithoutSongs(gateDb) : false);
+        !isErrorPaused(sync) &&
+        (!sync.librarySyncComplete ||
+          !sync.songSyncComplete ||
+          rowCount === 0 ||
+          (!sync.songGapRepairAttempted && gateDb ? await hasAlbumWithoutSongs(gateDb) : false));
       const libPromise = needsLibraryFetch
         ? runNormalizedLibrarySync({ reason: 'startup:needsLibraryFetch' })
         : Promise.resolve();
@@ -338,7 +351,7 @@ async function startupOrResumeFlow(): Promise<void> {
         // a basic server), both resuming from their cursors. Progress shows on the
         // banner. `libPromise` above already covers the incomplete-album-list case, and
         // the in-flight guard collapses the two into one run.
-        if (!syncStatusStore.getState().songSyncComplete) {
+        if (!syncStatusStore.getState().songSyncComplete && !isErrorPaused(syncStatusStore.getState())) {
           fireAndForget(runNormalizedLibrarySync({ reason: 'startup:songSyncIncomplete' }), 'sync.songSync');
         }
       }
@@ -694,12 +707,14 @@ async function runDetectChanges(): Promise<{
 export async function recoverStalledSync(): Promise<void> {
   const status = syncStatusStore.getState();
   const phase = status.detailSyncPhase;
+  // Checked before `albumPhaseStalled` below, which an error-paused album phase also
+  // satisfies — the pause has to survive a foreground, not be healed away by one.
+  if (isErrorPaused(status)) return;
   const resumablePhases: Array<typeof phase> = [
     'syncing',
     'paused-offline',
     'paused-auth-error',
     'paused-metered',
-    'paused-error',
     'error',
   ];
   // An interrupted ALBUM phase leaves `detailSyncPhase` at 'idle' — only
