@@ -12,33 +12,38 @@ let mockDirExistsForUri: ((uri: string) => boolean) | null = null;
 
 jest.mock('../../store/persistence/kvStorage', () => require('../../store/persistence/__mocks__/kvStorage'));
 
-// detailTables imports expo-sqlite directly; stub it so the migration test
-// doesn't drag the real native handle through expo-asset + expo-constants.
-jest.mock('expo-sqlite', () => ({
-  openDatabaseSync: () => {
-    throw new Error('mocked — detailTables fallback path used in tests');
-  },
+// m25/m29 wipe the image cache. `migrationService` imports `clearImageCache`
+// normally, which pulls in connectivityService → netinfo (no native bridge under
+// Jest), so the dependency is stubbed here rather than hidden behind a lazy
+// require in production code.
+jest.mock('../imageCacheService', () => ({
+  clearImageCache: jest.fn(async () => 0),
 }));
 
-// isDbHealthy gates the fresh-install fast-track. This suite mocks expo-sqlite
-// to throw (DB unavailable), so the real isDbHealthy is false — default the
-// mock to false to match, keeping every full-sweep test unchanged, and flip it
-// true only inside the fast-track block.
+// The runner REFUSES to run when the DB is unavailable: a version misread as 0 must
+// NOT re-run every migration on an already-loaded app (that repeated the destructive
+// image-cache re-key wipes m25/m29 in prod and deleted the on-disk cache). The test DB
+// is healthy (op-SQLite better-sqlite3 substitute), so default isDbHealthy TRUE; the guard
+// tests flip it false to assert NOTHING runs.
 jest.mock('../../store/persistence/db', () => {
   const actual = jest.requireActual('../../store/persistence/db');
-  return { ...actual, isDbHealthy: jest.fn(() => false) };
+  return { ...actual, isDbHealthy: jest.fn(() => true) };
 });
 
-// Task #13 delegates bulk-insert to the scrobble table helper. Mock it so we
-// can assert wiring without needing a real SQLite handle.
+// Task 13 delegates bulk-insert to the scrobble table helper. Mock the write
+// functions so the test can assert wiring without needing a real SQLite handle. The
+// rest of the module stays REAL: `scrobbleAggregates` reconstructs its rows through
+// this module's `SCROBBLE_SELECT` / `scrobblesWithArrays`, and stubbing those to
+// `undefined` breaks every analytics query.
 jest.mock('../../store/persistence/scrobbleTable', () => ({
+  ...jest.requireActual('../../store/persistence/scrobbleTable'),
   replaceAllScrobbles: jest.fn(),
   insertScrobble: jest.fn(),
   clearScrobbles: jest.fn(),
-  hydrateScrobbles: jest.fn(() => []),
+  backfillScrobbleColumnsAsync: jest.fn(async () => {}),
 }));
 
-// Task #15 mirrors task 13 for pending scrobbles. Mock the helper module so
+// Task 15 mirrors task 13 for pending scrobbles. Mock the helper module so
 // the migration test can assert wiring without a real SQLite handle.
 jest.mock('../../store/persistence/pendingScrobbleTable', () => ({
   replaceAllPendingScrobbles: jest.fn(),
@@ -47,7 +52,7 @@ jest.mock('../../store/persistence/pendingScrobbleTable', () => ({
   clearPendingScrobbles: jest.fn(),
 }));
 
-// Migration #21 imports deviceIdentityStore which transitively pulls
+// Migration 21 imports deviceIdentityStore which transitively pulls
 // expo-device + expo-crypto + i18n. Mock the store and the native modules
 // so the migration runs without dragging the native bridge into the test.
 jest.mock('../../store/deviceIdentityStore', () => ({
@@ -65,7 +70,7 @@ jest.mock('../../store/deviceIdentityStore', () => ({
   getDeviceShortId: () => 'mock1234',
 }));
 
-// Task #14 calls bulkReplace to write the v2 rows. Mock the whole module so
+// Task 14 calls bulkReplace to write the v2 rows. Mock the whole module so
 // tests don't need a real SQLite handle; assertions are on the mock calls.
 jest.mock('../../store/persistence/musicCacheTables', () => ({
   bulkReplace: jest.fn(),
@@ -86,16 +91,10 @@ jest.mock('../../store/persistence/musicCacheTables', () => ({
   addColumnIfMissing: jest.fn(() => false),
 }));
 
-// Task #14 consults albumDetailStore for albumId resolution when a playlist
+// Task 14 consults albumDetailStore for albumId resolution when a playlist
 // track's album wasn't itself cached as a v1 album item. Mock with a
 // controllable getState() so tests can dial the resolution map up and down.
 let mockAlbumDetailAlbums: Record<string, any> = {};
-jest.mock('../../store/albumDetailStore', () => ({
-  albumDetailStore: {
-    getState: () => ({ albums: mockAlbumDetailAlbums }),
-  },
-}));
-
 jest.mock('expo-file-system', () => {
   class MockFile {
     uri: string;
@@ -150,14 +149,14 @@ jest.mock('react-native', () => ({
 
 import { Platform } from 'react-native';
 import { getPendingTasks, runMigrations, LATEST_MIGRATION_ID } from '../migrationService';
-import { isDbHealthy } from '../../store/persistence/db';
+import { getDb, isDbHealthy } from '../../store/persistence/db';
 import { completedScrobbleStore } from '../../store/completedScrobbleStore';
 import { mbidOverrideStore } from '../../store/mbidOverrideStore';
 import { musicCacheStore } from '../../store/musicCacheStore';
 import { playbackSettingsStore } from '../../store/playbackSettingsStore';
 import { bulkReplace } from '../../store/persistence/musicCacheTables';
 import { replaceAllPendingScrobbles } from '../../store/persistence/pendingScrobbleTable';
-import { replaceAllScrobbles } from '../../store/persistence/scrobbleTable';
+import { backfillScrobbleColumnsAsync, replaceAllScrobbles } from '../../store/persistence/scrobbleTable';
 import { kvStorage } from '../../store/persistence';
 
 const mockReplaceAllScrobbles = replaceAllScrobbles as jest.Mock;
@@ -218,11 +217,12 @@ beforeEach(() => {
 });
 
 describe('getPendingTasks', () => {
-  it('returns the full sweep at completedVersion 0 when the DB is unhealthy (default)', () => {
-    // isDbHealthy() is false in this suite, so v0 falls back to the full sweep.
+  it('returns the runOnFreshInstall tasks at completedVersion 0 when the DB is healthy (default)', () => {
+    // Healthy DB + v0 = genuine fresh install → only the runOnFreshInstall tasks.
     const tasks = getPendingTasks(0);
     expect(tasks.length).toBeGreaterThanOrEqual(2);
     expect(tasks[0].id).toBe(1);
+    expect(tasks.every((t) => t.runOnFreshInstall)).toBe(true);
   });
 
   it('returns tasks after completedVersion', () => {
@@ -245,9 +245,6 @@ describe('getPendingTasks', () => {
 });
 
 describe('fresh-install fast-track (completedVersion 0, DB healthy)', () => {
-  beforeEach(() => (isDbHealthy as jest.Mock).mockReturnValue(true));
-  afterEach(() => (isDbHealthy as jest.Mock).mockReturnValue(false));
-
   it('getPendingTasks(0) returns only the runOnFreshInstall tasks, in order', () => {
     const tasks = getPendingTasks(0);
     expect(tasks.map((t) => t.id)).toEqual([1, 2, 21]);
@@ -260,7 +257,7 @@ describe('fresh-install fast-track (completedVersion 0, DB healthy)', () => {
     ]);
   });
 
-  it('runMigrations(0) runs only #1/#2/#21 and stamps LATEST_MIGRATION_ID', async () => {
+  it('runMigrations(0) runs only migrations 1, 2 and 21 and stamps LATEST_MIGRATION_ID', async () => {
     const onProgress = jest.fn();
     const newVersion = await runMigrations(0, onProgress);
     expect(newVersion).toBe(LATEST_MIGRATION_ID);
@@ -268,12 +265,26 @@ describe('fresh-install fast-track (completedVersion 0, DB healthy)', () => {
   });
 });
 
-describe('fresh-install guard — DB unhealthy falls back to the full sweep', () => {
-  it('getPendingTasks(0) returns the full task list when isDbHealthy() is false', () => {
+describe('DB-unavailable guard — the runner must NOT run any migration', () => {
+  // A failed DB init makes the persisted completedVersion read back as 0, which
+  // would re-run EVERY migration on an already-loaded app — repeating the
+  // destructive image-cache wipes (m25/m29) and deleting the on-disk cache. When
+  // the DB is unavailable we must run NOTHING.
+  beforeEach(() => (isDbHealthy as jest.Mock).mockReturnValue(false));
+  afterEach(() => (isDbHealthy as jest.Mock).mockReturnValue(true));
+
+  it('getPendingTasks returns [] regardless of the (untrustworthy) version', () => {
     expect(isDbHealthy()).toBe(false);
-    const tasks = getPendingTasks(0);
-    expect(tasks[0].id).toBe(1);
-    expect(tasks.length).toBeGreaterThan(3);
+    expect(getPendingTasks(0)).toHaveLength(0);
+    expect(getPendingTasks(5)).toHaveLength(0);
+    expect(getPendingTasks(LATEST_MIGRATION_ID - 1)).toHaveLength(0);
+  });
+
+  it('runMigrations runs no task and leaves the completedVersion untouched', async () => {
+    const onProgress = jest.fn();
+    const newVersion = await runMigrations(0, onProgress);
+    expect(newVersion).toBe(0);
+    expect(onProgress).not.toHaveBeenCalled();
   });
 });
 
@@ -363,26 +374,28 @@ describe('runMigrations', () => {
     expect(logContent).toContain('Failed to remove:');
   });
 
-  it('Task 3 skips aggregate rebuild when no scrobbles', async () => {
-    completedScrobbleStore.setState({ completedScrobbles: [] } as any);
+  it('Task 3 logs no scrobbles when the table is empty', async () => {
+    getDb()?.runSync('DELETE FROM scrobble_events');
     await runMigrations(2);
     const logContent = mockFileWrite.mock.calls[0][0] as string;
     expect(logContent).toContain('No scrobbles');
-    expect(logContent).toContain('skipping aggregate rebuild');
   });
 
-  it('Task 3 rebuilds aggregates when scrobbles exist', async () => {
-    const mockRebuild = jest.fn();
-    completedScrobbleStore.setState({
-      completedScrobbles: [
-        { id: '1', song: { id: 's1', title: 'Song', artist: 'A', duration: 200 }, time: Date.now() },
-      ],
-      rebuildAggregates: mockRebuild,
-    } as any);
+  it('Task 3 backfills + refreshes analytics when scrobbles exist', async () => {
+    const db = getDb()!;
+    db.runSync('DELETE FROM scrobble_events');
+    db.runSync('INSERT INTO scrobble_events (id, time, song_id, title, artist, duration) VALUES (?, ?, ?, ?, ?, ?);', [
+      'm1',
+      Date.now(),
+      's1',
+      'Song',
+      'A',
+      200,
+    ]);
     await runMigrations(2);
-    expect(mockRebuild).toHaveBeenCalled();
     const logContent = mockFileWrite.mock.calls[0][0] as string;
-    expect(logContent).toContain('Rebuilt aggregates for 1 scrobbles');
+    expect(logContent).toContain('Backfilled + refreshed analytics for 1 scrobbles');
+    db.runSync('DELETE FROM scrobble_events');
   });
 
   it('Task 2 uses android databases path', async () => {
@@ -1814,16 +1827,8 @@ describe('Task 24 – Backfill primary server URL for failover schema', () => {
 
 describe('runMigrations resilience', () => {
   it('breaks loop and persists partial progress when a task throws', async () => {
-    // Seed unparseable shares so Task 4 doesn't throw (it catches JSON errors),
-    // then force Task 3 to throw via a rebuildAggregates that throws.
-    completedScrobbleStore.setState({
-      completedScrobbles: [
-        { id: '1', song: { id: 's1', title: 'Song', artist: 'A', duration: 200 }, time: Date.now() },
-      ],
-      rebuildAggregates: () => {
-        throw new Error('simulated task failure');
-      },
-    } as any);
+    // Force Task 3 (Build analytics aggregates) to throw via its backfill call.
+    (backfillScrobbleColumnsAsync as jest.Mock).mockRejectedValueOnce(new Error('simulated task failure'));
     const finalVersion = await runMigrations(2);
     // Task 3 threw → final version should stay at 2 (last successful).
     expect(finalVersion).toBe(2);

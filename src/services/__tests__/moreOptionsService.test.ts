@@ -21,19 +21,13 @@ const mockFetchStarred = jest.fn();
 jest.mock('../../store/favoritesStore', () => ({
   favoritesStore: {
     getState: jest.fn(() => ({
-      songs: [],
-      albums: [],
-      artists: [],
+      songIds: new Set<string>(),
+      albumIds: new Set<string>(),
+      artistIds: new Set<string>(),
       overrides: {} as Record<string, boolean>,
       setOverride: mockSetOverride,
       fetchStarred: mockFetchStarred,
     })),
-  },
-}));
-
-jest.mock('../../store/albumDetailStore', () => ({
-  albumDetailStore: {
-    getState: jest.fn(() => ({ albums: {} })),
   },
 }));
 
@@ -43,35 +37,60 @@ jest.mock('../../store/offlineModeStore', () => ({
   },
 }));
 
-jest.mock('../../store/musicCacheStore', () => ({
-  musicCacheStore: {
-    getState: jest.fn(() => ({ cachedItems: {} })),
+// The REAL music-cache store, so the offline artist path builds its `Child`s through
+// the real `getSongEnvelope` projection — a fake here would assert nothing about it.
+jest.mock('../../store/persistence/kvStorage', () => require('../../store/persistence/__mocks__/kvStorage'));
+
+jest.mock('../../store/persistence/db', () => ({
+  getDb: jest.fn(() => ({})),
+}));
+
+// The normalized detail reads derive from the (mocked) detail stores so the existing
+// cached-data test setups exercise the same code path without per-test churn.
+jest.mock('../../db/repository/details', () => ({
+  getAlbumDetail: jest.fn(async (_db: unknown, id: string) => {
+    const al = mockAlbumDetails[id];
+    return al ? { album: al.album, songs: al.album?.song ?? [] } : null;
+  }),
+  getPlaylistDetail: jest.fn(async (_db: unknown, id: string) => {
+    const pl = mockPlaylistDetails[id];
+    return pl ? { entry: pl.playlist?.entry ?? [] } : null;
+  }),
+}));
+
+// Artist detail fetch routes through the shared normalized detailFetchService; bridge it to
+// the per-test `fetchArtist` injection on the (still-present) artistDetailStore mock.
+// The artist detail parts are fetched independently now; these read the per-test state
+// object below, which replaces the deleted store as the injection point.
+// eslint-disable-next-line no-var
+var mockRefreshPlaylists = jest.fn().mockResolvedValue(undefined);
+// eslint-disable-next-line no-var
+var mockAlbumDetails: Record<string, any> = {};
+// eslint-disable-next-line no-var
+var mockPlaylistDetails: Record<string, any> = {};
+// eslint-disable-next-line no-var
+var mockArtistParts: { albums?: unknown[]; topSongs?: unknown[]; throws?: boolean } = {};
+
+jest.mock('../detailFetchService', () => ({
+  fetchArtistBase: async () => {
+    if (mockArtistParts.throws) throw new Error('fetch failed');
+    return mockArtistParts.albums
+      ? { artist: { id: 'ar1', name: 'Test Artist' }, albums: mockArtistParts.albums }
+      : null;
+  },
+  fetchArtistTopSongs: async () => {
+    if (mockArtistParts.throws) throw new Error('fetch failed');
+    return mockArtistParts.topSongs
+      ? { songs: mockArtistParts.topSongs, retrievedAt: 1, listLength: 20, songCount: mockArtistParts.topSongs.length }
+      : null;
   },
 }));
 
-jest.mock('../../store/artistDetailStore', () => ({
-  artistDetailStore: {
-    getState: jest.fn(() => ({
-      artists: {},
-      fetchArtist: jest.fn().mockResolvedValue(null),
-    })),
-  },
+// The playlist-list refresh moved off the store onto the sync service; route it back
+// at the store mock so the existing call assertions keep working.
+jest.mock('../normalizedLibrarySync', () => ({
+  refreshPlaylistLibrary: () => mockRefreshPlaylists(),
 }));
-
-jest.mock('../../store/playlistDetailStore', () => ({
-  playlistDetailStore: {
-    getState: jest.fn(() => ({ playlists: {} })),
-  },
-}));
-
-jest.mock('../../store/playlistLibraryStore', () => ({
-  playlistLibraryStore: {
-    getState: jest.fn(() => ({
-      fetchAllPlaylists: jest.fn().mockResolvedValue(undefined),
-    })),
-  },
-}));
-
 jest.mock('../../store/layoutPreferencesStore', () => ({
   layoutPreferencesStore: {
     getState: jest.fn(() => ({ listLength: 20 })),
@@ -114,10 +133,6 @@ import {
   createNewPlaylist,
 } from '../subsonicService';
 import { favoritesStore } from '../../store/favoritesStore';
-import { albumDetailStore } from '../../store/albumDetailStore';
-import { playlistDetailStore } from '../../store/playlistDetailStore';
-import { artistDetailStore } from '../../store/artistDetailStore';
-import { playlistLibraryStore } from '../../store/playlistLibraryStore';
 import { offlineModeStore } from '../../store/offlineModeStore';
 import { musicCacheStore } from '../../store/musicCacheStore';
 import {
@@ -152,12 +167,19 @@ const mockCreateNewPlaylist = createNewPlaylist as jest.Mock;
 const mockAddToQueue = addToQueue as jest.Mock;
 const mockPlayTrack = playTrack as jest.Mock;
 
+/** Seed the real music-cache store; `cachedSongs` rows are promoted-column shaped. */
+const seedCache = (
+  cachedItems: Record<string, unknown> = {},
+  cachedSongs: Record<string, unknown> = {},
+) => musicCacheStore.setState({ cachedItems, cachedSongs } as any);
+
 beforeEach(() => {
   jest.clearAllMocks();
+  seedCache();
   (favoritesStore.getState as jest.Mock).mockReturnValue({
-    songs: [],
-    albums: [],
-    artists: [],
+    songIds: new Set<string>(),
+    albumIds: new Set<string>(),
+    artistIds: new Set<string>(),
     overrides: {},
     setOverride: mockSetOverride,
     fetchStarred: mockFetchStarred,
@@ -176,9 +198,9 @@ describe('toggleStar', () => {
 
   it('unstars a starred song', async () => {
     (favoritesStore.getState as jest.Mock).mockReturnValue({
-      songs: [{ id: 'song-1' }],
-      albums: [],
-      artists: [],
+      songIds: new Set(['song-1']),
+      albumIds: new Set<string>(),
+      artistIds: new Set<string>(),
       overrides: {},
       setOverride: mockSetOverride,
       fetchStarred: mockFetchStarred,
@@ -193,9 +215,9 @@ describe('toggleStar', () => {
 
   it('uses override value when present', async () => {
     (favoritesStore.getState as jest.Mock).mockReturnValue({
-      songs: [],
-      albums: [],
-      artists: [],
+      songIds: new Set<string>(),
+      albumIds: new Set<string>(),
+      artistIds: new Set<string>(),
       overrides: { 'song-1': true },
       setOverride: mockSetOverride,
       fetchStarred: mockFetchStarred,
@@ -214,9 +236,9 @@ describe('toggleStar', () => {
 
   it('unstars an album', async () => {
     (favoritesStore.getState as jest.Mock).mockReturnValue({
-      songs: [],
-      albums: [{ id: 'album-1' }],
-      artists: [],
+      songIds: new Set<string>(),
+      albumIds: new Set(['album-1']),
+      artistIds: new Set<string>(),
       overrides: {},
       setOverride: mockSetOverride,
       fetchStarred: mockFetchStarred,
@@ -234,9 +256,9 @@ describe('toggleStar', () => {
 
   it('unstars an artist', async () => {
     (favoritesStore.getState as jest.Mock).mockReturnValue({
-      songs: [],
-      albums: [],
-      artists: [{ id: 'artist-1' }],
+      songIds: new Set<string>(),
+      albumIds: new Set<string>(),
+      artistIds: new Set(['artist-1']),
       overrides: {},
       setOverride: mockSetOverride,
       fetchStarred: mockFetchStarred,
@@ -269,9 +291,7 @@ describe('addSongToQueue', () => {
 describe('addAlbumToQueue', () => {
   it('uses cached album data when available', async () => {
     const songs = [{ id: 's1' }, { id: 's2' }];
-    (albumDetailStore.getState as jest.Mock).mockReturnValueOnce({
-      albums: { 'a1': { album: { song: songs } } },
-    });
+    mockAlbumDetails = { 'a1': { album: { song: songs } } };
 
     await addAlbumToQueue({ id: 'a1' } as any);
 
@@ -280,7 +300,7 @@ describe('addAlbumToQueue', () => {
   });
 
   it('fetches from API when not cached', async () => {
-    (albumDetailStore.getState as jest.Mock).mockReturnValueOnce({ albums: {} });
+    mockAlbumDetails = {};
     const songs = [{ id: 's1' }];
     mockGetAlbum.mockResolvedValue({ song: songs });
 
@@ -291,14 +311,14 @@ describe('addAlbumToQueue', () => {
   });
 
   it('does nothing when album has no songs', async () => {
-    (albumDetailStore.getState as jest.Mock).mockReturnValueOnce({ albums: {} });
+    mockAlbumDetails = {};
     mockGetAlbum.mockResolvedValue({ song: [] });
     await addAlbumToQueue({ id: 'a1' } as any);
     expect(mockAddToQueue).not.toHaveBeenCalled();
   });
 
   it('does nothing when API returns null', async () => {
-    (albumDetailStore.getState as jest.Mock).mockReturnValueOnce({ albums: {} });
+    mockAlbumDetails = {};
     mockGetAlbum.mockResolvedValue(null);
     await addAlbumToQueue({ id: 'a1' } as any);
     expect(mockAddToQueue).not.toHaveBeenCalled();
@@ -308,9 +328,7 @@ describe('addAlbumToQueue', () => {
 describe('addPlaylistToQueue', () => {
   it('uses cached playlist data when available', async () => {
     const entries = [{ id: 's1' }, { id: 's2' }];
-    (playlistDetailStore.getState as jest.Mock).mockReturnValueOnce({
-      playlists: { 'p1': { playlist: { entry: entries } } },
-    });
+    mockPlaylistDetails = { 'p1': { playlist: { entry: entries } } };
 
     await addPlaylistToQueue({ id: 'p1' } as any);
 
@@ -319,7 +337,7 @@ describe('addPlaylistToQueue', () => {
   });
 
   it('fetches from API when not cached', async () => {
-    (playlistDetailStore.getState as jest.Mock).mockReturnValueOnce({ playlists: {} });
+    mockPlaylistDetails = {};
     const entries = [{ id: 's1' }];
     mockGetPlaylist.mockResolvedValue({ entry: entries });
 
@@ -330,7 +348,7 @@ describe('addPlaylistToQueue', () => {
   });
 
   it('does nothing when playlist has no entries', async () => {
-    (playlistDetailStore.getState as jest.Mock).mockReturnValueOnce({ playlists: {} });
+    mockPlaylistDetails = {};
     mockGetPlaylist.mockResolvedValue({ entry: [] });
     await addPlaylistToQueue({ id: 'p1' } as any);
     expect(mockAddToQueue).not.toHaveBeenCalled();
@@ -389,9 +407,8 @@ describe('playMoreLikeThis', () => {
     expect(mockOverlayShowError).toHaveBeenCalledWith('Failed to load similar songs');
   });
 
-  // Issue #156 — thin getSimilarSongs results used to ship a 2-track queue.
-  // Now we top up via similar2 → same-genre → artist top, preserving order
-  // and deduping the source song + duplicates.
+  // A thin getSimilarSongs result is topped up via similar2 → same-genre →
+  // artist top, preserving order and deduping the source song + duplicates.
   it('tops up via similar2 when getSimilarSongs returns too few', async () => {
     mockGetSimilarSongs.mockResolvedValue([{ id: 't1' }, { id: 't2' }]);
     mockGetSimilarSongs2.mockResolvedValue(
@@ -536,50 +553,30 @@ describe('saveArtistTopSongsPlaylist', () => {
 
   it('creates playlist from cached top songs', async () => {
     const topSongs = [{ id: 's1' }, { id: 's2' }];
-    (artistDetailStore.getState as jest.Mock).mockReturnValue({
-      artists: { ar1: { topSongs } },
-      fetchArtist: jest.fn(),
-    });
+    mockArtistParts = { topSongs };
     mockCreateNewPlaylist.mockResolvedValue(true);
-    const mockFetchAllPlaylists = jest.fn().mockResolvedValue(undefined);
-    (playlistLibraryStore.getState as jest.Mock).mockReturnValue({
-      fetchAllPlaylists: mockFetchAllPlaylists,
-    });
 
     await saveArtistTopSongsPlaylist(artist);
 
     expect(mockOverlayShow).toHaveBeenCalledWith('Creating…');
     expect(mockCreateNewPlaylist).toHaveBeenCalledWith('Test Artist Top Songs', ['s1', 's2']);
-    expect(mockFetchAllPlaylists).toHaveBeenCalled();
     expect(mockOverlayShowSuccess).toHaveBeenCalledWith('Playlist Created');
   });
 
-  it('fetches artist when top songs are not cached', async () => {
+  it('creates the playlist from a fetcher that had to go to the server', async () => {
+    // The local-first read lives inside fetchArtistTopSongs now; from here it is one call.
     const topSongs = [{ id: 's1' }];
-    const mockFetchArtist = jest.fn().mockResolvedValue({ topSongs });
-    (artistDetailStore.getState as jest.Mock).mockReturnValue({
-      artists: {},
-      fetchArtist: mockFetchArtist,
-    });
+    mockArtistParts = { topSongs };
     mockCreateNewPlaylist.mockResolvedValue(true);
-    const mockFetchAllPlaylists = jest.fn().mockResolvedValue(undefined);
-    (playlistLibraryStore.getState as jest.Mock).mockReturnValue({
-      fetchAllPlaylists: mockFetchAllPlaylists,
-    });
 
     await saveArtistTopSongsPlaylist(artist);
 
-    expect(mockFetchArtist).toHaveBeenCalledWith('ar1');
     expect(mockCreateNewPlaylist).toHaveBeenCalledWith('Test Artist Top Songs', ['s1']);
     expect(mockOverlayShowSuccess).toHaveBeenCalledWith('Playlist Created');
   });
 
   it('shows error when no top songs are available', async () => {
-    const mockFetchArtist = jest.fn().mockResolvedValue({ topSongs: [] });
-    (artistDetailStore.getState as jest.Mock).mockReturnValue({
-      artists: {},
-      fetchArtist: mockFetchArtist,
-    });
+    mockArtistParts = { topSongs: [] };
 
     await saveArtistTopSongsPlaylist(artist);
 
@@ -589,10 +586,7 @@ describe('saveArtistTopSongsPlaylist', () => {
 
   it('shows error when createNewPlaylist returns false', async () => {
     const topSongs = [{ id: 's1' }];
-    (artistDetailStore.getState as jest.Mock).mockReturnValue({
-      artists: { ar1: { topSongs } },
-      fetchArtist: jest.fn(),
-    });
+    mockArtistParts = { topSongs };
     mockCreateNewPlaylist.mockResolvedValue(false);
 
     await saveArtistTopSongsPlaylist(artist);
@@ -601,10 +595,7 @@ describe('saveArtistTopSongsPlaylist', () => {
   });
 
   it('shows error on exception', async () => {
-    (artistDetailStore.getState as jest.Mock).mockReturnValue({
-      artists: {},
-      fetchArtist: jest.fn().mockRejectedValue(new Error('network')),
-    });
+    mockArtistParts = { throws: true };
 
     await saveArtistTopSongsPlaylist(artist);
 
@@ -626,17 +617,8 @@ describe('playMoreByArtist', () => {
         { id: 's4', title: 'Song 4', artist: 'Artist A', artistId: 'ar1' },
         { id: 's5', title: 'Song 5', artist: 'Artist A', artistId: 'ar1' },
       ];
-      (artistDetailStore.getState as jest.Mock).mockReturnValue({
-        artists: {
-          ar1: {
-            artist: { album: [{ id: 'alb1' }] },
-          },
-        },
-        fetchArtist: jest.fn(),
-      });
-      (albumDetailStore.getState as jest.Mock).mockReturnValue({
-        albums: { alb1: { album: { song: songs } } },
-      });
+      mockArtistParts = { albums: [{ id: 'alb1' }] };
+      mockAlbumDetails = { alb1: { album: { song: songs } } };
 
       await playMoreByArtist('ar1', 'Artist A');
 
@@ -652,19 +634,12 @@ describe('playMoreByArtist', () => {
       const songs = Array.from({ length: 6 }, (_, i) => ({
         id: `s${i}`, artist: 'Artist B', artistId: 'ar2',
       }));
-      const mockFetchArtist = jest.fn().mockResolvedValue({
-        artist: { album: [{ id: 'alb1' }] },
-      });
-      (artistDetailStore.getState as jest.Mock).mockReturnValue({
-        artists: {},
-        fetchArtist: mockFetchArtist,
-      });
-      (albumDetailStore.getState as jest.Mock).mockReturnValue({ albums: {} });
+      mockArtistParts = { albums: [{ id: 'alb1' }] };
+      mockAlbumDetails = {};
       mockGetAlbum.mockResolvedValue({ song: songs });
 
       await playMoreByArtist('ar2', 'Artist B');
 
-      expect(mockFetchArtist).toHaveBeenCalledWith('ar2');
       expect(mockGetAlbum).toHaveBeenCalledWith('alb1');
       expect(mockPlayTrack).toHaveBeenCalled();
     });
@@ -679,15 +654,8 @@ describe('playMoreByArtist', () => {
         { id: 's6', artist: 'Artist A', artistId: 'ar1' },
         { id: 's7', artist: 'Another', artistId: 'ar88' },
       ];
-      (artistDetailStore.getState as jest.Mock).mockReturnValue({
-        artists: {
-          ar1: { artist: { album: [{ id: 'alb1' }] } },
-        },
-        fetchArtist: jest.fn(),
-      });
-      (albumDetailStore.getState as jest.Mock).mockReturnValue({
-        albums: { alb1: { album: { song: songs } } },
-      });
+      mockArtistParts = { albums: [{ id: 'alb1' }] };
+      mockAlbumDetails = { alb1: { album: { song: songs } } };
 
       await playMoreByArtist('ar1', 'Artist A');
 
@@ -702,15 +670,8 @@ describe('playMoreByArtist', () => {
         artist: 'Artist A',
         artistId: 'ar1',
       }));
-      (artistDetailStore.getState as jest.Mock).mockReturnValue({
-        artists: {
-          ar1: { artist: { album: [{ id: 'alb1' }] } },
-        },
-        fetchArtist: jest.fn(),
-      });
-      (albumDetailStore.getState as jest.Mock).mockReturnValue({
-        albums: { alb1: { album: { song: songs } } },
-      });
+      mockArtistParts = { albums: [{ id: 'alb1' }] };
+      mockAlbumDetails = { alb1: { album: { song: songs } } };
 
       await playMoreByArtist('ar1', 'Artist A');
 
@@ -719,15 +680,8 @@ describe('playMoreByArtist', () => {
     });
 
     it('shows error when no songs found', async () => {
-      (artistDetailStore.getState as jest.Mock).mockReturnValue({
-        artists: {
-          ar1: { artist: { album: [{ id: 'alb1' }] } },
-        },
-        fetchArtist: jest.fn(),
-      });
-      (albumDetailStore.getState as jest.Mock).mockReturnValue({
-        albums: { alb1: { album: { song: [] } } },
-      });
+      mockArtistParts = { albums: [{ id: 'alb1' }] };
+      mockAlbumDetails = { alb1: { album: { song: [] } } };
 
       await playMoreByArtist('ar1', 'Artist A');
 
@@ -736,12 +690,7 @@ describe('playMoreByArtist', () => {
     });
 
     it('shows error when artist has no albums', async () => {
-      (artistDetailStore.getState as jest.Mock).mockReturnValue({
-        artists: {
-          ar1: { artist: { album: [] } },
-        },
-        fetchArtist: jest.fn(),
-      });
+      mockArtistParts = { albums: [] };
 
       await playMoreByArtist('ar1', 'Artist A');
 
@@ -755,15 +704,8 @@ describe('playMoreByArtist', () => {
         { id: 's2', artist: 'Artist A', artistId: 'ar1' },
         { id: 's3', artist: 'Artist A', artistId: 'ar1' },
       ];
-      (artistDetailStore.getState as jest.Mock).mockReturnValue({
-        artists: {
-          ar1: { artist: { album: [{ id: 'alb1' }] } },
-        },
-        fetchArtist: jest.fn(),
-      });
-      (albumDetailStore.getState as jest.Mock).mockReturnValue({
-        albums: { alb1: { album: { song: songs } } },
-      });
+      mockArtistParts = { albums: [{ id: 'alb1' }] };
+      mockAlbumDetails = { alb1: { album: { song: songs } } };
 
       await playMoreByArtist('ar1', 'Artist A');
 
@@ -775,15 +717,8 @@ describe('playMoreByArtist', () => {
       const songs = Array.from({ length: 5 }, (_, i) => ({
         id: `s${i}`, artist: 'Artist A', artistId: 'ar1',
       }));
-      (artistDetailStore.getState as jest.Mock).mockReturnValue({
-        artists: {
-          ar1: { artist: { album: [{ id: 'alb1' }] } },
-        },
-        fetchArtist: jest.fn(),
-      });
-      (albumDetailStore.getState as jest.Mock).mockReturnValue({
-        albums: { alb1: { album: { song: songs } } },
-      });
+      mockArtistParts = { albums: [{ id: 'alb1' }] };
+      mockAlbumDetails = { alb1: { album: { song: songs } } };
 
       await playMoreByArtist('ar1', 'Artist A');
 
@@ -793,10 +728,7 @@ describe('playMoreByArtist', () => {
     });
 
     it('shows error on exception', async () => {
-      (artistDetailStore.getState as jest.Mock).mockReturnValue({
-        artists: {},
-        fetchArtist: jest.fn().mockRejectedValue(new Error('fail')),
-      });
+      mockArtistParts = { throws: true };
 
       await playMoreByArtist('ar1', 'Artist A');
 
@@ -810,12 +742,12 @@ describe('playMoreByArtist', () => {
     });
 
     it('plays songs from cached items matching artist name', async () => {
-      (musicCacheStore.getState as jest.Mock).mockReturnValue({
-        cachedItems: {
+      seedCache(
+        {
           alb1: { itemId: 'alb1', name: 'Album One', coverArtId: 'cov1', songIds: ['s1', 's2', 's4', 's5'] },
           alb2: { itemId: 'alb2', name: 'Album Two', coverArtId: 'cov2', songIds: ['s3', 's6'] },
         },
-        cachedSongs: {
+        {
           s1: { id: 's1', title: 'Song 1', artist: 'Artist A', duration: 200, bytes: 1000 },
           s2: { id: 's2', title: 'Song 2', artist: 'Other', duration: 180, bytes: 900 },
           s3: { id: 's3', title: 'Song 3', artist: 'Artist A', duration: 210, bytes: 1100 },
@@ -823,7 +755,7 @@ describe('playMoreByArtist', () => {
           s5: { id: 's5', title: 'Song 5', artist: 'Artist A', duration: 220, bytes: 1050 },
           s6: { id: 's6', title: 'Song 6', artist: 'Artist A', duration: 230, bytes: 1200 },
         },
-      });
+      );
 
       await playMoreByArtist('ar1', 'Artist A');
 
@@ -841,14 +773,10 @@ describe('playMoreByArtist', () => {
     });
 
     it('shows error when no offline songs match', async () => {
-      (musicCacheStore.getState as jest.Mock).mockReturnValue({
-        cachedItems: {
-          alb1: { itemId: 'alb1', name: 'Album One', coverArtId: 'cov1', songIds: ['s1'] },
-        },
-        cachedSongs: {
-          s1: { id: 's1', title: 'Song 1', artist: 'Other', duration: 200, bytes: 1000 },
-        },
-      });
+      seedCache(
+        { alb1: { itemId: 'alb1', name: 'Album One', coverArtId: 'cov1', songIds: ['s1'] } },
+        { s1: { id: 's1', title: 'Song 1', artist: 'Other', duration: 200, bytes: 1000 } },
+      );
 
       await playMoreByArtist('ar1', 'Artist A');
 
@@ -857,7 +785,7 @@ describe('playMoreByArtist', () => {
     });
 
     it('shows error when cache is empty', async () => {
-      (musicCacheStore.getState as jest.Mock).mockReturnValue({ cachedItems: {}, cachedSongs: {} });
+      seedCache();
 
       await playMoreByArtist('ar1', 'Artist A');
 
@@ -865,16 +793,26 @@ describe('playMoreByArtist', () => {
       expect(mockPlayTrack).not.toHaveBeenCalled();
     });
 
+    it('skips a songId whose cached row is gone', async () => {
+      seedCache(
+        { alb1: { itemId: 'alb1', name: 'Album One', coverArtId: 'cov1', songIds: ['s1', 'gone'] } },
+        { s1: { id: 's1', title: 'Song 1', artist: 'Artist A', duration: 200, bytes: 1000 } },
+      );
+
+      await playMoreByArtist('ar1', 'Artist A');
+
+      // One real match → below the 5-song floor, and no crash on the dangling id.
+      expect(mockOverlayShowError).toHaveBeenCalledWith('Not enough offline songs by Artist A');
+    });
+
     it('shows error when fewer than 5 offline songs match', async () => {
-      (musicCacheStore.getState as jest.Mock).mockReturnValue({
-        cachedItems: {
-          alb1: { itemId: 'alb1', name: 'Album One', coverArtId: 'cov1', songIds: ['s1', 's2'] },
-        },
-        cachedSongs: {
+      seedCache(
+        { alb1: { itemId: 'alb1', name: 'Album One', coverArtId: 'cov1', songIds: ['s1', 's2'] } },
+        {
           s1: { id: 's1', title: 'Song 1', artist: 'Artist A', duration: 200, bytes: 1000 },
           s2: { id: 's2', title: 'Song 2', artist: 'Artist A', duration: 180, bytes: 900 },
         },
-      });
+      );
 
       await playMoreByArtist('ar1', 'Artist A');
 
@@ -894,17 +832,55 @@ describe('playMoreByArtist', () => {
           bytes: 1000,
         };
       }
-      (musicCacheStore.getState as jest.Mock).mockReturnValue({
-        cachedItems: {
-          alb1: { itemId: 'alb1', name: 'Album', coverArtId: 'cov', songIds },
-        },
-        cachedSongs,
-      });
+      seedCache({ alb1: { itemId: 'alb1', name: 'Album', coverArtId: 'cov', songIds } }, cachedSongs);
 
       await playMoreByArtist('ar1', 'Artist A');
 
       const [, queue] = mockPlayTrack.mock.calls[0];
       expect(queue.length).toBe(20);
+    });
+
+    /* The offline artist sheet must emit a full `Child`, not a narrow projection —
+     * the song-details modal renders fields well beyond the playback essentials. */
+    it('carries the full downloaded metadata, with album/coverArt still from the item', async () => {
+      const cachedSongs: Record<string, any> = {
+        s1: {
+          id: 's1', title: 'Song 1', artist: 'Artist A', album: 'Real Album',
+          albumId: 'dir1', coverArt: 'songcover', duration: 200, bytes: 1000,
+          suffix: 'mp3', bitRate: 320,
+          srcAlbumId: 'server-album', srcSuffix: 'flac', srcBitRate: 1000,
+          srcBitDepth: 24, srcSamplingRate: 96000, size: 41_000_000,
+          genres: ['Shoegaze'], genre: 'Shoegaze', track: 3, year: 1991,
+          rgTrackGain: -6.5, rgAlbumPeak: 0.99,
+        },
+      };
+      // Four filler tracks so the set clears the 5-song floor.
+      for (let i = 2; i <= 5; i++) {
+        cachedSongs[`s${i}`] = { id: `s${i}`, title: `Song ${i}`, artist: 'Artist A', duration: 200, bytes: 1000 };
+      }
+      // A PLAYLIST download: `album` must show the playlist, not the song's own album.
+      seedCache(
+        { pl1: { itemId: 'pl1', name: 'Road Trip', coverArtId: 'plcover', songIds: Object.keys(cachedSongs) } },
+        cachedSongs,
+      );
+
+      await playMoreByArtist('ar1', 'Artist A');
+
+      const [, queue] = mockPlayTrack.mock.calls[0];
+      const song = queue.find((s: any) => s.id === 's1');
+      expect(song.suffix).toBe('flac');
+      expect(song.bitRate).toBe(1000);
+      expect(song.size).toBe(41_000_000);
+      expect(song.genres).toEqual(['Shoegaze']);
+      expect(song.replayGain).toEqual({
+        trackGain: -6.5, albumGain: undefined, trackPeak: undefined,
+        albumPeak: 0.99, baseGain: undefined, fallbackGain: undefined,
+      });
+      expect(song.track).toBe(3);
+      expect(song.year).toBe(1991);
+      // The two overrides the item still owns.
+      expect(song.album).toBe('Road Trip');
+      expect(song.coverArt).toBe('plcover');
     });
   });
 });
@@ -922,13 +898,8 @@ describe('playAllByArtist', () => {
         { id: 's3', artist: 'A', artistId: 'ar1', year: 2020, discNumber: 1, track: 1 },
         { id: 's4', artist: 'A', artistId: 'ar1', year: 2020, discNumber: 2, track: 1 },
       ];
-      (artistDetailStore.getState as jest.Mock).mockReturnValue({
-        artists: { ar1: { artist: { album: [{ id: 'alb1' }] } } },
-        fetchArtist: jest.fn(),
-      });
-      (albumDetailStore.getState as jest.Mock).mockReturnValue({
-        albums: { alb1: { album: { song: songs } } },
-      });
+      mockArtistParts = { albums: [{ id: 'alb1' }] };
+      mockAlbumDetails = { alb1: { album: { song: songs } } };
 
       await playAllByArtist('ar1', 'A', false);
 
@@ -942,13 +913,8 @@ describe('playAllByArtist', () => {
       const songs = Array.from({ length: 50 }, (_, i) => ({
         id: `s${i}`, artist: 'A', artistId: 'ar1', year: 2020, discNumber: 1, track: i + 1,
       }));
-      (artistDetailStore.getState as jest.Mock).mockReturnValue({
-        artists: { ar1: { artist: { album: [{ id: 'alb1' }] } } },
-        fetchArtist: jest.fn(),
-      });
-      (albumDetailStore.getState as jest.Mock).mockReturnValue({
-        albums: { alb1: { album: { song: songs } } },
-      });
+      mockArtistParts = { albums: [{ id: 'alb1' }] };
+      mockAlbumDetails = { alb1: { album: { song: songs } } };
 
       await playAllByArtist('ar1', 'A', false);
 
@@ -961,13 +927,8 @@ describe('playAllByArtist', () => {
         { id: 's1', artist: 'A', artistId: 'ar1', year: 2020, discNumber: 1, track: 1 },
         { id: 's2', artist: 'A', artistId: 'ar1', year: 2020, discNumber: 1, track: 2 },
       ];
-      (artistDetailStore.getState as jest.Mock).mockReturnValue({
-        artists: { ar1: { artist: { album: [{ id: 'alb1' }] } } },
-        fetchArtist: jest.fn(),
-      });
-      (albumDetailStore.getState as jest.Mock).mockReturnValue({
-        albums: { alb1: { album: { song: songs } } },
-      });
+      mockArtistParts = { albums: [{ id: 'alb1' }] };
+      mockAlbumDetails = { alb1: { album: { song: songs } } };
 
       await playAllByArtist('ar1', 'A', false);
 
@@ -977,13 +938,8 @@ describe('playAllByArtist', () => {
     });
 
     it('shows error when no songs found', async () => {
-      (artistDetailStore.getState as jest.Mock).mockReturnValue({
-        artists: { ar1: { artist: { album: [{ id: 'alb1' }] } } },
-        fetchArtist: jest.fn(),
-      });
-      (albumDetailStore.getState as jest.Mock).mockReturnValue({
-        albums: { alb1: { album: { song: [] } } },
-      });
+      mockArtistParts = { albums: [{ id: 'alb1' }] };
+      mockAlbumDetails = { alb1: { album: { song: [] } } };
 
       await playAllByArtist('ar1', 'A', false);
 
@@ -992,10 +948,7 @@ describe('playAllByArtist', () => {
     });
 
     it('shows error on exception', async () => {
-      (artistDetailStore.getState as jest.Mock).mockReturnValue({
-        artists: {},
-        fetchArtist: jest.fn().mockRejectedValue(new Error('fail')),
-      });
+      mockArtistParts = { throws: true };
 
       await playAllByArtist('ar1', 'A', false);
 
@@ -1012,13 +965,8 @@ describe('playAllByArtist', () => {
       const songs = Array.from({ length: 10 }, (_, i) => ({
         id: `s${i}`, artist: 'A', artistId: 'ar1',
       }));
-      (artistDetailStore.getState as jest.Mock).mockReturnValue({
-        artists: { ar1: { artist: { album: [{ id: 'alb1' }] } } },
-        fetchArtist: jest.fn(),
-      });
-      (albumDetailStore.getState as jest.Mock).mockReturnValue({
-        albums: { alb1: { album: { song: songs } } },
-      });
+      mockArtistParts = { albums: [{ id: 'alb1' }] };
+      mockAlbumDetails = { alb1: { album: { song: songs } } };
 
       await playAllByArtist('ar1', 'A', true);
 
@@ -1036,15 +984,13 @@ describe('playAllByArtist', () => {
     });
 
     it('plays offline songs sorted by year when shuffle=false', async () => {
-      (musicCacheStore.getState as jest.Mock).mockReturnValue({
-        cachedItems: {
-          alb1: { itemId: 'alb1', name: 'Album', coverArtId: 'cov', songIds: ['s1', 's2'] },
-        },
-        cachedSongs: {
+      seedCache(
+        { alb1: { itemId: 'alb1', name: 'Album', coverArtId: 'cov', songIds: ['s1', 's2'] } },
+        {
           s1: { id: 's1', title: 'Song 1', artist: 'A', duration: 200, bytes: 1000 },
           s2: { id: 's2', title: 'Song 2', artist: 'A', duration: 180, bytes: 900 },
         },
-      });
+      );
 
       await playAllByArtist('ar1', 'A', false);
 
@@ -1054,7 +1000,7 @@ describe('playAllByArtist', () => {
     });
 
     it('shows error when no offline songs match', async () => {
-      (musicCacheStore.getState as jest.Mock).mockReturnValue({ cachedItems: {}, cachedSongs: {} });
+      seedCache();
 
       await playAllByArtist('ar1', 'A', false);
 
@@ -1114,13 +1060,11 @@ describe('handleDownloadSong', () => {
 describe('handleRemoveSongDownload', () => {
   const mockDelete = mockDeleteCachedItem as jest.Mock;
   const mockRemoveAlbumSong = mockRemoveCachedAlbumSong as jest.Mock;
-  const mockGetState = musicCacheStore.getState as jest.Mock;
-
   /** Make `cachedItems` report the given ids as present. */
   const withCachedItems = (...ids: string[]) => {
     const cachedItems: Record<string, unknown> = {};
     for (const id of ids) cachedItems[id] = { type: 'album' };
-    mockGetState.mockReturnValue({ cachedItems });
+    seedCache(cachedItems);
   };
 
   it('no-ops on falsy song', () => {
@@ -1146,7 +1090,7 @@ describe('handleRemoveSongDownload', () => {
   });
 
   it('removes the song from its parent album (reverts album to partial)', async () => {
-    mockGetState.mockReturnValue({ cachedItems: {} }); // no explicit song: item
+    seedCache(); // no explicit song: item
     mockRemoveAlbumSong.mockResolvedValueOnce(true);
     const song = { id: 's1', title: 'Cool Song', albumId: 'alb1' } as any;
     await handleRemoveSongDownload(song);
@@ -1156,7 +1100,7 @@ describe('handleRemoveSongDownload', () => {
   });
 
   it('shows error overlay when nothing was removed', async () => {
-    mockGetState.mockReturnValue({ cachedItems: {} });
+    seedCache();
     mockRemoveAlbumSong.mockResolvedValueOnce(false);
     const song = { id: 's1', title: 'Cool Song', albumId: 'alb1' } as any;
     await handleRemoveSongDownload(song);

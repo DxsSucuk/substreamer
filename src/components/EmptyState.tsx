@@ -40,6 +40,9 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginTop: 16,
     marginBottom: 8,
+    // Without this a one-line title looks centred (the Text block is), but any title
+    // that wraps left-aligns against a centred icon and subtitle.
+    textAlign: 'center',
   },
   subtitle: {
     fontSize: 16,

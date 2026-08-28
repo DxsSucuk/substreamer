@@ -128,12 +128,12 @@ function extractPrimaryGenre(song: { genre?: string; genres?: unknown[] }): stri
 /* ------------------------------------------------------------------ */
 
 export function getTopDecade(
-  songCounts: Record<string, { song: Child; count: number }>,
+  songStats: Record<string, { count: number; year?: number }>,
 ): { decade: number; fromYear: number; toYear: number } | null {
   const decadeCounts: Record<number, number> = {};
 
-  for (const entry of Object.values(songCounts)) {
-    const year = entry.song.year;
+  for (const entry of Object.values(songStats)) {
+    const year = entry.year;
     if (!year || year < 1950) continue;
     const decade = Math.floor(year / 10) * 10;
     decadeCounts[decade] = (decadeCounts[decade] ?? 0) + entry.count;
@@ -180,16 +180,18 @@ export function getTopDecade(
 interface GenerateMixesInput {
   hourBuckets: number[];
   genreCounts: Record<string, number>;
-  songCounts: Record<string, { song: Child; count: number }>;
+  songStats: Record<string, { count: number; year?: number }>;
   artistCounts: Record<string, { count: number; artistId?: string }>;
   scrobbles: Array<{ time: number; song: { genre?: string; genres?: unknown[]; artist?: string; artistId?: string } }>;
-  starredSongs: Child[];
+  /** One random starred song to seed "Favorites Radio", or null when there are none.
+   *  A single seed, not the whole set: the mix only ever reads one id + title. */
+  favoritesSeed: { id: string; title?: string } | null;
   isOnline: boolean;
   listLength?: number;
 }
 
 export function generateMixes(input: GenerateMixesInput): MixDefinition[] {
-  const { hourBuckets, genreCounts, songCounts, artistCounts, scrobbles, starredSongs, isOnline, listLength = 20 } = input;
+  const { hourBuckets, genreCounts, songStats, artistCounts, scrobbles, favoritesSeed, isOnline, listLength = 20 } = input;
   const mixes: MixDefinition[] = [];
 
   // 1. "Right Now" — Time-of-Day Mix (always shown)
@@ -286,7 +288,7 @@ export function generateMixes(input: GenerateMixesInput): MixDefinition[] {
 
   // 3. "Time Machine" — Decade Mix (online only)
   if (isOnline) {
-    const pickedDecade = getTopDecade(songCounts);
+    const pickedDecade = getTopDecade(songStats);
     if (pickedDecade) {
       const decadeLabel = `${pickedDecade.decade}s`;
       mixes.push({
@@ -327,15 +329,14 @@ export function generateMixes(input: GenerateMixesInput): MixDefinition[] {
   });
 
   // 4. "Favorites Radio" — Based on Starred Songs (online only, needs starred songs)
-  if (isOnline && starredSongs.length > 0) {
-    const randomStar = starredSongs[Math.floor(Math.random() * starredSongs.length)];
+  if (isOnline && favoritesSeed) {
     mixes.push({
       id: 'favorites-radio',
       name: i18n.t('favoritesRadio'),
-      subtitle: i18n.t('inspiredBy', { title: randomStar.title }),
+      subtitle: i18n.t('inspiredBy', { title: favoritesSeed.title }),
       icon: 'heart',
       gradientColors: ['#E11D48', '#DB2777'],
-      fetchStrategy: { type: 'similarToSong', songId: randomStar.id, count: listLength },
+      fetchStrategy: { type: 'similarToSong', songId: favoritesSeed.id, count: listLength },
     });
   }
 

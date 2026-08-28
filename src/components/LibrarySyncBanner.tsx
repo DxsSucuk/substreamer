@@ -48,15 +48,20 @@ function getVariant(
   phase: DetailSyncPhase,
   completed: number,
   total: number,
+  finalizing: boolean,
   t: (key: string, opts?: Record<string, unknown>) => string,
 ): Variant | null {
   if (phase === 'syncing') {
-    // `total > 0` on the basic-path walk (per-album progress); `total === 0` on
-    // the fast paged-search3 song sync (indeterminate — no per-album count).
+    // Fetch done but the in-memory index is still rebuilding → "Finalizing…".
+    if (finalizing) {
+      return { icon: 'sync', iconColor: ACCENT_BLUE, label: t('finalizingLibrary'), tappable: true };
+    }
+    // Progress = albums-whose-songs-we-have / total-albums. Banner shows % only.
+    const pct = total > 0 ? Math.min(100, Math.floor((completed / total) * 100)) : 0;
     return {
       icon: 'sync',
       iconColor: ACCENT_BLUE,
-      label: total > 0 ? `${t('syncingLibrary')} ${completed} / ${total}` : t('syncingLibrary'),
+      label: total > 0 ? `${t('syncingSongs')} ${pct}%` : t('syncingSongs'),
       tappable: true,
     };
   }
@@ -68,7 +73,12 @@ function getVariant(
       tappable: false,
     };
   }
-  if (phase === 'paused-auth-error' || phase === 'paused-metered' || phase === 'error') {
+  if (
+    phase === 'paused-auth-error'
+    || phase === 'paused-metered'
+    || phase === 'paused-error'
+    || phase === 'error'
+  ) {
     return {
       icon: 'alert-circle',
       iconColor: ERROR_RED,
@@ -80,9 +90,32 @@ function getVariant(
 }
 
 /**
- * Variant for the album-LIST fetch (paginated into `library_albums`), shown
- * BEFORE the detail walk. `librarySyncCount` climbs as pages arrive. Suppressed
- * below `MIN_TOTAL_TO_SHOW` so a small library (one instant page) doesn't flash.
+ * Variant for the one-time blob→normalized migration. Banner shows the PERCENTAGE
+ * only (the settings card carries the bar + counts). Top priority — it runs when the
+ * sync is idle, so it won't overlap the sync variants in practice.
+ */
+function getMigrationVariant(
+  phase: 'idle' | 'migrating',
+  done: number,
+  total: number,
+  t: (key: string, opts?: Record<string, unknown>) => string,
+): Variant | null {
+  if (phase !== 'migrating') return null;
+  const pct = total > 0 ? Math.min(100, Math.floor((done / total) * 100)) : 0;
+  return {
+    icon: 'sync',
+    iconColor: ACCENT_BLUE,
+    label: `${t('upgradingLibrary')} ${pct}%`,
+    tappable: false,
+  };
+}
+
+/**
+ * Variant for the album-LIST fetch, shown BEFORE the detail walk. The count is the
+ * walk's cursor — albums PROCESSED — not a row count, so it keeps moving on a pass
+ * that re-covers albums already stored. Suppressed below `MIN_TOTAL_TO_SHOW` so a
+ * small library (one instant page) doesn't flash.
+ *
  */
 function getListVariant(
   phase: LibrarySyncPhase,
@@ -94,7 +127,7 @@ function getListVariant(
     return {
       icon: 'sync',
       iconColor: ACCENT_BLUE,
-      label: `${t('fetchingLibrary')} ${count}`,
+      label: `${t('syncingAlbums')} ${count}`,
       tappable: true,
     };
   }
@@ -104,6 +137,14 @@ function getListVariant(
       iconColor: WARNING_AMBER,
       label: t('syncPausedOffline'),
       tappable: false,
+    };
+  }
+  if (phase === 'paused-error') {
+    return {
+      icon: 'alert-circle',
+      iconColor: WARNING_AMBER,
+      label: t('syncPausedError'),
+      tappable: true,
     };
   }
   return null;
@@ -116,15 +157,21 @@ export const LibrarySyncBanner = memo(function LibrarySyncBanner() {
   const total = syncStatusStore((s) => s.detailSyncTotal);
   const completed = syncStatusStore((s) => s.detailSyncCompleted);
   const listPhase = syncStatusStore((s) => s.librarySyncPhase);
-  const listCount = syncStatusStore((s) => s.librarySyncCount);
+  const listCount = syncStatusStore((s) => s.librarySyncCursor);
+  const migPhase = syncStatusStore((s) => s.normalizedMigrationPhase);
+  const migDone = syncStatusStore((s) => s.normalizedMigrationDone);
+  const migTotal = syncStatusStore((s) => s.normalizedMigrationTotal);
+  const finalizing = syncStatusStore((s) => s.songSyncFinalizing);
   const bannerDismissedAt = syncStatusStore((s) => s.bannerDismissedAt);
 
   const suppressed = bannerDismissedAt != null;
   const tinyLibrary = total > 0 && total < MIN_TOTAL_TO_SHOW;
-  // The album-LIST fetch runs first (the detail walk is gated on it), so its
-  // variant takes priority. It carries its own small-library suppression.
+  // Priority: the one-time normalized migration (a distinct upgrade event) → the
+  // album-LIST fetch (the detail walk is gated on it) → the detail walk itself.
+  const migrationVariant = getMigrationVariant(migPhase, migDone, migTotal, t);
   const listVariant = getListVariant(listPhase, listCount, t);
-  const variant = listVariant ?? (tinyLibrary ? null : getVariant(phase, completed, total, t));
+  const variant =
+    migrationVariant ?? listVariant ?? (tinyLibrary ? null : getVariant(phase, completed, total, finalizing, t));
   const visible = variant != null && !suppressed;
 
   const prevVisible = useRef(visible);

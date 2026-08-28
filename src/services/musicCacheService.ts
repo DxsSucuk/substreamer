@@ -10,8 +10,7 @@
  * downloading, the service checks whether a song is already in the pool. If
  * so, it just inserts a new `cached_item_songs` edge — no bytes, no network.
  *
- * See `plans/music-downloads-v2.md` for the full architectural plan. Key
- * guarantees preserved from v1:
+ * Key guarantees:
  *   - Tmp-file atomicity (download to .tmp, move on success)
  *   - Kill-mid-item resumption via pre-scan + `recoverStalledDownloadsAsync`
  *   - Retry-once-on-null inside `downloadItem`
@@ -35,25 +34,37 @@ import {
 } from 'expo-async-fs';
 import { checkStorageLimit } from './storageService';
 import { beginDownload, clearDownload } from './downloadSpeedTracker';
-import { albumDetailStore } from '../store/albumDetailStore';
+import { fetchAlbumDetail, fetchPlaylistDetail } from './detailFetchService';
 import { favoritesStore } from '../store/favoritesStore';
 import { storageLimitStore } from '../store/storageLimitStore';
 import {
   musicCacheStore,
+  whenQueuePayloadWritten,
   type CachedItemMeta,
   type CachedSongMeta,
   type DownloadQueueItem,
 } from '../store/musicCacheStore';
+import { offlineModeStore } from '../store/offlineModeStore';
 import {
+  albumMetaFromAlbumID3,
   countCachedSongs,
   countRealSongRefsForSongsAsync,
   insertCachedItemSong,
+  playlistMetaFromPlaylist,
+  promotedSongFieldsFromChild,
+  readDownloadQueueAlbumIdsAsync,
+  readDownloadQueueSongRefsAsync,
+  readDownloadQueueSongsAsync,
+  readQueuedSongStatus,
 } from '../store/persistence/musicCacheTables';
 import { logImageCache } from './imageCacheLogger';
 import { processingOverlayStore } from '../store/processingOverlayStore';
 import { playbackSettingsStore } from '../store/playbackSettingsStore';
 import { resolveEffectiveFormat } from '../utils/effectiveFormat';
-import { playlistDetailStore } from '../store/playlistDetailStore';
+import { getDb } from '../store/persistence/db';
+import { getAlbumDetail, getPlaylistDetail } from '../db/repository/details';
+import { albumIdsWithSongs } from '../db/repository/songs';
+import { countStarredSongs, listAllStarredSongs, starredItemOf } from '../db/repository/favorites';
 import {
   ensureCoverArtAuth,
   getDownloadStreamUrl,
@@ -127,6 +138,7 @@ function getTrackFileExtension(track: Child): string {
 let cacheDir: Directory | null = null;
 let isProcessing = false;
 let processingId = 0;
+let offlineSubscription: (() => void) | null = null;
 let appStateSubscription: { remove: () => void } | null = null;
 
 /**
@@ -198,6 +210,20 @@ export function initMusicCache(): void {
         if (!isProcessing) recoverStalledDownloadsAsync();
       });
     }
+    if (!offlineSubscription) {
+      // Same machinery as kill-mid-download recovery: bump the generation so live
+      // workers exit at their next song boundary, hand the in-flight item back to
+      // 'queued' and drop its .tmp remnants. Going offline the gate above keeps it
+      // parked there; coming back online the identical call restarts it from exactly
+      // where it stopped (and retries whatever errored while the network was gone).
+      offlineSubscription = offlineModeStore.subscribe((state, prev) => {
+        if (state.offlineMode === prev.offlineMode) return;
+        // The trailing pump is what resumes: after a pause the items sit in 'queued',
+        // so the recovery pass finds nothing to recover and would never restart on its
+        // own. Going offline it is a no-op — the gate turns it straight back.
+        void forceRecoverDownloadsAsync().then(() => processQueue());
+      });
+    }
   } catch (e) {
     // eslint-disable-next-line no-console
     console.warn(
@@ -216,6 +242,8 @@ export function initMusicCache(): void {
 export function teardownMusicCache(): void {
   appStateSubscription?.remove();
   appStateSubscription = null;
+  offlineSubscription?.();
+  offlineSubscription = null;
   cacheDir = null;
 }
 
@@ -261,9 +289,8 @@ export async function deferredMusicCacheInit(): Promise<void> {
     );
   }
 
-  // Capture filesystem ground-truth byte/file totals. Store aggregates are
-  // derived from cachedSongs on hydrate (dedup-correct), but a filesystem
-  // recalculate belts-and-braces against any Task-14 migration drift.
+  // Capture filesystem ground-truth byte/file totals. Store aggregates are derived
+  // from cachedSongs on hydrate (dedup-correct); this corrects any drift from them.
   scheduleRecalculate();
 
   await recoverStalledDownloadsAsync();
@@ -299,23 +326,19 @@ async function populateTrackMapsAsync(): Promise<void> {
     }
   }
 
-  // Diagnostic (gated by the image-cache diagnostics flag). Compares rows in
-  // SQLite vs the hydrated store vs the map just built — a `dbSongs>0 mapSize=0`
-  // line is the signature of the empty-map-from-unhydrated-store regression.
+  // Diagnostic (gated by the image-cache diagnostics flag). Compares rows in SQLite
+  // vs the hydrated store vs the map just built; `dbSongs>0 mapSize=0` means the
+  // maps were built from an unhydrated store.
   logImageCache(
     `musiccache trackmaps hydrated=${hasHydrated} `
     + `dbSongs=${countCachedSongs()} storeSongs=${Object.keys(cachedSongs).length} `
     + `mapSize=${trackUriMap.size}`,
   );
 
-  // Only latch "ready" once the store is actually hydrated. The store hydrates
-  // on a SEPARATE async boot effect from the requestIdleCallback that runs
-  // deferredMusicCacheInit; if this ever runs mid-hydration it would build an
-  // empty `trackUriMap` and — without this guard — latch it, leaving every
-  // downloaded track shown as unavailable until the next launch (files on disk
-  // are intact; only the in-memory lookup is empty). Leaving it un-latched lets
-  // a later post-hydration call rebuild instead of short-circuiting in
-  // `ensureTrackMapsReady`.
+  // Only latch "ready" once the store is actually hydrated — see
+  // `deferredMusicCacheInit`. Latching an empty `trackUriMap` shows every downloaded
+  // track as unavailable until the next launch; leaving it un-latched lets a later
+  // post-hydration call rebuild instead of short-circuiting in `ensureTrackMapsReady`.
   if (hasHydrated) {
     trackMapsReady = true;
     flushTrackMapsReadyWaiters();
@@ -323,7 +346,7 @@ async function populateTrackMapsAsync(): Promise<void> {
 
   // Run any starred-songs sync that was deferred because the favoritesStore
   // subscription fired before the maps were ready.
-  syncStarredSongsDownload();
+  void syncStarredSongsDownload();
 }
 
 /**
@@ -584,19 +607,19 @@ async function removeOrphanItemRows(): Promise<number> {
 
 /**
  * Pass 4: sweep non-album top-level directories — leftover v1 playlist /
- * __starred__ dirs from a partial Task-14 migration, or other junk.
+ * __starred__ dirs from a partial v1→v2 migration, or other junk.
  *
  * CRITICAL SAFETY GATE: skip this pass entirely if we have no valid
  * album_ids. `cached_songs` is empty in two scenarios, neither of which
  * should trigger a sweep:
  *   (a) Fresh install — there's nothing on disk to sweep, so skipping
  *       is a cheap no-op.
- *   (b) Migration task #14 hasn't completed yet (an earlier task threw and
- *       runMigrations halted) — the v1 cache directories are still on disk
- *       in their original shape waiting to be migrated. Sweeping them here
- *       would be catastrophic data loss.
+ *   (b) The v1→v2 migration (migration 14) hasn't completed yet (an earlier
+ *       task threw and runMigrations halted) — the v1 cache directories are
+ *       still on disk in their original shape waiting to be migrated.
+ *       Sweeping them here would be catastrophic data loss.
  * Without this gate, scenario (b) would wipe every cached file the user has
- * before task #14 ever gets a chance to run on the next launch.
+ * before that migration ever gets a chance to run on the next launch.
  */
 function sweepStaleTopLevelDirs(
   dir: Directory,
@@ -625,18 +648,10 @@ function sweepStaleTopLevelDirs(
  * clean up partial transfers without touching fully-downloaded files.
  */
 async function cleanupTmpFilesForQueueItem(item: DownloadQueueItem): Promise<void> {
-  let songs: Child[] = [];
-  try {
-    songs = JSON.parse(item.songsJson) as Child[];
-  } catch {
-    return;
-  }
-
-  // Deduplicate the album directories we need to sweep.
-  const albumIds = new Set<string>();
-  for (const s of songs) {
-    albumIds.add(s.albumId || UNKNOWN_ALBUM_ID);
-  }
+  // Only the directories, straight out of SQL — a `.tmp` sweep never needed the songs.
+  const albumIds = new Set(
+    (await readDownloadQueueAlbumIdsAsync(item.queueId)).map((id) => id || UNKNOWN_ALBUM_ID),
+  );
 
   for (const albumId of albumIds) {
     const albumDir = new Directory(ensureCacheDir(), albumId);
@@ -725,22 +740,20 @@ export function isItemCached(itemId: string): boolean {
   return itemId in musicCacheStore.getState().cachedItems;
 }
 
-/** Check if a track is in any queued / downloading queue item. */
+/**
+ * Check if a track is in any queued / downloading queue item.
+ *
+ * One indexed point lookup. It reads SYNCHRONOUSLY because `useDownloadStatus` calls
+ * it from inside a zustand selector, which cannot await — and the alternative, holding
+ * every queued song id in memory, is the exact cost this table exists to remove
+ * (`fullLibraryDownloadService` queues one row per album in the library).
+ *
+ * A queue row whose songs Migration 39 has not converted yet answers `null`: the badge
+ * is missing until the chain runs, which it does on the splash before any song row
+ * renders. A missing badge, never a wrong download.
+ */
 export function getTrackQueueStatus(trackId: string): 'queued' | 'downloading' | null {
-  const queue = musicCacheStore.getState().downloadQueue;
-  for (const item of queue) {
-    if (item.status !== 'queued' && item.status !== 'downloading') continue;
-    let songs: Child[];
-    try {
-      songs = JSON.parse(item.songsJson) as Child[];
-    } catch {
-      continue;
-    }
-    if (songs.some((t) => t.id === trackId)) {
-      return item.status;
-    }
-  }
-  return null;
+  return readQueuedSongStatus(trackId);
 }
 
 /* ------------------------------------------------------------------ */
@@ -792,7 +805,7 @@ export async function enqueueAlbumDownload(
   }
 
   await ensureCoverArtAuth();
-  const album = await albumDetailStore.getState().fetchAlbum(albumId);
+  const album = await fetchAlbumDetail(albumId, { force: true });
   if (!album?.song?.length) {
     if (isTopUp) {
       processingOverlayStore.getState().showError(i18n.t('failedToLoadAlbum'));
@@ -813,10 +826,10 @@ export async function enqueueAlbumDownload(
     const haveIds = new Set(existing.songIds);
     const missingSongs = album.song.filter((s) => s.id && !haveIds.has(s.id));
 
-    // We just fetched a fresh album — carry its envelope into the row so
-    // any previously stored thin/null `rawJson` gets upgraded.
-    const { song: _albumSongsIgnored, ...albumMeta } = album;
-    const refreshedEnvelope = JSON.stringify(albumMeta);
+    // We just fetched a fresh album — carry its metadata into the row, reduced
+    // to the same `cached_albums` scalars the primary download path stores so
+    // the two writers can't diverge (see the plan's §2.3 decision).
+    const albumMeta = albumMetaFromAlbumID3(album);
 
     if (missingSongs.length === 0) {
       // No missing songs — refresh `expectedSongCount` so the defensive
@@ -826,45 +839,44 @@ export async function enqueueAlbumDownload(
       musicCacheStore.getState().upsertCachedItem({
         ...existing,
         expectedSongCount: album.song.length,
-        rawJson: refreshedEnvelope,
+        albumMeta,
         derived: false,
       });
       return;
     }
 
     // Refresh `expectedSongCount` on the existing row with the fresh server
-    // total BEFORE enqueueing. The top-up queue row's `songsJson` only
-    // contains the missing delta, so the worker's derived count would be
+    // total BEFORE enqueueing. The top-up queue row's payload is only the
+    // missing delta, so the worker's derived count would be
     // wrong — `markItemComplete` preserves this existing value on merge.
-    if (
-      existing.expectedSongCount !== album.song.length ||
-      existing.rawJson !== refreshedEnvelope
-    ) {
-      musicCacheStore.getState().upsertCachedItem({
-        ...existing,
-        expectedSongCount: album.song.length,
-        rawJson: refreshedEnvelope,
-        // Explicit album download — upgrade a possibly-derived partial to real.
-        derived: false,
-      });
-    }
+    // Written unconditionally: the fresh metadata and the derived→real upgrade
+    // both belong on the row, and this runs once per explicit album top-up.
+    musicCacheStore.getState().upsertCachedItem({
+      ...existing,
+      expectedSongCount: album.song.length,
+      albumMeta,
+      // Explicit album download — upgrade a possibly-derived partial to real.
+      derived: false,
+    });
 
     // Cover art keys off the album's `coverArt` value, never the entity ID
     // (see src/utils/coverArtId.ts) — so the warmed/stored key matches what
-    // the grid renders and resolves on OpenSubsonic servers. (#202)
+    // the grid renders and resolves on OpenSubsonic servers.
     const topUpCover = coverArtForAlbum(album);
     await ensureCoverBeforeBinary(topUpCover, awaitCover);
     cacheTrackCoverArt(missingSongs);
 
-    musicCacheStore.getState().enqueueTopUp({
-      itemId: albumId,
-      type: 'album',
-      name: album.name,
-      artist: album.artist ?? album.displayArtist,
-      coverArtId: topUpCover,
-      totalSongs: missingSongs.length,
-      songsJson: JSON.stringify(missingSongs),
-    });
+    musicCacheStore.getState().enqueueTopUp(
+      {
+        itemId: albumId,
+        type: 'album',
+        name: album.name,
+        artist: album.artist ?? album.displayArtist,
+        coverArtId: topUpCover,
+        totalSongs: missingSongs.length,
+      },
+      missingSongs,
+    );
 
     processQueue();
     return;
@@ -874,15 +886,17 @@ export async function enqueueAlbumDownload(
   await ensureCoverBeforeBinary(albumCover, awaitCover);
   cacheTrackCoverArt(album.song);
 
-  musicCacheStore.getState().enqueue({
-    itemId: albumId,
-    type: 'album',
-    name: album.name,
-    artist: album.artist ?? album.displayArtist,
-    coverArtId: albumCover,
-    totalSongs: album.song.length,
-    songsJson: JSON.stringify(album.song),
-  });
+  musicCacheStore.getState().enqueue(
+    {
+      itemId: albumId,
+      type: 'album',
+      name: album.name,
+      artist: album.artist ?? album.displayArtist,
+      coverArtId: albumCover,
+      totalSongs: album.song.length,
+    },
+    album.song,
+  );
 
   processQueue();
 }
@@ -898,25 +912,27 @@ export async function enqueuePlaylistDownload(
   if (state.downloadQueue.some((q) => q.itemId === playlistId)) return;
 
   await ensureCoverArtAuth();
-  const playlist = await playlistDetailStore.getState().fetchPlaylist(playlistId);
+  const playlist = await fetchPlaylistDetail(playlistId, { force: true });
   if (!playlist?.entry?.length) return;
 
   // Re-check after the awaits (see enqueueAlbumDownload) — avoid a duplicate row.
   if (musicCacheStore.getState().downloadQueue.some((q) => q.itemId === playlistId)) return;
 
-  // Cover art keys off the playlist's `coverArt` value (see coverArtId.ts). (#202)
+  // Cover art keys off the playlist's `coverArt` value (see coverArtId.ts).
   const playlistCover = coverArtForPlaylist(playlist);
   await ensureCoverBeforeBinary(playlistCover, awaitCover);
   cacheTrackCoverArt(playlist.entry);
 
-  musicCacheStore.getState().enqueue({
-    itemId: playlistId,
-    type: 'playlist',
-    name: playlist.name,
-    coverArtId: playlistCover,
-    totalSongs: playlist.entry.length,
-    songsJson: JSON.stringify(playlist.entry),
-  });
+  musicCacheStore.getState().enqueue(
+    {
+      itemId: playlistId,
+      type: 'playlist',
+      name: playlist.name,
+      coverArtId: playlistCover,
+      totalSongs: playlist.entry.length,
+    },
+    playlist.entry,
+  );
 
   processQueue();
 }
@@ -944,10 +960,14 @@ export async function enqueueSongDownload(song: Child): Promise<void> {
   // avoids a redundant round-trip when the album was already downloaded or the
   // song is being re-added. Best-effort. This is the download-side half of the
   // "downloads carry their own metadata" invariant.
-  if (song.albumId && !albumDetailStore.getState().albums[song.albumId]) {
-    try {
-      await albumDetailStore.getState().fetchAlbum(song.albumId, { prefetchCovers: true });
-    } catch { /* best-effort — parent album detail is a bonus for the song */ }
+  if (song.albumId) {
+    const db = getDb();
+    const parentHasDetail = db ? (await albumIdsWithSongs(db, [song.albumId])).has(song.albumId) : false;
+    if (!parentHasDetail) {
+      try {
+        await fetchAlbumDetail(song.albumId, { prefetchCovers: true });
+      } catch { /* best-effort — parent album detail is a bonus for the song */ }
+    }
   }
   const songCover = resolveSongCoverArt(song);
   if (songCover) {
@@ -957,13 +977,14 @@ export async function enqueueSongDownload(song: Child): Promise<void> {
   const state = musicCacheStore.getState();
   // If the underlying song is already fully cached, don't transfer bytes —
   // just create the `song:` item + edge so it shows up in the browser, and
-  // refresh the `cached_songs` envelope with whatever the caller supplied.
+  // refresh the promoted metadata with whatever the caller supplied. The real
+  // `Child` goes along, so the `cached_song_*` mirrors are rebuilt too.
   if (song.id in state.cachedSongs) {
     const existing = state.cachedSongs[song.id];
-    musicCacheStore.getState().upsertCachedSong({
-      ...existing,
-      rawJson: JSON.stringify(song),
-    });
+    musicCacheStore.getState().upsertCachedSong(
+      { ...existing, ...promotedSongFieldsFromChild(song) },
+      song,
+    );
     musicCacheStore.getState().upsertCachedItem(
       {
         itemId,
@@ -988,15 +1009,17 @@ export async function enqueueSongDownload(song: Child): Promise<void> {
   // Re-check after the awaits (see enqueueAlbumDownload) — avoid a duplicate row.
   if (musicCacheStore.getState().downloadQueue.some((q) => q.itemId === itemId)) return;
 
-  musicCacheStore.getState().enqueue({
-    itemId,
-    type: 'song',
-    name: song.title ?? 'Unknown',
-    artist: song.artist,
-    coverArtId: songCover,
-    totalSongs: 1,
-    songsJson: JSON.stringify([song]),
-  });
+  musicCacheStore.getState().enqueue(
+    {
+      itemId,
+      type: 'song',
+      name: song.title ?? 'Unknown',
+      artist: song.artist,
+      coverArtId: songCover,
+      totalSongs: 1,
+    },
+    [song],
+  );
 
   processQueue();
 }
@@ -1005,7 +1028,14 @@ export async function enqueueSongDownload(song: Child): Promise<void> {
 /*  Queue processing                                                   */
 /* ------------------------------------------------------------------ */
 
+/** Downloads are network work: offline mode parks the queue rather than burning
+ *  retries against a server the user has told us not to talk to. */
+function isPausedForOffline(): boolean {
+  return offlineModeStore.getState().offlineMode;
+}
+
 async function processQueue(): Promise<void> {
+  if (isPausedForOffline()) return;
   if (isProcessing) return;
   isProcessing = true;
   const myId = ++processingId;
@@ -1018,6 +1048,16 @@ async function processQueue(): Promise<void> {
       const { downloadQueue } = musicCacheStore.getState();
       const next = downloadQueue.find((q) => q.status === 'queued');
       if (!next) break;
+
+      // An enqueue publishes the item to the mirror before its songs reach SQL, and
+      // `downloadItem` reads the payload from there — so claim the item only once the
+      // write it started has landed, or the read finds nothing to download.
+      await whenQueuePayloadWritten(next.queueId);
+      if (myId !== processingId) return;
+      const claimed = musicCacheStore.getState().downloadQueue.find(
+        (q) => q.queueId === next.queueId,
+      );
+      if (claimed?.status !== 'queued') continue;
 
       musicCacheStore.getState().updateQueueItem(next.queueId, { status: 'downloading' });
       await downloadItem(next, myId);
@@ -1039,38 +1079,35 @@ function registerTrackToItem(songId: string, itemId: string): void {
 }
 
 /**
- * Serialise the "envelope" for a `cached_items` row — the full Subsonic
- * entity metadata minus any per-song list. Songs live authoritatively in
- * `cached_songs.raw_json`; carrying `AlbumWithSongsID3.song[]` or
- * `PlaylistWithSongs.entry[]` on the parent row would be a stale
- * duplicate that could drift, so we strip them.
+ * Build the per-type component-row metadata for a `cached_items` row — the
+ * Subsonic entity's scalars minus any per-song list. Songs live authoritatively
+ * in `cached_songs` + `cached_item_songs`; carrying `AlbumWithSongsID3.song[]`
+ * or `PlaylistWithSongs.entry[]` on the parent row would be a stale duplicate.
  *
- * Returns `undefined` when the corresponding detail store is empty (e.g.
- * first download where the user hasn't opened the album). Callers pass
- * `undefined` straight through to the row; Migration 18/19 will backfill
- * later from local caches, and future writes will populate it when the
- * store warms up.
+ * Returns an EMPTY object when the normalized model has no row for the item
+ * (first download of an unsynced album, or mid-`forceFullResync` when `albums`
+ * has been dropped and is repopulating): callers spread the result, so a write
+ * with no metadata leaves the existing component row untouched instead of
+ * blanking it with NULLs.
  */
-function buildCachedItemEnvelope(
+async function buildCachedItemMetadata(
   itemId: string,
   type: CachedItemMeta['type'],
-): string | undefined {
+): Promise<Pick<CachedItemMeta, 'albumMeta' | 'playlistMeta'>> {
+  const db = getDb();
+  if (!db) return {};
   if (type === 'album') {
-    const albums = albumDetailStore.getState().albums;
-    const album = albums?.[itemId]?.album;
-    if (!album) return undefined;
-    const { song: _songs, ...meta } = album;
-    return JSON.stringify(meta);
+    // `getAlbumDetail().album` is the AlbumID3 WITHOUT songs (they live in
+    // cached_item_songs), exactly the `cached_albums` shape.
+    const detail = await getAlbumDetail(db, itemId);
+    return detail ? { albumMeta: albumMetaFromAlbumID3(detail.album) } : {};
   }
   if (type === 'playlist') {
-    const playlists = playlistDetailStore.getState().playlists;
-    const playlist = playlists?.[itemId]?.playlist;
-    if (!playlist) return undefined;
-    const { entry: _entries, ...meta } = playlist;
-    return JSON.stringify(meta);
+    const detail = await getPlaylistDetail(db, itemId);
+    return detail ? { playlistMeta: playlistMetaFromPlaylist(detail.playlist) } : {};
   }
-  // `favorites` (__starred__) and `song` intents have no natural envelope.
-  return undefined;
+  // `favorites` (__starred__) and `song` intents have no per-type metadata.
+  return {};
 }
 
 /**
@@ -1078,12 +1115,10 @@ function buildCachedItemEnvelope(
  * downloaded from a non-album item. No-op when the triggering item IS the
  * album itself.
  *
- * Authoritative track count comes from the server: when albumDetailStore
- * doesn't already have this album, we fetch it (we're online — we're
- * downloading) and use `album.song.length`. The historical `?? 1`
- * fallback is kept only for the cases where the fetch fails outright
- * (server unreachable, album deleted between getSong and getAlbum) so
- * we still stitch the edge in; the next refresh path corrects the count.
+ * The authoritative track count is the album's song rows in the normalized model,
+ * fetched if absent (we are online — we are downloading). A failed fetch leaves the
+ * count unknown rather than blocking: the edge is still stitched in, and the next
+ * refresh corrects the count.
  */
 async function ensurePartialAlbumEdge(
   triggerItemId: string,
@@ -1093,49 +1128,39 @@ async function ensurePartialAlbumEdge(
   if (!song.albumId) return;
   if (triggerItemType === 'album' && triggerItemId === song.albumId) return;
 
-  // Resolve the album's authoritative track count once up-front. Memory
-  // hit when albumDetailStore already has it (the common case — user
-  // visited the album-detail screen, or a prior ensurePartialAlbumEdge
-  // for the same album already populated it). One getAlbum call when
-  // it doesn't. `fetchAlbum` caches the result in albumDetailStore so
-  // subsequent calls in the same session reuse it.
   const albumId = song.albumId;
-  let cachedAlbum = albumDetailStore.getState().albums[albumId];
-  if (!cachedAlbum) {
-    // `prefetchCovers: false` — we're inside a song-download hot path
-    // and don't want to kick off hundreds of cover-art downloads here.
-    // The album-detail screen visit re-fetches with covers when needed.
-    // try/catch (not .catch) so a sync throw or a non-thenable return
-    // both land in the no-op branch without aborting the edge stitch.
-    let fetched: unknown = null;
+  const db = getDb();
+  // Authoritative track count = songs the normalized model holds for this album.
+  let detail = db ? await getAlbumDetail(db, albumId) : null;
+  if (!detail || detail.songs.length === 0) {
+    // `prefetchCovers: false` — this is a song-download hot path, so it must not
+    // kick off hundreds of cover-art downloads. An album-detail screen visit
+    // re-fetches with covers when needed.
     try {
-      fetched = await albumDetailStore
-        .getState()
-        .fetchAlbum(albumId, { prefetchCovers: false });
+      await fetchAlbumDetail(albumId, { prefetchCovers: false });
     } catch { /* fall through to the unknown-count branch */ }
-    if (fetched) cachedAlbum = albumDetailStore.getState().albums[albumId];
+    if (db) detail = await getAlbumDetail(db, albumId);
   }
-  const authoritativeCount = cachedAlbum?.album?.song?.length;
+  const authoritativeCount = detail && detail.songs.length > 0 ? detail.songs.length : undefined;
 
   const state = musicCacheStore.getState();
   const existing = state.cachedItems[albumId];
 
   if (existing) {
-    // Refresh expectedSongCount to match the authoritative server count
-    // when we have it (corrects any historical `?? 1` write). Also
-    // refresh `rawJson` if the existing row is missing its envelope.
-    const envelope = existing.rawJson
-      ? undefined
-      : buildCachedItemEnvelope(albumId, 'album');
+    // Refresh expectedSongCount to the authoritative count when we have one. Also
+    // fill the component row when the existing one carries no metadata — the
+    // component row is the only form now, the conversion having promoted any
+    // envelope into it before the store published this row.
+    const metadata = existing.albumMeta ? {} : await buildCachedItemMetadata(albumId, 'album');
     if (
       (authoritativeCount !== undefined && authoritativeCount !== existing.expectedSongCount) ||
-      envelope !== undefined
+      metadata.albumMeta !== undefined
     ) {
       musicCacheStore.getState().upsertCachedItem({
         ...existing,
         expectedSongCount:
           authoritativeCount !== undefined ? authoritativeCount : existing.expectedSongCount,
-        rawJson: envelope ?? existing.rawJson,
+        ...metadata,
       });
     }
 
@@ -1169,16 +1194,16 @@ async function ensurePartialAlbumEdge(
     {
       itemId: albumId,
       type: 'album',
-      name: song.album ?? cachedAlbum?.album?.name ?? 'Unknown',
-      artist: song.artist ?? cachedAlbum?.album?.artist,
-      // Album item — cover art keys off the album's `coverArt` value (#202),
+      name: song.album ?? detail?.album.name ?? 'Unknown',
+      artist: song.artist ?? detail?.album.artist,
+      // Album item — cover art keys off the album's `coverArt` value,
       // looked up from the synced library (fallback to the song's own cover).
       coverArtId: albumCoverArtById(albumId) ?? song.coverArt,
       expectedSongCount,
       parentAlbumId: undefined,
       lastSyncAt: now,
       downloadedAt: now,
-      rawJson: buildCachedItemEnvelope(albumId, 'album'),
+      ...(await buildCachedItemMetadata(albumId, 'album')),
       // Auto-created partial-album grouping — NOT a real download holder. Songs
       // here orphan when their last real holder (playlist/favorites/song/full
       // album) is removed; this row is pruned once empty.
@@ -1208,13 +1233,15 @@ async function ensurePartialAlbumEdge(
 async function downloadItem(queueItem: DownloadQueueItem, myId: number): Promise<void> {
   const { maxConcurrentDownloads } = musicCacheStore.getState();
 
-  let songs: Child[];
-  try {
-    songs = JSON.parse(queueItem.songsJson) as Child[];
-  } catch {
+  const songs = await readDownloadQueueSongsAsync(queueItem.queueId);
+  // An item with nothing to download is NOT a completed one. Without this the
+  // all-covered test below reads `0 === 0` and finalises the item, silently
+  // discarding a queued download — the failure the row-backed payload is gated
+  // against, reachable here through any read that comes back empty.
+  if (songs.length === 0) {
     musicCacheStore.getState().updateQueueItem(queueItem.queueId, {
       status: 'error',
-      error: 'Failed to parse songs',
+      error: 'Failed to read songs',
     });
     return;
   }
@@ -1223,6 +1250,11 @@ async function downloadItem(queueItem: DownloadQueueItem, myId: number): Promise
   const itemEdges: Array<{ position: number; songId: string }> = [];
   // Accumulated song metadata to upsert at markItemComplete.
   const itemSongsForCommit = new Map<string, CachedSongMeta>();
+  // The real server `Child` behind each row this run actually downloaded — the
+  // only thing that rebuilds the `cached_song_*` mirrors. Pre-scanned songs
+  // commit an in-memory row instead and are deliberately absent, so their
+  // mirrors are left as the download that created them wrote them.
+  const childBySongId = new Map<string, Child>();
 
   const seen = new Set<string>();
   let trackIndex = 0;
@@ -1268,7 +1300,7 @@ async function downloadItem(queueItem: DownloadQueueItem, myId: number): Promise
       );
       if (!current || current.status !== 'downloading') return;
 
-      if (checkStorageLimit()) {
+      if (checkStorageLimit() || isPausedForOffline()) {
         musicCacheStore.getState().updateQueueItem(queueItem.queueId, {
           status: 'queued',
         });
@@ -1287,6 +1319,10 @@ async function downloadItem(queueItem: DownloadQueueItem, myId: number): Promise
         if (!result) result = await downloadSong(song);
         if (result) {
           itemSongsForCommit.set(song.id, result);
+          // Membership comes from the loop's source `song`, not from `result` —
+          // `downloadSong` early-returns the in-memory row for an id that got
+          // cached in the meantime, and this queue entry is still a real `Child`.
+          childBySongId.set(song.id, song);
           itemEdges.push({ position, songId: song.id });
           trackUriMap.set(song.id, resolveSongFile(result).uri);
 
@@ -1334,7 +1370,7 @@ async function downloadItem(queueItem: DownloadQueueItem, myId: number): Promise
       parentAlbumId: queueItem.type === 'song' ? songs[0]?.albumId : undefined,
       lastSyncAt: Date.now(),
       downloadedAt: Date.now(),
-      rawJson: buildCachedItemEnvelope(queueItem.itemId, queueItem.type),
+      ...(await buildCachedItemMetadata(queueItem.itemId, queueItem.type)),
     };
     const songsToCommit = Array.from(itemSongsForCommit.values());
     const edgesForCommit = itemEdges.map((e) => ({
@@ -1346,6 +1382,7 @@ async function downloadItem(queueItem: DownloadQueueItem, myId: number): Promise
       cachedItem,
       songsToCommit,
       edgesForCommit,
+      childBySongId,
     );
 
     for (const e of edgesForCommit) {
@@ -1430,16 +1467,18 @@ async function downloadSong(track: Child): Promise<CachedSongMeta | null> {
       samplingRate: effectiveFmt.samplingRate,
       formatCapturedAt: effectiveFmt.capturedAt,
       downloadedAt: now,
-      // Preserve the full Subsonic envelope next to the indexed columns.
-      // Any future feature reading from `getSongEnvelope()` sees discNumber,
-      // track, genre, MusicBrainz id, ReplayGain, contributors, moods,
-      // explicitStatus, etc. — every optional field the server returned.
-      rawJson: JSON.stringify(track),
+      // The server's `Child` promoted into typed columns alongside the file
+      // facts above — discNumber, track, genre, MusicBrainz id, ReplayGain,
+      // explicitStatus, and the `src_*` pairs for the five whose names here
+      // describe the DOWNLOADED file rather than the source.
+      ...promotedSongFieldsFromChild(track),
     };
 
     // Upsert to the pool immediately so subsequent dedup checks within this
     // same item (e.g. playlist with the song twice) short-circuit cleanly.
-    musicCacheStore.getState().upsertCachedSong(meta);
+    // `track` comes along so the `cached_song_*` mirrors (genres, artists,
+    // albumArtists, contributors, moods) are rebuilt from the real `Child`.
+    musicCacheStore.getState().upsertCachedSong(meta, track);
 
     return meta;
   } catch {
@@ -1583,6 +1622,10 @@ export async function redownloadTrack(
     };
 
     trackUriMap.set(trackId, dest.uri);
+    // No `Child` — this rewrites the FILE facts from an in-memory row. The
+    // promoted metadata columns survive via the upsert's COALESCE and the
+    // `cached_song_*` mirrors are left alone; rebuilding them from a row that
+    // only carries the `genres` projection would empty the other four.
     musicCacheStore.getState().upsertCachedSong(updated);
 
     return true;
@@ -1907,15 +1950,12 @@ export async function syncCachedPlaylistTracks(
 }
 
 /**
- * Full sync for a cached item: removes tracks no longer present and
- * re-enqueues through the download queue when new tracks are detected.
+ * Full sync for a cached item: removes tracks no longer present and re-enqueues
+ * through the download queue when new tracks are detected.
  *
- * v2 behaviour: addition path no longer manually spliced out of
- * `cachedItems` — the new tracks go through the normal download pipeline,
- * which knows how to add edges to an existing item (via the same itemId,
- * songs are transferred, then `markItemComplete` upserts the item row and
- * fresh edges). This is equivalent to v1 semantics for users but cleaner
- * at the model level.
+ * Additions are NOT spliced into `cachedItems` here — they go through the normal
+ * download pipeline, which adds edges to the existing item under the same itemId
+ * and lets `markItemComplete` upsert the row and its fresh edges.
  */
 export function syncCachedItemTracks(
   itemId: string,
@@ -1932,13 +1972,10 @@ export function syncCachedItemTracks(
   // Removes + reorders via the playlist sync.
   syncCachedPlaylistTracks(itemId, newTrackIds);
 
-  // Belt-and-braces cover-art reconciliation for this offline item only.
-  // `ensureCached` and `prefetchCoverArt` are idempotent — instant
-  // no-op when every variant is already on disk (imageCacheService.ts:447),
-  // refills only what's missing (e.g. a variant dropped by the
+  // Cover-art reconciliation for this offline item only — never the full library.
+  // `ensureCached` / `prefetchCoverArt` are idempotent: an instant no-op when every
+  // variant is on disk, refilling only what is missing (a variant dropped by the
   // reconcileImageCache zero-byte pass, or an OS cache eviction).
-  // This check never walks the full library — only this single cached
-  // item and its tracks.
   if (cached.coverArtId) {
     ensureCached(cached.coverArtId).catch(() => { /* non-critical */ });
   }
@@ -1958,15 +1995,17 @@ export function syncCachedItemTracks(
     return { cachedItems: rest };
   });
 
-  musicCacheStore.getState().enqueue({
-    itemId,
-    type: updated.type,
-    name: updated.name,
-    artist: updated.artist,
-    coverArtId: updated.coverArtId,
-    totalSongs: newSongs.length,
-    songsJson: JSON.stringify(newSongs),
-  });
+  musicCacheStore.getState().enqueue(
+    {
+      itemId,
+      type: updated.type,
+      name: updated.name,
+      artist: updated.artist,
+      coverArtId: updated.coverArtId,
+      totalSongs: newSongs.length,
+    },
+    newSongs,
+  );
 
   processQueue();
 }
@@ -1982,21 +2021,25 @@ export function syncCachedItemTracks(
  * wiped the item dir entirely) — it avoids throwing away work the user's
  * bandwidth paid for, and the partial-album row keeps it reachable.
  */
-export function cancelDownload(queueId: string): void {
+export async function cancelDownload(queueId: string): Promise<void> {
   const item = musicCacheStore.getState().downloadQueue.find(
     (q) => q.queueId === queueId,
   );
   if (!item) return;
 
+  // The enqueue publishes to the mirror before its rows reach SQL, so a cancel tapped
+  // while that write is still parked would read an empty payload and DELETE nothing —
+  // and the insert, landing afterwards, would put the cancelled item back for the next
+  // hydrate. Resolves immediately when no write is in flight. Same wait, same reason as
+  // the worker's claim in `processQueue`.
+  await whenQueuePayloadWritten(queueId);
+
+  // Read the ids BEFORE dropping the row: `download_queue_songs` FK-cascades off it,
+  // so the delete takes the payload with it. Two columns, not a rebuilt `Child`.
+  const songs = await readDownloadQueueSongRefsAsync(queueId);
+
   musicCacheStore.getState().removeFromQueue(queueId);
 
-  // Delete any .tmp remnants for songs in this queue item (best-effort).
-  let songs: Child[] = [];
-  try {
-    songs = JSON.parse(item.songsJson) as Child[];
-  } catch {
-    songs = [];
-  }
   // Group cancelled song ids by album, then sweep each album's .tmp remnants
   // off the JS thread: one directory listing per album + async deletes, rather
   // than a sync exists/delete per song×extension (which was O(songs²) on the
@@ -2047,10 +2090,13 @@ export function cancelDownload(queueId: string): void {
  * Cancel all queued and in-progress downloads, removing partial files.
  * Completed (cached) items are not affected.
  */
-export function clearDownloadQueue(): void {
+export async function clearDownloadQueue(): Promise<void> {
   const queue = [...musicCacheStore.getState().downloadQueue];
   for (const item of queue) {
-    cancelDownload(item.queueId);
+    // Serial: each cancel reads its payload before dropping the row, and the resume
+    // below must not restart an item that is still being cancelled.
+    // eslint-disable-next-line no-await-in-loop
+    await cancelDownload(item.queueId);
   }
   resumeIfSpaceAvailable();
 }
@@ -2064,11 +2110,12 @@ export function clearDownloadQueue(): void {
  * no/partial songs on disk); letting the active item finish means it commits a
  * clean complete row, and the untouched queued items never created rows at all.
  */
-export function clearQueuedDownloads(): void {
+export async function clearQueuedDownloads(): Promise<void> {
   const queue = [...musicCacheStore.getState().downloadQueue];
   for (const item of queue) {
     if (item.status === 'downloading') continue;
-    cancelDownload(item.queueId);
+    // eslint-disable-next-line no-await-in-loop
+    await cancelDownload(item.queueId);
   }
 }
 
@@ -2174,7 +2221,8 @@ export async function enqueueStarredSongsDownload(): Promise<void> {
   if (STARRED_SONGS_ITEM_ID in state.cachedItems) return;
   if (state.downloadQueue.some((q) => q.itemId === STARRED_SONGS_ITEM_ID)) return;
 
-  const { songs } = favoritesStore.getState();
+  const db = getDb();
+  const songs = db ? (await listAllStarredSongs(db)).map(starredItemOf) : [];
   if (songs.length === 0) return;
 
   await ensureCoverArtAuth();
@@ -2191,20 +2239,22 @@ export async function enqueueStarredSongsDownload(): Promise<void> {
     void runPool(
       parentAlbumIds,
       async (id) => {
-        await albumDetailStore.getState().fetchAlbum(id, { prefetchCovers: true });
+        await fetchAlbumDetail(id, { prefetchCovers: true });
       },
       { concurrency: 3 },
     );
   }
 
-  musicCacheStore.getState().enqueue({
-    itemId: STARRED_SONGS_ITEM_ID,
-    type: 'favorites',
-    name: 'Favorite Songs',
-    coverArtId: STARRED_COVER_ART_ID,
-    totalSongs: songs.length,
-    songsJson: JSON.stringify(songs),
-  });
+  musicCacheStore.getState().enqueue(
+    {
+      itemId: STARRED_SONGS_ITEM_ID,
+      type: 'favorites',
+      name: 'Favorite Songs',
+      coverArtId: STARRED_COVER_ART_ID,
+      totalSongs: songs.length,
+    },
+    songs,
+  );
 
   processQueue();
 }
@@ -2219,20 +2269,19 @@ export function deleteStarredSongsDownload(): void {
  * Removes tracks that were unstarred and enqueues downloads for newly
  * starred tracks via the generic syncCachedItemTracks.
  */
-function syncStarredSongsDownload(): void {
-  const { songs } = favoritesStore.getState();
-  const state = musicCacheStore.getState();
+async function syncStarredSongsDownload(): Promise<void> {
+  // Membership check FIRST: both branches below are gated on the `__starred__` aggregate
+  // existing, so for a user who never downloaded it the whole function is a no-op — and
+  // reading the starred set first would put a full projection on every star toggle.
+  if (!(STARRED_SONGS_ITEM_ID in musicCacheStore.getState().cachedItems)) return;
 
-  if (songs.length === 0) {
-    if (STARRED_SONGS_ITEM_ID in state.cachedItems) {
-      deleteCachedItem(STARRED_SONGS_ITEM_ID);
-    }
+  const db = getDb();
+  if (!db) return;
+  if ((await countStarredSongs(db)) === 0) {
+    deleteCachedItem(STARRED_SONGS_ITEM_ID);
     return;
   }
-
-  if (STARRED_SONGS_ITEM_ID in state.cachedItems) {
-    syncCachedItemTracks(STARRED_SONGS_ITEM_ID, songs);
-  }
+  syncCachedItemTracks(STARRED_SONGS_ITEM_ID, (await listAllStarredSongs(db)).map(starredItemOf));
 }
 
 /* ------------------------------------------------------------------ */
@@ -2250,8 +2299,10 @@ function syncStarredSongsDownload(): void {
  * never observes the music-cache. No cycle.
  *
  * Guards:
- *   - Identity compare on `state.songs`: skip if the array reference
- *     didn't change (re-renders, unrelated field changes).
+ *   - Identity compare on `state.songIds`: skip if the membership Set reference
+ *     didn't change (re-renders, unrelated field changes). The store REPLACES that
+ *     Set on every membership change and never mutates it in place — an in-place
+ *     mutation would silently stop this firing.
  *   - `trackMapsReady`: skip during the startup window when
  *     trackUriMap / trackToItems are still being populated from SQL.
  *     Otherwise we'd run syncCachedItemTracks against empty maps and
@@ -2259,9 +2310,9 @@ function syncStarredSongsDownload(): void {
  *     storm of already-cached songs on boot.
  */
 favoritesStore.subscribe((state, prev) => {
-  if (state.songs === prev.songs) return;
+  if (state.songIds === prev.songIds) return;
   if (!trackMapsReady) return;
-  syncStarredSongsDownload();
+  void syncStarredSongsDownload();
 });
 
 storageLimitStore.subscribe((state, prev) => {

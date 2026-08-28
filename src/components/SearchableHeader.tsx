@@ -28,7 +28,7 @@ import { searchStore } from '../store/searchStore';
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
 
-const DEBOUNCE_MS = 300;
+const DEBOUNCE_MS = 500;
 
 export function SearchableHeader({ route }: BottomTabHeaderProps) {
   const { t } = useTranslation();
@@ -74,11 +74,16 @@ export function SearchableHeader({ route }: BottomTabHeaderProps) {
   }, [query, showOverlay, isSearchTab]);
 
   const handleSubmitEditing = useCallback(() => {
-    // Pressing the search/return key is an explicit "run this search" — record
-    // the term (search itself already ran via the debounced onChangeText path).
+    // Pressing the search/return key is an explicit "run this search now" — cancel
+    // the pending debounce and fire, rather than letting the timer land later.
+    if (debounceTimer.current) {
+      clearTimeout(debounceTimer.current);
+      debounceTimer.current = null;
+    }
+    if (query.trim()) void performSearch();
     recentSearchStore.getState().record(query);
     Keyboard.dismiss();
-  }, [query]);
+  }, [query, performSearch]);
 
   const handleClear = useCallback(() => {
     if (debounceTimer.current) {
@@ -92,7 +97,6 @@ export function SearchableHeader({ route }: BottomTabHeaderProps) {
     Keyboard.dismiss();
   }, [clear]);
 
-  // Clean up debounce timer on unmount
   useEffect(() => {
     return () => {
       if (debounceTimer.current) clearTimeout(debounceTimer.current);

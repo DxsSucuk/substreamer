@@ -114,7 +114,7 @@ describe('derived display helpers', () => {
     expect(bookmarkQueuePosition(b)).toEqual({ index: 2, total: 2 });
   });
 
-  it('resolves the current track cover via the song coverArt value (#202)', () => {
+  it('resolves the current track cover via the song coverArt value', () => {
     // Album mode, album not in the (empty) library → falls back to the song's coverArt.
     expect(
       bookmarkCoverArtId(bookmark({ queue: [track('t', { albumId: 'al', coverArt: 'cov-al' })], currentIndex: 0 })),

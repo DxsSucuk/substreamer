@@ -102,7 +102,7 @@ export const SkipIntervalButton = memo(function SkipIntervalButton({
     direction === 'forward' ? s.skipForwardInterval : s.skipBackwardInterval,
   );
 
-  // U21: react-native-svg#2878 — iOS Fabric topSvgLayout race during
+  // software-mansion/react-native-svg#2878 — iOS Fabric topSvgLayout race during
   // navigation transitions. Defer SVG mount until the player transition
   // animation finishes; the placeholder reserves the same footprint so
   // the surrounding controls don't shift on mount.

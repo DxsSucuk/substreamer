@@ -4,7 +4,7 @@
  * Per the OpenSubsonic spec, `getCoverArt?id=` takes the entity's `coverArt`
  * token (the opaque value from its metadata), NOT the entity id. We use that
  * `coverArt` value as both the image-cache key and the fetch id everywhere —
- * never the entity id (#202). Servers where `coverArt !== id` (airsonic-advanced,
+ * never the entity id. Servers where `coverArt !== id` (airsonic-advanced,
  * Gonic) return a placeholder/error for an entity id; the `coverArt` token works
  * on all servers.
  *

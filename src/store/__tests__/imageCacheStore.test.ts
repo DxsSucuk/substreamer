@@ -13,16 +13,6 @@ jest.mock('../persistence/imageCacheTable', () => ({
   hydrateImageCacheAggregates: jest.fn(() => mockAggregates),
   hydrateImageCacheAggregatesAsync: jest.fn(async () => mockAggregates),
 }));
-jest.mock('expo-sqlite', () => ({
-  openDatabaseSync: () => ({
-    getFirstSync: () => undefined,
-    getAllSync: () => [],
-    runSync: () => {},
-    execSync: () => {},
-    withTransactionSync: (fn: () => void) => fn(),
-  }),
-}));
-
 import { kvStorage } from '../persistence/__mocks__/kvStorage';
 import {
   getLastReconcileMs,

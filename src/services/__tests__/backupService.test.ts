@@ -60,16 +60,60 @@ jest.mock('expo-gzip', () => ({
 
 jest.mock('../../store/persistence/kvStorage', () => require('../../store/persistence/__mocks__/kvStorage'));
 
-// Mock the per-row scrobble table so we can assert SQL-layer wiring without
-// needing a real SQLite handle in the test.
-const mockMergeScrobbles = jest.fn((..._args: unknown[]) => ({ added: 0, skipped: 0 }));
+// Fake the scrobble SQL layer with a single in-memory list (`mockDbScrobbles`)
+// so the SQL-backed store (compute aggregates / load recent / export) behaves
+// deterministically without a real handle. `mockReplaceAll`/`mockMergeScrobbles`
+// mutate it; the analytics + recent + export reads derive from it.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let mockDbScrobbles: Array<{ id: string; song: any; time: number }> = [];
+// Referenced only at CALL time inside the mock factories (deferred past the
+// import-hoisting TDZ). Derives the store's SQL analytics from the fake table.
+const mockScrobbleAnalytics = () => ({
+  stats: {
+    totalPlays: mockDbScrobbles.length,
+    totalListeningSeconds: mockDbScrobbles.reduce((s, x) => s + (x.song?.duration ?? 0), 0),
+    uniqueArtists: {} as Record<string, true>,
+  },
+  aggregates: {
+    artistCounts: {},
+    albumCounts: {},
+    songCounts: {},
+    genreCounts: {},
+    hourBuckets: new Array<number>(24).fill(0),
+    dayCounts: {},
+  },
+});
 jest.mock('../../store/persistence/scrobbleTable', () => ({
   insertScrobble: jest.fn(),
-  replaceAllScrobbles: jest.fn(),
-  mergeScrobbles: (...args: unknown[]) => mockMergeScrobbles(...args),
-  clearScrobbles: jest.fn(),
-  hydrateScrobbles: jest.fn(() => []),
+  replaceAllScrobbles: jest.fn((arr: typeof mockDbScrobbles) => {
+    mockDbScrobbles = [...arr];
+  }),
+  mergeScrobbles: jest.fn((arr: typeof mockDbScrobbles) => {
+    const seen = new Set(mockDbScrobbles.map((s) => s.id));
+    let added = 0;
+    for (const s of arr) {
+      if (s?.id && !seen.has(s.id)) {
+        seen.add(s.id);
+        mockDbScrobbles.push(s);
+        added += 1;
+      }
+    }
+    return { added, skipped: arr.length - added };
+  }),
+  clearScrobbles: jest.fn(() => {
+    mockDbScrobbles = [];
+  }),
+  hydrateScrobblesAsync: jest.fn(async () => mockDbScrobbles),
+  backfillScrobbleColumnsAsync: jest.fn(async () => {}),
 }));
+jest.mock('../../store/persistence/scrobbleAggregates', () => ({
+  computeScrobbleAnalytics: jest.fn(async () => mockScrobbleAnalytics()),
+  loadRecentScrobbles: jest.fn(async (n: number) => [...mockDbScrobbles].reverse().slice(0, n)),
+}));
+/** Seed the fake scrobble "table" for a test (replaces the old store.setState). */
+const seedScrobbles = (arr: typeof mockDbScrobbles): void => {
+  mockDbScrobbles = [...arr];
+};
 
 // Mock the device identity store so backupService can stamp deviceId/
 // deviceName/deviceLabel into v5 metadata without depending on
@@ -147,10 +191,7 @@ beforeEach(() => {
   mockDecompressFromFile.mockReset();
   mockListDirectoryAsync.mockReset();
 
-  completedScrobbleStore.setState({
-    completedScrobbles: [],
-    stats: { totalPlays: 0, totalListeningSeconds: 0, uniqueArtists: {} },
-  });
+  seedScrobbles([]);
   mbidOverrideStore.setState({ overrides: {} });
   scrobbleExclusionStore.setState({ excludedAlbums: {}, excludedArtists: {}, excludedPlaylists: {} });
   bookmarksStore.setState({ bookmarks: {} });
@@ -179,11 +220,7 @@ describe('makeBackupIdentityKey', () => {
 
 describe('createBackup', () => {
   it('compresses scrobbles and writes v6 meta with identity + device tag', async () => {
-    completedScrobbleStore.setState({
-      completedScrobbles: [
-        { id: 's1', song: { id: 'track-1' } as any, time: 1000 },
-      ] as any,
-    });
+    seedScrobbles([{ id: 's1', song: { id: 'track-1' } as any, time: 1000 }]);
     mockCompressToFile.mockResolvedValue({ bytes: 42 });
 
     await createBackup();
@@ -211,9 +248,7 @@ describe('createBackup', () => {
 
   it('throws when no active session', async () => {
     setAuth(null, null);
-    completedScrobbleStore.setState({
-      completedScrobbles: [{ id: 's1', song: {}, time: 1 }] as any,
-    });
+    seedScrobbles([{ id: 's1', song: {}, time: 1 }] as any);
 
     await expect(createBackup()).rejects.toThrow('Cannot create backup: no active session');
   });
@@ -275,9 +310,7 @@ describe('createBackup', () => {
   });
 
   it('creates all three datasets when all have data', async () => {
-    completedScrobbleStore.setState({
-      completedScrobbles: [{ id: 's1', song: {}, time: 1 }] as any,
-    });
+    seedScrobbles([{ id: 's1', song: {}, time: 1 }] as any);
     mbidOverrideStore.setState({
       overrides: { 'a1': { mbid: 'x' } } as any,
     });
@@ -294,9 +327,7 @@ describe('createBackup', () => {
   });
 
   it('creates both datasets when both have data', async () => {
-    completedScrobbleStore.setState({
-      completedScrobbles: [{ id: 's1', song: {}, time: 1 }] as any,
-    });
+    seedScrobbles([{ id: 's1', song: {}, time: 1 }] as any);
     mbidOverrideStore.setState({
       overrides: { 'a1': { mbid: 'x' } } as any,
     });
@@ -316,9 +347,7 @@ describe('createBackup', () => {
   });
 
   it('updates lastBackupTimes for current identity', async () => {
-    completedScrobbleStore.setState({
-      completedScrobbles: [{ id: 's1', song: {}, time: 1 }] as any,
-    });
+    seedScrobbles([{ id: 's1', song: {}, time: 1 }] as any);
     mockCompressToFile.mockResolvedValue({ bytes: 10 });
 
     await createBackup();
@@ -518,7 +547,7 @@ describe('restoreBackup', () => {
 
     // In-memory state reflects the restored set.
     expect(result.scrobbleCount).toBe(2);
-    expect(completedScrobbleStore.getState().completedScrobbles).toHaveLength(2);
+    expect(completedScrobbleStore.getState().recentScrobbles).toHaveLength(2);
     expect(completedScrobbleStore.getState().stats.totalPlays).toBe(2);
     expect(completedScrobbleStore.getState().stats.totalListeningSeconds).toBe(300);
 
@@ -548,7 +577,7 @@ describe('restoreBackup', () => {
 
     // The reported count reflects the validated (deduped + filtered) set.
     expect(result.scrobbleCount).toBe(1);
-    expect(completedScrobbleStore.getState().completedScrobbles).toHaveLength(1);
+    expect(completedScrobbleStore.getState().recentScrobbles).toHaveLength(1);
     expect(mockReplace).toHaveBeenCalledTimes(1);
     expect(mockReplace.mock.calls[0][0]).toHaveLength(1);
   });
@@ -728,9 +757,7 @@ describe('runAutoBackupIfNeeded', () => {
   it('skips when not logged in', async () => {
     setAuth(null, null);
     backupStore.setState({ autoBackupEnabled: true });
-    completedScrobbleStore.setState({
-      completedScrobbles: [{ id: 's1', song: {}, time: 1 }] as any,
-    });
+    seedScrobbles([{ id: 's1', song: {}, time: 1 }] as any);
     mockListDirectoryAsync.mockResolvedValue([]);
 
     await runAutoBackupIfNeeded();
@@ -742,9 +769,7 @@ describe('runAutoBackupIfNeeded', () => {
       autoBackupEnabled: true,
       lastBackupTimes: { [TEST_IDENTITY_KEY]: Date.now() - 1000 },
     });
-    completedScrobbleStore.setState({
-      completedScrobbles: [{ id: 's1', song: {}, time: 1 }] as any,
-    });
+    seedScrobbles([{ id: 's1', song: {}, time: 1 }] as any);
     mockListDirectoryAsync.mockResolvedValue([]);
 
     await runAutoBackupIfNeeded();
@@ -756,9 +781,7 @@ describe('runAutoBackupIfNeeded', () => {
       autoBackupEnabled: true,
       lastBackupTimes: { [TEST_IDENTITY_KEY]: Date.now() - 25 * 60 * 60 * 1000 },
     });
-    completedScrobbleStore.setState({
-      completedScrobbles: [{ id: 's1', song: {}, time: 1 }] as any,
-    });
+    seedScrobbles([{ id: 's1', song: {}, time: 1 }] as any);
     mockCompressToFile.mockResolvedValue({ bytes: 10 });
     mockListDirectoryAsync.mockResolvedValue([]);
 
@@ -771,9 +794,7 @@ describe('runAutoBackupIfNeeded', () => {
       autoBackupEnabled: true,
       lastBackupTimes: {},
     });
-    completedScrobbleStore.setState({
-      completedScrobbles: [{ id: 's1', song: {}, time: 1 }] as any,
-    });
+    seedScrobbles([{ id: 's1', song: {}, time: 1 }] as any);
     mockCompressToFile.mockResolvedValue({ bytes: 10 });
     mockListDirectoryAsync.mockResolvedValue([]);
 
@@ -787,9 +808,7 @@ describe('runAutoBackupIfNeeded', () => {
       autoBackupEnabled: true,
       lastBackupTimes: { [otherKey]: Date.now() - 1000 },
     });
-    completedScrobbleStore.setState({
-      completedScrobbles: [{ id: 's1', song: {}, time: 1 }] as any,
-    });
+    seedScrobbles([{ id: 's1', song: {}, time: 1 }] as any);
     mockCompressToFile.mockResolvedValue({ bytes: 10 });
     mockListDirectoryAsync.mockResolvedValue([]);
 
@@ -803,9 +822,7 @@ describe('runAutoBackupIfNeeded', () => {
       autoBackupEnabled: true,
       lastBackupTimes: {},
     });
-    completedScrobbleStore.setState({
-      completedScrobbles: [{ id: 's1', song: {}, time: 1 }] as any,
-    });
+    seedScrobbles([{ id: 's1', song: {}, time: 1 }] as any);
     mockCompressToFile.mockRejectedValue(new Error('disk full'));
     mockListDirectoryAsync.mockResolvedValue([]);
 
@@ -914,9 +931,7 @@ describe('migrateV3BackupMetas', () => {
 
 describe('createBackup edge cases', () => {
   it('deletes existing dest file before renaming scrobbles', async () => {
-    completedScrobbleStore.setState({
-      completedScrobbles: [{ id: 's1', song: {}, time: 1 }] as any,
-    });
+    seedScrobbles([{ id: 's1', song: {}, time: 1 }] as any);
     mockCompressToFile.mockResolvedValue({ bytes: 10 });
 
     const origGet = mockFileInstances.get.bind(mockFileInstances);
@@ -935,9 +950,7 @@ describe('createBackup edge cases', () => {
   });
 
   it('cleans up .tmp file on compressToFile failure for scrobbles', async () => {
-    completedScrobbleStore.setState({
-      completedScrobbles: [{ id: 's1', song: {}, time: 1 }] as any,
-    });
+    seedScrobbles([{ id: 's1', song: {}, time: 1 }] as any);
     mockCompressToFile.mockRejectedValue(new Error('compression failed'));
 
     await expect(createBackup()).rejects.toThrow('compression failed');

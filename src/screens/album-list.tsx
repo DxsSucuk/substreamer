@@ -4,7 +4,7 @@ import { useCallback, useContext, useEffect, useState } from 'react';
 import { StyleSheet } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
-import { AlbumListView } from '../components/AlbumListView';
+import { AlbumListView, albumIdentity } from '../components/AlbumListView';
 import { GradientBackground } from '../components/GradientBackground';
 import { BottomChrome } from '../components/BottomChrome';
 import {
@@ -63,7 +63,8 @@ export function AlbumListScreen() {
   return (
     <GradientBackground style={styles.container} scrollable>
       <AlbumListView
-        albums={albums}
+        items={albums}
+        toAlbum={albumIdentity}
         loading={false}
         error={null}
         onRefresh={offlineMode ? undefined : handleRefresh}

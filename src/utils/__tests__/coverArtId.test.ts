@@ -13,7 +13,7 @@ import {
 } from '../../services/subsonicService';
 
 /**
- * The single rule (#202): cover-art keys off the entity's `coverArt` VALUE,
+ * The single rule: cover-art keys off the entity's `coverArt` VALUE,
  * NEVER the entity id. Songs additionally pick album-vs-own coverArt by mode.
  */
 describe('coverArtId helpers', () => {

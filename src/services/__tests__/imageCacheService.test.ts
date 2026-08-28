@@ -4,18 +4,6 @@
 (globalThis as { requestIdleCallback?: (cb: () => void) => void }).requestIdleCallback =
   (cb: () => void) => { cb(); };
 
-// `persistence/db.ts` imports `expo-sqlite` at module load; stub it so the
-// import doesn't hit the native bridge during tests.
-jest.mock('expo-sqlite', () => ({
-  openDatabaseSync: () => ({
-    getFirstSync: () => undefined,
-    getAllSync: () => [],
-    runSync: () => {},
-    execSync: () => {},
-    withTransactionSync: (fn: () => void) => fn(),
-  }),
-}));
-
 const mockListDirectoryAsync = jest.fn();
 const mockGetDirectorySizeAsync = jest.fn();
 // Tracks every deleteFileAsync() invocation (by internal `_name`, i.e. with
@@ -229,6 +217,16 @@ jest.mock('../../store/imageCacheStore', () => ({
 // these helpers; tests drive the in-memory fake below.
 type CacheDbRow = { coverArtId: string; size: number; ext: string; bytes: number; cachedAt: number };
 const mockDbRows = new Map<string, CacheDbRow>();
+/** Reconcile's single snapshot read. `null` means "table unreadable" — tests that
+ *  need the abort path override this. */
+const mockGetAllCachedImageRows = jest.fn(async () =>
+  [...mockDbRows.values()].map((r) => ({ coverArtId: r.coverArtId, size: r.size, ext: r.ext })),
+);
+const mockDeleteCachedImageVariants = jest.fn(
+  async (pairs: readonly { coverArtId: string; size: number }[]) => {
+    for (const p of pairs) mockDbRows.delete(mockDbKey(p.coverArtId, p.size));
+  },
+);
 const mockDbKey = (id: string, size: number) => `${id}::${size}`;
 const mockUpsertCachedImage = jest.fn((row: CacheDbRow) => {
   mockDbRows.set(mockDbKey(row.coverArtId, row.size), row);
@@ -301,6 +299,9 @@ jest.mock('../../store/persistence/imageCacheTable', () => ({
   hydrateImageCacheAggregatesAsync: () => mockHydrateImageCacheAggregates(),
   listCachedImagesForBrowser: (filter?: 'all' | 'complete' | 'incomplete') => mockListCachedImagesForBrowser(filter),
   bulkInsertCachedImages: (rows: readonly CacheDbRow[]) => mockBulkInsertCachedImages(rows),
+  deleteCachedImageVariants: (pairs: readonly { coverArtId: string; size: number }[]) =>
+    mockDeleteCachedImageVariants(pairs),
+  getAllCachedImageRows: () => mockGetAllCachedImageRows(),
   getCachedImagesForCoverArt: (id: string) =>
     [...mockDbRows.values()]
       .filter((r) => r.coverArtId === id)
@@ -400,6 +401,8 @@ beforeEach(() => {
   mockUpsertCachedImage.mockClear();
   mockDeleteCachedImagesForCoverArt.mockClear();
   mockDeleteCachedImageVariant.mockClear();
+  mockDeleteCachedImageVariants.mockClear();
+  mockGetAllCachedImageRows.mockClear();
   mockClearAllCachedImages.mockClear();
   mockHasCachedImage.mockClear();
   mockFindIncompleteCovers.mockClear();
@@ -747,7 +750,7 @@ describe('download pipeline — cacheAllSizes + processQueue', () => {
   });
 });
 
-describe('prefetchCoverArt — keys off the coverArt value, not the entity ID (#202)', () => {
+describe('prefetchCoverArt — keys off the coverArt value, not the entity ID', () => {
   it('warms the cache for the coverArt value, never the entity id', async () => {
     const { getCoverArtUrl: mockGetCoverArtUrl } = jest.requireMock(
       '../subsonicService',
@@ -1111,8 +1114,8 @@ describe('generateResizedVariant — 3-failure circuit breaker purges row', () =
   // fallback handles user-visible recovery instead.
 });
 
-describe('listCachedImages — reconstructs URIs from DB row shape', () => {
-  it('builds the file URI from (coverArtId, size, ext) on every row', async () => {
+describe('listCachedImages — file names from DB row shape', () => {
+  it('builds the file name from (size, ext) on every row', async () => {
     seedDbRow({ coverArtId: 'good-dir', size: 300, ext: 'jpg' });
     seedDbRow({ coverArtId: 'good-dir', size: 600, ext: 'jpg' });
     mockDirExistsMap.set(subDirName('good-dir'), true);
@@ -1123,8 +1126,7 @@ describe('listCachedImages — reconstructs URIs from DB row shape', () => {
     expect(result[0].coverArtId).toBe('good-dir');
     expect(result[0].files).toHaveLength(2);
     for (const f of result[0].files) {
-      expect(f.uri).toContain('good-dir');
-      expect(f.uri).toContain(`${f.size}.jpg`);
+      expect(f.fileName).toBe(`${f.size}.jpg`);
     }
   });
 });
@@ -1229,7 +1231,7 @@ describe('reconcileImageCache — zero-byte detection', () => {
     // The zero-byte file was deleted…
     expect(mockDeleteFileAsyncCalls.has(fileName('album2', 600))).toBe(true);
     // …and the DB row was removed via the persistence helper.
-    expect(mockDeleteCachedImageVariant).toHaveBeenCalledWith('album2', 600);
+    expect(mockDeleteCachedImageVariants).toHaveBeenCalledWith([{ coverArtId: 'album2', size: 600 }]);
     expect(mockDbRows.has('album2::600')).toBe(false);
   });
 
@@ -1243,7 +1245,7 @@ describe('reconcileImageCache — zero-byte detection', () => {
 
     await reconcileImageCache();
 
-    expect(mockDeleteCachedImageVariant).toHaveBeenCalledWith('album3', 600);
+    expect(mockDeleteCachedImageVariants).toHaveBeenCalledWith([{ coverArtId: 'album3', size: 600 }]);
     expect(mockDbRows.has('album3::600')).toBe(false);
   });
 });
@@ -1438,10 +1440,12 @@ describe('deferredImageCacheInit — throttle + idle deferral', () => {
     expect(mockMarkReconcileRan).toHaveBeenCalledTimes(1);
   });
 
-  it('does NOT write the timestamp when the safety gate trips', async () => {
+  it('does NOT write the timestamp when the DB snapshot disagrees with the aggregate', async () => {
     mockGetLastReconcileMs.mockReturnValue(undefined);
-    // Safety gate fires when newRows.length > 100 AND preAggregate.fileCount > 50.
-    // Seed >50 pre-existing DB rows, then produce >100 new on-disk files.
+    // An empty snapshot against a non-empty aggregate means the table could not
+    // be read honestly. Rowing every file on disk from that state would rewrite
+    // the cache, so the pass aborts — and must not stamp, or a transient failure
+    // locks in a 7-day skip.
     mockHydrateImageCacheAggregates.mockReturnValue({
       totalBytes: 1000,
       fileCount: 60,
@@ -1461,14 +1465,10 @@ describe('deferredImageCacheInit — throttle + idle deferral', () => {
       mockFileExistsMap.set(fileMockName(id, '600.jpg'), true);
       mockFileSizeMap.set(fileMockName(id, '600.jpg'), 1000);
     }
-    // Silence the safety-gate warn.
-    jest.spyOn(console, 'warn').mockImplementation(() => {});
 
     await reconcileImageCache();
 
-    // Bulk insert was NOT called (safety gate skipped it).
     expect(mockBulkInsertCachedImages).not.toHaveBeenCalled();
-    // Timestamp was NOT written — we want the next launch to retry.
     expect(mockMarkReconcileRan).not.toHaveBeenCalled();
   });
 
@@ -1841,8 +1841,8 @@ describe('coverArtPathKey — FS-hostile coverArtId sanitisation', () => {
   });
 
   it('distinct IDs `dc-abc:1` and `dc-abc_1` resolve to distinct paths', async () => {
-    // Regression: the old `:` → `_` mapping collapsed these to the same dir.
-    // Percent-encoded `%3A` makes them injective.
+    // A `:` → `_` mapping would collapse these to the same dir; percent-encoded
+    // `%3A` keeps it injective.
     seedDbRow({ coverArtId: 'dc-abc_1', size: 300, ext: 'jpg' });
     seedDbRow({ coverArtId: 'dc-abc:1', size: 300, ext: 'jpg' });
 
@@ -1877,8 +1877,193 @@ describe('reconcileImageCache — row drop on missing file', () => {
 
     await reconcileImageCache();
 
-    expect(mockDeleteCachedImageVariant).toHaveBeenCalledWith('gone-album', 600);
+    expect(mockDeleteCachedImageVariants).toHaveBeenCalledWith([{ coverArtId: 'gone-album', size: 600 }]);
     // The resolver (DB-authoritative) now returns null for the dropped row.
     expect(await resolveCachedImageUri('gone-album', 600)).toBeNull();
+  });
+});
+
+describe('reconcileImageCache — encoded directory names vs SQL ids', () => {
+  beforeEach(() => {
+    // Explicit: a leaked non-zero fileCount from another suite would trip the
+    // snapshot-disagreement abort before any of these assertions are reached.
+    mockHydrateImageCacheAggregates.mockReturnValue({
+      totalBytes: 0, fileCount: 0, imageCount: 0, incompleteCount: 0,
+    });
+  });
+
+  // Disc-cover ids carry a colon, which `coverArtPathKey` escapes for the path
+  // while the SQL row keeps the original. Pass 1 must map the directory BACK to
+  // the id; treating the directory name as the id misses every lookup.
+  const RAW_ID = 'dc-abc:1';
+  const DIR = 'dc-abc%3A1';
+
+  function seedEncodedDirOnDisk(): void {
+    mockListDirectoryAsync.mockImplementation(async (uri: string) => {
+      if (uri.endsWith('image-cache')) return [DIR];
+      if (uri.endsWith(DIR)) return ['600.jpg'];
+      return [];
+    });
+    const key = fileMockName(DIR, '600.jpg');
+    mockFileExistsMap.set(key, true);
+    mockFileSizeMap.set(key, 1000);
+  }
+
+  it('inserts NOTHING when the row already exists under the original id', async () => {
+    seedDbRow({ coverArtId: RAW_ID, size: 600, ext: 'jpg' });
+    seedEncodedDirOnDisk();
+
+    await reconcileImageCache();
+
+    expect(mockBulkInsertCachedImages).not.toHaveBeenCalled();
+  });
+
+  it('does not drop the row for an encoded directory it can read', async () => {
+    seedDbRow({ coverArtId: RAW_ID, size: 600, ext: 'jpg' });
+    seedEncodedDirOnDisk();
+
+    await reconcileImageCache();
+
+    expect(mockDeleteCachedImageVariants).not.toHaveBeenCalled();
+    expect(mockDbRows.has(mockDbKey(RAW_ID, 600))).toBe(true);
+  });
+
+  it('inserts under the DECODED id when the directory has no row', async () => {
+    seedEncodedDirOnDisk();
+
+    await reconcileImageCache();
+
+    expect(mockBulkInsertCachedImages).toHaveBeenCalledWith([
+      expect.objectContaining({ coverArtId: RAW_ID, size: 600 }),
+    ]);
+  });
+
+  it('skips a directory whose name this scheme could not have written', async () => {
+    // A raw `:` survives only where the cache-wipe migration no-opped. Rowing it
+    // under either spelling yields something nothing can resolve.
+    mockListDirectoryAsync.mockImplementation(async (uri: string) => {
+      if (uri.endsWith('image-cache')) return ['dc-abc:1'];
+      if (uri.endsWith('dc-abc:1')) return ['600.jpg'];
+      return [];
+    });
+    const key = fileMockName('dc-abc:1', '600.jpg');
+    mockFileExistsMap.set(key, true);
+    mockFileSizeMap.set(key, 1000);
+
+    await reconcileImageCache();
+
+    expect(mockBulkInsertCachedImages).not.toHaveBeenCalled();
+  });
+});
+
+describe('reconcileImageCache — snapshot trust', () => {
+  beforeEach(() => {
+    // Explicit: a leaked non-zero fileCount from another suite would trip the
+    // snapshot-disagreement abort before any of these assertions are reached.
+    mockHydrateImageCacheAggregates.mockReturnValue({
+      totalBytes: 0, fileCount: 0, imageCount: 0, incompleteCount: 0,
+    });
+  });
+
+  function seedOneUnrowedFile(): void {
+    mockListDirectoryAsync.mockImplementation(async (uri: string) => {
+      if (uri.endsWith('image-cache')) return ['album1'];
+      if (uri.endsWith('album1')) return ['600.jpg'];
+      return [];
+    });
+    const key = fileMockName('album1', '600.jpg');
+    mockFileExistsMap.set(key, true);
+    mockFileSizeMap.set(key, 1000);
+  }
+
+  it('aborts without writing or stamping when the table cannot be read', async () => {
+    // `null` is "unreadable", NOT "empty" — treating it as empty would rewrite
+    // the whole cache from disk off a swallowed query error.
+    mockGetAllCachedImageRows.mockResolvedValueOnce(null as never);
+    seedOneUnrowedFile();
+
+    await reconcileImageCache();
+
+    expect(mockBulkInsertCachedImages).not.toHaveBeenCalled();
+    expect(mockDeleteCachedImageVariants).not.toHaveBeenCalled();
+    expect(mockMarkReconcileRan).not.toHaveBeenCalled();
+  });
+
+  it('aborts when the snapshot is empty but the aggregate says otherwise', async () => {
+    mockGetAllCachedImageRows.mockResolvedValueOnce([] as never);
+    mockHydrateImageCacheAggregates.mockReturnValue({
+      totalBytes: 1000, fileCount: 60, imageCount: 30, incompleteCount: 0,
+    });
+    seedOneUnrowedFile();
+
+    await reconcileImageCache();
+
+    expect(mockBulkInsertCachedImages).not.toHaveBeenCalled();
+    expect(mockMarkReconcileRan).not.toHaveBeenCalled();
+  });
+
+  it('inserts a large genuinely-unrowed set instead of blocking on volume', async () => {
+    // Replaces the old mass-insert safety gate: with ids resolved correctly, a
+    // big newRows is a real repair, not evidence of a broken filesystem view.
+    const albumIds = Array.from({ length: 105 }, (_, i) => `album${i}`);
+    mockListDirectoryAsync.mockImplementation(async (uri: string) => {
+      if (uri.endsWith('image-cache')) return albumIds;
+      const match = albumIds.find((id) => uri.endsWith(id));
+      return match ? ['600.jpg'] : [];
+    });
+    for (const id of albumIds) {
+      const key = fileMockName(id, '600.jpg');
+      mockFileExistsMap.set(key, true);
+      mockFileSizeMap.set(key, 1000);
+    }
+
+    await reconcileImageCache();
+
+    expect(mockBulkInsertCachedImages).toHaveBeenCalled();
+    expect(mockBulkInsertCachedImages.mock.calls[0][0]).toHaveLength(105);
+    expect(mockMarkReconcileRan).toHaveBeenCalled();
+  });
+
+  it('does not stamp when every subdirectory listing fails', async () => {
+    mockListDirectoryAsync.mockImplementation(async (uri: string) => {
+      if (uri.endsWith('image-cache')) return ['album1', 'album2'];
+      throw new Error('unreadable');
+    });
+
+    await reconcileImageCache();
+
+    expect(mockMarkReconcileRan).not.toHaveBeenCalled();
+  });
+
+  it('still stamps when only SOME subdirectory listings fail', async () => {
+    mockListDirectoryAsync.mockImplementation(async (uri: string) => {
+      if (uri.endsWith('image-cache')) return ['album1', 'album2'];
+      if (uri.endsWith('album2')) throw new Error('unreadable');
+      return ['600.jpg'];
+    });
+    const key = fileMockName('album1', '600.jpg');
+    mockFileExistsMap.set(key, true);
+    mockFileSizeMap.set(key, 1000);
+
+    await reconcileImageCache();
+
+    expect(mockMarkReconcileRan).toHaveBeenCalled();
+  });
+
+  it('leaves rows untouched for a directory whose listing failed', async () => {
+    seedDbRow({ coverArtId: 'album2', size: 600, ext: 'jpg' });
+    mockListDirectoryAsync.mockImplementation(async (uri: string) => {
+      if (uri.endsWith('image-cache')) return ['album1', 'album2'];
+      if (uri.endsWith('album2')) throw new Error('unreadable');
+      return ['600.jpg'];
+    });
+    const key = fileMockName('album1', '600.jpg');
+    mockFileExistsMap.set(key, true);
+    mockFileSizeMap.set(key, 1000);
+
+    await reconcileImageCache();
+
+    expect(mockDeleteCachedImageVariants).not.toHaveBeenCalled();
+    expect(mockDbRows.has(mockDbKey('album2', 600))).toBe(true);
   });
 });

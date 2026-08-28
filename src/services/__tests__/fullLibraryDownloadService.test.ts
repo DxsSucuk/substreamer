@@ -3,24 +3,28 @@ let mockPlaylistsState: Array<{ id: string }> = [];
 let mockOffline = false;
 let mockReachable = true;
 
-const mockFetchAllAlbums = jest.fn().mockResolvedValue(undefined);
 const mockFetchAllPlaylists = jest.fn().mockResolvedValue(undefined);
 
-jest.mock('../../store/albumLibraryStore', () => ({
-  albumLibraryStore: {
-    getState: () => ({ albums: mockAlbumsState, fetchAllAlbums: mockFetchAllAlbums }),
-  },
-}));
-jest.mock('../../store/playlistLibraryStore', () => ({
-  playlistLibraryStore: {
-    getState: () => ({ playlists: mockPlaylistsState, fetchAllPlaylists: mockFetchAllPlaylists }),
-  },
+jest.mock('../normalizedLibrarySync', () => ({
+  refreshPlaylistLibrary: (...a: unknown[]) => mockFetchAllPlaylists(...a),
 }));
 jest.mock('../../store/offlineModeStore', () => ({
   offlineModeStore: { getState: () => ({ offlineMode: mockOffline }) },
 }));
 jest.mock('../../store/connectivityStore', () => ({
   connectivityStore: { getState: () => ({ isServerReachable: mockReachable }) },
+}));
+
+// Enumeration reads the normalized ids; derive them from the same mock state the
+// fetch actions "populate" so the queueing order + totals behave as before.
+jest.mock('../../store/persistence/db', () => ({ getDb: () => ({}) }));
+jest.mock('../../db/repository/albums', () => ({
+  ...jest.requireActual('../../db/repository/albums'),
+  listAlbumIds: jest.fn(async () => mockAlbumsState.map((a) => a.id)),
+}));
+jest.mock('../../db/repository/playlists', () => ({
+  ...jest.requireActual('../../db/repository/playlists'),
+  listPlaylistIds: jest.fn(async () => mockPlaylistsState.map((p) => p.id)),
 }));
 
 const mockEnqueueAlbum = jest.fn();
@@ -51,7 +55,6 @@ beforeEach(() => {
     calls.push(`p:${id}`);
     return Promise.resolve();
   });
-  mockFetchAllAlbums.mockClear();
   mockFetchAllPlaylists.mockClear();
   fullLibraryDownloadStore.getState().finish();
 });
@@ -59,7 +62,6 @@ beforeEach(() => {
 describe('enqueueFullLibraryDownload', () => {
   it('enqueues every album then every playlist (albums first)', async () => {
     await enqueueFullLibraryDownload();
-    expect(mockFetchAllAlbums).toHaveBeenCalledTimes(1);
     expect(mockFetchAllPlaylists).toHaveBeenCalledTimes(1);
     expect(calls).toEqual(['a:a1', 'a:a2', 'p:p1']);
     expect(fullLibraryDownloadStore.getState().active).toBe(false);
@@ -68,7 +70,6 @@ describe('enqueueFullLibraryDownload', () => {
   it('bails out when offline (no fetch, no enqueue)', async () => {
     mockOffline = true;
     await enqueueFullLibraryDownload();
-    expect(mockFetchAllAlbums).not.toHaveBeenCalled();
     expect(calls).toEqual([]);
   });
 
@@ -81,7 +82,6 @@ describe('enqueueFullLibraryDownload', () => {
   it('does nothing if a run is already active', async () => {
     fullLibraryDownloadStore.getState().start();
     await enqueueFullLibraryDownload();
-    expect(mockFetchAllAlbums).not.toHaveBeenCalled();
     expect(calls).toEqual([]);
   });
 
@@ -93,14 +93,6 @@ describe('enqueueFullLibraryDownload', () => {
     await enqueueFullLibraryDownload();
     expect(calls).toEqual(['a:a1', 'a:a2', 'p:p1']);
     // One album couldn't be queued — surfaced for the card, run still idle.
-    expect(fullLibraryDownloadStore.getState().error).toBeTruthy();
-    expect(fullLibraryDownloadStore.getState().active).toBe(false);
-  });
-
-  it('sets an error and does not queue when preparing fails', async () => {
-    mockFetchAllAlbums.mockRejectedValueOnce(new Error('offline mid-prepare'));
-    await enqueueFullLibraryDownload();
-    expect(calls).toEqual([]);
     expect(fullLibraryDownloadStore.getState().error).toBeTruthy();
     expect(fullLibraryDownloadStore.getState().active).toBe(false);
   });

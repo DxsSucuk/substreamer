@@ -11,9 +11,11 @@ import { BottomChrome } from '../components/BottomChrome';
 import { useTheme } from '../hooks/useTheme';
 import { settingsStyles } from '../styles/settingsStyles';
 import { IMAGE_CACHE_DIAG_LOG_FILE } from '../services/imageCacheLogger';
+import { LIBRARY_SYNC_DIAG_LOG_FILE } from '../services/librarySyncLogger';
 import { VOICE_SEARCH_DIAG_LOG_FILE } from '../services/voiceSearchLogger';
 import { audioDiagnosticsStore } from '../store/audioDiagnosticsStore';
 import { imageCacheDiagnosticsStore } from '../store/imageCacheDiagnosticsStore';
+import { librarySyncDiagnosticsStore } from '../store/librarySyncDiagnosticsStore';
 import { remoteControlDiagnosticsStore } from '../store/remoteControlDiagnosticsStore';
 import { voiceSearchDiagnosticsStore } from '../store/voiceSearchDiagnosticsStore';
 import { formatBytes } from '../utils/formatters';
@@ -22,6 +24,7 @@ const LOG_FILE = new File(Paths.document, 'migration-log.txt');
 const DIAG_LOG_FILE = new File(Paths.document, 'audio-diagnostics.log');
 const REMOTE_LOG_FILE = new File(Paths.document, 'remote-control-diagnostics.log');
 const IMAGE_LOG_FILE = new File(Paths.document, IMAGE_CACHE_DIAG_LOG_FILE);
+const SYNC_LOG_FILE = new File(Paths.document, LIBRARY_SYNC_DIAG_LOG_FILE);
 const VOICE_LOG_FILE = new File(Paths.document, VOICE_SEARCH_DIAG_LOG_FILE);
 
 export function LoggingScreen() {
@@ -37,6 +40,8 @@ export function LoggingScreen() {
   const remoteLogSize = remoteControlDiagnosticsStore((s) => s.logFileSize);
   const imageEnabled = imageCacheDiagnosticsStore((s) => s.enabled);
   const imageLogSize = imageCacheDiagnosticsStore((s) => s.logFileSize);
+  const syncEnabled = librarySyncDiagnosticsStore((s) => s.enabled);
+  const syncLogSize = librarySyncDiagnosticsStore((s) => s.logFileSize);
   const voiceEnabled = voiceSearchDiagnosticsStore((s) => s.enabled);
   const voiceLogSize = voiceSearchDiagnosticsStore((s) => s.logFileSize);
 
@@ -44,6 +49,7 @@ export function LoggingScreen() {
     audioDiagnosticsStore.getState().refreshStatus();
     remoteControlDiagnosticsStore.getState().refreshStatus();
     imageCacheDiagnosticsStore.getState().refreshStatus();
+    librarySyncDiagnosticsStore.getState().refreshStatus();
     voiceSearchDiagnosticsStore.getState().refreshStatus();
     if (LOG_FILE.exists) {
       LOG_FILE.text().then((text) => {
@@ -94,6 +100,20 @@ export function LoggingScreen() {
   const handleShareImageLog = useCallback(async () => {
     if (IMAGE_LOG_FILE.exists) {
       await shareAsync(IMAGE_LOG_FILE.uri, { mimeType: 'text/plain' });
+    }
+  }, []);
+
+  const handleSyncToggle = useCallback(async (value: boolean) => {
+    await librarySyncDiagnosticsStore.getState().setEnabled(value);
+  }, []);
+
+  const handleSyncReset = useCallback(async () => {
+    await librarySyncDiagnosticsStore.getState().resetLog();
+  }, []);
+
+  const handleShareSyncLog = useCallback(async () => {
+    if (SYNC_LOG_FILE.exists) {
+      await shareAsync(SYNC_LOG_FILE.uri, { mimeType: 'text/plain' });
     }
   }, []);
 
@@ -306,6 +326,64 @@ export function LoggingScreen() {
             >
               <Ionicons name="trash-outline" size={18} color={voiceLogSize != null ? colors.red : colors.textSecondary} />
               <Text style={[styles.actionButtonText, { color: voiceLogSize != null ? colors.red : colors.textSecondary }]}>
+                {t('clear')}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+
+      {/* Library Sync Diagnostics */}
+      <View style={settingsStyles.section}>
+        <Text style={[settingsStyles.sectionTitle, { color: colors.label }]}>{t('librarySyncDiagnostics')}</Text>
+        <View style={[settingsStyles.card, settingsStyles.cardPadded, { backgroundColor: colors.card }]}>
+          <View style={[styles.diagRow, { borderBottomColor: colors.border }]}>
+            <View style={styles.diagTextWrap}>
+              <Text style={[styles.diagLabel, { color: colors.textPrimary }]}>{t('librarySyncLogging')}</Text>
+              <Text style={[styles.diagHint, { color: colors.textSecondary }]}>
+                {t('librarySyncLoggingHint')}
+              </Text>
+            </View>
+            <Switch
+              value={syncEnabled}
+              onValueChange={handleSyncToggle}
+              trackColor={{ false: colors.border, true: colors.primary }}
+            />
+          </View>
+          <View style={[styles.diagRow, styles.diagRowLast]}>
+            <Text style={[styles.diagLabel, { color: colors.textPrimary }]}>{t('logFile')}</Text>
+            <Text style={[styles.diagValue, { color: colors.textSecondary }]}>
+              {syncLogSize != null ? formatBytes(syncLogSize) : t('none')}
+            </Text>
+          </View>
+          <View style={styles.buttonRow}>
+            <Pressable
+              onPress={handleShareSyncLog}
+              disabled={syncLogSize == null}
+              style={({ pressed }) => [
+                styles.actionButton,
+                { borderColor: colors.border },
+                pressed && syncLogSize != null && settingsStyles.pressed,
+                syncLogSize == null && settingsStyles.disabled,
+              ]}
+            >
+              <Ionicons name="share-outline" size={18} color={syncLogSize != null ? colors.primary : colors.textSecondary} />
+              <Text style={[styles.actionButtonText, { color: syncLogSize != null ? colors.primary : colors.textSecondary }]}>
+                {t('share')}
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={handleSyncReset}
+              disabled={syncLogSize == null}
+              style={({ pressed }) => [
+                styles.actionButton,
+                { borderColor: colors.border },
+                pressed && syncLogSize != null && settingsStyles.pressed,
+                syncLogSize == null && settingsStyles.disabled,
+              ]}
+            >
+              <Ionicons name="trash-outline" size={18} color={syncLogSize != null ? colors.red : colors.textSecondary} />
+              <Text style={[styles.actionButtonText, { color: syncLogSize != null ? colors.red : colors.textSecondary }]}>
                 {t('clear')}
               </Text>
             </Pressable>

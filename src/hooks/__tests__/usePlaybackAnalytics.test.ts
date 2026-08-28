@@ -5,9 +5,79 @@ import {
   dateKey,
   usePlaybackAnalytics,
   type ScrobbleRecord,
+  type TimePeriod,
 } from '../usePlaybackAnalytics';
 
 import { type AnalyticsAggregates } from '../../store/completedScrobbleStore';
+import { getPrimaryGenre } from '../../utils/genreHelpers';
+
+// The hook is now aggregate-driven (SQL supplies period + all-time aggregates in
+// prod). This helper builds an AnalyticsAggregates from a scrobble list — the same
+// shape the SQL layer produces — so the existing scrobble-based cases keep working.
+function buildAgg(list: ScrobbleRecord[]): AnalyticsAggregates {
+  const artistCounts: AnalyticsAggregates['artistCounts'] = {};
+  const albumCounts: AnalyticsAggregates['albumCounts'] = {};
+  const songStats: AnalyticsAggregates['songStats'] = {};
+  const latestSong = new Map<string, ScrobbleRecord['song']>();
+  const genreCounts: Record<string, number> = {};
+  const hourBuckets = new Array<number>(24).fill(0);
+  const dayCounts: Record<string, number> = {};
+  for (const s of list) {
+    const artist = s.song.artist ?? 'Unknown';
+    const a = artistCounts[artist];
+    if (a) {
+      a.count++;
+      if (!a.artistId && s.song.artistId) a.artistId = s.song.artistId;
+    } else artistCounts[artist] = { count: 1, artistId: s.song.artistId ?? undefined };
+    const albumKey = `${s.song.album ?? 'Unknown'}::${artist}`;
+    const al = albumCounts[albumKey];
+    if (al) {
+      al.count++;
+      if (s.song.coverArt) al.coverArt = s.song.coverArt;
+      if (!al.albumId && s.song.albumId) al.albumId = s.song.albumId;
+    } else
+      albumCounts[albumKey] = {
+        artist,
+        coverArt: s.song.coverArt ?? undefined,
+        count: 1,
+        albumId: s.song.albumId ?? undefined,
+      };
+    // Latest play wins for the per-song scalars, as the SQL representative row does.
+    const sc = songStats[s.song.id];
+    if (sc) sc.count++;
+    else songStats[s.song.id] = { count: 1 };
+    songStats[s.song.id].duration = s.song.duration ?? undefined;
+    songStats[s.song.id].year = s.song.year ?? undefined;
+    latestSong.set(s.song.id, s.song);
+    const genre = getPrimaryGenre(s.song);
+    if (genre) genreCounts[genre] = (genreCounts[genre] ?? 0) + 1;
+    hourBuckets[new Date(s.time).getHours()]++;
+    const dk = dateKey(s.time);
+    dayCounts[dk] = (dayCounts[dk] ?? 0) + 1;
+  }
+  // The ranked, bounded, fully-reconstructed slice the SQL layer hands over.
+  const topSongs = Object.entries(songStats)
+    .sort(([, a], [, b]) => b.count - a.count)
+    .slice(0, 10)
+    .map(([id, v]) => ({ song: latestSong.get(id)!, count: v.count }));
+  return { artistCounts, albumCounts, songStats, topSongs, genreCounts, hourBuckets, dayCounts };
+}
+
+const PERIOD_DAYS_MAP: Record<TimePeriod, number | null> = { '7d': 7, '30d': 30, '90d': 90, all: null };
+
+/** Adapter: build period + all-time aggregates from a scrobble list (as SQL does
+ *  in prod) and drive the aggregate-based hook. */
+function renderAnalytics(
+  list: ScrobbleRecord[],
+  period: TimePeriod,
+  pending?: Pick<ScrobbleRecord, 'time'>[],
+) {
+  const days = PERIOD_DAYS_MAP[period];
+  const cutoff = days ? Date.now() - days * 86_400_000 : 0;
+  const periodAgg = buildAgg(days ? list.filter((s) => s.time >= cutoff) : list);
+  const allAgg = buildAgg(list);
+  return renderHook(() => usePlaybackAnalytics(period, periodAgg, allAgg, pending));
+}
 
 function ts(year: number, month: number, day: number): number {
   return Date.UTC(year, month - 1, day, 12, 0, 0);
@@ -233,23 +303,17 @@ describe('usePlaybackAnalytics', () => {
       song: mockSong('old', 'Old', 'Old', 100),
       time: ts(2024, 12, 1),
     };
-    const { result } = renderHook(() =>
-      usePlaybackAnalytics([...scrobbles, oldScrobble], '7d'),
-    );
+    const { result } = renderAnalytics([...scrobbles, oldScrobble], '7d');
     expect(result.current.totalPlays).toBe(3);
   });
 
   it('includes all scrobbles for period all', () => {
-    const { result } = renderHook(() =>
-      usePlaybackAnalytics(scrobbles, 'all'),
-    );
+    const { result } = renderAnalytics(scrobbles, 'all');
     expect(result.current.totalPlays).toBe(3);
   });
 
   it('ranks top songs by count', () => {
-    const { result } = renderHook(() =>
-      usePlaybackAnalytics(scrobbles, 'all'),
-    );
+    const { result } = renderAnalytics(scrobbles, 'all');
     expect(result.current.topSongs).toHaveLength(2);
     expect(result.current.topSongs[0].count).toBe(2);
     expect(result.current.topSongs[0].song.id).toBe('s1');
@@ -261,9 +325,7 @@ describe('usePlaybackAnalytics', () => {
       song: mockSong(`s${i}`, `Artist${i}`, 'Album', 100),
       time: ts(2025, 1, 14),
     }));
-    const { result } = renderHook(() =>
-      usePlaybackAnalytics(many, 'all'),
-    );
+    const { result } = renderAnalytics(many, 'all');
     expect(result.current.topSongs).toHaveLength(10);
   });
 
@@ -273,9 +335,7 @@ describe('usePlaybackAnalytics', () => {
       song: mockSong(`s${i}`, `Artist${i}`, `Album${i}`, 100),
       time: ts(2025, 1, 14),
     }));
-    const { result } = renderHook(() =>
-      usePlaybackAnalytics(many, 'all'),
-    );
+    const { result } = renderAnalytics(many, 'all');
     expect(result.current.topArtists).toHaveLength(10);
     expect(result.current.topAlbums).toHaveLength(5);
   });
@@ -289,9 +349,7 @@ describe('usePlaybackAnalytics', () => {
       } as ScrobbleRecord['song'],
       time: ts(2025, 1, 14),
     }));
-    const { result } = renderHook(() =>
-      usePlaybackAnalytics(withGenres, 'all'),
-    );
+    const { result } = renderAnalytics(withGenres, 'all');
     const other = result.current.genreBreakdown.find((g) => g.genre === 'Other');
     expect(other).toBeDefined();
     expect(other!.count).toBe(3);
@@ -303,25 +361,20 @@ describe('usePlaybackAnalytics', () => {
       song: mockSong('s', 'A', 'B'),
       time: new Date(2025, 0, 14, h, 30, 0).getTime(),
     });
-    const { result } = renderHook(() =>
-      usePlaybackAnalytics(
+    const { result } = renderAnalytics(
         [atHour(14), atHour(14), atHour(14), atHour(9)],
         'all',
-      ),
-    );
+      );
     expect(result.current.peakHour).toBe(14);
   });
 
   it('computes average plays per day', () => {
-    const { result } = renderHook(() =>
-      usePlaybackAnalytics(scrobbles, 'all'),
-    );
+    const { result } = renderAnalytics(scrobbles, 'all');
     expect(result.current.averagePlaysPerDay).toBeGreaterThan(0);
   });
 
   it('includes pending scrobbles in streak', () => {
-    const { result } = renderHook(() =>
-      usePlaybackAnalytics(
+    const { result } = renderAnalytics(
         [
           {
             id: '1',
@@ -331,8 +384,7 @@ describe('usePlaybackAnalytics', () => {
         ],
         '7d',
         [{ time: ts(2025, 1, 15) }],
-      ),
-    );
+      );
     expect(result.current.currentStreak).toBe(2);
   });
 
@@ -346,41 +398,31 @@ describe('usePlaybackAnalytics', () => {
       { id: 'r1', song: mockSong('s1', 'A', 'B'), time: ts(2025, 1, 14) },
       { id: 'r2', song: mockSong('s1', 'A', 'B'), time: ts(2025, 1, 15) },
     ];
-    const { result } = renderHook(() =>
-      usePlaybackAnalytics([...oldStreak, ...recent], '7d'),
-    );
+    const { result } = renderAnalytics([...oldStreak, ...recent], '7d');
     expect(result.current.totalPlays).toBe(2);
     expect(result.current.longestStreak).toBe(5);
     expect(result.current.currentStreak).toBe(2);
   });
 
   it('computes totalListeningSeconds from song durations', () => {
-    const { result } = renderHook(() =>
-      usePlaybackAnalytics(scrobbles, 'all'),
-    );
+    const { result } = renderAnalytics(scrobbles, 'all');
     expect(result.current.totalListeningSeconds).toBe(200 + 200 + 240);
   });
 
   it('counts uniqueArtists and uniqueAlbums', () => {
-    const { result } = renderHook(() =>
-      usePlaybackAnalytics(scrobbles, 'all'),
-    );
+    const { result } = renderAnalytics(scrobbles, 'all');
     expect(result.current.uniqueArtists).toBe(2);
     expect(result.current.uniqueAlbums).toBe(2);
   });
 
   it('computes exact averagePlaysPerDay', () => {
-    const { result } = renderHook(() =>
-      usePlaybackAnalytics(scrobbles, 'all'),
-    );
+    const { result } = renderAnalytics(scrobbles, 'all');
     // 3 plays across 2 unique days → 1.5
     expect(result.current.averagePlaysPerDay).toBe(1.5);
   });
 
   it('returns zero stats for empty scrobble array', () => {
-    const { result } = renderHook(() =>
-      usePlaybackAnalytics([], 'all'),
-    );
+    const { result } = renderAnalytics([], 'all');
     expect(result.current.totalPlays).toBe(0);
     expect(result.current.totalListeningSeconds).toBe(0);
     expect(result.current.uniqueArtists).toBe(0);
@@ -396,9 +438,7 @@ describe('usePlaybackAnalytics', () => {
       song: mockSong('old', 'X', 'Y'),
       time: ts(2024, 11, 1),
     };
-    const { result } = renderHook(() =>
-      usePlaybackAnalytics([...scrobbles, old], '30d'),
-    );
+    const { result } = renderAnalytics([...scrobbles, old], '30d');
     expect(result.current.totalPlays).toBe(3);
   });
 
@@ -406,9 +446,7 @@ describe('usePlaybackAnalytics', () => {
     const noDuration: ScrobbleRecord[] = [
       { id: '1', song: { id: 's1', artist: 'A', album: 'B' } as any, time: ts(2025, 1, 14) },
     ];
-    const { result } = renderHook(() =>
-      usePlaybackAnalytics(noDuration, 'all'),
-    );
+    const { result } = renderAnalytics(noDuration, 'all');
     expect(result.current.totalListeningSeconds).toBe(0);
     expect(result.current.totalPlays).toBe(1);
   });
@@ -417,9 +455,7 @@ describe('usePlaybackAnalytics', () => {
     const noArtist: ScrobbleRecord[] = [
       { id: '1', song: { id: 's1', album: 'B', duration: 100 } as any, time: ts(2025, 1, 14) },
     ];
-    const { result } = renderHook(() =>
-      usePlaybackAnalytics(noArtist, 'all'),
-    );
+    const { result } = renderAnalytics(noArtist, 'all');
     expect(result.current.topArtists[0].artist).toBe('Unknown');
   });
 
@@ -431,9 +467,7 @@ describe('usePlaybackAnalytics', () => {
         time: ts(2025, 1, 14),
       },
     ];
-    const { result } = renderHook(() =>
-      usePlaybackAnalytics(withGenresArray, 'all'),
-    );
+    const { result } = renderAnalytics(withGenresArray, 'all');
     expect(result.current.genreBreakdown).toHaveLength(1);
     expect(result.current.genreBreakdown[0].genre).toBe('Rock');
   });
@@ -446,17 +480,13 @@ describe('usePlaybackAnalytics', () => {
         time: ts(2025, 1, 14),
       },
     ];
-    const { result } = renderHook(() =>
-      usePlaybackAnalytics(withStringGenres, 'all'),
-    );
+    const { result } = renderAnalytics(withStringGenres, 'all');
     expect(result.current.genreBreakdown).toHaveLength(1);
     expect(result.current.genreBreakdown[0].genre).toBe('Electronic');
   });
 
   it('hourlyDistribution has 24 buckets', () => {
-    const { result } = renderHook(() =>
-      usePlaybackAnalytics(scrobbles, 'all'),
-    );
+    const { result } = renderAnalytics(scrobbles, 'all');
     expect(result.current.hourlyDistribution).toHaveLength(24);
     const total = result.current.hourlyDistribution.reduce((a, b) => a + b, 0);
     expect(total).toBe(3);
@@ -467,7 +497,7 @@ describe('usePlaybackAnalytics', () => {
       { id: '1', song: { id: 's1', artist: 'A', album: 'B', duration: 100 } as any, time: ts(2025, 1, 14) },
       { id: '2', song: { id: 's1', artist: 'A', album: 'B', duration: 100, coverArt: 'art-1' } as any, time: ts(2025, 1, 14) },
     ];
-    const { result } = renderHook(() => usePlaybackAnalytics(records, '7d'));
+    const { result } = renderAnalytics(records, '7d');
     expect(result.current.topSongs[0].song.coverArt).toBe('art-1');
   });
 
@@ -476,7 +506,7 @@ describe('usePlaybackAnalytics', () => {
       { id: '1', song: { id: 's1', artist: 'A', album: 'AlbX', duration: 100 } as any, time: ts(2025, 1, 14) },
       { id: '2', song: { id: 's2', artist: 'A', album: 'AlbX', duration: 100, coverArt: 'al-42' } as any, time: ts(2025, 1, 14) },
     ];
-    const { result } = renderHook(() => usePlaybackAnalytics(records, '7d'));
+    const { result } = renderAnalytics(records, '7d');
     expect(result.current.topAlbums[0].coverArt).toBe('al-42');
   });
 
@@ -485,7 +515,7 @@ describe('usePlaybackAnalytics', () => {
       { id: '1', song: { id: 's1', artist: 'A', album: 'AlbX', duration: 100, coverArt: 'al-42' } as any, time: ts(2025, 1, 14) },
       { id: '2', song: { id: 's2', artist: 'A', album: 'AlbX', duration: 100 } as any, time: ts(2025, 1, 14) },
     ];
-    const { result } = renderHook(() => usePlaybackAnalytics(records, '7d'));
+    const { result } = renderAnalytics(records, '7d');
     expect(result.current.topAlbums[0].coverArt).toBe('al-42');
   });
 });
@@ -506,61 +536,9 @@ describe('usePlaybackAnalytics with aggregates', () => {
     { id: '3', song: mockSong('s2', 'Artist B', 'Album Y', 240), time: ts(2025, 1, 13) },
   ];
 
-  function buildAggregatesFromScrobbles(records: ScrobbleRecord[]): AnalyticsAggregates {
-    const artistCounts: Record<string, { count: number; artistId?: string }> = {};
-    const albumCounts: Record<string, { artist: string; coverArt?: string; count: number; albumId?: string }> = {};
-    const songCounts: Record<string, { song: ScrobbleRecord['song']; count: number }> = {};
-    const genreCounts: Record<string, number> = {};
-    const hourBuckets = new Array<number>(24).fill(0);
-    const dayCounts: Record<string, number> = {};
-
-    for (const s of records) {
-      const artist = s.song.artist ?? 'Unknown';
-      const existingArtist = artistCounts[artist];
-      if (existingArtist) {
-        existingArtist.count++;
-        if (!existingArtist.artistId && s.song.artistId) existingArtist.artistId = s.song.artistId;
-      } else {
-        artistCounts[artist] = { count: 1, artistId: s.song.artistId ?? undefined };
-      }
-
-      const albumKey = `${s.song.album ?? 'Unknown'}::${artist}`;
-      const existing = albumCounts[albumKey];
-      if (existing) {
-        existing.count++;
-        if (s.song.coverArt) existing.coverArt = s.song.coverArt;
-        if (!existing.albumId && s.song.albumId) existing.albumId = s.song.albumId;
-      } else {
-        albumCounts[albumKey] = {
-          artist,
-          coverArt: s.song.coverArt ?? undefined,
-          count: 1,
-          albumId: s.song.albumId ?? undefined,
-        };
-      }
-
-      const existingSong = songCounts[s.song.id];
-      if (existingSong) { existingSong.count++; existingSong.song = s.song; }
-      else songCounts[s.song.id] = { song: s.song, count: 1 };
-
-      hourBuckets[new Date(s.time).getHours()]++;
-
-      const dk = dateKey(s.time);
-      dayCounts[dk] = (dayCounts[dk] ?? 0) + 1;
-    }
-
-    return { artistCounts, albumCounts, songCounts, genreCounts, hourBuckets, dayCounts } as AnalyticsAggregates;
-  }
-
   it('uses aggregates for "all" period and produces same results', () => {
-    const aggregates = buildAggregatesFromScrobbles(scrobbles);
-
-    const { result: withAgg } = renderHook(() =>
-      usePlaybackAnalytics(scrobbles, 'all', undefined, aggregates),
-    );
-    const { result: withoutAgg } = renderHook(() =>
-      usePlaybackAnalytics(scrobbles, 'all'),
-    );
+    const { result: withAgg } = renderAnalytics(scrobbles, 'all');
+    const { result: withoutAgg } = renderAnalytics(scrobbles, 'all');
 
     expect(withAgg.current.totalPlays).toBe(withoutAgg.current.totalPlays);
     expect(withAgg.current.uniqueArtists).toBe(withoutAgg.current.uniqueArtists);
@@ -578,32 +556,21 @@ describe('usePlaybackAnalytics with aggregates', () => {
       time: ts(2024, 12, 1),
     };
     const allScrobbles = [...scrobbles, oldScrobble];
-    const aggregates = buildAggregatesFromScrobbles(allScrobbles);
-
-    const { result } = renderHook(() =>
-      usePlaybackAnalytics(allScrobbles, '7d', undefined, aggregates),
-    );
+    const { result } = renderAnalytics(allScrobbles, '7d');
     // Period-filtered: only recent 3 scrobbles
     expect(result.current.totalPlays).toBe(3);
   });
 
   it('uses aggregates dayCounts for heatmap', () => {
-    const aggregates = buildAggregatesFromScrobbles(scrobbles);
-
-    const { result } = renderHook(() =>
-      usePlaybackAnalytics(scrobbles, '7d', undefined, aggregates),
-    );
+    const { result } = renderAnalytics(scrobbles, '7d');
     // Heatmap should have entries for 16 weeks
     expect(result.current.heatmapData.length).toBe(16 * 7);
   });
 
   it('uses aggregates dayCounts for streaks', () => {
-    const aggregates = buildAggregatesFromScrobbles(scrobbles);
     const pending = [{ time: ts(2025, 1, 15) }];
 
-    const { result } = renderHook(() =>
-      usePlaybackAnalytics(scrobbles, 'all', pending, aggregates),
-    );
+    const { result } = renderAnalytics(scrobbles, 'all', pending);
     expect(result.current.currentStreak).toBe(3);
   });
 });

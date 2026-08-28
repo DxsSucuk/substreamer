@@ -1,6 +1,6 @@
 import { type StateStorage } from 'zustand/middleware';
 
-import { getDb, kvFallback, serializeDbWrite } from './db';
+import { getDb, kvFallback } from './db';
 
 // Fires once per process the first time any kvStorage operation falls back
 // to the in-memory Map. `db.ts` already logs at init time, but that warn is
@@ -38,7 +38,7 @@ function warnFallbackOnce(op: string, key: string): void {
  * `db.ts` so the UI can still render. Writes in that mode don't survive a
  * relaunch — `isDbHealthy()` lets the UI surface the degraded state.
  *
- * Row-table modules (musicCacheTables, scrobbleTable, detailTables) don't
+ * Row-table modules (musicCacheTables, scrobbleTable) don't
  * get this memory fallback — silently writing per-row data nowhere is worse
  * than not writing at all. They treat `getDb() === null` as a no-op.
  */
@@ -90,7 +90,7 @@ export const kvStorageSync: StateStorage = {
 /**
  * **Asynchronous** Zustand `StateStorage` adapter — the default for the
  * persist stores. Identical semantics to {@link kvStorageSync} but the SQLite
- * IO runs on expo-sqlite's background thread (`getFirstAsync`/`runAsync`), so
+ * IO runs on op-SQLite's pool thread (`getFirstAsync`/`runAsync`), so
  * reads (boot hydration) and writes (every persisted mutation) never block
  * the JS thread.
  *
@@ -157,7 +157,7 @@ export async function clearKvStorage(): Promise<void> {
     return;
   }
   try {
-    await serializeDbWrite(() => db.runAsync('DELETE FROM storage;'));
+    await db.runAsync('DELETE FROM storage;');
   } catch {
     /* dropped */
   }

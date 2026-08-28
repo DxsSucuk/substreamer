@@ -17,8 +17,8 @@ import { Platform } from 'react-native';
 import { defaultCollator } from '../utils/intl';
 
 import { migrateV3BackupMetas, migrateV4BackupMetas } from './backupService';
+import { clearImageCache } from './imageCacheService';
 import { deviceIdentityStore } from '../store/deviceIdentityStore';
-import { getAllSongAlbumIds } from '../store/persistence/detailTables';
 import {
   completedScrobbleStore,
   type CompletedScrobble,
@@ -27,13 +27,7 @@ import { mbidOverrideStore, type MbidOverride } from '../store/mbidOverrideStore
 import { type PendingScrobble } from '../store/pendingScrobbleStore';
 import { playbackSettingsStore } from '../store/playbackSettingsStore';
 import { localeStore } from '../store/localeStore';
-import {
-  hydrateAlbumDetails,
-  upsertAlbumDetail,
-  upsertSongsForAlbum,
-} from '../store/persistence/detailTables';
-import { getDb, isDbHealthy, serializeDbWrite } from '../store/persistence/db';
-import { normalize, normalizeArtist, metaphoneKey } from './searchMatch';
+import { getDb, isDbHealthy } from '../store/persistence/db';
 import {
   addColumnIfMissing,
   bulkReplace as bulkReplaceMusicCache,
@@ -45,13 +39,19 @@ import {
   type CachedItemRow,
   type CachedSongRow,
   type DownloadQueueRow,
+  type LegacyDownloadQueueRow,
 } from '../store/persistence/musicCacheTables';
 import { replaceAllPendingScrobbles } from '../store/persistence/pendingScrobbleTable';
-import { replaceAllScrobbles } from '../store/persistence/scrobbleTable';
+import { backfillScrobbleColumnsAsync, replaceAllScrobbles } from '../store/persistence/scrobbleTable';
 import {
   bulkInsertCachedImages,
   countCachedImages as countCachedImagesRow,
 } from '../store/persistence/imageCacheTable';
+import { migrateFavoritesToColumns } from '../db/favoritesColumnsMigration';
+import { migrateDownloadQueueSongs } from '../store/persistence/downloadQueueSongsMigration';
+import { migrateGenresAndSharesFromKv } from '../store/persistence/genreShareMigration';
+import { migrateQueueSnapshotsFromKv } from '../store/persistence/queueSnapshotMigration';
+import { migrateUserDataFromKv } from '../store/persistence/userDataMigration';
 import { kvStorage } from '../store/persistence';
 
 /* ------------------------------------------------------------------ */
@@ -77,6 +77,33 @@ interface MigrationTask {
 /* ------------------------------------------------------------------ */
 /*  Shared helpers                                                     */
 /* ------------------------------------------------------------------ */
+
+/**
+ * Every `album_details` row parsed into the `{ album, retrievedAt }` shape
+ * Migrations 18/19/20 consume. Raw SQL local to the chain: the legacy blob tables
+ * outlive the store-persistence module that wrapped them, so the migrations must not
+ * depend on it. Unparseable rows are skipped.
+ */
+function readAlbumDetailRows(): Record<string, { album: any; retrievedAt: number }> {
+  const out: Record<string, { album: any; retrievedAt: number }> = {};
+  const db = getDb();
+  if (db === null) return out;
+  try {
+    const rows = db.getAllSync<{ id: string; json: string; retrievedAt: number }>(
+      'SELECT id, json, retrievedAt FROM album_details;',
+    );
+    for (const row of rows) {
+      try {
+        out[row.id] = { album: JSON.parse(row.json), retrievedAt: row.retrievedAt };
+      } catch {
+        /* skip unparseable row */
+      }
+    }
+  } catch {
+    /* table unavailable — callers treat an empty map as "no local source" */
+  }
+  return out;
+}
 
 /**
  * Shared body for Migration 14 (forward run) and Migration 15 (recovery).
@@ -179,10 +206,14 @@ async function migrateMusicCacheFromBlob(
 
   // Source 2: song_index SQL table.
   try {
-    const sqlMap = getAllSongAlbumIds();
-    for (const [songId, albumId] of sqlMap) {
-      if (!trackIdToAlbumId.has(songId)) {
-        trackIdToAlbumId.set(songId, albumId);
+    const db = getDb();
+    const rows =
+      db?.getAllSync<{ id: string; albumId: string }>(
+        'SELECT id, albumId FROM song_index;',
+      ) ?? [];
+    for (const row of rows) {
+      if (row.id && row.albumId && !trackIdToAlbumId.has(row.id)) {
+        trackIdToAlbumId.set(row.id, row.albumId);
         resolvedVia2++;
       }
     }
@@ -313,7 +344,7 @@ async function migrateMusicCacheFromBlob(
     });
   }
 
-  const queueRows: DownloadQueueRow[] = v1DownloadQueue
+  const queueRows: LegacyDownloadQueueRow[] = v1DownloadQueue
     .filter((q: any) => q?.queueId && q?.itemId)
     .map((q: any, idx: number) => {
       const v2Type = mapV2Type(q.itemId, q.type);
@@ -324,7 +355,7 @@ async function migrateMusicCacheFromBlob(
         rawStatus === 'downloading'
           ? 'queued'
           : (rawStatus as DownloadQueueRow['status']);
-      const row: DownloadQueueRow = {
+      const row: LegacyDownloadQueueRow = {
         queueId: q.queueId,
         itemId: q.itemId,
         type: v2Type,
@@ -593,7 +624,7 @@ async function backfillCachedSongEnvelopes(
 
   // Source 1: album_details rows.
   try {
-    const albums = hydrateAlbumDetails();
+    const albums = readAlbumDetailRows();
     for (const entry of Object.values(albums)) {
       const songs = entry?.album?.song;
       if (!Array.isArray(songs)) continue;
@@ -647,8 +678,11 @@ async function backfillCachedSongEnvelopes(
     db.withTransactionSync(() => {
       for (const [songId, { child, source }] of lookup) {
         const json = JSON.stringify(child);
+        // `meta_v = NULL` alongside the envelope re-arms the one-time promotion:
+        // this row is written after a hydrate may already have converted, so it
+        // has to look unconverted again for the next one to pick it up.
         db.runSync(
-          'UPDATE cached_songs SET raw_json = ? WHERE song_id = ? AND raw_json IS NULL;',
+          'UPDATE cached_songs SET raw_json = ?, meta_v = NULL WHERE song_id = ? AND raw_json IS NULL;',
           [json, songId],
         );
         if (source === 'album') viaAlbum++;
@@ -701,7 +735,7 @@ async function backfillCachedItemEnvelopes(
   // Pre-build lookups once so we don't re-parse the playlist blob per row.
   let albumDetails: Record<string, { album: unknown; retrievedAt: number }> = {};
   try {
-    albumDetails = hydrateAlbumDetails();
+    albumDetails = readAlbumDetailRows();
   } catch (e) {
     log(`[diag] album_details hydrate threw: ${errMessage(e)}`);
   }
@@ -742,8 +776,9 @@ async function backfillCachedItemEnvelopes(
           }
         }
         if (envelope !== null) {
+          // `meta_v = NULL` re-arms the one-time promotion — see Migration 18.
           db.runSync(
-            'UPDATE cached_items SET raw_json = ? WHERE item_id = ? AND raw_json IS NULL;',
+            'UPDATE cached_items SET raw_json = ?, meta_v = NULL WHERE item_id = ? AND raw_json IS NULL;',
             [envelope, row.item_id],
           );
           if (row.type === 'album') albumsDone++;
@@ -771,7 +806,7 @@ async function backfillCachedItemEnvelopes(
  *
  * A queue row whose entries already look full (cheapest sentinel: any
  * entry has `isDir`, a required field on the API type) is skipped — those
- * came from a post-bfe1886 runtime write and are already correct.
+ * came from a runtime write of the full shape and are already correct.
  */
 async function repairDownloadQueueSongsJson(
   log: (message: string) => void,
@@ -953,7 +988,7 @@ async function backfillMissingPartialAlbums(
   // Step 3: preload album_details once so we can enrich every group.
   let albumDetails: Record<string, { album: any; retrievedAt: number }> = {};
   try {
-    albumDetails = hydrateAlbumDetails();
+    albumDetails = readAlbumDetailRows();
   } catch (e) {
     log(`[diag] album_details hydrate threw: ${errMessage(e)}`);
   }
@@ -1025,12 +1060,14 @@ async function backfillMissingPartialAlbums(
           return defaultCollator.compare(a.songId, b.songId);
         });
 
-        // Insert album row.
+        // Insert album row. `meta_v` is written NULL explicitly so the envelope
+        // this migration lands is re-converted by the next hydrate — see
+        // Migration 18.
         db.runSync(
           `INSERT INTO cached_items
              (item_id, type, name, artist, cover_art_id, expected_song_count,
-              parent_album_id, last_sync_at, downloaded_at, raw_json)
-             VALUES (?, 'album', ?, ?, ?, ?, NULL, ?, ?, ?)
+              parent_album_id, last_sync_at, downloaded_at, raw_json, meta_v)
+             VALUES (?, 'album', ?, ?, ?, ?, NULL, ?, ?, ?, NULL)
              ON CONFLICT(item_id) DO NOTHING;`,
           [albumId, name, artist, coverArt, expectedSongCount, now, now, envelope],
         );
@@ -1168,13 +1205,13 @@ const MIGRATION_TASKS: MigrationTask[] = [
     id: 3,
     name: 'Build analytics aggregates',
     run: async (log) => {
-      const state = completedScrobbleStore.getState();
-      if (state.completedScrobbles.length === 0) {
-        log('No scrobbles — skipping aggregate rebuild.');
-        return;
-      }
-      state.rebuildAggregates();
-      log(`Rebuilt aggregates for ${state.completedScrobbles.length} scrobbles.`);
+      // Analytics are now SQL GROUP BY aggregates over structured columns.
+      // Backfill those columns for any legacy rows, then refresh the store's
+      // cached all-time stats/aggregates from SQL.
+      await backfillScrobbleColumnsAsync();
+      await completedScrobbleStore.getState().refreshFromDb();
+      const total = completedScrobbleStore.getState().stats.totalPlays;
+      log(total > 0 ? `Backfilled + refreshed analytics for ${total} scrobbles.` : 'No scrobbles.');
     },
   },
 
@@ -1405,13 +1442,10 @@ const MIGRATION_TASKS: MigrationTask[] = [
     id: 10,
     name: 'Backfill downloaded track formats (deprecated in v2)',
     run: async (log) => {
-      // In v1 this migration backfilled the `downloadedFormats` map on the
-      // musicCacheStore blob. In the v2 re-architecture (see
-      // `plans/music-downloads-v2.md`) format metadata lives inline on the
-      // `cached_songs` per-row table, so there is no longer a separate map
-      // to populate here. Task #14 owns the v1→v2 migration and carries any
-      // format info over during that pass. Kept as a no-op so the migration
-      // ID sequence is preserved for users whose `completedVersion` is < 10.
+      // Format metadata lives inline on the `cached_songs` per-row table, so
+      // there is no separate `downloadedFormats` map to populate; migration 14
+      // carries v1 format info over during the v1→v2 pass. Kept as a no-op so
+      // the ID sequence is preserved for users on `completedVersion` < 10.
       log('Task deprecated in v2; format data now lives in cached_songs — skipping.');
     },
   },
@@ -1449,56 +1483,6 @@ const MIGRATION_TASKS: MigrationTask[] = [
       await kvStorage.setItem('substreamer-locale', JSON.stringify(parsed));
       localeStore.setState({ locale: 'zh-Hans' });
       log('Remapped legacy "zh" locale preference to "zh-Hans".');
-    },
-  },
-
-  {
-    id: 12,
-    name: 'Move album details to per-row SQLite tables',
-    run: async (log) => {
-      // albumDetailStore moved off the generic `persist(createJSONStorage)`
-      // blob model to per-row tables (`album_details`, `song_index`) owned
-      // by `src/store/persistence/detailTables.ts`. This task reads the old
-      // blob once, upserts each album into the new tables, and deletes the
-      // old blob key. Idempotent: if the blob is missing or already been
-      // migrated, it's a no-op.
-      const raw = await kvStorage.getItem('substreamer-album-details');
-      if (!raw) {
-        log('No persisted album-details blob — nothing to migrate.');
-        return;
-      }
-      let parsed: any;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        // Corrupt blob — drop it so the new tables start clean.
-        await kvStorage.removeItem('substreamer-album-details');
-        log('Failed to parse album-details blob — removed.');
-        return;
-      }
-      const albums: Record<string, { album: any; retrievedAt?: number }> =
-        parsed?.state?.albums ?? {};
-      const ids = Object.keys(albums);
-      if (ids.length === 0) {
-        await kvStorage.removeItem('substreamer-album-details');
-        log('Album-details blob was empty — removed.');
-        return;
-      }
-      let albumCount = 0;
-      let songCount = 0;
-      for (const id of ids) {
-        const entry = albums[id];
-        const album = entry?.album;
-        if (!album || typeof album !== 'object' || !album.id) continue;
-        const retrievedAt = typeof entry.retrievedAt === 'number' ? entry.retrievedAt : Date.now();
-        upsertAlbumDetail(id, album, retrievedAt);
-        const songs = Array.isArray(album.song) ? album.song : [];
-        upsertSongsForAlbum(id, songs);
-        albumCount++;
-        songCount += songs.length;
-      }
-      await kvStorage.removeItem('substreamer-album-details');
-      log(`Migrated ${albumCount} album detail(s) and ${songCount} song(s) to per-row tables.`);
     },
   },
 
@@ -1711,7 +1695,7 @@ const MIGRATION_TASKS: MigrationTask[] = [
       if (rows.length > 0) {
         await bulkInsertCachedImages(rows);
       }
-      const persisted = countCachedImagesRow();
+      const persisted = await countCachedImagesRow();
       const uniqueCovers = new Set(rows.map((r) => r.coverArtId)).size;
       log(
         `Indexed ${uniqueCovers} cover art item(s), ${rows.length} variant file(s) ` +
@@ -1861,11 +1845,8 @@ const MIGRATION_TASKS: MigrationTask[] = [
     },
   },
 
-  // IDs 22 and 23 are intentionally skipped. Both were unshipped image-
-  // cache migrations (reconcile to full cover-art IDs / clear legacy
-  // recache blob) consolidated into Migration 25 below before they ever
-  // reached production. Leaving the gap rather than renumbering keeps
-  // pre-consolidation git history readable.
+  // IDs 22 and 23 are intentionally skipped — both were consolidated into
+  // Migration 25 below before shipping. Leave the gap; do not renumber or reuse.
 
   {
     id: 24,
@@ -1927,18 +1908,13 @@ const MIGRATION_TASKS: MigrationTask[] = [
       // offline-first users, Settings → Image Cache → "Refresh
       // Downloaded" eager-repopulates while online.
       try {
-        const { clearImageCache } = require('./imageCacheService') as {
-          clearImageCache: () => Promise<number>;
-        };
         const freed = await clearImageCache();
         log(`[m25] wiped image cache, freed=${freed} bytes`);
       } catch (e) {
         log(`[m25] wipe failed: ${errMessage(e)}`);
       }
       // Also drop the legacy substreamer-cover-art-recache kvStorage blob
-      // — replaced by the persistent SQL image-download queue. (Originally
-      // unshipped Migration 23; folded in here since it's the same
-      // cleanup family.)
+      // — replaced by the persistent SQL image-download queue.
       try {
         await kvStorage.removeItem('substreamer-cover-art-recache');
         log('[m25] cleared substreamer-cover-art-recache blob');
@@ -1948,63 +1924,17 @@ const MIGRATION_TASKS: MigrationTask[] = [
     },
   },
 
-  {
-    id: 26,
-    name: 'Backfill song_index.album from album_details',
-    run: async (log) => {
-      // The `album` column on `song_index` was added in v8.0.61 alongside
-      // the Library → Songs segment. Pre-existing rows have NULL; without
-      // backfill, every existing song would display "Unknown album" until
-      // the next natural runFullAlbumDetailSync overwrites them. Use the
-      // cached `album_details.json` (parsed AlbumWithSongsID3 envelope) to
-      // derive the album name per albumId — no network required.
-      try {
-        const { getDb } = require('./../store/persistence/db') as {
-          getDb: () => any;
-        };
-        const db = getDb();
-        if (db === null) {
-          log('[m26] db unavailable — skipping');
-          return;
-        }
-        const rows = db.getAllSync(
-          'SELECT id, json FROM album_details;',
-        ) as { id: string; json: string }[];
-        let updated = 0;
-        db.withTransactionSync(() => {
-          for (const row of rows) {
-            let name: string | null = null;
-            try {
-              const parsed = JSON.parse(row.json);
-              if (parsed && typeof parsed.name === 'string') name = parsed.name;
-            } catch {
-              continue;
-            }
-            if (!name) continue;
-            const res = db.runSync(
-              'UPDATE song_index SET album = ? WHERE albumId = ? AND (album IS NULL OR album = "");',
-              [name, row.id],
-            );
-            updated += res.changes ?? 0;
-          }
-        });
-        log(`[m26] backfilled album name on ${updated} song_index rows`);
-      } catch (e) {
-        log(`[m26] backfill failed: ${errMessage(e)}`);
-      }
-    },
-  },
 
   {
     id: 27,
     name: 'Backfill cached_items.expected_song_count from album_details',
     run: async (log) => {
-      // Pre-#159 fix, `ensurePartialAlbumEdge` wrote `expected_song_count = 1`
-      // when albumDetailStore didn't yet have the album, indistinguishable
-      // from a genuine single-track album. The runtime now fetches the
-      // authoritative count when stitching the partial-album row; this
-      // migration corrects any historical rows whose count is stale by
-      // sourcing the real value from the locally cached album_details
+      // Older installs carry `expected_song_count = 1` rows written by
+      // `ensurePartialAlbumEdge` when albumDetailStore didn't yet have the
+      // album — indistinguishable from a genuine single-track album. The
+      // runtime now fetches the authoritative count when stitching the
+      // partial-album row; this migration corrects any stale historical rows
+      // by sourcing the real value from the locally cached album_details
       // envelope.
       //
       // Rows for which no album_details exists are left untouched — the
@@ -2012,9 +1942,6 @@ const MIGRATION_TASKS: MigrationTask[] = [
       // runtime path. Network fetch from here would gate the migration
       // on connectivity, which the splash flow shouldn't depend on.
       try {
-        const { getDb } = require('./../store/persistence/db') as {
-          getDb: () => any;
-        };
         const db = getDb();
         if (db === null) {
           log('[m27] db unavailable — skipping');
@@ -2061,64 +1988,10 @@ const MIGRATION_TASKS: MigrationTask[] = [
   },
 
   {
-    id: 28,
-    name: 'Backfill song_index.raw_json from album_details',
-    run: async (log) => {
-      // `raw_json` (the full Subsonic Child envelope) was added to song_index
-      // so the Songs list returns the complete song object instead of a
-      // reconstruction from the indexed columns (which dropped artistId, genre,
-      // etc. — breaking "Go to artist"). Pre-existing rows have NULL until the
-      // next album fetch re-upserts them; backfill from the locally cached
-      // album_details envelope (which holds every song's full Child) so the
-      // fix applies immediately, no network required.
-      try {
-        const { getDb } = require('./../store/persistence/db') as {
-          getDb: () => any;
-        };
-        const db = getDb();
-        if (db === null) {
-          log('[m28] db unavailable — skipping');
-          return;
-        }
-        const details = db.getAllSync(
-          'SELECT json FROM album_details;',
-        ) as { json: string }[];
-        if (details.length === 0) {
-          log('[m28] no album_details rows — nothing to backfill');
-          return;
-        }
-        let updated = 0;
-        db.withTransactionSync(() => {
-          for (const row of details) {
-            let songs: any[];
-            try {
-              const parsed = JSON.parse(row.json);
-              songs = Array.isArray(parsed?.song) ? parsed.song : [];
-            } catch {
-              continue;
-            }
-            for (const song of songs) {
-              if (!song?.id) continue;
-              const res = db.runSync(
-                'UPDATE song_index SET raw_json = ? WHERE id = ? AND raw_json IS NULL;',
-                [JSON.stringify(song), song.id],
-              );
-              updated += res.changes ?? 0;
-            }
-          }
-        });
-        log(`[m28] backfilled raw_json on ${updated} song_index rows`);
-      } catch (e) {
-        log(`[m28] backfill failed: ${errMessage(e)}`);
-      }
-    },
-  },
-
-  {
     id: 29,
     name: 'Re-key image cache to the coverArt-value model',
     run: async (log) => {
-      // #202: cover-art lookups moved back from the entity ID to the entity's
+      // Cover-art lookups moved from the entity ID to the entity's
       // `coverArt` VALUE (album.coverArt / playlist.coverArt / artist.coverArt;
       // songs resolve their parent album's or own coverArt). Files cached under
       // the OLD entity-ID keys are now orphaned — no consumer queries an entity
@@ -2130,12 +2003,8 @@ const MIGRATION_TASKS: MigrationTask[] = [
       // nothing worth preserving there. On servers where the ID happened to
       // resolve (Navidrome), `ensureCached` (online browsing) and the download
       // recache below repopulate the correct coverArt-keyed files. A blanket
-      // wipe also reclaims the orphaned bytes immediately. (Mirrors m25, which
-      // did the inverse switch.)
+      // wipe also reclaims the orphaned bytes immediately.
       try {
-        const { clearImageCache } = require('./imageCacheService') as {
-          clearImageCache: () => Promise<number>;
-        };
         const freed = await clearImageCache();
         log(`[m29] wiped image cache, freed=${freed} bytes`);
       } catch (e) {
@@ -2206,89 +2075,6 @@ const MIGRATION_TASKS: MigrationTask[] = [
     },
   },
 
-  {
-    id: 32,
-    name: 'Backfill fuzzy-search columns',
-    run: async (log) => {
-      // Backfill norm_/dmeta_ on existing rows so fuzzy candidate SQL works
-      // without a re-sync. Async-chunked (per-batch async txn + macrotask yield)
-      // so a 38k-row pass doesn't freeze the splash / ANR. NULL norm is the "not
-      // yet done" marker; every UPDATE writes non-null so rows leave the set.
-      const db = getDb();
-      if (!db) {
-        log('[m32] no db — skipped');
-        return;
-      }
-      const BATCH = 1000;
-
-      let songTotal = 0;
-      for (let guard = 0; guard < 1000; guard++) {
-        // eslint-disable-next-line no-await-in-loop
-        const rows = await db.getAllAsync<{
-          id: string;
-          title: string | null;
-          artist: string | null;
-        }>('SELECT id, title, artist FROM song_index WHERE norm_title IS NULL LIMIT ?;', [BATCH]);
-        if (rows.length === 0) break;
-        // eslint-disable-next-line no-await-in-loop
-        await serializeDbWrite(() =>
-          db.withTransactionAsync(async () => {
-            for (const r of rows) {
-              const title = r.title ?? '';
-              const artist = r.artist ?? '';
-              // eslint-disable-next-line no-await-in-loop
-              await db.runAsync(
-                'UPDATE song_index SET norm_title = ?, norm_artist = ?, dmeta_title = ?, dmeta_artist = ? WHERE id = ?;',
-                [normalize(title), normalizeArtist(artist), metaphoneKey(title), metaphoneKey(artist), r.id],
-              );
-            }
-          }),
-        );
-        songTotal += rows.length;
-        // eslint-disable-next-line no-await-in-loop
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        if (rows.length < BATCH) break;
-      }
-      log(`[m32] song_index backfilled ${songTotal} rows`);
-
-      let albumTotal = 0;
-      for (let guard = 0; guard < 1000; guard++) {
-        // library_albums has no name/artist column — parse the raw_json envelope.
-        // eslint-disable-next-line no-await-in-loop
-        const rows = await db.getAllAsync<{ id: string; raw_json: string }>(
-          'SELECT id, raw_json FROM library_albums WHERE norm_name IS NULL LIMIT ?;',
-          [BATCH],
-        );
-        if (rows.length === 0) break;
-        // eslint-disable-next-line no-await-in-loop
-        await serializeDbWrite(() =>
-          db.withTransactionAsync(async () => {
-            for (const r of rows) {
-              let name = '';
-              let artist = '';
-              try {
-                const a = JSON.parse(r.raw_json) as { name?: string; artist?: string };
-                name = a?.name ?? '';
-                artist = a?.artist ?? '';
-              } catch {
-                /* unparseable — store empties so the row leaves the backfill set */
-              }
-              // eslint-disable-next-line no-await-in-loop
-              await db.runAsync(
-                'UPDATE library_albums SET norm_name = ?, norm_artist = ?, dmeta_name = ?, dmeta_artist = ? WHERE id = ?;',
-                [normalize(name), normalizeArtist(artist), metaphoneKey(name), metaphoneKey(artist), r.id],
-              );
-            }
-          }),
-        );
-        albumTotal += rows.length;
-        // eslint-disable-next-line no-await-in-loop
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        if (rows.length < BATCH) break;
-      }
-      log(`[m32] library_albums backfilled ${albumTotal} rows`);
-    },
-  },
 
   {
     id: 33,
@@ -2309,6 +2095,92 @@ const MIGRATION_TASKS: MigrationTask[] = [
     },
   },
 
+  {
+    id: 34,
+    name: 'Drop the retired lyrics blob',
+    run: async (log) => {
+      // Lyrics moved to the `lyrics` + `lyric_lines` tables, one row per song. The old
+      // `substreamer-lyrics` KV blob has no reader left; nothing is migrated out of it
+      // because lyrics are re-derivable from the server on the next player open.
+      try {
+        await kvStorage.removeItem('substreamer-lyrics');
+        log('[m34] cleared substreamer-lyrics blob');
+      } catch (e) {
+        log(`[m34] clear failed: ${errMessage(e)}`);
+      }
+    },
+  },
+
+  {
+    id: 36,
+    name: 'Move saved queues into the snapshot tables',
+    run: async (log) => {
+      // Bookmarks and the live queue now live in `queue_snapshots`. Unlike the lyrics
+      // blob (m34) there is nothing to re-derive a bookmark from, so the migration
+      // reads the rows back and only then gives up the KV copy — and THROWS if it
+      // cannot, leaving the counter behind so the next launch retries with the blob
+      // still there. Migration 30 already deletes both queue keys, so finding them
+      // absent is the normal path, not a failure.
+      await migrateQueueSnapshotsFromKv(log);
+    },
+  },
+
+  {
+    // 37 is reserved by the commented-out legacy-blob drop at the foot of this list.
+    id: 38,
+    name: 'Move the genres and shares caches into their tables',
+    run: async (log) => {
+      // MIGRATED, not dropped and refilled: the share browser renders its empty state
+      // off `shares.length === 0` and the Tuned In mixes read the genre list, so a
+      // dropped blob shows "nothing here" until a fetch completes — and indefinitely
+      // offline, where today the cached list appears. Both are read back before the
+      // blob's copy is given up, and a failure THROWS so the next launch retries.
+      await migrateGenresAndSharesFromKv(log);
+    },
+  },
+
+  {
+    id: 39,
+    name: 'Move queued downloads’ songs into their table',
+    run: async (log) => {
+      // The queue's `Child[]` now lives in `download_queue_songs`. `songs_json` is
+      // KEPT and never rewritten: every row is verified back before its stored songs
+      // are used, and one that does not verify keeps reading the blob — losing a
+      // queued download would throw away hours of transfer.
+      await migrateDownloadQueueSongs(log);
+    },
+  },
+
+  {
+    id: 40,
+    name: 'Move starred items into their columns',
+    run: async (log) => {
+      // The `favorite_*` remainder now stores its entities in columns. `json` is KEPT
+      // and never rewritten: every row is verified back before its columns are read,
+      // and one that does not verify keeps reading the envelope — the remainder is the
+      // only local copy of a favourite the library has no row for.
+      const db = getDb();
+      if (db === null) {
+        log('[m40] db unavailable — favourites keep reading their envelopes');
+        return;
+      }
+      await migrateFavoritesToColumns(db, log);
+    },
+  },
+
+  {
+    // 41 is reserved by the commented-out legacy-blob drop at the foot of this list.
+    id: 42,
+    name: 'Move MBID corrections and scrobble exclusions into their tables',
+    run: async (log) => {
+      // Both are user-AUTHORED with nowhere on the server to live, so neither may be
+      // dropped and refilled the way a server-owned cache can. Every entry is read back
+      // before the blob's copy is given up, and a failure THROWS so the next launch
+      // retries with the blob still there.
+      await migrateUserDataFromKv(log);
+    },
+  },
+
   // -------------------------------------------------------------------
   // TEMPLATE – How to add a new migration task:
   //
@@ -2320,7 +2192,7 @@ const MIGRATION_TASKS: MigrationTask[] = [
   //   5. A fresh install (completedVersion 0) fast-tracks straight to the
   //      latest id, running ONLY tasks tagged `runOnFreshInstall`. Pure data
   //      transforms no-op on an empty DB and stay untagged. Tag the task if it
-  //      seeds state a fresh install needs (see #21's deviceId persist) or
+  //      seeds state a fresh install needs (migration 21's deviceId persist) or
   //      cleans up old-release files — otherwise it is silently skipped on
   //      fresh installs.
   //
@@ -2331,6 +2203,44 @@ const MIGRATION_TASKS: MigrationTask[] = [
   //   name: 'Reset playback settings',
   //   run: async () => {
   //     // your migration logic here
+  //   },
+  // },
+  // -------------------------------------------------------------------
+  //
+  // TODO: enable ONLY after verification runs of the final release (irreversible; frees space).
+  //
+  // The release is otherwise COMPLETE. The blob→normalized data-model upgrade migration
+  // (migrateBlobsToNormalized) is a PERMANENT part of the upgrade path — ANY user on an
+  // old version who ever upgrades gets their data migrated into the normalized model. The
+  // legacy blob tables are kept as dead data ONLY as the safety net (so the migration can
+  // be re-run or extended if a field was missed). When enabled, THIS task runs a final
+  // catch-up migration and THEN drops the tables — migrate-BEFORE-drop is mandatory so a
+  // very-old upgrader still recovers their data before it's gone. Held back JUST IN CASE
+  // until the final release is verified; uncomment to enable. It takes the NEXT free id
+  // — 43 — because a task numbered below the highest that has shipped never runs for
+  // anyone who has already passed it (`getPendingTasks` returns `id > completedVersion`);
+  // 35, 37 and 41 were all skipped that way as 36, 38 and 42 shipped.
+  //
+  // {
+  //   id: 43,
+  //   name: 'Migrate any remaining blob data, then drop the legacy blob tables',
+  //   run: async (log) => {
+  //     const { getDb } = require('../store/persistence/db') as { getDb: () => any };
+  //     const db = getDb();
+  //     if (db === null) { log('[m35] db unavailable — skipping'); return; }
+  //     // Final catch-up FIRST (idempotent): recover any un-migrated blob data into the
+  //     // normalized model before the tables vanish.
+  //     const { migrateBlobsToNormalized, checkpointWalAsync } =
+  //       require('../db/migrateNormalized') as typeof import('../db/migrateNormalized');
+  //     await migrateBlobsToNormalized(db, log);
+  //     for (const t of ['library_albums', 'song_index', 'album_details']) {
+  //       await db.runAsync(`DROP TABLE IF EXISTS ${t};`);
+  //       log(`[m35] dropped ${t}`);
+  //     }
+  //     // Reclaim the freed pages so the DB file actually shrinks.
+  //     await checkpointWalAsync(db, log);
+  //     await db.runAsync('VACUUM;');
+  //     log('[m35] reclaimed space');
   //   },
   // },
   // -------------------------------------------------------------------
@@ -2347,6 +2257,32 @@ const MIGRATION_TASKS: MigrationTask[] = [
  */
 export const LATEST_MIGRATION_ID = Math.max(...MIGRATION_TASKS.map((t) => t.id));
 
+/** `migrationStore`'s persisted KV row. Read directly rather than through the store,
+ *  which may not have rehydrated yet — the splash reads it the same way. */
+const MIGRATION_VERSION_KEY = 'substreamer-migration';
+
+/**
+ * Has the migration chain run to the end? `runMigrations` stops at the FIRST failure
+ * and persists the version of the last success, so a halted chain leaves legacy rows
+ * the later tasks never backfilled. Background one-shots that read those rows
+ * (`dataModelUpgradeService`, `legacyColumnDropService`) defer on a false; the next
+ * launch retries the chain.
+ *
+ * `>=`, not `==`: a downgrade leaves the counter above this build's latest id, and
+ * that chain is complete by definition. A fresh install passes — the runner
+ * fast-tracks the counter to the latest id.
+ */
+export async function migrationChainComplete(): Promise<boolean> {
+  try {
+    const raw = await kvStorage.getItem(MIGRATION_VERSION_KEY);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw) as { state?: { completedVersion?: number } };
+    return (parsed?.state?.completedVersion ?? 0) >= LATEST_MIGRATION_ID;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Returns tasks that still need to run.
  *
@@ -2356,7 +2292,14 @@ export const LATEST_MIGRATION_ID = Math.max(...MIGRATION_TASKS.map((t) => t.id))
  * guard avoids misreading a fallback-store 0 (DB failed to open) as "fresh".
  */
 export function getPendingTasks(completedVersion: number): MigrationTask[] {
-  if (completedVersion === 0 && isDbHealthy()) {
+  // NEVER migrate against an unavailable DB. A failed DB init makes the persisted
+  // `completedVersion` read back as 0 (KV falls back to in-memory), and returning
+  // `id > 0` here would re-run EVERY migration on an already-loaded app — repeating
+  // one-time DESTRUCTIVE steps that don't touch the DB and so aren't skipped (e.g. the
+  // image-cache re-key wipes m25/m29 delete the on-disk image-cache dir). Bail; the
+  // next healthy boot reads the real version and runs the genuine pending set.
+  if (!isDbHealthy()) return [];
+  if (completedVersion === 0) {
     return MIGRATION_TASKS.filter((t) => t.runOnFreshInstall);
   }
   return MIGRATION_TASKS.filter((t) => t.id > completedVersion);
@@ -2374,6 +2317,10 @@ export async function runMigrations(
   completedVersion: number,
   onProgress?: (task: MigrationTask) => void,
 ): Promise<number> {
+  // Hard guard (defense-in-depth with getPendingTasks): never run migrations against
+  // an unavailable DB — the version read is unreliable and re-running tasks on an
+  // already-loaded app repeats destructive one-time steps. Leave the version untouched.
+  if (!isDbHealthy()) return completedVersion;
   // Fresh install: `pending` is only the `runOnFreshInstall` tasks; stamp
   // straight to latest afterwards so the skipped no-op data migrations aren't
   // re-swept next boot. Best-effort — return latest even if a cleanup throws.

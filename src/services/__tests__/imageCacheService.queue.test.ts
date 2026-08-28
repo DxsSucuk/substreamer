@@ -1,23 +1,12 @@
 /**
- * Tests for the persistent image-download queue worker added in Phase 2
- * of the image-cache rework. See plans/2026-05-23-image-cache-queue-rework.md.
+ * Tests for the persistent image-download queue worker.
  *
  * These tests focus on the orchestration layer — enqueue → worker → state
  * transitions → cycle accounting. The actual `downloadAndCacheImage`
  * machinery (fetch + variant generation) is exercised by
- * `imageCacheService.test.ts`; here we mock it out and assert the queue
- * state transitions our new code performs.
+ * `imageCacheService.test.ts`; here it is mocked out so the assertions land
+ * on the queue state transitions.
  */
-
-jest.mock('expo-sqlite', () => ({
-  openDatabaseSync: () => ({
-    getFirstSync: () => undefined,
-    getAllSync: () => [],
-    runSync: () => ({ changes: 0, lastInsertRowId: 0 }),
-    execSync: () => {},
-    withTransactionSync: (fn: () => void) => fn(),
-  }),
-}));
 
 jest.mock('expo-file-system', () => ({
   File: class {},
@@ -212,7 +201,7 @@ jest.mock('../subsonicService', () => ({
   getCoverArtUrl: jest.fn(() => 'http://example/cov'),
 }));
 
-// The queue worker calls a swappable `imageDownloader` seam. Tests
+// The queue worker downloads through a swappable `imageDownloader`. Tests
 // install a deterministic stub via `__setImageDownloaderForTest()` rather
 // than driving `downloadAndCacheImage`'s full fetch + resize pipeline.
 let mockDownloaderShouldFail = false;
@@ -247,7 +236,7 @@ beforeEach(() => {
   mockHydrateCachedSongs.mockReturnValue({});
   mockGetAllCachedCoverArtIds.mockReturnValue([]);
   mockDownloaderShouldFail = false;
-  // Re-install the downloader stub — the seam may have been reset by
+  // Re-install the downloader stub — it may have been reset by
   // earlier tests calling __setImageDownloaderForTest(undefined).
   __setImageDownloaderForTest(mockDownloader);
 });
@@ -268,7 +257,7 @@ describe('image-queue meta accessors', () => {
 
 describe('enqueueImageRefreshCycle', () => {
   it('refresh-downloads snapshots from cached_items + per-song covers', async () => {
-    // Snapshot keys off the stored coverArt VALUE (#202): the cached_item's
+    // Snapshot keys off the stored coverArt VALUE: the cached_item's
     // coverArtId for album/playlist, and the mode-aware resolved cover for
     // songs (album mode, empty library → falls back to the song's own coverArt).
     mockHydrateCachedItems.mockReturnValue({

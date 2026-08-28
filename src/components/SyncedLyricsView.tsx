@@ -60,7 +60,7 @@ const ACTIVE_LINE_VIEWPORT_RATIO = 0.35;
  *
  * Uses a regular `ScrollView` + `useRef` because Reanimated 4's
  * `useAnimatedRef` on `Animated.ScrollView` keeps `.current` null, making
- * its `scrollTo` a silent no-op (see reanimated#8240).
+ * its `scrollTo` a silent no-op (software-mansion/react-native-reanimated#8240).
  */
 export const SyncedLyricsView = memo(function SyncedLyricsView({
   lines,

@@ -1,13 +1,17 @@
-// Per-suite mocks re-evaluate the module-scope try/catch in db.ts via
-// jest.isolateModules. Mirrors the pattern established in the previous
-// kvStorage test file.
+// Per-suite mocks re-evaluate the module-scope try/catch in db.ts (which opens
+// via the op-SQLite client) using jest.isolateModules + jest.doMock on
+// '@op-engineering/op-sqlite'. The client applies PRAGMAs and runs schema DDL
+// through op-SQLite's `executeSync`, so a jest.fn() spy on it captures the exact
+// statement sequence.
+
+import { KEPT_TABLES } from '../../../db/createNormalizedTables';
+import { NORMALIZED_DDL } from '../../../db/normalizedDdl';
+
+const okResult = { rows: [] as Array<Record<string, unknown>>, rowsAffected: 0 };
 
 describe('persistence/db (happy path)', () => {
-  let mockGetFirstSync: jest.Mock;
-  let mockGetAllSync: jest.Mock;
-  let mockRunSync: jest.Mock;
-  let mockExecSync: jest.Mock;
-  let mockWithTransactionSync: jest.Mock;
+  let mockExecuteSync: jest.Mock;
+  let mockExecute: jest.Mock;
   let getDb: typeof import('../db').getDb;
   let __setDbForTests: typeof import('../db').__setDbForTests;
   let isDbHealthy: typeof import('../db').isDbHealthy;
@@ -15,18 +19,20 @@ describe('persistence/db (happy path)', () => {
 
   beforeAll(() => {
     jest.isolateModules(() => {
-      mockGetFirstSync = jest.fn();
-      mockGetAllSync = jest.fn();
-      mockRunSync = jest.fn();
-      mockExecSync = jest.fn();
-      mockWithTransactionSync = jest.fn();
-      jest.doMock('expo-sqlite', () => ({
-        openDatabaseSync: () => ({
-          getFirstSync: mockGetFirstSync,
-          getAllSync: mockGetAllSync,
-          runSync: mockRunSync,
-          execSync: mockExecSync,
-          withTransactionSync: mockWithTransactionSync,
+      // Report `cached_item_songs` as present so the dedup's existence guard fires —
+      // an upgrading install, which is the case the dedup exists for.
+      mockExecuteSync = jest.fn((sql: string) =>
+        typeof sql === 'string' && sql.includes('sqlite_master')
+          ? { rows: [{ n: 1 }], rowsAffected: 0 }
+          : okResult,
+      );
+      mockExecute = jest.fn(async () => okResult);
+      jest.doMock('@op-engineering/op-sqlite', () => ({
+        open: () => ({
+          executeSync: mockExecuteSync,
+          execute: mockExecute,
+          getDbPath: () => ':memory:',
+          close: jest.fn(),
         }),
       }));
       const mod = require('../db');
@@ -42,21 +48,20 @@ describe('persistence/db (happy path)', () => {
     expect(dbInitError).toBeNull();
   });
 
-  it('returns the shared handle from getDb', () => {
+  it('returns a healthy op-SQLite-backed handle from getDb that forwards to executeSync', () => {
     const handle = getDb();
     expect(handle).not.toBeNull();
-    expect(handle?.getFirstSync).toBe(mockGetFirstSync);
-    expect(handle?.runSync).toBe(mockRunSync);
-    expect(handle?.execSync).toBe(mockExecSync);
-    expect(handle?.withTransactionSync).toBe(mockWithTransactionSync);
+    handle?.execSync('SELECT 42;');
+    expect(mockExecuteSync).toHaveBeenCalledWith('SELECT 42;');
   });
 
-  it('applies PRAGMAs in the documented order', () => {
-    const pragmaCalls = mockExecSync.mock.calls
+  it('applies PRAGMAs in the documented order (incl. the boot WAL fold)', () => {
+    const pragmaSets = mockExecuteSync.mock.calls
       .map((c) => c[0] as string)
-      .filter((sql) => sql.startsWith('PRAGMA'));
-    expect(pragmaCalls).toEqual([
+      .filter((sql) => sql.startsWith('PRAGMA') && (sql.includes('=') || sql.includes('wal_checkpoint')));
+    expect(pragmaSets).toEqual([
       'PRAGMA journal_mode = WAL;',
+      'PRAGMA wal_checkpoint(TRUNCATE);',
       'PRAGMA synchronous = NORMAL;',
       'PRAGMA foreign_keys = ON;',
       'PRAGMA busy_timeout = 5000;',
@@ -65,36 +70,32 @@ describe('persistence/db (happy path)', () => {
     ]);
   });
 
-  it('creates every persistence table in FK-safe order', () => {
-    const creates = mockExecSync.mock.calls
+  it('hand-writes no CREATE TABLE at boot', () => {
+    const creates = mockExecuteSync.mock.calls
       .map((c) => c[0] as string)
-      .filter((sql) => sql.trim().startsWith('CREATE TABLE'));
-    // The order here is load-bearing: cached_items must be created before
-    // cached_item_songs so the FOREIGN KEY clause resolves.
+      // The normalized model + the permanent kept tables live in schema.ts and are
+      // created by ensureNormalizedSchema from the generated (backtick-quoted) DDL.
+      .filter((sql) => sql.trim().startsWith('CREATE TABLE') && !sql.includes('`'));
     const tableNames = creates.map((sql) => {
       const match = sql.match(/CREATE TABLE IF NOT EXISTS (\w+)/);
       return match?.[1];
     });
-    expect(tableNames).toEqual([
-      'storage',
-      'album_details',
-      'song_index',
-      'library_albums',
-      'scrobble_events',
-      'pending_scrobble_events',
-      'cached_songs',
-      'cached_items',
-      'cached_item_songs',
-      'download_queue',
-      'cached_images',
-      'image_download_queue',
-    ]);
+    // Every table is declared in schema.ts now. The legacy blob tables are created only
+    // by Migration 12, off the boot path.
+    expect(tableNames).toEqual([]);
+  });
+
+  it('declares every permanent table in the generated DDL, not by hand', () => {
+    const ddl = NORMALIZED_DDL.join('\n');
+    for (const t of KEPT_TABLES) {
+      expect(ddl).toContain(`CREATE TABLE IF NOT EXISTS \`${t}\``);
+    }
   });
 
   it('reads the tuning PRAGMAs back at boot to validate they applied', () => {
-    const readbacks = mockGetFirstSync.mock.calls
+    const readbacks = mockExecuteSync.mock.calls
       .map((c) => c[0] as string)
-      .filter((sql) => sql.startsWith('PRAGMA'));
+      .filter((sql) => sql.startsWith('PRAGMA') && !sql.includes('=') && !sql.includes('('));
     expect(readbacks).toEqual(
       expect.arrayContaining([
         'PRAGMA busy_timeout;',
@@ -104,49 +105,79 @@ describe('persistence/db (happy path)', () => {
     );
   });
 
-  it('creates every expected index', () => {
-    const indexNames = mockExecSync.mock.calls
+  it('hand-writes no CREATE INDEX at boot', () => {
+    const indexNames = mockExecuteSync.mock.calls
       .map((c) => c[0] as string)
-      .filter((sql) => sql.trim().startsWith('CREATE INDEX'))
+      .filter((sql) => sql.trim().startsWith('CREATE INDEX') && !sql.includes('`'))
       .map((sql) => {
         const match = sql.match(/CREATE INDEX IF NOT EXISTS (\w+)/);
         return match?.[1];
       });
-    expect(indexNames.sort()).toEqual(
-      [
-        'idx_cached_images_cached_at',
-        'idx_cached_images_cover_art_id',
-        'idx_cached_item_songs_song_id',
-        'idx_cached_songs_album_id',
-        'idx_download_queue_position',
-        'idx_download_queue_status',
-        'idx_image_download_queue_cycle',
-        'idx_image_download_queue_status',
-        'idx_library_albums_dmeta_artist',
-        'idx_library_albums_dmeta_name',
-        'idx_library_albums_norm_name',
-        'idx_library_albums_sortKey',
-        'idx_pending_scrobble_events_time',
-        'idx_scrobble_events_time',
-        'idx_song_index_albumId',
-        'idx_song_index_dmeta_artist',
-        'idx_song_index_dmeta_title',
-        'idx_song_index_norm_title',
-        'idx_song_index_sort',
-        'idx_song_index_starred',
-      ].sort(),
-    );
+    expect(indexNames).toEqual([]);
+  });
+
+  it('the kept tables index via the generated DDL, after their columns exist', () => {
+    // The whole point of the consolidation: ensureNormalizedSchema runs tables →
+    // ALTER-add missing columns → indexes, so `idx_scrobble_events_hour` can no longer
+    // be created before the `hour` column and take DB init down.
+    const ddl = NORMALIZED_DDL.join('\n');
+    for (const idx of [
+      'idx_scrobble_events_time',
+      'idx_scrobble_events_hour',
+      'idx_pending_scrobble_events_time',
+      'idx_cached_songs_album_id',
+      'idx_cached_item_songs_song_id',
+      'idx_cached_item_songs_item_song',
+      'idx_download_queue_status',
+      'idx_download_queue_position_unique',
+      'idx_cached_images_cached_at',
+      'idx_cached_images_cover_art_id',
+      'idx_image_download_queue_status',
+      'idx_image_download_queue_cycle',
+    ]) {
+      expect(ddl).toContain(`\`${idx}\``);
+    }
   });
 
   it('cached_item_songs declares ON DELETE CASCADE on item_id', () => {
-    // Guards against accidental schema regression — the cascade behavior is
-    // exactly what the UPSERT fix in commit 5867ff0 relies on for orphan
-    // edges to clean up, and its absence would silently corrupt the
-    // refcount-by-COUNT invariant.
-    const cascadeDdl = mockExecSync.mock.calls
-      .map((c) => c[0] as string)
-      .find((sql) => sql.includes('cached_item_songs'));
-    expect(cascadeDdl).toMatch(/ON DELETE CASCADE/);
+    // Guards against accidental schema regression — the UPSERT path relies on
+    // this cascade for orphan edges to clean up, and its absence would silently
+    // corrupt the refcount-by-COUNT invariant. Match the CREATE specifically: the dedup DELETE in
+    // db.ts also mentions the table, and drizzle emits lowercase `ON DELETE cascade`.
+    const cascadeDdl = NORMALIZED_DDL.find(
+      (sql) => sql.trim().startsWith('CREATE TABLE') && sql.includes('cached_item_songs'),
+    );
+    expect(cascadeDdl).toMatch(/on delete cascade/i);
+  });
+
+  it('dedups cached_item_songs before the UNIQUE index is created', () => {
+    // The dedup must precede ensureNormalizedSchema — that transaction creates the
+    // UNIQUE (item_id, song_id) index all-or-nothing, so leftover duplicates would
+    // fail it and null the whole DB handle.
+    const sqls = mockExecuteSync.mock.calls.map((c) => c[0] as string);
+    const dedupIdx = sqls.findIndex((s) => s.includes('DELETE FROM cached_item_songs'));
+    const uniqueIdx = sqls.findIndex((s) => s.includes('idx_cached_item_songs_item_song'));
+    expect(dedupIdx).toBeGreaterThanOrEqual(0);
+    expect(uniqueIdx).toBeGreaterThan(dedupIdx);
+  });
+
+  it('retires the old non-unique download_queue position index at boot', () => {
+    // A new index NAME plus a DROP of the old one — `CREATE UNIQUE INDEX IF NOT
+    // EXISTS idx_download_queue_position` would be a silent no-op against the
+    // existing non-unique index, so upgrading installs would never get the
+    // constraint.
+    const sqls = mockExecuteSync.mock.calls.map((c) => c[0] as string);
+    expect(sqls).toContain('DROP INDEX IF EXISTS idx_download_queue_position;');
+  });
+
+  it('probes download_queue for duplicate positions before the UNIQUE index is created', () => {
+    // Same ordering requirement as the cached_item_songs dedup: the renumber must
+    // run first or leftover duplicates fail the all-or-nothing CREATE.
+    const sqls = mockExecuteSync.mock.calls.map((c) => c[0] as string);
+    const probeIdx = sqls.findIndex((s) => s.includes('HAVING COUNT(*) > 1'));
+    const uniqueIdx = sqls.findIndex((s) => s.includes('idx_download_queue_position_unique'));
+    expect(probeIdx).toBeGreaterThanOrEqual(0);
+    expect(uniqueIdx).toBeGreaterThan(probeIdx);
   });
 
   describe('__setDbForTests', () => {
@@ -159,9 +190,10 @@ describe('persistence/db (happy path)', () => {
         getFirstAsync: jest.fn(),
         runSync: jest.fn(),
         runAsync: jest.fn(),
+        runBatchAsync: jest.fn(),
+        runAtomicBatchAsync: jest.fn(),
         execSync: jest.fn(),
         withTransactionSync: jest.fn(),
-        withTransactionAsync: jest.fn(),
       };
       __setDbForTests(fake);
       expect(getDb()).toBe(fake);
@@ -188,8 +220,8 @@ describe('persistence/db (init failure)', () => {
   beforeAll(() => {
     warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
     jest.isolateModules(() => {
-      jest.doMock('expo-sqlite', () => ({
-        openDatabaseSync: () => {
+      jest.doMock('@op-engineering/op-sqlite', () => ({
+        open: () => {
           throw new Error('OEM ICU/JSSE failure');
         },
       }));
@@ -235,8 +267,8 @@ describe('persistence/db (non-Error throw)', () => {
   beforeAll(() => {
     warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
     jest.isolateModules(() => {
-      jest.doMock('expo-sqlite', () => ({
-        openDatabaseSync: () => {
+      jest.doMock('@op-engineering/op-sqlite', () => ({
+        open: () => {
           // eslint-disable-next-line @typescript-eslint/no-throw-literal
           throw 'string-shaped failure';
         },

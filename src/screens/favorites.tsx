@@ -1,16 +1,15 @@
 import { useIsFocused } from "expo-router/react-navigation";
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Ionicons from "@react-native-vector-icons/ionicons/static";
 import { useTranslation } from 'react-i18next';
 
-import { AlbumListView } from '../components/AlbumListView';
 import { DownloadButton } from '../components/DownloadButton';
 import { EmptyState } from '../components/EmptyState';
-import { ArtistListView } from '../components/ArtistListView';
 import { SegmentControl } from '../components/SegmentControl';
-import { SongListView } from '../components/SongListView';
-import { useFetchOnHydrated } from '../hooks/useFetchOnHydrated';
+import { StarredAlbumList } from '../components/StarredAlbumList';
+import { StarredArtistList } from '../components/StarredArtistList';
+import { StarredSongList } from '../components/StarredSongList';
 import { useTheme } from '../hooks/useTheme';
 import { shuffleArray } from '../utils/arrayHelpers';
 import { formatCompactDuration } from '../utils/formatters';
@@ -20,8 +19,10 @@ import {
   STARRED_SONGS_ITEM_ID,
   enqueueStarredSongsDownload,
   deleteStarredSongsDownload,
-  getLocalTrackUri,
 } from '../services/musicCacheService';
+import { listAllStarredSongs, starredItemOf, starredSongTotals } from '../db/repository/favorites';
+import { isItemDownloaded } from '../db/repository/downloads';
+import { getDb } from '../store/persistence/db';
 import { filterBarStore } from '../store/filterBarStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import {
@@ -30,7 +31,6 @@ import {
 } from '../store/layoutPreferencesStore';
 import { favoritesStore } from '../store/favoritesStore';
 import { musicCacheStore } from '../store/musicCacheStore';
-import { albumPassesDownloadedFilter } from '../store/persistence/cachedItemHelpers';
 import { searchStore } from '../store/searchStore';
 
 type FavoritesSegment = 'songs' | 'albums' | 'artists';
@@ -57,12 +57,11 @@ export function FavoritesScreen() {
     [t],
   );
 
-  /* ---- Store: favorites data ---- */
-  const songs = favoritesStore((s) => s.songs);
-  const albums = favoritesStore((s) => s.albums);
-  const artists = favoritesStore((s) => s.artists);
+  /* ---- Store: favorites membership (the lists themselves read SQL) ---- */
   const loading = favoritesStore((s) => s.loading);
   const error = favoritesStore((s) => s.error);
+  const version = favoritesStore((s) => s.version);
+  const hydrated = favoritesStore((s) => s.hydrated);
 
   /* ---- Store: layout preferences ---- */
   const favSongLayout = layoutPreferencesStore((s) => s.favSongLayout);
@@ -84,27 +83,47 @@ export function FavoritesScreen() {
     setFavArtistLayout(favArtistLayout === 'list' ? 'grid' : 'list');
   }, [favArtistLayout, setFavArtistLayout]);
 
-  /* ---- Auto-fetch on mount (after hydration) ---- */
-  // favoritesStore persists via the async adapter; gate the empty-check on
-  // hydration so cached favorites aren't re-fetched before the blob loads.
-  useFetchOnHydrated(favoritesStore, () => {
+  /* ---- Auto-fetch on mount (after the SQL read lands) ---- */
+  // Gate the empty-check on `hydrated` so a user with favourites in SQL isn't
+  // re-fetched before the membership sets are read.
+  const fetchedRef = useRef(false);
+  useEffect(() => {
+    if (!hydrated || fetchedRef.current) return;
     const s = favoritesStore.getState();
-    if (
-      s.songs.length === 0 &&
-      s.albums.length === 0 &&
-      s.artists.length === 0 &&
-      !s.loading
-    ) {
-      s.fetchStarred();
+    if (s.songIds.size === 0 && s.albumIds.size === 0 && s.artistIds.size === 0 && !s.loading) {
+      fetchedRef.current = true;
+      void s.fetchStarred();
     }
-  });
+  }, [hydrated]);
 
   /* ---- Filter state ---- */
   const offlineMode = offlineModeStore((s) => s.offlineMode);
   const downloadedOnly = filterBarStore((s) => s.downloadedOnly);
-  const cachedItems = musicCacheStore((s) => s.cachedItems);
   const includePartial = layoutPreferencesStore((s) => s.includePartialInDownloadedFilter);
-  const starredSongsDownloaded = STARRED_SONGS_ITEM_ID in cachedItems;
+  // `revision` is the download tables' change signal: the probe below is SQL, and SQL has
+  // no Zustand subscription, so without it downloading (or deleting) the starred aggregate
+  // never reaches this screen.
+  const revision = musicCacheStore((s) => s.revision);
+
+  // Is the `__starred__` aggregate itself downloaded? `null` means NOT YET KNOWN — a third
+  // state, distinct from "known absent", because the answer decides whether the songs
+  // segment renders at all, whether its list is filtered, and which empty-state copy it
+  // shows, and each of those is wrong for a frame if unknown is collapsed into `false`.
+  // A re-read deliberately keeps the previous answer rather than reverting to `null` —
+  // the same trade `search.tsx` makes.
+  const [starredSongsDownloaded, setStarredSongsDownloaded] = useState<boolean | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      const db = getDb();
+      const downloaded = db ? await isItemDownloaded(db, STARRED_SONGS_ITEM_ID) : false;
+      if (alive) setStarredSongsDownloaded(downloaded);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [revision]);
+  const starredDownloadedUnknown = starredSongsDownloaded === null;
 
   /* ---- Configure filter bar ---- */
   const handleDownloadStarred = useCallback(() => {
@@ -144,27 +163,35 @@ export function FavoritesScreen() {
     toggleArtistLayout,
   ]);
 
-  const filteredSongs = useMemo(() => {
-    if (!downloadedOnly) return songs;
-    if (!starredSongsDownloaded) return [];
-    return songs.filter((s) => getLocalTrackUri(s.id) !== null);
-  }, [songs, downloadedOnly, starredSongsDownloaded, cachedItems]);
-
-  const filteredAlbums = useMemo(() => {
-    if (!downloadedOnly) return albums;
-    return albums.filter((a) => albumPassesDownloadedFilter(a, cachedItems, includePartial));
-  }, [albums, downloadedOnly, cachedItems, includePartial]);
-
-  const filteredArtists = useMemo(() => {
-    if (!downloadedOnly) return artists;
-    const downloadedArtistIds = new Set<string>();
-    for (const album of albums) {
-      if (albumPassesDownloadedFilter(album, cachedItems, includePartial) && album.artistId) {
-        downloadedArtistIds.add(album.artistId);
-      }
-    }
-    return artists.filter((a) => downloadedArtistIds.has(a.id));
-  }, [artists, albums, downloadedOnly, cachedItems, includePartial]);
+  // INTENDED: the downloaded filter requires the `__starred__` aggregate to exist. Songs on
+  // disk via an album download don't substitute for marking the collection downloaded; that
+  // view is Library → Songs + Favourites filter.
+  //
+  // Unknown resolves per line: the FILTER treats it as downloaded (never show music that may
+  // not be on the device); SUPPRESSION and the OFFLINE COPY treat it as not-yet (never claim
+  // "download your favourites" over a list about to appear).
+  const songsDownloadedOnly = downloadedOnly && starredSongsDownloaded !== false;
+  const songsSuppressed = downloadedOnly && starredSongsDownloaded === false;
+  // Empty-state copy, three states, most specific first:
+  //  1. offline with the aggregate missing → "download your favourites" (explains the
+  //     mode, not the chip, so it outranks the generic filter message);
+  //  2. the Downloaded chip on → the list was emptied BY THE FILTER, not because the
+  //     user has starred nothing. `downloadedOnly` is the only filter consulted: the
+  //     Favourites chip is hidden on this route (`FilterBar`) and the starred lists
+  //     never apply it, so a value left over from the Library tab must not count;
+  //  3. otherwise → the plain "star some songs" hint.
+  const songsOfflineEmpty = starredSongsDownloaded === false && offlineMode;
+  const songsEmptyMessage = songsOfflineEmpty
+    ? t('notAvailableOffline')
+    : downloadedOnly
+      ? t('noMatchesForFilters')
+      : t('noFavoriteSongsYet');
+  const songsEmptySubtitle = songsOfflineEmpty
+    ? t('downloadFavoriteSongsOffline')
+    : downloadedOnly
+      ? t('tryAdjustingFilters')
+      : t('starSongsHint');
+  const songsEmptyIcon = songsOfflineEmpty ? 'cloud-offline-outline' : 'heart-outline';
 
   /* ---- Pull-to-refresh ---- */
   const [refreshing, setRefreshing] = useState(false);
@@ -181,16 +208,54 @@ export function FavoritesScreen() {
   const segmentHeight = 52;
   const contentInsetTop = headerHeight + segmentHeight;
 
-  const totalDuration = useMemo(
-    () => filteredSongs.reduce((sum, s) => sum + (s.duration ?? 0), 0),
-    [filteredSongs],
+  // Count + duration as two SQL aggregates over the favourites set — never a whole-set
+  // read. Both halves store `duration` as a column, so this stays an aggregate.
+  const [totals, setTotals] = useState({ count: 0, duration: 0 });
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      const db = getDb();
+      if (!db || songsSuppressed) {
+        if (alive) setTotals({ count: 0, duration: 0 });
+        return;
+      }
+      const t = await starredSongTotals(db, {
+        downloadedOnly: songsDownloadedOnly,
+        includePartial,
+      });
+      if (alive) setTotals(t);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [songsDownloadedOnly, songsSuppressed, includePartial, revision, version]);
+
+  // Play All / Shuffle All / tap-to-play all queue the WHOLE favourites list, fetched
+  // at press time — the player queue is `Child[]` by construction.
+  const playAll = useCallback(
+    (shuffle: boolean) => {
+      void (async () => {
+        const db = getDb();
+        if (!db) return;
+        const list = (
+          await listAllStarredSongs(db, {
+            downloadedOnly: songsDownloadedOnly,
+            includePartial,
+          })
+        ).map(starredItemOf);
+        if (list.length === 0) return;
+        const queue = shuffle ? shuffleArray(list) : list;
+        void playTrack(queue[0], queue);
+      })();
+    },
+    [songsDownloadedOnly, includePartial],
   );
 
   const songsActionBar = useMemo(() => {
-    if (filteredSongs.length === 0) return null;
+    if (totals.count === 0) return null;
     return (
       <View style={styles.actionBar}>
-        {(!offlineMode || starredSongsDownloaded) && (
+        {(!offlineMode || starredSongsDownloaded === true) && (
           <DownloadButton
             itemId={STARRED_SONGS_ITEM_ID}
             type="playlist"
@@ -203,23 +268,20 @@ export function FavoritesScreen() {
           <View style={styles.metaLine}>
             <Ionicons name="musical-notes-outline" size={14} color={colors.primary} />
             <Text style={[styles.metaText, { color: colors.textSecondary }]}>
-              {t('songCount', { count: filteredSongs.length })}
+              {t('songCount', { count: totals.count })}
             </Text>
           </View>
           <View style={styles.metaLine}>
             <Ionicons name="time-outline" size={14} color={colors.primary} />
             <Text style={[styles.metaText, { color: colors.textSecondary }]}>
-              {formatCompactDuration(totalDuration)}
+              {formatCompactDuration(totals.duration)}
             </Text>
           </View>
         </View>
         <View style={styles.actionButtons}>
-          {filteredSongs.length > 1 && (
+          {totals.count > 1 && (
             <Pressable
-              onPress={() => {
-                const shuffled = shuffleArray(filteredSongs);
-                playTrack(shuffled[0], shuffled);
-              }}
+              onPress={() => playAll(true)}
               style={({ pressed }) => [
                 styles.shufflePlayButton,
                 pressed && styles.buttonPressed,
@@ -231,7 +293,7 @@ export function FavoritesScreen() {
             </Pressable>
           )}
           <Pressable
-            onPress={() => playTrack(filteredSongs[0], filteredSongs)}
+            onPress={() => playAll(false)}
             style={({ pressed }) => [
               styles.playAllButton,
               { backgroundColor: colors.primary },
@@ -245,60 +307,74 @@ export function FavoritesScreen() {
         </View>
       </View>
     );
-  }, [filteredSongs, totalDuration, colors, offlineMode, starredSongsDownloaded, handleDownloadStarred, handleDeleteStarred]);
+  }, [totals, playAll, colors, t, offlineMode, starredSongsDownloaded, handleDownloadStarred, handleDeleteStarred]);
 
   return (
     <View style={styles.container}>
       <View style={styles.content}>
         {activeSegment === 'songs' && (
-          <SongListView
-            songs={filteredSongs}
-            layout={favSongLayout}
-            loading={loading}
-            error={error}
-            onRefresh={handleRefresh}
-            refreshing={refreshing}
-            emptyMessage={starredSongsDownloaded === false && offlineMode
-              ? t('notAvailableOffline')
-              : t('noFavoriteSongsYet')}
-            emptySubtitle={starredSongsDownloaded === false && offlineMode
-              ? t('downloadFavoriteSongsOffline')
-              : t('starSongsHint')}
-            emptyIcon={starredSongsDownloaded === false && offlineMode
-              ? 'cloud-offline-outline'
-              : 'heart-outline'}
-            scrollToTopTrigger={`${downloadedOnly}`}
-            contentInsetTop={contentInsetTop}
-            listHeaderExtra={songsActionBar}
-          />
+          songsSuppressed ? (
+            <View style={[styles.emptyContainer, { paddingTop: contentInsetTop }]}>
+              <EmptyState
+                icon={songsEmptyIcon}
+                title={songsEmptyMessage}
+                subtitle={songsEmptySubtitle}
+              />
+            </View>
+          ) : (
+            <StarredSongList
+              layout={favSongLayout}
+              downloadedOnly={songsDownloadedOnly}
+              includePartial={includePartial}
+              // Hold the list on `loading` until the probe answers, so an empty result can
+              // never render its empty state with copy chosen from the unknown state.
+              // `SongListView` only draws a spinner when the list is EMPTY, so a populated
+              // list is untouched.
+              loading={loading || starredDownloadedUnknown}
+              error={error}
+              onRefresh={handleRefresh}
+              refreshing={refreshing}
+              emptyMessage={songsEmptyMessage}
+              emptySubtitle={songsEmptySubtitle}
+              emptyIcon={songsEmptyIcon}
+              contentInsetTop={contentInsetTop}
+              listHeaderExtra={songsActionBar}
+            />
+          )
         )}
         {activeSegment === 'albums' && (
-          <AlbumListView
-            albums={filteredAlbums}
+          <StarredAlbumList
             layout={favAlbumLayout}
+            downloadedOnly={downloadedOnly}
+            includePartial={includePartial}
             loading={loading}
             error={error}
             onRefresh={handleRefresh}
             refreshing={refreshing}
-            emptyMessage={t('noFavoriteAlbumsYet')}
-            emptySubtitle={t('starAlbumsHint')}
+            // Same rule as the songs segment: with the Downloaded chip on, an empty list
+            // means the filter emptied it, not that nothing is starred. (Artists take no
+            // filter copy — Downloaded replaces that segment outright, below.)
+            emptyMessage={downloadedOnly ? t('noMatchesForFilters') : t('noFavoriteAlbumsYet')}
+            emptySubtitle={downloadedOnly ? t('tryAdjustingFilters') : t('starAlbumsHint')}
             emptyIcon="heart-outline"
-            scrollToTopTrigger={`${downloadedOnly}`}
             contentInsetTop={contentInsetTop}
           />
         )}
         {activeSegment === 'artists' && (
-          offlineMode ? (
+          // See `library.tsx` — artists aren't downloadable, so the Downloaded
+          // filter hides them; only the copy depends on `offlineMode`.
+          downloadedOnly ? (
             <View style={[styles.emptyContainer, { paddingTop: contentInsetTop }]}>
               <EmptyState
-                icon="cloud-offline-outline"
-                title={t('notAvailableOffline')}
-                subtitle={t('artistsNotAvailableOffline')}
+                icon={offlineMode ? 'cloud-offline-outline' : 'cloud-download-outline'}
+                title={offlineMode ? t('notAvailableOffline') : t('artistsNotDownloadable')}
+                subtitle={
+                  offlineMode ? t('artistsNotAvailableOffline') : t('artistsNotDownloadableHint')
+                }
               />
             </View>
           ) : (
-            <ArtistListView
-              artists={filteredArtists}
+            <StarredArtistList
               layout={favArtistLayout}
               loading={loading}
               error={error}
@@ -307,7 +383,6 @@ export function FavoritesScreen() {
               emptyMessage={t('noFavoriteArtistsYet')}
               emptySubtitle={t('starArtistsHint')}
               emptyIcon="heart-outline"
-              scrollToTopTrigger={`${downloadedOnly}`}
               contentInsetTop={contentInsetTop}
             />
           )

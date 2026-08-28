@@ -1,5 +1,5 @@
 import { FlashList, type FlashListRef } from '@shopify/flash-list';
-import { useCallback, useMemo, useRef } from 'react';
+import { useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -17,24 +17,73 @@ import { useTheme } from '../hooks/useTheme';
 import { EmptyState } from './EmptyState';
 import { type IoniconsName } from '../utils/iconNames';
 import type { AlbumID3 } from '../services/subsonicService';
-import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
-import { getSortFirstLetter } from '../utils/sortHelpers';
-import { serverInfoStore } from '../store/serverInfoStore';
+import { letterOfSortKey } from '../utils/sortHelpers';
 import { AlbumCard } from './AlbumCard';
 import { AlbumRow } from './AlbumRow';
 import { closeOpenRow } from './SwipeableRow';
 import { AlphabetScroller } from './AlphabetScroller';
+import { addStatusBarTapListener, setArmed } from 'expo-scroll-to-top';
+
+import { isOverlayOpen } from '../store/overlayStore';
+
 import { InsetRefreshSpacer } from './InsetRefreshSpacer';
 
 export type AlbumLayout = 'list' | 'grid';
+
+/** `toAlbum` for consumers that already hold envelopes. Module-level so its identity is
+ *  stable: a fresh arrow per render would re-run every visible row's conversion. */
+export const albumIdentity = (album: AlbumID3): AlbumID3 => album;
+
+/* ------------------------------------------------------------------ */
+/*  Per-row adapters                                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One rendered row, converted. The conversion is memoised on the item object, so
+ * appending a page converts the appended rows only — the accumulated array is never
+ * re-mapped, and the screen holds no second array of envelopes.
+ */
+function AlbumListItem<T>({ item, toAlbum }: { item: T; toAlbum: (item: T) => AlbumID3 }) {
+  const album = useMemo(() => toAlbum(item), [item, toAlbum]);
+  return <AlbumRow album={album} />;
+}
+
+function AlbumGridItem<T>({
+  item,
+  toAlbum,
+  index,
+  columns,
+}: {
+  item: T;
+  toAlbum: (item: T) => AlbumID3;
+  index: number;
+  columns: number;
+}) {
+  const album = useMemo(() => toAlbum(item), [item, toAlbum]);
+  const { paddingLeft, paddingRight } = getGridItemPadding(index, columns, GRID_GAP);
+  return (
+    <View style={{ flex: 1, paddingLeft, paddingRight, marginBottom: GRID_GAP }}>
+      <AlbumCard album={album} />
+    </View>
+  );
+}
 
 /* ------------------------------------------------------------------ */
 /*  AlbumListView                                                     */
 /* ------------------------------------------------------------------ */
 
-export interface AlbumListViewProps {
-  /** The list of albums to display */
-  albums: AlbumID3[];
+export interface AlbumListViewProps<T extends { id: string }> {
+  /** The items to display — whatever the screen holds: SQL browse rows, envelopes. */
+  items: T[];
+  /** Adapts one item to the `AlbumID3` the row and card components take. Must be
+   *  stable across renders (module-level, or memoised at the consumer). */
+  toAlbum: (item: T) => AlbumID3;
+  /** The key this list is ORDERED BY, read off the item. The A-Z scroller's letter is
+   *  derived from it (`letterOfSortKey`) rather than recomputed from the envelope, so
+   *  the letter a row files under is by construction the one it sorts at.
+   *  Required only when the scroller computes its own letters — the keyset lists supply
+   *  `activeLetters` and seek in SQL, and the home lists have no A-Z order at all. */
+  sortKeyOf?: (item: T) => string;
   /** Display layout: row list or grid of cards */
   layout?: AlbumLayout;
   /** Whether data is currently loading */
@@ -57,10 +106,33 @@ export interface AlbumListViewProps {
   scrollToTopTrigger?: string;
   /** Extra top padding so content starts below a floating header but scrolls behind it */
   contentInsetTop?: number;
+  // ── Keyset paging (bounded window from the normalized DB). Optional: array-based
+  //    consumers omit these. ──
+  /** Near the end → load + append the next keyset page. */
+  onEndReached?: () => void;
+  /** Near the top → load + prepend the previous keyset page (after an A-Z jump). */
+  onStartReached?: () => void;
+  /** iOS status-bar tap. Fires once the native scroll has FINISHED, so the list is already
+   *  at offset 0 — after an A-Z seek that is the sought letter, not the start of the data.
+   *  The screen drives the transition and needs two things from the list: where it
+   *  currently sits, and a way to move it once the prepend has shifted it. */
+  /** iOS status-bar tap, delivered by `StatusBarTapTarget` — the list itself declines it,
+   *  so nothing has scrolled when this runs. Return true if the window was reset (the
+   *  remount lands at the top by itself); false means the list was already showing the
+   *  start of the data and just needs scrolling. */
+  onScrollToTop?: () => boolean | Promise<boolean>;
+  /** A-Z tap seeks via the DB (replace the window) instead of scrolling within the
+   *  loaded array. When set, the list also scrolls to the top on `scrollToTopTrigger`. */
+  onSeekLetter?: (letter: string) => void;
+  /** The full set of active alphabet letters — the loaded window can't reveal them
+   *  all, so the screen supplies it. Falls back to computing from `items`. */
+  activeLetters?: Set<string>;
 }
 
-export function AlbumListView({
-  albums,
+export function AlbumListView<T extends { id: string }>({
+  items,
+  toAlbum,
+  sortKeyOf,
   layout = 'list',
   loading = false,
   error = null,
@@ -72,13 +144,18 @@ export function AlbumListView({
   showAlphabetScroller = false,
   scrollToTopTrigger,
   contentInsetTop = 0,
-}: AlbumListViewProps) {
+  onEndReached,
+  onStartReached,
+  onScrollToTop,
+  onSeekLetter,
+  activeLetters: activeLettersProp,
+}: AlbumListViewProps<T>) {
   const { t } = useTranslation();
   const { colors } = useTheme();
   const resolvedEmptyMessage = emptyMessage ?? t('noAlbumsFound');
   const resolvedEmptySubtitle = emptySubtitle ?? t('tryAdjustingFilters');
   const gridColumns = useGridColumns();
-  const listRef = useRef<FlashListRef<AlbumID3>>(null);
+  const listRef = useRef<FlashListRef<T>>(null);
   const scrollY = useSharedValue(0);
   const refreshControlKey = useRefreshControlKey();
 
@@ -89,33 +166,51 @@ export function AlbumListView({
     [scrollY],
   );
 
+  // The status-bar tap arrives from `expo-scroll-to-top`, which declines it natively so
+  // nothing has scrolled by the time this runs. A screen that reset its window needs no
+  // scroll; one that was already showing the start of its data does.
+  const handleScrollToTop = useCallback(async () => {
+    // A tap belongs to whatever is on top. The native side has already declined it, so
+    // returning here makes it a true no-op rather than scrolling a hidden list.
+    if (isOverlayOpen()) return;
+    const reset = await onScrollToTop?.();
+    if (!reset) {
+      listRef.current?.scrollToOffset({ offset: 0, animated: true });
+    }
+  }, [onScrollToTop]);
+
+  // Subscribe ONCE, through a ref. Keying the effect on the handler would re-arm and
+  // re-subscribe whenever it were rebuilt, briefly leaving two subscriptions live and
+  // firing the tap twice.
+  const scrollToTopRef = useRef(handleScrollToTop);
+  scrollToTopRef.current = handleScrollToTop;
+  useEffect(() => {
+    if (!onScrollToTop) return undefined;
+    setArmed(true);
+    const off = addStatusBarTapListener(() => {
+      void scrollToTopRef.current();
+    });
+    return () => {
+      setArmed(false);
+      off();
+    };
+  }, [onScrollToTop]);
+
   const listKey = scrollToTopTrigger ? `${layout}:${scrollToTopTrigger}` : layout;
 
   const renderListItem = useCallback(
-    ({ item }: { item: AlbumID3 }) => <AlbumRow album={item} />,
-    []
+    ({ item }: { item: T }) => <AlbumListItem item={item} toAlbum={toAlbum} />,
+    [toAlbum]
   );
 
   const renderGridItem = useCallback(
-    ({ item, index }: { item: AlbumID3; index: number }) => {
-      const { paddingLeft, paddingRight } = getGridItemPadding(index, gridColumns, GRID_GAP);
-      return (
-        <View
-          style={{
-            flex: 1,
-            paddingLeft,
-            paddingRight,
-            marginBottom: GRID_GAP,
-          }}
-        >
-          <AlbumCard album={item} />
-        </View>
-      );
-    },
-    [gridColumns]
+    ({ item, index }: { item: T; index: number }) => (
+      <AlbumGridItem item={item} toAlbum={toAlbum} index={index} columns={gridColumns} />
+    ),
+    [gridColumns, toAlbum]
   );
 
-  const keyExtractor = useCallback((item: AlbumID3) => item.id, []);
+  const keyExtractor = useCallback((item: T) => item.id, []);
 
   const EmptyComponent = useMemo(
     () => (
@@ -129,39 +224,42 @@ export function AlbumListView({
   );
 
   /* ---- Alphabet scroller support ---- */
-  const scrollerVisible = showAlphabetScroller && albums.length > 0;
-  const albumSortOrder = layoutPreferencesStore((s) => s.albumSortOrder);
-  const ignoredArticles = serverInfoStore((s) => s.ignoredArticles);
+  const scrollerVisible = showAlphabetScroller && items.length > 0;
 
-  /** Compute the alphabet-scroller letter for a given album, mirroring
-   *  the article-stripped sort key used by `albumLibraryStore`. */
-  const getLetter = useCallback(
-    (a: AlbumID3): string =>
-      albumSortOrder === 'title'
-        ? getSortFirstLetter(a.name ?? '', a.sortName, ignoredArticles ?? undefined)
-        : getSortFirstLetter(a.artist ?? a.name ?? '', undefined, ignoredArticles ?? undefined),
-    [albumSortOrder, ignoredArticles],
+  /** The scroller letter for an item — the first character of the SAME key the list is
+   *  ordered by, and nothing else. `null` when the consumer supplies no key, which is
+   *  every list that has no alphabetical order to file rows under. */
+  const getLetter = useMemo(
+    () => (sortKeyOf ? (item: T): string => letterOfSortKey(sortKeyOf(item)) : null),
+    [sortKeyOf],
   );
 
-  const activeLetters = useMemo(() => {
-    if (!scrollerVisible) return new Set<string>();
-    return new Set(albums.map((a) => getLetter(a)));
-  }, [albums, scrollerVisible, getLetter]);
+  // In keyset mode the window can't reveal every letter, so the screen supplies the full
+  // active set — and this whole-array pass would be discarded, so it is skipped.
+  const computedLetters = useMemo(() => {
+    if (activeLettersProp || !scrollerVisible || !getLetter) return new Set<string>();
+    return new Set(items.map((item) => getLetter(item)));
+  }, [activeLettersProp, items, scrollerVisible, getLetter]);
+  const activeLetters = activeLettersProp ?? computedLetters;
 
   const handleLetterChange = useCallback(
     (letter: string) => {
-      const idx = albums.findIndex((a) => {
-        const first = getLetter(a);
-        return letter === '#' ? first === '#' : first === letter;
-      });
+      // Keyset mode: seek via the DB (screen replaces the window). Array mode:
+      // scroll to the matching index within the loaded array.
+      if (onSeekLetter) {
+        onSeekLetter(letter);
+        return;
+      }
+      if (!getLetter) return;
+      const idx = items.findIndex((item) => getLetter(item) === letter);
       if (idx >= 0) {
         listRef.current?.scrollToIndex({ index: idx, animated: false });
       }
     },
-    [albums, getLetter]
+    [items, getLetter, onSeekLetter]
   );
 
-  if (loading && albums.length === 0) {
+  if (loading && items.length === 0) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator size="large" color={colors.primary} />
@@ -169,7 +267,7 @@ export function AlbumListView({
     );
   }
 
-  if (error && albums.length === 0) {
+  if (error && items.length === 0) {
     return (
       <View style={styles.centered}>
         <Text style={[styles.errorText, { color: colors.textSecondary }]}>
@@ -186,7 +284,7 @@ export function AlbumListView({
       <FlashList
         ref={listRef}
         key={listKey}
-        data={albums}
+        data={items}
         renderItem={isGrid ? renderGridItem : renderListItem}
         keyExtractor={keyExtractor}
         onScrollBeginDrag={closeOpenRow}
@@ -195,7 +293,7 @@ export function AlbumListView({
           styles.listContent,
           isGrid && styles.listContentGrid,
           scrollerVisible && styles.listContentWithScroller,
-          albums.length === 0 && styles.emptyListContent,
+          items.length === 0 && styles.emptyListContent,
         ]}
         onScroll={contentInsetTop > 0 && Platform.OS === 'ios' ? handleScroll : undefined}
         scrollEventThrottle={contentInsetTop > 0 && Platform.OS === 'ios' ? 16 : undefined}
@@ -226,6 +324,10 @@ export function AlbumListView({
           ) : undefined
         }
         drawDistance={300}
+        onEndReached={onEndReached}
+        onEndReachedThreshold={0.6}
+        onStartReached={onStartReached}
+        onStartReachedThreshold={0.6}
         ListEmptyComponent={EmptyComponent}
       />
       {scrollerVisible && (

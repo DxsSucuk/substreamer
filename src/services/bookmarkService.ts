@@ -147,7 +147,7 @@ export function bookmarkCurrentTrack(bookmark: PlayQueueBookmark): Child | undef
   return bookmark.queue[clampIndex(bookmark.currentIndex, bookmark.queue.length)];
 }
 
-/** Cover-art value for a bookmark — its current track's resolved cover (#202). */
+/** Cover-art value for a bookmark — its current track's resolved cover. */
 export function bookmarkCoverArtId(bookmark: PlayQueueBookmark): string | undefined {
   const track = bookmarkCurrentTrack(bookmark);
   if (!track) return undefined;

@@ -6,18 +6,16 @@ import {
   type ArtistID3,
   type Child,
 } from './subsonicService';
-import { albumLibraryStore } from '../store/albumLibraryStore';
-import { artistLibraryStore } from '../store/artistLibraryStore';
 import { musicCacheStore, getSongEnvelope } from '../store/musicCacheStore';
-import { playlistLibraryStore } from '../store/playlistLibraryStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { syncStatusStore } from '../store/syncStatusStore';
 import { connectivityStore } from '../store/connectivityStore';
-import {
-  querySongCandidates,
-  queryAlbumCandidates,
-  hasLocalLibraryRows,
-} from '../store/persistence/searchIndexQueries';
+import { getDb } from '../store/persistence/db';
+import { hasLocalCorpus, searchAlbums, searchArtists, searchSongs } from '../db/repository/search';
+import { albumListRowToAlbumID3, listAlbumsByIds } from '../db/repository/albums';
+import { artistListRowToArtistID3 } from '../db/repository/artists';
+import { songListRowToChild } from '../db/repository/songs';
+import { listPlaylistsByIds, playlistListRowToPlaylist } from '../db/repository/playlists';
 import { normalize, tokenize, metaphoneKey, scoreField, scoreCandidate, REJECT, CONFIDENT } from './searchMatch';
 import { getGenreNames } from '../utils/genreHelpers';
 
@@ -33,46 +31,13 @@ export async function performOnlineSearch(query: string): Promise<SearchResults>
 }
 
 /**
- * Construct a Child from a cached_songs row + its parent cached_item.
- *
- * Carries every field the cached row holds — including `coverArt`, which song
- * cover-art resolution reads (#202). Never narrow a reconstruction because "no
- * consumer reads it today"; the data is here, so pass it through.
- */
-function childFromCachedSong(
-  track: {
-    id: string;
-    title: string;
-    artist?: string;
-    albumId: string;
-    duration: number;
-    coverArt?: string;
-  },
-  parentItemName?: string,
-): Child {
-  return {
-    id: track.id,
-    albumId: track.albumId,
-    title: track.title,
-    artist: track.artist,
-    album: parentItemName,
-    duration: track.duration,
-    coverArt: track.coverArt,
-    isDir: false,
-  };
-}
-
-/**
  * Offline search over the cached library.
  *
- * The per-song scan can sweep the entire downloaded catalog (tens of
- * thousands of rows on a heavily-cached device), so it runs as an async,
- * chunked loop that yields the JS thread every {@link OFFLINE_SCAN_CHUNK}
- * song iterations — without this, typing in the search box on a large
- * offline library froze the UI for the whole scan. `shouldAbort` lets the
- * caller cancel a superseded scan early when the user has typed further
- * (the keystroke that started this scan is no longer the current query).
- * setTimeout, not rAF — rAF can stall on RN 0.85/Fabric.
+ * The per-song scan can sweep the entire downloaded catalog (tens of thousands of
+ * rows on a heavily-cached device), so it must not run in one JS turn: it yields
+ * every {@link OFFLINE_SCAN_CHUNK} song iterations, or typing in the search box
+ * freezes the UI for the whole scan. `shouldAbort` cancels a scan whose keystroke
+ * is no longer the current query. setTimeout, not rAF — rAF can stall on Fabric.
  */
 const OFFLINE_SCAN_CHUNK = 1024;
 
@@ -83,7 +48,7 @@ export async function performOfflineSearch(
   // Empty / whitespace query matches nothing (guards the scan too).
   if (!normalize(query)) return { albums: [], artists: [], songs: [] };
   const { cachedItems, cachedSongs } = musicCacheStore.getState();
-  const cachedIds = new Set(Object.keys(cachedItems));
+  const cachedIds = Object.keys(cachedItems);
 
   // Relevance for a name (+ optional artist) — the best of the two field scores.
   const rel = (name: string, artist?: string | null): number =>
@@ -92,18 +57,17 @@ export async function performOfflineSearch(
       artist ? scoreField(query, artist).score : 0,
     );
 
-  const albums = albumLibraryStore
-    .getState()
-    .albums.filter((a) => cachedIds.has(a.id))
-    .map((a) => ({ a, s: rel(a.name, a.artist) }))
+  // Downloaded albums/playlists: the normalized rows for the downloaded id set, scored in
+  // full — perfect recall over that small set. No downloads / no db → nothing to match.
+  const db = getDb();
+  const albums = (db && cachedIds.length ? await listAlbumsByIds(db, cachedIds) : [])
+    .map((r) => ({ a: albumListRowToAlbumID3(r), s: rel(r.name ?? '', r.display_artist) }))
     .filter((x) => x.s >= REJECT)
     .sort((x, y) => y.s - x.s)
     .map((x) => x.a);
 
-  const playlists = playlistLibraryStore
-    .getState()
-    .playlists.filter((p) => cachedIds.has(p.id))
-    .map((p) => ({ p, s: scoreField(query, p.name).score }))
+  const playlists = (db && cachedIds.length ? await listPlaylistsByIds(db, cachedIds) : [])
+    .map((r) => ({ p: playlistListRowToPlaylist(r), s: scoreField(query, r.name ?? '').score }))
     .filter((x) => x.s >= REJECT)
     .sort((x, y) => y.s - x.s)
     .map((x) => x.p);
@@ -134,11 +98,15 @@ export async function performOfflineSearch(
       if (seen.has(songId)) continue;
       const track = cachedSongs[songId];
       if (!track) continue;
+      // Score off the row, not the envelope: building one per candidate would
+      // rebuild the whole downloaded catalog on every keystroke.
       const s = rel(track.title, track.artist);
-      if (s >= REJECT) {
-        seen.add(songId);
-        scored.push({ c: childFromCachedSong(track, item.name), s });
-      }
+      if (s < REJECT) continue;
+      // The snapshot above predates the awaits, so a song deleted mid-scan is gone here.
+      const envelope = getSongEnvelope(songId);
+      if (!envelope) continue;
+      seen.add(songId);
+      scored.push({ c: { ...envelope, album: item.name }, s });
     }
   }
   scored.sort((a, b) => b.s - a.s);
@@ -153,11 +121,10 @@ export async function performOfflineSearch(
 
 const EMPTY_RESULTS: SearchResults = { albums: [], artists: [], songs: [] };
 
-// Output caps. Local search can score hundreds of candidates; the on-screen
-// results list (a SectionList) re-renders the whole set per keystroke, so an
-// uncapped list makes the full Search screen janky. Mirror the server path's
-// per-category cap (`search3` returns 20 each) so the two paths feel the same
-// — not an arbitrary number. Ranked, so the cap keeps the best matches.
+// Output caps. Local search can score hundreds of candidates and the results
+// SectionList re-renders the whole set per keystroke, so an uncapped list makes the
+// Search screen janky. Set to the server path's per-category cap (`search3` returns 20
+// each) so the two paths feel the same. Results are ranked, so the cap keeps the best.
 const SONG_RESULT_CAP = SEARCH3_RESULT_LIMIT;
 const ALBUM_RESULT_CAP = SEARCH3_RESULT_LIMIT;
 const ARTIST_RESULT_CAP = SEARCH3_RESULT_LIMIT;
@@ -176,8 +143,8 @@ function relevance(query: string, name: string, artist?: string | null): number 
 }
 
 /**
- * Local fuzzy search over the ENTIRE synced library (`song_index` +
- * `library_albums`) via candidate SQL + JS re-rank. Distinct from
+ * Local fuzzy search over the ENTIRE synced library (the normalized `songs` +
+ * `albums` tables) via candidate SQL + JS re-rank. Distinct from
  * `performOfflineSearch`, which scans only the downloaded set held in memory.
  * Returns the ranked results plus the top relevance score — the routing gate for
  * whether the server is still worth consulting. `shouldAbort` bails a superseded
@@ -189,6 +156,8 @@ export async function searchFullLibraryScored(
 ): Promise<{ results: SearchResults; topScore: number }> {
   const norm = normalize(query);
   if (!norm) return { results: EMPTY_RESULTS, topScore: 0 };
+  const db = getDb();
+  if (!db) return { results: EMPTY_RESULTS, topScore: 0 };
   const tokens = tokenize(norm);
   // Phonetic tier is gated to tokens ≥4 chars (short tokens over-collide) and
   // to non-empty codes (non-Latin encodes to '' — never a phonetic candidate).
@@ -197,36 +166,38 @@ export async function searchFullLibraryScored(
     .map((t) => metaphoneKey(t))
     .filter((k) => k.length > 0);
 
-  const [songCands, albumCands] = await Promise.all([
-    querySongCandidates(norm, tokens, dmetaTokens),
-    queryAlbumCandidates(norm, tokens, dmetaTokens),
+  // Tiered candidate generation over the normalized tables (norm_*/dmeta_* columns),
+  // then the JS precision re-rank below.
+  const [songCands, albumCands, artistCands] = await Promise.all([
+    searchSongs(db, norm, tokens, dmetaTokens),
+    searchAlbums(db, norm, tokens, dmetaTokens),
+    searchArtists(db, norm, tokens, dmetaTokens),
   ]);
   if (shouldAbort?.()) return { results: EMPTY_RESULTS, topScore: 0 };
 
   const songs = songCands
-    .map((c) => ({ c, s: relevance(query, c.title ?? '', c.artist) }))
+    .map((r) => ({ r, s: relevance(query, r.title ?? '', r.artist) }))
     .filter((x) => x.s >= REJECT)
     .sort((a, b) => b.s - a.s);
   const albums = albumCands
-    .map((a) => ({ a, s: relevance(query, a.name, a.artist) }))
+    .map((r) => ({ r, s: relevance(query, r.name ?? '', r.display_artist) }))
     .filter((x) => x.s >= REJECT)
     .sort((a, b) => b.s - a.s);
 
-  // Artists (online only): fuzzy-match names against the synced artist library.
-  // CONFIDENT floor, not REJECT — this scores every artist un-prefiltered, so a
-  // looser floor would admit weak Jaro-Winkler noise.
-  const artists = artistLibraryStore
-    .getState()
-    .artists.map((a) => ({ a, s: scoreField(query, a.name).score }))
+  // Artists are held to the CONFIDENT floor, deliberately stricter than songs/albums'
+  // REJECT: a wrong artist row misroutes the whole browse, so only a near-certain name
+  // match is worth surfacing.
+  const artists = artistCands
+    .map((r) => ({ r, s: scoreField(query, r.name ?? '').score }))
     .filter((x) => x.s >= CONFIDENT)
     .sort((x, y) => y.s - x.s);
 
   const topScore = Math.max(songs[0]?.s ?? 0, albums[0]?.s ?? 0, artists[0]?.s ?? 0);
   return {
     results: {
-      albums: albums.slice(0, ALBUM_RESULT_CAP).map((x) => x.a),
-      artists: artists.slice(0, ARTIST_RESULT_CAP).map((x) => x.a),
-      songs: songs.slice(0, SONG_RESULT_CAP).map((x) => x.c),
+      albums: albums.slice(0, ALBUM_RESULT_CAP).map((x) => albumListRowToAlbumID3(x.r)),
+      artists: artists.slice(0, ARTIST_RESULT_CAP).map((x) => artistListRowToArtistID3(x.r)),
+      songs: songs.slice(0, SONG_RESULT_CAP).map((x) => songListRowToChild(x.r)),
     },
     topScore,
   };
@@ -310,7 +281,8 @@ export async function searchLibrary(
   const { hasConnection, isServerReachable } = connectivityStore.getState();
   const reachable = hasConnection && isServerReachable;
 
-  if (!(await hasLocalLibraryRows())) {
+  const db = getDb();
+  if (!db || !(await hasLocalCorpus(db))) {
     return reachable ? performOnlineSearch(query) : EMPTY_RESULTS;
   }
 
@@ -329,9 +301,9 @@ export async function searchLibrary(
 
 /**
  * Best local album match for a voice "play album" intent. Fuzzy-matches the
- * album name over `library_albums`, weighting the (optional) artist via
+ * album name over the normalized `albums` table, weighting the (optional) artist via
  * `scoreCandidate` so "Ten by Pearl Jam" picks Pearl Jam's Ten, not some other
- * "Ten". Local-only (library_albums is on-device, so it works offline too);
+ * "Ten". Local-only (the album table is on-device, so it works offline too);
  * null when nothing clears the reject floor. The caller fetches + plays the
  * album's tracks in order.
  */
@@ -343,13 +315,21 @@ export async function findAlbum(name: string, artist?: string): Promise<AlbumID3
     .filter((t) => t.length >= 4)
     .map((t) => metaphoneKey(t))
     .filter((k) => k.length > 0);
-  const candidates = await queryAlbumCandidates(norm, tokens, dmetaTokens);
+  const db = getDb();
+  if (!db) return null;
+  const candidates = await searchAlbums(db, norm, tokens, dmetaTokens);
   if (candidates.length === 0) return null;
   const scored = candidates
-    .map((a) => ({ a, score: scoreCandidate({ song: name, artist }, { title: a.name, artist: a.artist }) }))
+    .map((r) => ({
+      r,
+      score: scoreCandidate(
+        { song: name, artist },
+        { title: r.name ?? '', artist: r.display_artist ?? undefined },
+      ),
+    }))
     .filter((x) => x.score >= REJECT)
     .sort((x, y) => y.score - x.score);
-  return scored[0]?.a ?? null;
+  return scored[0] ? albumListRowToAlbumID3(scored[0].r) : null;
 }
 
 /**
@@ -368,17 +348,16 @@ export async function findArtistSongs(name: string): Promise<Child[]> {
  * Every downloaded song, optionally filtered by genre.
  *
  * Iterates `cachedItems` (downloaded items including the `__starred__`
- * aggregate) → `songIds` → `cachedSongs`. Dedup by song id so a track
+ * aggregate) → `songIds` → `getSongEnvelope()`. Dedup by song id so a track
  * that lives under multiple cached items appears once.
  *
- * Genre filtering reads each song's full envelope via `getSongEnvelope()`
- * (lazy JSON parse with WeakMap memoisation) since the `cached_songs` hot
- * columns don't carry genre. For text-only paths (no genre filter) we
- * never touch the envelope, so the call is essentially free.
+ * `album` is overridden with the containing item's name, so a playlist-downloaded
+ * song shows the playlist rather than its own album — the display these callers
+ * have always had.
  */
 function collectOfflineSongs(genreFilter?: string): Child[] {
   const g = genreFilter?.toLowerCase();
-  const { cachedItems, cachedSongs } = musicCacheStore.getState();
+  const { cachedItems } = musicCacheStore.getState();
 
   const out: Child[] = [];
   const seen = new Set<string>();
@@ -386,15 +365,11 @@ function collectOfflineSongs(genreFilter?: string): Child[] {
   for (const item of Object.values(cachedItems)) {
     for (const songId of item.songIds) {
       if (seen.has(songId)) continue;
-      const track = cachedSongs[songId];
-      if (!track) continue;
-      if (g) {
-        const envelope = getSongEnvelope(songId);
-        const names = envelope ? getGenreNames(envelope) : [];
-        if (!names.some((name) => name.toLowerCase() === g)) continue;
-      }
+      const envelope = getSongEnvelope(songId);
+      if (!envelope) continue;
+      if (g && !getGenreNames(envelope).some((name) => name.toLowerCase() === g)) continue;
       seen.add(songId);
-      out.push(childFromCachedSong(track, item.name));
+      out.push({ ...envelope, album: item.name });
     }
   }
 
@@ -407,12 +382,10 @@ export function getOfflineSongsByGenre(genre: string): Child[] {
 
 /**
  * The set of genre names (lowercased) present anywhere in the offline (cached)
- * library. Single pass over all cached songs, parsing each envelope once.
- *
- * Replaces the O(genres × songs) pattern of calling `getOfflineSongsByGenre`
- * once per candidate genre (which re-walks the whole library per genre) — used
- * by the Tuned-In builder's offline genre list, which previously froze on a
- * large offline library at screen mount.
+ * library. ONE pass over all cached songs, building each `Child` once — callers
+ * needing the genre list (the Tuned-In builder) must use this rather than calling
+ * `getOfflineSongsByGenre` per candidate genre, which re-walks the whole library
+ * each time and blocks the JS thread at mount on a large offline library.
  */
 export function getOfflineGenresPresent(): Set<string> {
   const { cachedItems, cachedSongs } = musicCacheStore.getState();

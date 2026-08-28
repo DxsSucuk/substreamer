@@ -4,12 +4,9 @@ Drop-in operating instructions for coding agents. Read this file before every ta
 
 **Working code only. Finish the job. Plausibility is not correctness.**
 
-This file follows the [AGENTS.md](https://agents.md) open standard (Linux Foundation / Agentic AI Foundation). Claude Code, Codex, Cursor, Windsurf, Copilot, Aider, Devin, Amp read it natively. For tools that look elsewhere, symlink:
+This file follows the [AGENTS.md](https://agents.md) open standard (Linux Foundation / Agentic AI Foundation). Claude Code, Codex, Cursor, Windsurf, Copilot, Aider, Devin and Amp read it natively.
 
-```bash
-ln -s AGENTS.md CLAUDE.md
-ln -s AGENTS.md GEMINI.md
-```
+**This is the only rules file.** `CLAUDE.md`, `.cursor/rules/`, `.github/copilot-instructions.md` and `.github/instructions/*.instructions.md` were all retired on 2026-08-06 — every tool reads AGENTS.md now. Do not reintroduce a per-tool copy: two rules files drift, and the stale one is always the one that gets read. (The retired Copilot files had gone stale exactly that way — none of them knew the data model existed.)
 
 ---
 
@@ -37,6 +34,41 @@ These rules override everything else in this file when in conflict:
 - Surface assumptions out loud: "I'm assuming you want X, Y, Z. If that's wrong, say so." Do not bury assumptions inside the implementation.
 - If two approaches exist, present both with tradeoffs. Do not pick one silently. Exception: trivial tasks (typo, rename, log line) where the diff fits in one sentence.
 
+### Server behaviour: READ THE SOURCE, never assume
+
+Every Subsonic-compatible server we support is open source, and local read-only clones live in
+`reference/` (gitignored — see `reference/README.md`). **Never guess, infer or "reason about" what
+a server does when the answer can be read.** Never write a defensive branch for a failure mode you
+have not confirmed exists in a real implementation.
+
+- Establishing a behaviour means citing `reference/<server>/<file>:<line>`, not an observation, a
+  plausible mechanism, or an existing code comment.
+- A comment in OUR code is not evidence. Comments record what someone believed at the time. Two
+  such comments in the sync path ("search3 is not reliably pageable", "a server that ignores
+  `albumOffset` returns the same first page forever") were both agent-written assumptions, both
+  wrong, and both shaped real design decisions for weeks before anyone checked.
+- Rationale written as assertion is how this spreads. Write "guards an UNVERIFIED failure mode —
+  never observed" rather than a confident description of a server that may not exist.
+- When a real server genuinely misbehaves, cite its source too, and treat it as that server's bug —
+  do not generalise one server's defect into a rule about the API.
+
+`plans/research-search3-paging-behaviour.md` is the worked example: five servers read from source,
+which disproved both assumptions and identified the actual defect in the one server that had one.
+
+### The planning cycle
+
+For anything beyond a trivial fix, plan before you touch code, and get the plan approved before you implement:
+
+1. **Write the plan** to `plans/` (see §10 Plans). State the goal, the steps, and how each step is verified.
+2. **Review it adversarially** — a subagent, or a deliberate second pass hunting for what is wrong with it. The reviewer's job is to find defects, not to agree.
+3. **Assess every finding on the evidence.** Read the actual source and confirm or refute it. A finding is not true because a reviewer asserted it, and not false because it is inconvenient. Say which it is.
+4. **Fix the plan** for the findings that hold. If a finding reveals a defect in shipped code, it goes IN SCOPE — never deferred (§12).
+5. **Iterate 2–4** until a review produces no new valid findings. Resolve every open question with evidence; a plan containing "investigate X during implementation" is not finished.
+6. **Submit the clean plan for approval. Never start significant implementation without it.** Sequencing decisions, scope changes and reversals of an earlier decision go back to the user too.
+7. **Keep the plan current** as you implement — deviations, surprises, final state, test results.
+
+The review step is not ceremony. It has repeatedly found live bugs in already-shipped code, and it has caught chosen approaches that would not have worked.
+
 ---
 
 ## 2. Writing code: simplicity first
@@ -49,6 +81,8 @@ These rules override everything else in this file when in conflict:
 - If the solution runs 200 lines and could be 50, rewrite it before showing it.
 - If you find yourself adding "for future extensibility", stop. Future extensibility is a future decision.
 - Bias toward deleting code over adding code. Shipping less is almost always better.
+
+**Weigh cases by whether a real user of THIS app can actually hit them.** This is a music client: someone browses a library, plays tracks, downloads albums, stars things, syncs, logs out. Before hardening a path, say concretely how a user reaches it. Cases that are merely *not forbidden by a hard technical limit* — but that nothing in the app can actually produce — are not worth code, tests, or plan sections; note the assumption and move on. We have burned real time chasing scenarios that turned out to be impossible in practice, and the cost is not just the wasted work: it buries the failures that do happen. Two exceptions, where "unlikely" is not a defence: **data loss** and **anything that fires on every launch**.
 
 The test: would a senior engineer reading the diff call this overcomplicated? If yes, simplify.
 
@@ -140,11 +174,12 @@ For every task:
 After every session where the agent did something wrong:
 
 1. Ask: was the mistake because this file lacks a rule, or because the agent ignored a rule?
-2. If lacking: add the rule under "Project Learnings" below, written as concretely as possible ("Always use X for Y" not "be careful with Y").
+2. If lacking: add the rule — a project fact to §11, a working correction to §12 — as concretely as possible ("Always use X for Y", not "be careful with Y").
 3. If ignored: the rule may be too long, too vague, or buried. Tighten it or move it up.
 4. Every few weeks, prune. For each line, ask: "Would removing this cause the agent to make a mistake?" If no, delete. Bloated AGENTS.md files get ignored wholesale.
+5. **Re-verify §10 against `package.json` and the tree whenever the stack moves.** Every version line in it was wrong by the time it was next read — an agent that trusts a stale fact goes looking for a library that isn't there.
 
-Boris Cherny (creator of Claude Code) keeps his team's file around 100 lines. Under 300 is a good ceiling. Over 500 and you are fighting your own config.
+Aim for ~300 lines of rules; over 500 you are fighting your own config. §11 is exempt from the diet — it is the expensive-to-rediscover material, and it should grow when something bites us and shrink when a subsystem is retired.
 
 ---
 
@@ -154,10 +189,13 @@ Substreamer — React Native music streaming client for Subsonic-compatible serv
 
 ### Stack
 
-- React Native 0.83 + Expo SDK 55 (New Architecture / Fabric enabled, Hermes engine).
-- TypeScript strict, React 19. Path alias: `@/*` → `./src/*`.
-- Routing: Expo Router (file-based). State: Zustand + SQLite (`substreamer7.db`).
-- Audio: `react-native-track-player` (local fork in `modules/`, Media3-based on Android).
+Verified against `package.json` on 2026-08-06 — correct a line here the moment it stops being true.
+
+- React Native 0.86 + Expo SDK 57 (New Architecture + Hermes, both SDK defaults).
+- TypeScript ~6.0 strict, React 19.2. Path alias: `@/*` → `./src/*`.
+- Routing: Expo Router (file-based). State: Zustand v5.
+- Persistence: **op-SQLite** (`@op-engineering/op-sqlite`) — one connection to `substreamer7.db`. `expo-sqlite` is gone; do not reintroduce it.
+- Audio: **`react-native-queue-player`** — our own package (`github.com/ghenry22/react-native-queue-player`), installed from npm, NOT in `modules/`. Media3-based on Android. (It replaced `react-native-track-player`; that name should appear nowhere in new code.)
 - Lists: `@shopify/flash-list` v2. Animations: `react-native-reanimated` v4.
 - i18n: `react-i18next` v17 (English source; community translations via Crowdin).
 - Image cache: custom disk cache via `expo-file-system`.
@@ -171,10 +209,21 @@ Substreamer — React Native music streaming client for Subsonic-compatible serv
 - Typecheck: `npx tsc --noEmit`
 - Validate i18n: `node scripts/validate-translations.js`
 - Validate Intl helpers: `node scripts/validate-intl.js`
-- Native build (Android): `npm run android`
+- Validate native module inventory: `npm run validate:modules`
+- Circular imports: `npx madge --circular --extensions ts,tsx src`
+- Native build (Android): `npm run android` (device: `npm run android:device`)
 - Native build (iOS): `npm run ios`
 - Both concurrent: `npm run concurrent`
-- Native module rebuild only: `scripts/build-modules.sh`
+- Native module rebuild only: `npm run build:modules`
+- Android build with explicit flags (`--gradle-only`, `--release`, `--no-install`): `scripts/build-android.sh`
+
+The full quality gate, run before starting and after finishing any task that touches `src/`:
+
+```bash
+npx tsc --noEmit && npx jest --no-coverage
+node scripts/validate-intl.js && node scripts/validate-translations.js
+npx madge --circular --extensions ts,tsx src
+```
 
 **Native builds are available when needed** — typically to verify a native-side change compiles and links cleanly, not as part of every task. The npm scripts source `scripts/env-android.sh` internally (sets `JAVA_HOME`, `ANDROID_HOME`, `ANDROID_SDK_ROOT`, prepends emulator/platform-tools to `PATH`, and starts an Android emulator if none is running). For ad-hoc `gradle` / `adb` / `emulator` commands outside the npm scripts, prefix with `source scripts/env-android.sh && ` so the env is populated. To target a real device instead of the emulator: `npm run android:device`.
 
@@ -197,10 +246,21 @@ src/
   components/   reusable UI
   hooks/        custom hooks
   services/     API clients + integrations (plain async functions, no classes)
-  store/        Zustand stores (one per domain)
+  db/           persistence — THE data layer (see §11)
+    client.ts     op-SQLite connection + the `InternalDb` surface every module uses
+    schema.ts     normalized schema (source of truth; DDL generated from it)
+    repository/   per-entity SQL: albums, artists, songs, playlists, favorites, search…
+    migrations/   versioned data migrations
+    testing/      the op-SQLite ⇄ better-sqlite3 Jest substitute (see `__mocks__/`)
+  store/        Zustand stores (one per domain) + store/persistence (KV + row tables)
+  constants/    theme definitions
   i18n/         singleton + locale JSON
+  types/        shared type declarations
   utils/        shared helpers
-modules/        local Expo native modules
+  test-utils/   test helpers
+modules/        local Expo native modules (expo-async-fs, expo-ssl-trust, expo-gzip,
+                expo-image-colors, expo-image-resize, expo-move-to-back,
+                expo-backup-exclusions, subsonic-api)
 plans/          local working docs (gitignored)
 fastlane/       store-listing metadata
 scripts/        build helpers + CI validators
@@ -233,13 +293,15 @@ scripts/        build helpers + CI validators
 
 **FlashList v2:** `keyExtractor`, memoised `renderItem`, `drawDistance` to control off-screen rendering. **Don't pass** `estimatedItemSize`, `windowSize`, `maxToRenderPerBatch`, `initialNumToRender`, `getItemLayout`, `removeClippedSubviews` — all FlatList-only and unsupported. Grid: `numColumns={N}`; handle gaps via per-item padding (no `columnWrapperStyle`). Ref type `useRef<FlashListRef<T>>(null)`. Exception: drag-reorder uses `react-native-reorderable-list`; bounded horizontal carousels (≤20 items) may use RN `FlatList`.
 
+**`maintainVisibleContentPosition` is ON by default in v2 — pass `{{ disabled: true }}` on any list whose data is REPLACED rather than appended.** It anchors the viewport to a previously-visible item; when the replacement data puts that item at a different index the list parks where nothing is drawn, and only a manual scroll recovers it. The home carousels hit this on every filter toggle, section refresh and sync — cards rendered at full size with a correct list layout, and still nothing painted. Keep it enabled where the user's scroll position is worth preserving across an append, i.e. the keyset browse lists loading a backward page.
+
 **Animations:** `react-native-reanimated` everywhere — `useSharedValue`, `useAnimatedStyle`, `withTiming`/`withSpring`/etc. Do not import `Animated`/`Easing` from `react-native` **except** for slow linear translations (e.g. `MarqueeText`'s scroll), where `Animated` + `useNativeDriver: true` produces uniform display-synced motion that worklets can't match at low speeds.
 
 **Modals / sheets:** RN `Modal` with transparent backdrop. Bottom padding via `useSafeAreaInsets()` → `Math.max(insets.bottom, 16)`.
 
 **Swipe rows:** primary action goes at the **outside edge** (last in the array). Full swipe triggers the outermost action — visual hierarchy matches gesture.
 
-**Pull-to-refresh:** wrap with `minDelay()` from `utils/stringHelpers.ts` so the spinner is visible long enough to perceive.
+**Pull-to-refresh:** go through `onPullToRefresh(scope)` in `services/dataSyncService`, which holds the `minDelay()` that keeps the spinner perceptible and the offline no-op (offline there is nothing to refresh — that is intended, not a gap). It refreshes the **server source of whatever the view shows**, so pick the scope from the source, never from the filters: a favourites view refreshes `favorites` (`getStarred2`) whatever else is filtered on top, and a Downloaded filter still refreshes the library it filters. A filter narrows a VIEW; it never changes the source. A filtered branch whose refresh differs from its unfiltered one is a bug.
 
 **Navigation transitions:** detail screens defer heavy rendering with `useTransitionComplete()` to avoid janky push animations.
 
@@ -268,7 +330,9 @@ Save every non-trivial plan to `plans/` (gitignored) before implementation begin
 
 ### Commits
 
-Short, factual subject lines. **No** preamble, recap, ceremonial summaries. **No** mentions of test counts, coverage %, TS/lint status unless the commit is specifically about those. **No** attribution trailers — `Co-Authored-By`, `Signed-off-by`, "Generated with", "🤖", tool credits — ever, in any commit, full stop. Only commit when explicitly asked.
+Short, factual subject lines. **No** preamble, recap, ceremonial summaries. **No** mentions of test counts, coverage %, TS/lint status unless the commit is specifically about those. **No** attribution trailers — `Co-Authored-By`, `Signed-off-by`, "Generated with", "🤖", tool credits — ever, in any commit, full stop.
+
+**Local commits are allowed; pushing is not.** When working through an approved plan, commit each step at a gate-green boundary — that is what makes the work resumable and reviewable step by step. **Never `git push`, open a PR, or publish anything to a remote without explicit approval**, every time; approval to commit is never approval to push. Outside an approved plan, ask before committing.
 
 **Closing issues:** to close a GitHub issue, put `Closes #N` **in the commit message** — it auto-closes when the commit is pushed. This is the ONLY way to close an issue. **Never** run `gh issue close` manually. When the user says "close the ticket with the commit message" (or "close #N with the commit"), they mean literally add `Closes #N` to the commit message — not close it by hand. "Commit" still means commit locally and stop (never push unless told); the issue closes later when the commit is pushed, which is fine — do not manually close it in the meantime.
 
@@ -282,37 +346,86 @@ Prefer Symdex MCP server (when available) over Glob/Grep for symbol lookup, file
 
 - Editing `android/` or `ios/` directly — generated, will be lost.
 - `expo run:android` / `expo run:ios` directly — use `npm run android` / `npm run ios` (they handle env setup and emulator). Direct `./gradlew` invocations are fine when you've sourced `scripts/env-android.sh` first.
-- Lazy `require()` inside store actions — architectural smell; restructure.
+- Lazy `require()` of project code — **anywhere**, not just store actions: services, components,
+  migrations, all of it. It hides a cycle from the compiler instead of fixing it, defeats typing
+  (the destructured binding is `any` unless hand-cast), and hides a real dependency from the test
+  graph. If there is a cycle, **re-architect to remove it**; a lazy require is never the answer.
+  If the blocker is a test-environment gap (a native module with no Jest bridge), mock it in the
+  SUITE — production code does not carry workarounds for test wiring. Only exceptions: RN static
+  assets (`require('../assets/x.png')`, the required idiom) and `jest.mock` factories.
 - Brand-gating (`Build.MANUFACTURER` checks) in native code — prefer generic dispatch.
-- `String.prototype.localeCompare(...)` — use `defaultCollator` / `baseCollator` from `src/utils/intl.ts`. Hermes Android ARM64 has a perf bug (#867) cloning a fresh ICU collator per call. CI guards via `validate-intl.js`.
+- `String.prototype.localeCompare(...)` — use `defaultCollator` / `baseCollator` from `src/utils/intl.ts`. Hermes Android ARM64 has a perf bug (facebook/hermes#867) cloning a fresh ICU collator per call. CI guards via `validate-intl.js`.
 - `new Intl.DateTimeFormat(...)` — use `getDateTimeFormat(locale, options)` from `src/utils/intl.ts`. Same reason; same guard.
 - Class components — all functional with `memo`.
 - Class-based or singleton services — plain modules of async functions.
 - Raw `<Image>` for Subsonic cover art — `<CachedImage>`.
 - FlatList-only props on FlashList (`estimatedItemSize`, `windowSize`, etc.).
 - Author tags in commits.
-- Committing without explicit user request.
+- Pushing to a remote, opening a PR, or publishing anything outward without explicit approval — every time. Local commits at gate-green step boundaries are fine (see Commits).
 
 ---
 
-## 11. Project Learnings
+## 11. Key decisions and findings
+
+**Hard-won and expensive to rediscover. Read before touching persistence. Do not re-litigate without new evidence.**
+
+### The write path (atomic-writes programme, Phases 1–3, 2026-08)
+
+- **There is NO JS-side write mutex.** `serializeDbWrite` and `withTransactionAsync` were deleted. The native pool is ONE thread, FIFO (`cpp/OPThreadPool.cpp`), so it serializes work that reaches it. Do not add a JS mutex back.
+- **A BATCH DOES NOT REACH THE POOL WHEN YOU CALL IT — a read issued after a batch runs BEFORE it.** op-SQLite's JS layer parks every `executeBatch` on a transaction lock and starts it from a **`setImmediate`** (`node_modules/@op-engineering/op-sqlite/src/functions.ts:66-68,122-131`), serialized behind every other in-flight batch. `execute` — every read, and every `runAsync` write — passes straight through at call time. So the pool's FIFO orders *arrival*, and batches arrive at least a macrotask late.
+
+  **Never fire a batch un-awaited and then read what it wrote in the same tick.** Two live bugs came from exactly that: a queued download read its own payload rows before the insert landed and errored "Failed to read songs" on every album, and `cached_item_songs` edges written with bare `runAsync` hit an FK against parents still sitting in a deferred batch, were rejected, and were swallowed — losing the edge for a song the user had downloaded. Either await the write, or put the dependent write in the SAME batch so it shares the lane.
+
+  **The Jest SQLite substitute models this**: `src/db/testing/opSqliteBetterSqlite3.ts` carries the same lock — `executeBatch`/`transaction` park on it and start from a `setImmediate`, everything else applies at call time. Submission order is ordinary JS scheduling, so the suite CAN hold it. Drain the lock with `settleDbWrites()` (`src/test-utils/`) wherever a test asserts on an un-awaited write; a suite on fake timers owns `setImmediate` too, so it must either pay 1ms of clock per macrotask or opt out with `jest.useFakeTimers({ doNotFake: ['setImmediate'] })`.
+- **Multi-statement writes MUST use `runAtomicBatchAsync`.** It is the only way to get all-or-nothing. It brackets the statements in `SAVEPOINT`/`RELEASE` inside one `executeBatch` and enqueues the `ROLLBACK TO` in the *same tick* — because an aborted batch never reaches its `RELEASE`, and recovering from the JS `catch` leaves the savepoint open across a round trip while the pool keeps draining, silently swallowing other writers' work. That was a real shipped bug.
+- **`runBatchAsync` is NOT atomic**, whatever any comment says. op-SQLite's `opsqlite_execute_batch` has its `BEGIN` commented out and aborts on the first failure with everything before it committed. Use it only where a half-applied run is self-repairing.
+- **`withTransactionSync` issues its BEGIN on the JS thread**, bypassing the pool, and hard-fails on Android if a pool transaction is open. Use it only where nothing else writes (boot, the migration chain). At runtime, `await awaitDbWritesIdle()` from `db/client.ts` first — logout is the only such caller today.
+- **Never `INSERT OR REPLACE` into a table other rows FK to.** It is DELETE-then-INSERT and fires `ON DELETE CASCADE`, wiping children silently. Always `INSERT … ON CONFLICT DO UPDATE`.
+- **A promise you will await later still needs a handler now.** A write kicked off without `await` (the `bulkUpsert` pipeline) is an unhandled rejection until something observes it.
+
+### Data model
+
+- The **normalized tables are the source of truth** (`src/db/schema.ts`); all reads go through `src/db/repository/*`. The legacy blob/KV caches are frozen and being retired — do not write to them.
+- **Download `queue_position` values are UNIQUE but deliberately NOT dense.** Renumbering to close gaps is O(N²) across a full-library download. See `plans/download-queue-position-density.md` before "fixing" the holes.
+- Boot calls `ensureNormalizedSchema` once, at module scope. Runtime callers were removed; do not add one.
+
+### Working on the data model
+
+- **Two upsert policies, and picking the wrong one loses data.** A writer that enumerates the whole entity (the library sync, a full `getAlbum`) overwrites authoritatively. A **supplementary** writer holding a partial view (a list endpoint, `getArtist`'s album array) must pass `merge: true` — `COALESCE(excluded.col, col)` — or it blanks every column its payload omits. The merge flag also skips the child DELETE/INSERT when the payload carries no child rows, because a COALESCE cannot protect a child table and an absent child set means "no opinion", not "none". This was a live bug: opening an artist wiped album genre/year/MBID until the next full sync.
+- **Regenerating the DDL** after editing `src/db/schema.ts`: `rm -f src/db/migrations/*.sql && rm -rf src/db/migrations/meta` → `npx drizzle-kit generate` → `node scripts/build-normalized-ddl.js`. The build script requires exactly ONE .sql file (a full schema, not a delta) and errors out otherwise. Never hand-edit `normalizedDdl.ts`.
+- **Every new table must be classified** in `MODEL_TABLES` (server-scoped; logout drops it) or `KEPT_TABLES` (permanent user data) in `createNormalizedTables.ts`. A suite guard enforces it, and the allowlist fails CLOSED — an unclassified table is never dropped, so a server-scoped one would leak between accounts.
+- **FK to your own parent, never to `songs`.** Only true song children (`song_artists`, `song_genres`, …) reference `songs`. A table that merely holds a song id (`artist_top_songs` is the model) must not, because the song need not be in the library — and with `PRAGMA foreign_keys = ON` the INSERT fails outright.
+- **Hydrate stores from SQL in `rehydrateAllStores`**, not from a store's persist config. `headlessMediaService` runs the same pair before building the CarPlay browse tree, so doing it there makes headless work for free.
+
+### Testing reality
+
+- **Jest reproduces the SUBMISSION order, not the pool.** The substitute (`src/db/testing/opSqliteBetterSqlite3.ts`) carries op-SQLite's transaction lock, so which writes are visible to a later read is checkable in the suite — that is JS scheduling. What it cannot reproduce is the native pool draining underneath: no thread, no interleaving window mid-batch. A concurrency claim of that kind still needs a throwaway on-device spike; that is how the open-savepoint window (§ "The write path") was found. The rebuild's spike screens were deleted on 2026-08-08 — recover one from git history rather than reasoning from the suite.
+- Where a hazard is device-only, say so in the plan rather than implying the suite covers it.
+
+---
+
+## 12. Project Learnings
 
 **Accumulated corrections. This section is for the agent to maintain, not just the human.**
 
 When the user corrects your approach, append a one-line rule here before ending the session. Write it concretely ("Always use X for Y"), never abstractly ("be careful with Y"). If an existing line already covers the correction, tighten it instead of adding a new one. Remove lines when the underlying issue goes away (model upgrades, refactors, process changes).
 
-- (empty)
-
----
-
-## 12. How this file was built
-
-This boilerplate synthesizes:
-- Sean Donahoe's IJFW ("It Just F\*cking Works") principles: one install, working code, no ceremony.
-- Andrej Karpathy's observations on LLM coding pitfalls (the four principles: think-first, simplicity, surgical changes, goal-driven execution).
-- Boris Cherny's public Claude Code workflow (reactive pruning, keep it ~100 lines, only rules that fix real mistakes).
-- Anthropic's official Claude Code best practices (explore-plan-code-commit, verification loops, context as the scarce resource).
-- Community anti-sycophancy patterns (explicit banned phrases, direct-not-diplomatic).
-- The AGENTS.md open standard (cross-tool portability via symlinks).
-
-Read once. Edit sections 10 and 11 for your project. Prune the rest over time. This file gets better the more you use it.
+- **Never defer a pre-existing defect you find on the way.** If work uncovers a bug in shipped code, it goes in scope and gets its own commit. Do not relay a subagent's "out of scope" as if it were settled.
+- **Don't soften a rule to fit what the code does.** A lazy `require()` in a service was described as "adjacent to the rule" because the rule said "store actions"; it was a breach. When shipped code violates the *rationale* of a rule, the finding is a breach and the rule's wording is what needs fixing.
+- **Migrations run SEQUENTIALLY, in id order, exactly ONCE per install. Stop reasoning about old migrations as if they could fire after the current model landed.** `getPendingTasks` returns `id > completedVersion` and runs them in order, so a lower-numbered task can never execute after a higher-numbered one, for anybody. An old migration is history: it runs only for an install that has not reached that version, and always *before* everything after it. Two wrong claims came out of forgetting this — "m17 will re-add `raw_json` so the drop brings the column back" (it cannot; m17 runs first, the drop runs later, end state is dropped) and framing a within-chain ordering question as old migrations interfering with the remodel. If a genuine ordering concern exists it is between two tasks *in the same run*, so say which two and in which order — never "an old migration might run later". **And an old migration is FROZEN: it writes the model that existed when it was written, and is never retro-fitted to a later schema.** "Should m14 also write the new tables?" is not a question — m14 predates them. A new migration handles the new model; that is what new migrations are for.
+- **Text an agent wrote earlier is not project convention, and checking that it predates THIS session proves nothing.** Most prose in this repo — comments, docs, even parts of this file — was agent-authored. Citing it back as established practice is circular: it is your own output wearing the project's clothes. If a term, pattern or claim needs authority, its source is the owner, the code's behaviour, or an external spec — never "it was already written down here". This bites hardest with jargon: a coinage gets used once, appears in the repo, and is then defended as house vocabulary by the agent that coined it. Plain words, unless the owner used the jargon first.
+- **Our own comments are what someone believed when they wrote them, not authority.** Cite them as a lead, verify against the code before repeating them as fact, and correct them when they are wrong. Three of the four lazy `require()`s cited cycles or test needs; `madge` found no cycle at any of them. `childFromCachedSong`'s docstring claimed it "carries every field the cached row holds… never narrow a reconstruction to today's consumers" while emitting 7 of ~50. `resetNormalizedSchema`'s docblock still says full-resync is its only caller; logout calls it too. A comment that has drifted is worse than none, because it reads as confirmation.
+- **The same goes for a spec's "must".** It tells you what a conformant server owes you, not what the servers in the wild actually do — `probeEmptySearch3` exists because a documented requirement was not universally honoured. Never present a spec guarantee as evidence of real-world behaviour.
+- **A single green suite run is not evidence when the suite has ever been flaky.** Two screen suites failed intermittently under full-suite load for a whole session while passing alone; every "gate green" in between was a sampled run that happened to pass. When a failure looks flaky, characterise it — alone, paired, full, repeated — before dismissing it. Fixed by `asyncUtilTimeout`/`testTimeout` in `src/test-utils/asyncTimeouts.ts`; if it returns, raise both and keep the 3× margin.
+- **Comments state what a developer needs to know, not how it was discovered.** A comment exists so someone working on the code can see what it does, what it needs, and any quirk they could not infer from reading it. Concise, focused, factual. No narrating the investigation, no recapping the bug report, no arguing the case, no "this used to…", "an earlier version…", "previously…", "rev 1 said…", no commit hashes, no `plans/` paths. That is project worklog, and worklog in source is terrible practice — it belongs in the commit message or `plans/`. If it takes more than ~3 lines, it is not a comment. Match the density of the surrounding code.
+- **NEVER put ticket numbers in code comments — ours or GitHub's.** `(#202)`, `issue #90`, `migration #33`, `task #14`, `Pre-#159` — all out. A reader cannot resolve them, they rot, and they turn source into a worklog index. Describe the behaviour instead; if the detail is too big for that, it belongs in `plans/`. **The one exception is a THIRD-PARTY tracker reference for a workaround we carry until upstream fixes it** — `facebook/react-native#56343`, `software-mansion/react-native-screens#3786`, `Navidrome #3185`. Those are actionable: they tell the next reader when the workaround can go. Always qualify them with the project name.
+- **Don't describe intended behaviour as a "quirk", "legacy" or a workaround.** Twice in one session that framing sent work down a wrong path — a design decision was filed as a bug, and a lazy `require()` was preserved on a cycle claim that was false. Say it is intended and why, in one line.
+- **Fix native-layer inconsistencies in native code**, not with JS workarounds.
+- **Verify a subagent's findings yourself** before acting on them, and before reporting them as fact. They are frequently right and occasionally confidently wrong.
+- **Run sub-agents one at a time** on multi-phase work — protects context and avoids conflicting edits.
+- **Never invent evidence.** No fabricated user anecdotes or observations to support an argument.
+- **Re-index Symdex after every commit** — its AST snapshot goes stale and post-commit searches silently return old results.
+- **Don't paste plan/tracker contents back into chat.** Summarize the headlines; the file is the artifact.
+- Affirmative action in a confirmation dialog uses a positive label (OK/Delete), never Cancel.
+- Shares exist for albums, playlists and the player queue — not individual songs.
+- Drop a one-line status note when working silently for a long stretch.

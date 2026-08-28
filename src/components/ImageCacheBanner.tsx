@@ -1,9 +1,6 @@
 /**
  * Pill-style notification banner for the persistent image-cache refresh
- * cycle. Shows progress while a cycle is running (or paused). Renamed
- * from `CoverArtRecacheBanner` when the Migration-22 single-shot recache
- * was replaced with the queueable, pause/resume/cancel-able refresh in
- * Phase 3 of the image-cache queue rework.
+ * cycle. Shows progress while a cycle is running (or paused).
  *
  * Visual language matches `LibrarySyncBanner` / `StorageFullBanner` —
  * dark capsule centred below the header, rendered via the priority

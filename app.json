@@ -23,6 +23,11 @@
           "NSAllowsArbitraryLoads": true
         },
         "ITSAppUsesNonExemptEncryption": false,
+        "NSLocalNetworkUsageDescription": "Substreamer uses your local network to connect to your self-hosted music server.",
+        "NSBonjourServices": [
+          "_googlecast._tcp",
+          "_CC1AD845._googlecast._tcp"
+        ],
         "NSLocationWhenInUseUsageDescription": "Location access is needed to detect your WiFi network name for automatic offline mode switching.",
         "INAlternativeAppNames": [
           {
@@ -72,7 +77,7 @@
       "./plugins/fix-jvm-target",
       "./plugins/large-heap",
       "./plugins/set-gradle-version",
-      "expo-sqlite",
+      "./plugins/with-disable-sync-mount-props-override",
       "./modules/expo-ssl-trust/plugin",
       "./modules/expo-backup-exclusions/plugin",
       [

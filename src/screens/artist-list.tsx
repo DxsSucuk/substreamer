@@ -1,90 +1,342 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 
 import { ArtistListView, type ArtistLayout } from '../components/ArtistListView';
 import { useFetchOnHydrated } from '../hooks/useFetchOnHydrated';
 import { onPullToRefresh } from '../services/dataSyncService';
-import { albumLibraryStore } from '../store/albumLibraryStore';
-import { artistLibraryStore } from '../store/artistLibraryStore';
+import {
+  artistCursorOf,
+  artistListRowToArtistID3,
+  countArtists,
+  listArtists,
+  listArtistsBefore,
+  type ArtistListRow,
+} from '../db/repository/artists';
+import { type Cursor } from '../db/repository/core';
+import {
+  listAllStarredArtists,
+  starredItemOf,
+  starredSortKeyOf,
+  type StarredItem,
+} from '../db/repository/favorites';
+import { getDb } from '../store/persistence/db';
+import { refreshArtistLibrary } from '../services/normalizedLibrarySync';
+import { syncStatusStore } from '../store/syncStatusStore';
 import { favoritesStore } from '../store/favoritesStore';
-import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
-import { musicCacheStore } from '../store/musicCacheStore';
-import { albumPassesDownloadedFilter } from '../store/persistence/cachedItemHelpers';
+import { type ArtistID3 } from '../services/subsonicService';
 
-export function ArtistListScreen({
-  layout = 'list',
-  downloadedOnly = false,
-  favoritesOnly = false,
-  contentInsetTop = 0,
+const PAGE = 120;
+/** Alphabet-scroller letters — all active in keyset mode (the loaded window can't
+ *  reveal which letters exist; a tap on an empty letter seeks to the next one). */
+const ALL_LETTERS = new Set<string>([
+  '#',
+  ...Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i)),
+]);
+
+/**
+ * Main artist browse — reads bounded KEYSET pages from the normalized `artists`
+ * table. Artists aren't in the bulk library sync; they're fetched on demand
+ * (`fetchAllArtists`, which dual-writes the normalized table). On a fresh library
+ * the table is empty on first browse, so we trigger the fetch and reload the window
+ * when it lands (via the store's `lastFetchedAt`).
+ */
+function KeysetArtistList({
+  layout,
+  contentInsetTop,
 }: {
-  layout?: ArtistLayout;
-  downloadedOnly?: boolean;
-  favoritesOnly?: boolean;
-  contentInsetTop?: number;
+  layout: ArtistLayout;
+  contentInsetTop: number;
 }) {
-  const artists = artistLibraryStore((s) => s.artists);
-  const loading = artistLibraryStore((s) => s.loading);
-  const error = artistLibraryStore((s) => s.error);
+  const [rows, setRows] = useState<ArtistListRow[]>([]);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [seekTick, setSeekTick] = useState(0);
+  const cursorRef = useRef<Cursor | null>(null); // forward (end)
+  const prevCursorRef = useRef<Cursor | null>(null); // backward (start)
+  const doneRef = useRef(false);
+  const busyRef = useRef(false);
+  // Bumped by every load that REPLACES the window (first page, letter seek, top seek).
+  // A paging load that was already in flight when one of those ran must not write its
+  // rows or cursors afterwards — it belongs to a window that no longer exists.
+  const loadGenRef = useRef(0);
+  // Whether the loaded window begins at the START of the library. `prevCursorRef` cannot
+  // answer this: after the first page it holds row 0's own cursor, which is non-null and
+  // looks identical to a window that starts mid-library after a letter seek.
+  const atLibraryStartRef = useRef(true);
+  // Held across the whole prepend -> scroll -> trim transition. `busyRef` cannot do this
+  // job: every pager clears it in its own `finally`, so an in-flight load would drop the
+  // guard part-way through.
+  const transitionRef = useRef(false);
 
-  const cachedItems = musicCacheStore((s) => s.cachedItems);
-  const includePartial = layoutPreferencesStore((s) => s.includePartialInDownloadedFilter);
-  const allAlbums = albumLibraryStore((s) => s.albums);
-  const starredArtists = favoritesStore((s) => s.artists);
+  const loadFirstPage = useCallback(async () => {
+    const gen = (loadGenRef.current += 1);
+    busyRef.current = true;
+    try {
+      const db = getDb();
+      if (!db) return;
+      const page = await listArtists(db, { cursor: null, limit: PAGE });
+      // A newer load superseded this one — its rows belong to a window that is gone.
+      if (gen !== loadGenRef.current) return;
+      atLibraryStartRef.current = true;
+      cursorRef.current = page.nextCursor;
+      doneRef.current = !page.nextCursor;
+      prevCursorRef.current = page.rows.length > 0 ? artistCursorOf(page.rows[0]) : null;
+      setRows(page.rows);
+    } finally {
+      busyRef.current = false;
+      setInitialLoading(false);
+    }
+  }, []);
 
-  // Fetch only after hydration so a cached library isn't re-fetched on mount.
-  useFetchOnHydrated(artistLibraryStore, () => {
-    const s = artistLibraryStore.getState();
-    if (s.artists.length === 0 && !s.loading) s.fetchAllArtists();
+  const loadMore = useCallback(async () => {
+    if (transitionRef.current) return;
+    if (busyRef.current || doneRef.current) return;
+    const gen = loadGenRef.current;
+    busyRef.current = true;
+    try {
+      const db = getDb();
+      if (!db) return;
+      const page = await listArtists(db, { cursor: cursorRef.current, limit: PAGE });
+      if (gen !== loadGenRef.current) return false;
+      cursorRef.current = page.nextCursor;
+      if (!page.nextCursor) doneRef.current = true;
+      setRows((r) => [...r, ...page.rows]);
+    } finally {
+      busyRef.current = false;
+    }
+  }, []);
+
+  const loadPrevious = useCallback(async () => {
+    const before = prevCursorRef.current;
+    if (transitionRef.current) return;
+    if (busyRef.current || !before) return;
+    const gen = loadGenRef.current;
+    busyRef.current = true;
+    try {
+      const db = getDb();
+      if (!db) return;
+      const page = await listArtistsBefore(db, { before, limit: PAGE });
+      if (gen !== loadGenRef.current) return;
+      prevCursorRef.current = page.prevCursor;
+      if (page.prevCursor === null) atLibraryStartRef.current = true;
+      if (page.rows.length > 0) setRows((r) => [...page.rows, ...r]);
+    } finally {
+      busyRef.current = false;
+    }
+  }, []);
+
+  const seekLetter = useCallback(async (letter: string) => {
+    const gen = (loadGenRef.current += 1);
+    busyRef.current = true;
+    try {
+      const db = getDb();
+      if (!db) return;
+      const page = await listArtists(db, { letter, limit: PAGE });
+      // A newer seek superseded this one — same reasoning.
+      if (gen !== loadGenRef.current) return;
+      atLibraryStartRef.current = false;
+      cursorRef.current = page.nextCursor;
+      doneRef.current = !page.nextCursor;
+      prevCursorRef.current = page.rows.length > 0 ? artistCursorOf(page.rows[0]) : null;
+      setRows(page.rows);
+      setSeekTick((t) => t + 1); // triggers scroll-to-top in ArtistListView
+    } finally {
+      busyRef.current = false;
+    }
+  }, []);
+
+  // Initial window load on mount.
+  // iOS status-bar tap, delivered by `StatusBarTapTarget` — the list itself declines it,
+  // so nothing has scrolled when we get here. Reset to the first page exactly the way a
+  // letter seek does: replace the window, bump the tick. No traversal to flash through.
+  const seekTop = useCallback(async (): Promise<boolean> => {
+    // Already showing the first page: there is no window to replace, so report that and
+    // let the list scroll itself — otherwise the tap does nothing at all.
+    if (atLibraryStartRef.current || transitionRef.current) return false;
+    transitionRef.current = true;
+    try {
+      const db = getDb();
+      if (!db) return false;
+      const gen = (loadGenRef.current += 1);
+      const page = await listArtists(db, { cursor: null, limit: PAGE });
+      // A newer load superseded this one; it has already moved the list.
+      if (gen !== loadGenRef.current) return true;
+      cursorRef.current = page.nextCursor;
+      doneRef.current = !page.nextCursor;
+      prevCursorRef.current = page.rows.length > 0 ? artistCursorOf(page.rows[0]) : null;
+      atLibraryStartRef.current = true;
+      setRows(page.rows);
+      setSeekTick((t) => t + 1);
+      return true;
+    } finally {
+      transitionRef.current = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadFirstPage();
+  }, [loadFirstPage]);
+
+  // Fetch-on-browse (once, post-hydration): if the normalized table is empty and
+  // nothing is in flight, pull artists from the server (which dual-writes normalized
+  // + bumps lastFetchedAt → the reload effect below repaints the window).
+  useFetchOnHydrated(syncStatusStore, () => {
+    void (async () => {
+      const db = getDb();
+      if (db && !syncStatusStore.getState().artistLibraryLoading && (await countArtists(db)) === 0) {
+        void refreshArtistLibrary();
+      }
+    })();
   });
 
-  const filteredArtists = useMemo(() => {
-    if (!downloadedOnly && !favoritesOnly) return artists;
+  // Reload the window when a fetch lands. Skip the initial (persisted) value so this
+  // only fires on a genuine post-mount fetch completion — no loop when the library is
+  // legitimately empty (fetch-on-browse already fired once above).
+  const lastFetchedAt = syncStatusStore((s) => s.artistLibraryLastFetchedAt);
+  const fetchLoading = syncStatusStore((s) => s.artistLibraryLoading);
+  const seenFetchRef = useRef(lastFetchedAt);
 
-    const starredIds = favoritesOnly
-      ? new Set(starredArtists.map((a) => a.id))
-      : null;
-
-    let downloadedArtistIds: Set<string> | null = null;
-    if (downloadedOnly) {
-      downloadedArtistIds = new Set<string>();
-      for (const album of allAlbums) {
-        if (albumPassesDownloadedFilter(album, cachedItems, includePartial) && album.artistId) {
-          downloadedArtistIds.add(album.artistId);
-        }
-      }
-    }
-
-    return artists.filter((artist) => {
-      if (downloadedArtistIds && !downloadedArtistIds.has(artist.id)) return false;
-      if (starredIds && !starredIds.has(artist.id)) return false;
-      return true;
-    });
-  }, [artists, downloadedOnly, favoritesOnly, cachedItems, allAlbums, starredArtists, includePartial]);
-
-  const [refreshing, setRefreshing] = useState(false);
+  // Show the spinner (not the empty placeholder) until we have a DEFINITIVE result:
+  // the first keyset read, a server fetch in flight, or a library never fetched yet.
+  // The empty placeholder only appears once a fetch has completed and returned nothing.
+  const showLoading =
+    initialLoading || (rows.length === 0 && (fetchLoading || lastFetchedAt == null));
+  useEffect(() => {
+    if (lastFetchedAt === seenFetchRef.current) return;
+    seenFetchRef.current = lastFetchedAt;
+    cursorRef.current = null;
+    prevCursorRef.current = null;
+    doneRef.current = false;
+    void loadFirstPage();
+  }, [lastFetchedAt, loadFirstPage]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
       await onPullToRefresh('artists');
+      cursorRef.current = null;
+      prevCursorRef.current = null;
+      doneRef.current = false;
+      await loadFirstPage();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadFirstPage]);
+
+  return (
+    <ArtistListView
+      items={rows}
+      toArtist={artistListRowToArtistID3}
+      layout={layout}
+      loading={showLoading}
+      showAlphabetScroller
+      activeLetters={ALL_LETTERS}
+      onEndReached={loadMore}
+      onStartReached={loadPrevious}
+      onSeekLetter={seekLetter}
+      onScrollToTop={seekTop}
+      onRefresh={handleRefresh}
+      refreshing={refreshing}
+      scrollToTopTrigger={`seek:${seekTick}`}
+      contentInsetTop={contentInsetTop}
+    />
+  );
+}
+
+/** The favourites filter reads the whole starred artist set from SQL — marked library
+ *  rows plus the `favorite_artists` remainder — A–Z on the same stored `sort_title` the
+ *  keyset browse orders by, so the filter cannot reorder the list.
+ *
+ *  There is deliberately NO downloaded branch: artists cannot be downloaded, so the
+ *  Downloaded filter hides the Artists segment outright (`library.tsx`) and this
+ *  component is never mounted under it. */
+function FilteredArtistList({
+  layout,
+  favoritesOnly,
+  contentInsetTop,
+}: {
+  layout: ArtistLayout;
+  favoritesOnly: boolean;
+  contentInsetTop: number;
+}) {
+  const { t } = useTranslation();
+  const version = favoritesStore((s) => s.version);
+
+  const [starredArtists, setStarredArtists] = useState<StarredItem<ArtistID3>[]>([]);
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  const starredKey = `${version}`;
+  // DERIVED, not seeded — see the note in `album-library-list.tsx`. A mount-time seed
+  // would leave one empty-and-not-loading frame that flashes the placeholder.
+  const starredLoading = favoritesOnly && loadedKey !== starredKey;
+  useEffect(() => {
+    if (!favoritesOnly) return;
+    let alive = true;
+    void (async () => {
+      const db = getDb();
+      const list = db ? await listAllStarredArtists(db, { sortOrder: 'name' }) : [];
+      if (alive) {
+        setStarredArtists(list);
+        setLoadedKey(starredKey);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [favoritesOnly, version, starredKey]);
+
+  const [refreshing, setRefreshing] = useState(false);
+  // Only ever a favourites view, so the source is `getStarred2` — refreshing the artist
+  // library would leave the starred set on screen untouched.
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await onPullToRefresh('favorites');
     } finally {
       setRefreshing(false);
     }
   }, []);
 
   return (
+    <ArtistListView
+      items={starredArtists}
+      toArtist={starredItemOf}
+      sortKeyOf={starredSortKeyOf}
+      layout={layout}
+      loading={starredLoading}
+      onRefresh={handleRefresh}
+      refreshing={refreshing}
+      showAlphabetScroller
+      scrollToTopTrigger={`${favoritesOnly}`}
+      contentInsetTop={contentInsetTop}
+      // Only mounted under the Favourites filter (Downloaded hides the segment entirely,
+      // see `library.tsx`), so an empty result here is always the filter's doing.
+      emptyMessage={t('noMatchesForFilters')}
+      emptySubtitle={t('tryAdjustingFilters')}
+    />
+  );
+}
+
+export function ArtistListScreen({
+  layout = 'list',
+  favoritesOnly = false,
+  contentInsetTop = 0,
+}: {
+  layout?: ArtistLayout;
+  favoritesOnly?: boolean;
+  contentInsetTop?: number;
+}) {
+  return (
     <View style={styles.container}>
-      <ArtistListView
-        artists={filteredArtists}
-        layout={layout}
-        loading={loading}
-        error={error}
-        onRefresh={handleRefresh}
-        refreshing={refreshing}
-        showAlphabetScroller
-        scrollToTopTrigger={`${downloadedOnly}:${favoritesOnly}`}
-        contentInsetTop={contentInsetTop}
-      />
+      {favoritesOnly ? (
+        <FilteredArtistList
+          layout={layout}
+          favoritesOnly={favoritesOnly}
+          contentInsetTop={contentInsetTop}
+        />
+      ) : (
+        <KeysetArtistList layout={layout} contentInsetTop={contentInsetTop} />
+      )}
     </View>
   );
 }

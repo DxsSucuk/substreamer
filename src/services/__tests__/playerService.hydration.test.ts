@@ -7,16 +7,6 @@
  * bailing when nothing is playable, and the public-API hydration guard.
  */
 
-jest.mock('expo-sqlite', () => ({
-  openDatabaseSync: () => ({
-    getFirstSync: () => undefined,
-    getAllSync: () => [],
-    runSync: () => {},
-    execSync: () => {},
-    withTransactionSync: (fn: () => void) => fn(),
-  }),
-}));
-
 jest.mock('react-native', () => ({
   AppState: { addEventListener: jest.fn(() => ({ remove: jest.fn() })) },
   Platform: { OS: 'android' },
@@ -103,6 +93,8 @@ jest.mock('../musicCacheService', () => ({
 
 jest.mock('../../store/musicCacheStore', () => ({
   musicCacheStore: { getState: jest.fn(() => ({ cachedSongs: {} })) },
+  // Nothing downloaded here, so the queue builder's completion pass is a pass-through.
+  completeSongFromCache: (song: unknown) => song,
 }));
 
 const mockOfflineMode = { offlineMode: false };
@@ -124,13 +116,12 @@ const mockGetPersistedQueue = jest.fn().mockReturnValue(null);
 const mockGetPersistedPosition = jest.fn().mockReturnValue(null);
 jest.mock('../queuePersistenceService', () => ({
   persistQueue: jest.fn(),
+  persistCurrentIndex: jest.fn(),
   persistPositionIfDue: jest.fn(),
   flushPosition: jest.fn(),
   clearPersistedQueue: jest.fn(),
   getPersistedQueue: () => mockGetPersistedQueue(),
   getPersistedPosition: () => mockGetPersistedPosition(),
-  resetPersistTimer: jest.fn(),
-  PERSIST_INTERVAL_MS: 10_000,
 }));
 
 import type { Child } from '../subsonicService';

@@ -5,8 +5,15 @@ import { minDelay } from '../utils/stringHelpers';
 interface DetailFetchOptions {
   /** Route param id; a missing id surfaces `missingIdMessage` instead of fetching. */
   id: string | undefined;
-  /** True when a cached store entry already populated the screen — skips the mount fetch. */
+  /** True when a cached (normalized) entry already populated the screen — skips the mount fetch. */
   hasCache: boolean;
+  /**
+   * True once the (async) local-DB cache lookup has RESOLVED. The mount fetch is held
+   * until this flips true, so a local-DB cache hit renders instantly instead of firing a
+   * blocking server fetch on every open. Defaults to `true` for callers whose cache
+   * lookup is synchronous.
+   */
+  cacheChecked?: boolean;
   /** Error shown when `id` is missing. */
   missingIdMessage: string;
   /** Fallback error shown when the fetch throws a non-`Error`. */
@@ -20,16 +27,15 @@ interface DetailFetchOptions {
 }
 
 /**
- * Shared data-loading shell for the album / artist / playlist detail screens.
- * Owns the `loading` / `refreshing` / `error` lifecycle and the mount + pull
- * triggers; the screen supplies `load`, which fetches and applies its own
- * (single- or multi-) state. Mirrors the previously-inlined `fetchData`
- * skeleton 1:1 — a plain open fetches only when uncached, a pull always
- * refetches with a minimum spinner delay.
+ * Shared data-loading shell for the album / artist / playlist detail screens. Owns the
+ * `loading` / `refreshing` / `error` lifecycle and the mount + pull triggers; the screen
+ * supplies `load`, which fetches and applies its own (single- or multi-) state. A plain
+ * open fetches only when uncached; a pull always refetches, with a minimum spinner delay.
  */
 export function useDetailFetch({
   id,
   hasCache,
+  cacheChecked = true,
   missingIdMessage,
   failedMessage,
   load,
@@ -63,10 +69,13 @@ export function useDetailFetch({
     [id, load, missingIdMessage, failedMessage],
   );
 
-  // Only fetch on mount if no cached data.
+  // Hold the mount fetch until the async local-DB cache lookup resolves: a cache HIT
+  // renders instantly (no server round-trip); only a genuine MISS fetches.
   useEffect(() => {
+    if (!cacheChecked) return;
     if (!hasCache) fetchData();
-  }, [fetchData, hasCache]);
+    else setLoading(false);
+  }, [fetchData, hasCache, cacheChecked]);
 
   const onRefresh = useCallback(() => fetchData(true), [fetchData]);
 

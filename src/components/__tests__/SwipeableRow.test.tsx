@@ -151,7 +151,7 @@ describe('SwipeableRow — disabled prop', () => {
   });
 });
 
-describe('SwipeableRow — edge-back gesture (#217)', () => {
+describe('SwipeableRow — edge-back gesture', () => {
   it('reserves the left edge via negative-left hitSlop so the OS back-swipe wins', () => {
     render(
       <SwipeableRow>

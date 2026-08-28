@@ -1,9 +1,10 @@
 /**
- * Hook that checks whether an item is starred (favorited) by looking up
- * the `favoritesStore` – the single source of truth for starred state.
+ * Whether an item is starred, from the id sets on `favoritesStore` — the in-memory
+ * mirror of SQL membership (marked library rows ∪ the `favorite_*` remainder).
  *
- * Supports optimistic overrides so the UI updates instantly after a toggle,
- * before the server round-trip completes.
+ * Synchronous and O(1) on purpose: this runs per starred icon, per row, per render
+ * across a dozen call sites, so a per-row SQL query would be 120 round trips and a
+ * star-icon flicker on every page.
  */
 
 import { useCallback } from 'react';
@@ -11,10 +12,9 @@ import { useCallback } from 'react';
 import { favoritesStore, type FavoritesState } from '../store/favoritesStore';
 
 /**
- * Returns `true` when the item identified by `type` + `id` is starred.
- *
- * The hook subscribes to `favoritesStore` so re-renders happen automatically
- * when the starred state changes (including optimistic overrides).
+ * Returns `true` when the item identified by `type` + `id` is starred. Subscribes to
+ * `favoritesStore`, so a re-render follows any change — including the optimistic
+ * override a toggle sets before the server round-trip completes.
  */
 export function useIsStarred(type: 'song' | 'album' | 'artist', id: string): boolean {
   return favoritesStore(
@@ -24,11 +24,11 @@ export function useIsStarred(type: 'song' | 'album' | 'artist', id: string): boo
         if (id in s.overrides) return s.overrides[id];
         switch (type) {
           case 'song':
-            return s.songs.some((song) => song.id === id);
+            return s.songIds.has(id);
           case 'album':
-            return s.albums.some((album) => album.id === id);
+            return s.albumIds.has(id);
           case 'artist':
-            return s.artists.some((artist) => artist.id === id);
+            return s.artistIds.has(id);
         }
       },
       [type, id],

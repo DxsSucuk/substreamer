@@ -1,7 +1,5 @@
 import {
-  albumPassesDownloadedFilter,
   computeQueueItemProgress,
-  isCompleteAlbum,
   isPartialAlbum,
 } from '../cachedItemHelpers';
 import type {
@@ -33,7 +31,6 @@ function makeQueue(overrides: Partial<DownloadQueueRow> = {}): DownloadQueueRow 
     completedSongs: 0,
     addedAt: 0,
     queuePosition: 1,
-    songsJson: '[]',
     ...overrides,
   };
 }
@@ -56,7 +53,7 @@ describe('isPartialAlbum', () => {
     }))).toBe(false);
   });
 
-  it('treats a real single-track album (1 of 1 downloaded) as complete — fixes #159', () => {
+  it('treats a real single-track album (1 of 1 downloaded) as complete', () => {
     // ensurePartialAlbumEdge now fetches the authoritative song count
     // from the server when the album-detail store is empty, so an
     // expectedSongCount of 1 always reflects a real single-track album.
@@ -70,50 +67,6 @@ describe('isPartialAlbum', () => {
   });
 });
 
-describe('isCompleteAlbum', () => {
-  it('true only for albums that are not partial', () => {
-    expect(isCompleteAlbum(makeItem({
-      songIds: Array.from({ length: 10 }, (_, i) => `s${i}`),
-      expectedSongCount: 10,
-    }))).toBe(true);
-    expect(isCompleteAlbum(makeItem({ songIds: ['s1'], expectedSongCount: 10 }))).toBe(false);
-    expect(isCompleteAlbum(makeItem({ type: 'playlist' }))).toBe(false);
-  });
-});
-
-describe('albumPassesDownloadedFilter', () => {
-  const complete = makeItem({
-    itemId: 'a1',
-    songIds: Array.from({ length: 10 }, (_, i) => `s${i}`),
-    expectedSongCount: 10,
-  });
-  const partial = makeItem({
-    itemId: 'a2',
-    songIds: ['s1', 's2'],
-    expectedSongCount: 10,
-  });
-
-  it('returns false when album has no cached entry', () => {
-    expect(albumPassesDownloadedFilter({ id: 'nonexistent' }, {}, true)).toBe(false);
-    expect(albumPassesDownloadedFilter({ id: 'nonexistent' }, {}, false)).toBe(false);
-  });
-
-  it('returns true for fully-downloaded album regardless of toggle', () => {
-    const map = { a1: complete };
-    expect(albumPassesDownloadedFilter({ id: 'a1' }, map, false)).toBe(true);
-    expect(albumPassesDownloadedFilter({ id: 'a1' }, map, true)).toBe(true);
-  });
-
-  it('excludes partial album when includePartial is false', () => {
-    const map = { a2: partial };
-    expect(albumPassesDownloadedFilter({ id: 'a2' }, map, false)).toBe(false);
-  });
-
-  it('includes partial album when includePartial is true', () => {
-    const map = { a2: partial };
-    expect(albumPassesDownloadedFilter({ id: 'a2' }, map, true)).toBe(true);
-  });
-});
 
 describe('computeQueueItemProgress', () => {
   it('falls back to queue-row progress when itemId has no cachedItems entry (fresh download)', () => {

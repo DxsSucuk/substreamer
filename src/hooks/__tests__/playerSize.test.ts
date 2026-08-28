@@ -55,7 +55,7 @@ describe('getPlayerSize', () => {
 
   it('an 800×480-style device (tall but narrow) drops the secondary row', () => {
     // Portrait width below the tiny breakpoint forces the tiny tier regardless
-    // of the ample vertical budget — issue #90's exact device.
+    // of the ample vertical budget.
     const m = getPlayerSize(700, TINY_WIDTH - 1);
     expect(m.showSecondaryRow).toBe(false);
     expect(m.playButton).toBeLessThanOrEqual(48);

@@ -32,7 +32,7 @@ export interface RoutePickerSheetProps {
  * `useRoutePickerStore().open()`. Discovery lives in an inner component so it
  * only runs while the sheet is open (our BottomSheet unmounts its children when
  * hidden). PIN entry for AirPlay pairing is inline; the sheet lifts above the
- * keyboard via the shared BottomSheet (#209).
+ * keyboard via the shared BottomSheet.
  */
 export function RoutePickerSheet({ theme }: RoutePickerSheetProps = {}) {
   const t = useRoutePickerTheme(theme);

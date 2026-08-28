@@ -9,7 +9,6 @@ import {
   type ListLength,
 } from '../../store/layoutPreferencesStore';
 import { albumListsStore } from '../../store/albumListsStore';
-import { artistDetailStore } from '../../store/artistDetailStore';
 import { offlineModeStore } from '../../store/offlineModeStore';
 import { processingOverlayStore } from '../../store/processingOverlayStore';
 import { DropdownRow, type DropdownOption } from './DropdownRow';
@@ -42,10 +41,9 @@ export function ListLengthCard() {
       }
       processingOverlayStore.getState().show(t('updatingCachedLists'));
       try {
-        await Promise.all([
-          albumListsStore.getState().refreshAll(),
-          artistDetailStore.getState().refreshTopSongs(),
-        ]);
+        // Artist top songs are NOT bulk-refreshed: the stored `list_length` no longer
+        // matches, so each artist re-fetches on next open, for artists actually visited.
+        await albumListsStore.getState().refreshAll();
         processingOverlayStore.getState().showSuccess(t('cachedListsUpdated'));
       } catch {
         processingOverlayStore.getState().showError(t('cachedListsUpdateFailed'));

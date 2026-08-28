@@ -77,3 +77,7 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/test_output
 play-store-key.json
+
+# Local reference copies of Subsonic server implementations — read-only, never committed.
+# Clone/refresh with scripts or by hand; see plans/research-search3-paging-behaviour.md
+reference/

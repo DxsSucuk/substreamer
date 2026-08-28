@@ -37,7 +37,9 @@ import { toggleStar } from '../services/moreOptionsService';
 import { enqueueAlbumDownload } from '../services/musicCacheService';
 import { shuffleArray } from '../utils/arrayHelpers';
 import { playTrack } from '../services/playerService';
-import { albumDetailStore } from '../store/albumDetailStore';
+import { fetchAlbumDetail } from '../services/detailFetchService';
+import { getDb } from '../store/persistence/db';
+import { getAlbumDetail } from '../db/repository/details';
 import { moreOptionsStore } from '../store/moreOptionsStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 
@@ -75,8 +77,38 @@ export function AlbumDetailScreen() {
   const navigation = useNavigation();
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const cachedEntry = albumDetailStore((s) => (id ? s.albums[id] : undefined));
-  const [album, setAlbum] = useState<AlbumWithSongsID3 | null>(cachedEntry?.album ?? null);
+  const [album, setAlbum] = useState<AlbumWithSongsID3 | null>(null);
+  const [hasCache, setHasCache] = useState(false);
+  const [cacheChecked, setCacheChecked] = useState(false);
+  // Read the cached detail from the local DB first (fast) — the server fetch only runs
+  // on a genuine miss. The server refresh (fetchAlbum) dual-writes normalized, so a
+  // re-open resolves instantly from here without a network round-trip.
+  useEffect(() => {
+    if (!id) return;
+    const db = getDb();
+    if (!db) {
+      setCacheChecked(true);
+      return;
+    }
+    let alive = true;
+    getAlbumDetail(db, id)
+      .then((d) => {
+        if (!alive) return;
+        if (d) {
+          setAlbum((prev) => prev ?? ({ ...d.album, song: d.songs } as AlbumWithSongsID3));
+          // "Cached" only if we actually have the tracks — an album ROW can exist without
+          // its songs synced yet; an empty song list ⇒ fetch from the server.
+          setHasCache(d.songs.length > 0);
+        }
+        setCacheChecked(true);
+      })
+      .catch(() => {
+        if (alive) setCacheChecked(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [id]);
   const starred = useIsStarred('album', id ?? '');
   const transitionComplete = useTransitionComplete();
   const downloadStatus = useDownloadStatus('album', Platform.OS === 'ios' ? (id ?? '') : '');
@@ -116,23 +148,22 @@ export function AlbumDetailScreen() {
   }, [album, id, navigation, colors.textPrimary, colors.red, starred, offlineMode, handleToggleStar]);
 
   /* ---- Data fetching ---- */
-  const { fetchAlbum } = albumDetailStore.getState();
-
   const load = useCallback(async (albumId: string, isRefresh: boolean) => {
-    // Reflect the viewed album in the library (#202): an explicit refresh
-    // replaces the entry (propagating server-side edits), a plain open adds
-    // it only if it wasn't synced yet.
-    const data = await fetchAlbum(albumId, { syncToLibrary: isRefresh ? 'replace' : 'ifAbsent' });
+    // The fetch always upserts the album row, so the viewed album reaches the library
+    // list without a separate sync step. `force` only on an explicit pull-to-refresh;
+    // a normal open answers from the local database when we already hold the tracks.
+    const data = await fetchAlbumDetail(albumId, { force: isRefresh });
     setAlbum(data);
     if (isRefresh && data?.id) {
       refreshCoverArt(data.id, 'album-detail-pull').catch(() => { /* non-critical */ });
     }
     return data ? null : t('albumNotFound');
-  }, [fetchAlbum, t]);
+  }, [t]);
 
   const { loading, refreshing, error, onRefresh } = useDetailFetch({
     id,
-    hasCache: !!cachedEntry,
+    hasCache,
+    cacheChecked,
     missingIdMessage: t('missingAlbumId'),
     failedMessage: t('failedToLoadAlbum'),
     load,
@@ -156,17 +187,12 @@ export function AlbumDetailScreen() {
     return items;
   }, [allSongs]);
 
-  // Use paddingTop on contentContainerStyle for BOTH platforms. iOS used
-  // to combine contentInset.top + contentOffset.y = -inset to position
-  // content visually below the floating Stack.Toolbar, but RN 0.85's
-  // Fabric scroll-view recycles RCTScrollViewComponentView instances
-  // across screen pushes — and `contentOffset` (an initial-only prop)
-  // is not re-applied to a recycled instance. Result: the second push
-  // of any detail screen reused a recycled scroll view that ignored
-  // our initial offset, leaving the hero scrolled partly off the top.
-  // paddingTop is a content-side property that the layout engine
-  // applies regardless of recycle state, so behaviour is consistent
-  // on fresh AND recycled instances.
+  // paddingTop on contentContainerStyle for BOTH platforms — never iOS's
+  // contentInset.top + contentOffset.y = -inset to clear the floating Stack.Toolbar.
+  // Fabric recycles RCTScrollViewComponentView instances across screen pushes and
+  // `contentOffset` is initial-only, so it is not re-applied to a recycled instance:
+  // the second push of any detail screen leaves the hero scrolled partly off the top.
+  // paddingTop is content-side, so the layout engine applies it either way.
   const headerInset = insets.top + HEADER_BAR_HEIGHT;
   const listContentContainerStyle = useMemo(
     () => ({
@@ -441,10 +467,9 @@ const styles = StyleSheet.create({
     opacity: 0.6,
   },
   trackItemWrap: {
-    // No padding here — TrackRow now provides 16px internal horizontal
-    // padding (matches the `info` block padding) so the row's content
-    // edge aligns with the title / by-owner / song-count text block
-    // above, and the swipe-gesture area extends to the screen edge.
+    // Deliberately empty: TrackRow carries the 16px horizontal padding (matching the
+    // `info` block) so its content edge aligns with the title text above while the
+    // swipe-gesture area still reaches the screen edge.
   },
   discHeaderWrap: {
     flexDirection: 'row',

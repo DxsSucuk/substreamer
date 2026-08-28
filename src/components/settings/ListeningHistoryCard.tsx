@@ -25,7 +25,7 @@ export function ListeningHistoryCard() {
   const [triggerSheetVisible, setTriggerSheetVisible] = useState(false);
 
   const pendingScrobbleCount = pendingScrobbleStore((s) => s.pendingScrobbles.length);
-  const completedScrobbleCount = completedScrobbleStore((s) => s.completedScrobbles.length);
+  const completedScrobbleCount = completedScrobbleStore((s) => s.stats.totalPlays);
   const scrobbleExclusionCount = scrobbleExclusionStore((s) =>
     Object.keys(s.excludedAlbums).length +
     Object.keys(s.excludedArtists).length +

@@ -14,9 +14,11 @@ jest.mock('../playStatsService', () => ({
 }));
 
 import { completedScrobbleStore } from '../../store/completedScrobbleStore';
+import { musicCacheStore } from '../../store/musicCacheStore';
 import { pendingScrobbleStore } from '../../store/pendingScrobbleStore';
 import { scrobbleExclusionStore } from '../../store/scrobbleExclusionStore';
 import { getApi } from '../subsonicService';
+import { getDb } from '../../store/persistence/db';
 import {
   addCompletedScrobble,
   sendNowPlaying,
@@ -25,9 +27,13 @@ import {
 const mockGetApi = getApi as jest.Mock;
 
 beforeEach(() => {
+  // The completed dedup is now SQL-backed, so reset the actual table (not just
+  // the in-memory store) or a prior test's rows leak into the next's dedup.
+  getDb()?.runSync('DELETE FROM scrobble_events');
   pendingScrobbleStore.setState({ pendingScrobbles: [] });
-  completedScrobbleStore.setState({ completedScrobbles: [], stats: { totalPlays: 0, totalListeningSeconds: 0, uniqueArtists: {} } });
+  completedScrobbleStore.setState({ recentScrobbles: [], stats: { totalPlays: 0, totalListeningSeconds: 0, uniqueArtists: {} } });
   scrobbleExclusionStore.setState({ excludedAlbums: {}, excludedArtists: {}, excludedPlaylists: {} });
+  musicCacheStore.setState({ cachedSongs: {} } as any);
   mockGetApi.mockReturnValue(null);
   mockApplyLocalPlay.mockClear();
 });
@@ -136,6 +142,79 @@ describe('addCompletedScrobble', () => {
   });
 });
 
+/**
+ * The last gate before a permanent record: whatever projection fed the queue, a track
+ * we hold a downloaded row for is written whole. A song we hold nothing for is written
+ * exactly as it arrives.
+ */
+describe('addCompletedScrobble — completing a partial track', () => {
+  /** A downloaded row as the writer stores it; the `src*` twins are the SERVER's. */
+  const downloadedRow = {
+    id: 's1',
+    title: 'Song',
+    artist: 'The Artist',
+    album: 'The Album',
+    albumId: 'dir-1',
+    bytes: 1,
+    duration: 210,
+    suffix: 'mp3',
+    formatCapturedAt: 0,
+    downloadedAt: 0,
+    srcAlbumId: 'srv-1',
+    srcSuffix: 'flac',
+    srcBitRate: 1000,
+    artistId: 'ar-1',
+    year: 1991,
+    genre: 'Shoegaze',
+    size: 41_000_000,
+  };
+
+  /** What a narrow list projection hands the player. */
+  const partial = { id: 's1', title: 'Song', artist: 'The Artist', duration: 210 };
+
+  const queued = () => pendingScrobbleStore.getState().pendingScrobbles[0].song as any;
+
+  it('fills the gaps from the downloaded row', () => {
+    musicCacheStore.setState({ cachedSongs: { s1: downloadedRow } } as any);
+
+    addCompletedScrobble(partial as any);
+
+    expect(queued().album).toBe('The Album');
+    expect(queued().year).toBe(1991);
+    expect(queued().genre).toBe('Shoegaze');
+    expect(queued().suffix).toBe('flac');
+    expect(queued().bitRate).toBe(1000);
+    expect(queued().size).toBe(41_000_000);
+  });
+
+  it('writes a song we hold nothing for exactly as it arrived', () => {
+    addCompletedScrobble(partial as any);
+
+    expect(queued()).toEqual(partial);
+  });
+
+  it('never overwrites a value the incoming track already has', () => {
+    musicCacheStore.setState({ cachedSongs: { s1: downloadedRow } } as any);
+
+    // A playlist download shows the playlist as the album — a deliberate override.
+    addCompletedScrobble({ ...partial, album: 'Road Trip' } as any);
+
+    expect(queued().album).toBe('Road Trip');
+    expect(queued().suffix).toBe('flac');
+  });
+
+  it('decides the artist exclusion on the completed track', () => {
+    musicCacheStore.setState({ cachedSongs: { s1: downloadedRow } } as any);
+    scrobbleExclusionStore.getState().addExclusion('artist', 'ar-1', 'The Artist');
+
+    // The incoming projection carries no `artistId`, so the exclusion only matches
+    // once the track is completed.
+    addCompletedScrobble(partial as any);
+
+    expect(pendingScrobbleStore.getState().pendingScrobbles).toHaveLength(0);
+  });
+});
+
 describe('sendNowPlaying', () => {
   it('does nothing when api is null', async () => {
     mockGetApi.mockReturnValue(null);
@@ -170,7 +249,7 @@ describe('processScrobbles (via addCompletedScrobble)', () => {
       expect.objectContaining({ id: 's1', submission: true }),
     );
     expect(pendingScrobbleStore.getState().pendingScrobbles).toHaveLength(0);
-    expect(completedScrobbleStore.getState().completedScrobbles).toHaveLength(1);
+    expect(completedScrobbleStore.getState().recentScrobbles).toHaveLength(1);
   });
 
   it('retries once on first failure, succeeds on retry', async () => {
@@ -184,7 +263,7 @@ describe('processScrobbles (via addCompletedScrobble)', () => {
 
     expect(mockScrobble).toHaveBeenCalledTimes(2);
     expect(pendingScrobbleStore.getState().pendingScrobbles).toHaveLength(0);
-    expect(completedScrobbleStore.getState().completedScrobbles).toHaveLength(1);
+    expect(completedScrobbleStore.getState().recentScrobbles).toHaveLength(1);
   });
 
   it('stops processing on double failure, keeps scrobble pending', async () => {
@@ -196,7 +275,7 @@ describe('processScrobbles (via addCompletedScrobble)', () => {
 
     expect(mockScrobble).toHaveBeenCalledTimes(2);
     expect(pendingScrobbleStore.getState().pendingScrobbles).toHaveLength(1);
-    expect(completedScrobbleStore.getState().completedScrobbles).toHaveLength(0);
+    expect(completedScrobbleStore.getState().recentScrobbles).toHaveLength(0);
   });
 
   it('skips scrobbles already in completed store', async () => {
@@ -261,7 +340,7 @@ describe('initScrobbleService', () => {
         time: Date.now(),
       }],
     });
-    cs.setState({ completedScrobbles: [], stats: { totalPlays: 0, totalListeningSeconds: 0, uniqueArtists: {} } });
+    cs.setState({ recentScrobbles: [], stats: { totalPlays: 0, totalListeningSeconds: 0, uniqueArtists: {} } });
 
     const mockScrobble = jest.fn().mockResolvedValue(undefined);
     (ga as jest.Mock).mockReturnValue({ scrobble: mockScrobble });
@@ -303,7 +382,7 @@ describe('initScrobbleService', () => {
     const { getApi: ga } = require('../subsonicService');
 
     ps.setState({ pendingScrobbles: [] });
-    cs.setState({ completedScrobbles: [], stats: { totalPlays: 0, totalListeningSeconds: 0, uniqueArtists: {} } });
+    cs.setState({ recentScrobbles: [], stats: { totalPlays: 0, totalListeningSeconds: 0, uniqueArtists: {} } });
     (ga as jest.Mock).mockReturnValue(null);
 
     const { initScrobbleService: init } = require('../scrobbleService');
@@ -337,7 +416,7 @@ describe('initScrobbleService', () => {
     const { initScrobbleService: init } = require('../scrobbleService');
 
     ps.setState({ pendingScrobbles: [] });
-    cs.setState({ completedScrobbles: [], stats: { totalPlays: 0, totalListeningSeconds: 0, uniqueArtists: {} } });
+    cs.setState({ recentScrobbles: [], stats: { totalPlays: 0, totalListeningSeconds: 0, uniqueArtists: {} } });
     (ga as jest.Mock).mockReturnValue(null);
 
     init();
@@ -385,7 +464,7 @@ describe('initScrobbleService', () => {
       });
 
     ps.setState({ pendingScrobbles: [] });
-    cs.setState({ completedScrobbles: [], stats: { totalPlays: 0, totalListeningSeconds: 0, uniqueArtists: {} } });
+    cs.setState({ recentScrobbles: [], stats: { totalPlays: 0, totalListeningSeconds: 0, uniqueArtists: {} } });
     (ga as jest.Mock).mockReturnValue(null);
 
     const { initScrobbleService: init } = require('../scrobbleService');

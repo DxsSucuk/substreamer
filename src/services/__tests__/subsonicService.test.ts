@@ -483,13 +483,13 @@ describe('normalizeServerUrl (tested indirectly via login)', () => {
     expect(result.success).toBe(true);
   });
 
-  it('preserves a .rest TLD hostname (does not strip the TLD) — #225', () => {
+  it('preserves a .rest TLD hostname (does not strip the TLD)', () => {
     const { normalizeServerUrl } = require('../subsonicService');
     expect(normalizeServerUrl('https://my.domain.rest')).toBe('https://my.domain.rest');
     expect(normalizeServerUrl('http://my.domain.rest')).toBe('http://my.domain.rest');
   });
 
-  it('strips a trailing /rest path segment so it is not doubled — #225', () => {
+  it('strips a trailing /rest path segment so it is not doubled', () => {
     const { normalizeServerUrl } = require('../subsonicService');
     expect(normalizeServerUrl('https://my.domain.rest/rest')).toBe('https://my.domain.rest');
     expect(normalizeServerUrl('https://host.com/rest/')).toBe('https://host.com');
@@ -523,6 +523,56 @@ describe('API wrapper functions', () => {
     getApi();
     const result = await getAlbum('a1');
     expect(result).toBeNull();
+  });
+
+  describe('getAlbumResult keeps the failure modes apart', () => {
+    /** A Subsonic failure envelope: HTTP 200, `status: 'failed'`, an error code. */
+    const respondWith = (response: unknown) => {
+      const { default: SubsonicAPI } = require('subsonic-api');
+      SubsonicAPI.prototype.getAlbum = jest.fn().mockResolvedValue(response);
+      const { getAlbumResult, getApi } = require('../subsonicService');
+      getApi();
+      return getAlbumResult('a1');
+    };
+
+    it('reports the album on success', async () => {
+      expect(await respondWith({ status: 'ok', album: { id: 'a1' } })).toEqual({
+        status: 'ok',
+        album: { id: 'a1' },
+      });
+    });
+
+    it('reports not-found for error code 70', async () => {
+      expect(await respondWith({ status: 'failed', error: { code: 70, message: 'not found' } }))
+        .toEqual({ status: 'not-found' });
+    });
+
+    it('reports failed for wrong credentials (40) and incompatible version (30)', async () => {
+      // The same envelope as a 70. Reading these as "the album is gone" would let an
+      // expired token mark a partial library complete.
+      expect(await respondWith({ status: 'failed', error: { code: 40 } })).toEqual({
+        status: 'failed',
+      });
+      expect(await respondWith({ status: 'failed', error: { code: 30 } })).toEqual({
+        status: 'failed',
+      });
+    });
+
+    it('reports failed for a failure envelope with no code, and for a 200 with no album', async () => {
+      expect(await respondWith({ status: 'failed' })).toEqual({ status: 'failed' });
+      expect(await respondWith({ status: 'ok' })).toEqual({ status: 'failed' });
+    });
+
+    it('reports failed on a transport throw and with no API', async () => {
+      const { default: SubsonicAPI } = require('subsonic-api');
+      SubsonicAPI.prototype.getAlbum = jest.fn().mockRejectedValue(new Error('fail'));
+      const { getAlbumResult, getApi } = require('../subsonicService');
+      getApi();
+      expect(await getAlbumResult('a1')).toEqual({ status: 'failed' });
+
+      mockAuthStore.getState.mockReturnValue({ isLoggedIn: false } as any);
+      expect(await getAlbumResult('a1')).toEqual({ status: 'failed' });
+    });
   });
 
   it('getRecentlyAddedAlbums returns empty when no API', async () => {
@@ -810,6 +860,34 @@ describe('probeEmptySearch3 + paged search3 fetchers', () => {
       songCount: 0,
       artistCount: 0,
     });
+  });
+
+  // SERVERS.md records both out-of-bounds shapes: Navidrome/gonic/MiniMedia serialise
+  // an empty `album: []`, Airsonic and Nextcloud omit the key entirely. Both mean the
+  // same thing, and the sync loop's end-of-library test is `page.length === 0` — so a
+  // missing key reaching it as `undefined` would throw rather than end the walk.
+  it.each([
+    ['an empty array (Navidrome, gonic, MiniMedia)', { album: [] }],
+    ['an omitted key (Airsonic, Nextcloud)', {}],
+  ])('searchAlbumsPage reads an out-of-bounds page returning %s as empty', async (_label, searchResult3) => {
+    const { default: SubsonicAPI } = require('subsonic-api');
+    SubsonicAPI.prototype.search3 = jest.fn().mockResolvedValue({ searchResult3 });
+    const { searchAlbumsPage, getApi } = require('../subsonicService');
+    getApi();
+
+    await expect(searchAlbumsPage(500, 999999)).resolves.toEqual([]);
+  });
+
+  it.each([
+    ['an empty array', { song: [] }],
+    ['an omitted key', {}],
+  ])('searchSongsPage reads an out-of-bounds page returning %s as empty', async (_label, searchResult3) => {
+    const { default: SubsonicAPI } = require('subsonic-api');
+    SubsonicAPI.prototype.search3 = jest.fn().mockResolvedValue({ searchResult3 });
+    const { searchSongsPage, getApi } = require('../subsonicService');
+    getApi();
+
+    await expect(searchSongsPage(500, 999999)).resolves.toEqual([]);
   });
 
   it('searchSongsPage pages by songOffset and returns songs', async () => {
@@ -1548,13 +1626,16 @@ describe('getTopSongs (success and error paths)', () => {
     expect(result).toEqual([]);
   });
 
-  it('returns empty array on exception', async () => {
+  it('returns NULL on exception — callers must not stamp a presence marker', async () => {
+    // `[]` is a genuine "this artist has no top songs"; a failed call must stay
+    // distinguishable, or fetchArtistTopSongs records "fetched, 0 songs" with no TTL and
+    // the section is empty until a manual pull.
     const { default: SubsonicAPI } = require('subsonic-api');
     SubsonicAPI.prototype.getTopSongs = jest.fn().mockRejectedValue(new Error('fail'));
     const { getTopSongs, getApi } = require('../subsonicService');
     getApi();
     const result = await getTopSongs('Radiohead');
-    expect(result).toEqual([]);
+    expect(result).toBeNull();
   });
 });
 

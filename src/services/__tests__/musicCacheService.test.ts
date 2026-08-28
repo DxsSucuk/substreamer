@@ -1,15 +1,3 @@
-// `persistence/db.ts` imports `expo-sqlite` at module load; stub it so the
-// import doesn't hit the native bridge during tests.
-jest.mock('expo-sqlite', () => ({
-  openDatabaseSync: () => ({
-    getFirstSync: () => undefined,
-    getAllSync: () => [],
-    runSync: () => {},
-    execSync: () => {},
-    withTransactionSync: (fn: () => void) => fn(),
-  }),
-}));
-
 /**
  * musicCacheService v2 tests. Mocks the SQL persistence layer so the real
  * store logic can exercise without a real DB.
@@ -118,30 +106,45 @@ jest.mock('../subsonicService');
 
 const mockFetchAlbum = jest.fn();
 const mockAlbumDetailAlbums: { value: Record<string, any> } = { value: {} };
-jest.mock('../../store/albumDetailStore', () => ({
-  albumDetailStore: {
-    getState: jest.fn(() => ({
-      fetchAlbum: mockFetchAlbum,
-      albums: mockAlbumDetailAlbums.value,
-    })),
-  },
-}));
-
 const mockFetchPlaylist = jest.fn();
 let mockPlaylistDetailPlaylists: Record<string, any> = {};
-jest.mock('../../store/playlistDetailStore', () => ({
-  playlistDetailStore: {
-    getState: jest.fn(() => ({
-      fetchPlaylist: mockFetchPlaylist,
-      playlists: mockPlaylistDetailPlaylists,
-    })),
-  },
+// Detail fetch now goes through the shared normalized detailFetchService.
+jest.mock('../detailFetchService', () => ({
+  fetchAlbumDetail: (...args: unknown[]) => mockFetchAlbum(...args),
+  fetchPlaylistDetail: (...args: unknown[]) => mockFetchPlaylist(...args),
+}));
+
+// The normalized detail reads + album-song presence check derive from the same detail-store
+// mock state the tests drive, so the envelope build + partial-album count behave as before.
+// `getAlbumDetail().album` is the album META (song stripped) — matches production.
+jest.mock('../../db/repository/details', () => ({
+  ...jest.requireActual('../../db/repository/details'),
+  getAlbumDetail: jest.fn(async (_db: unknown, id: string) => {
+    const a = mockAlbumDetailAlbums.value[id];
+    if (!a) return null;
+    const { song, ...albumMeta } = a.album ?? a;
+    return { album: albumMeta, songs: song ?? [] };
+  }),
+  getPlaylistDetail: jest.fn(async (_db: unknown, id: string) => {
+    const p = mockPlaylistDetailPlaylists[id];
+    if (!p) return null;
+    const { entry, ...plMeta } = p.playlist ?? p;
+    return { playlist: plMeta, entry: entry ?? [] };
+  }),
+}));
+jest.mock('../../db/repository/songs', () => ({
+  ...jest.requireActual('../../db/repository/songs'),
+  albumIdsWithSongs: jest.fn(
+    async (_db: unknown, ids: string[]) => new Set(ids.filter((id) => mockAlbumDetailAlbums.value[id])),
+  ),
 }));
 
 jest.mock('../../store/favoritesStore', () => {
   const { create } = require('zustand');
+  // Membership only — the service reads the starred SET from SQL now; the store just
+  // notifies. The Set is REPLACED on every change, which is what the reactor guards on.
   return {
-    favoritesStore: create(() => ({ songs: [] })),
+    favoritesStore: create(() => ({ songIds: new Set<string>() })),
   };
 });
 
@@ -174,11 +177,17 @@ jest.mock('../../store/persistence/kvStorage', () => require('../../store/persis
 // Mock the SQL persistence layer with identity-style no-ops so the store
 // can mutate in-memory state without touching a real DB.
 jest.mock('../../store/persistence/musicCacheTables', () => {
+  // The `Child`/`AlbumID3`/`Playlist` → row mappers are pure and are what the
+  // service under test writes with, so use the real ones.
+  const actual = jest.requireActual('../../store/persistence/musicCacheTables');
   const edges: Array<{ itemId: string; position: number; songId: string }> = [];
   // Item ids stamped `derived = true` (auto-created partial-album grouping
   // rows). Tracked here because the SQL layer's REAL-ref count and the
   // orphan-pruning both hinge on it. Any item NOT in this set is REAL.
   const derivedItems = new Set<string>();
+  // The queued payload, keyed by queueId — the fake's stand-in for
+  // `download_queue_songs`. Written by the append, dropped with the queue row.
+  const queueSongs = new Map<string, Array<Record<string, unknown>>>();
   const isDerived = (itemId: string) => derivedItems.has(itemId);
   return {
     // Hydrate helpers — return empty; tests seed in-memory state directly.
@@ -265,12 +274,32 @@ jest.mock('../../store/persistence/musicCacheTables', () => {
       }
     }),
     reorderCachedItemSongs: jest.fn(),
-    // download_queue writes
-    insertDownloadQueueItem: jest.fn(),
-    removeDownloadQueueItem: jest.fn(),
+    // download_queue writes. The append echoes the store's optimistic slot back —
+    // SQL assigns it for real, and here memory and disk agree.
+    //
+    // The payload lands a MACROTASK later, not at call time. op-sqlite's JS
+    // `enhanceDB.executeBatch` parks a batch on a transaction lock and only submits it
+    // to the native pool from a `setImmediate`, while `execute` (every read) reaches
+    // the pool at call time — so a read issued in the same tick as an un-awaited batch
+    // runs FIRST. Committing here synchronously hides that, and the download worker
+    // reads this payload out of SQL.
+    insertDownloadQueueItem: jest.fn(
+      async (
+        row: { queueId: string; queuePosition: number },
+        songs: Array<Record<string, unknown>>,
+      ) => {
+        await new Promise((resolve) => setImmediate(resolve));
+        queueSongs.set(row.queueId, [...songs]);
+        return row.queuePosition;
+      },
+    ),
+    removeDownloadQueueItem: jest.fn((queueId: string) => {
+      queueSongs.delete(queueId);
+    }),
     updateDownloadQueueItem: jest.fn(),
     reorderDownloadQueue: jest.fn(),
     markDownloadComplete: jest.fn((queueId, item, songs, incomingEdges) => {
+      queueSongs.delete(queueId);
       // An explicit finished download is a REAL holder.
       if (item?.derived) derivedItems.add(item.itemId);
       else derivedItems.delete(item.itemId);
@@ -278,22 +307,45 @@ jest.mock('../../store/persistence/musicCacheTables', () => {
         edges.push({ itemId: item.itemId, position: e.position, songId: e.songId });
       }
     }),
+    // The four gated readers. The fake has one source, so there is no gate: a
+    // queueId with no payload answers empty, exactly as an unreadable row would.
+    readDownloadQueueSongsAsync: jest.fn(async (queueId: string) => [
+      ...(queueSongs.get(queueId) ?? []),
+    ]),
+    readDownloadQueueAlbumIdsAsync: jest.fn(async (queueId: string) => [
+      ...new Set((queueSongs.get(queueId) ?? []).map((s: any) => s.albumId ?? null)),
+    ]),
+    readDownloadQueueSongRefsAsync: jest.fn(async (queueId: string) =>
+      (queueSongs.get(queueId) ?? []).map((s: any) => ({ id: s.id, albumId: s.albumId })),
+    ),
+    readQueuedSongStatus: jest.fn(() => null),
     bulkReplace: jest.fn(),
     clearAllMusicCacheRows: jest.fn(() => {
       edges.length = 0;
       derivedItems.clear();
+      queueSongs.clear();
     }),
+    convertLegacyMetadataAsync: jest.fn(async () => {}),
+    childGenreNames: actual.childGenreNames,
+    promotedSongFieldsFromChild: actual.promotedSongFieldsFromChild,
+    albumMetaFromAlbumID3: actual.albumMetaFromAlbumID3,
+    playlistMetaFromPlaylist: actual.playlistMetaFromPlaylist,
     // Test helpers
     __edges: edges,
     __derivedItems: derivedItems,
-    __resetEdges: () => { edges.length = 0; derivedItems.clear(); },
+    __queueSongs: queueSongs,
+    __resetEdges: () => { edges.length = 0; derivedItems.clear(); queueSongs.clear(); },
     __setDbForTests: jest.fn(),
   };
 });
 
-import { musicCacheStore } from '../../store/musicCacheStore';
+import { musicCacheStore, whenQueuePayloadWritten } from '../../store/musicCacheStore';
 import { favoritesStore } from '../../store/favoritesStore';
+import { getDb } from '../../store/persistence/db';
+import { upsertSongs } from '../../db/repository/songs';
+import { markStarredSongs } from '../../db/repository/favorites';
 import { storageLimitStore } from '../../store/storageLimitStore';
+import { offlineModeStore } from '../../store/offlineModeStore';
 import { playbackSettingsStore } from '../../store/playbackSettingsStore';
 import { checkStorageLimit } from '../storageService';
 import { ensureCached, prefetchCoverArt } from '../imageCacheService';
@@ -341,6 +393,24 @@ import type { Child } from '../subsonicService';
 const mockCheckStorageLimit = checkStorageLimit as jest.Mock;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const persistenceMock = require('../../store/persistence/musicCacheTables');
+
+/** Favourites live in SQL now: upsert the songs, then mark them starred (newest first,
+ *  so the marks descend with the array order the assertions expect). */
+const seedStarred = async (songs: Child[]): Promise<void> => {
+  const db = getDb()!;
+  db.runSync('DELETE FROM songs');
+  db.runSync('DELETE FROM favorite_songs');
+  if (songs.length > 0) {
+    await upsertSongs(db, songs);
+    await markStarredSongs(
+      db,
+      songs.map((c, i) => ({ id: c.id, starredAt: songs.length - i })),
+    );
+  }
+  (favoritesStore as unknown as { setState: (s: unknown) => void }).setState({
+    songIds: new Set(songs.map((c) => c.id)),
+  });
+};
 
 const makeChild = (id: string, overrides?: Partial<Child>): Child => ({
   id,
@@ -401,6 +471,10 @@ function seedItem(itemId: string, opts: {
       },
     },
   }));
+}
+
+function seedQueuePayload(queueId: string, songs: any[]) {
+  persistenceMock.__queueSongs.set(queueId, songs);
 }
 
 function seedSong(song: any) {
@@ -608,7 +682,7 @@ describe('clearQueuedDownloads', () => {
       ],
     } as any);
 
-    clearQueuedDownloads();
+    await clearQueuedDownloads();
 
     const remaining = musicCacheStore.getState().downloadQueue;
     expect(remaining.map((q) => q.queueId)).toEqual(['q1']);
@@ -617,93 +691,24 @@ describe('clearQueuedDownloads', () => {
 
   it('no-ops on an empty queue', async () => {
     musicCacheStore.setState({ downloadQueue: [] } as any);
-    clearQueuedDownloads();
+    await clearQueuedDownloads();
     expect(musicCacheStore.getState().downloadQueue).toEqual([]);
   });
 });
 
 describe('getTrackQueueStatus', () => {
-  it('returns null when track is not in queue', async () => {
-    expect(getTrackQueueStatus('track-1')).toBeNull();
-  });
+  const mockReadQueuedSongStatus = jest.requireMock(
+    '../../store/persistence/musicCacheTables',
+  ).readQueuedSongStatus as jest.Mock;
 
-  it('returns queued status when track is in queued item', async () => {
-    musicCacheStore.setState({
-      downloadQueue: [
-        {
-          queueId: 'q1',
-          itemId: 'album-1',
-          type: 'album',
-          name: 'X',
-          status: 'queued',
-          totalSongs: 1,
-          completedSongs: 0,
-          addedAt: 0,
-          queuePosition: 1,
-          songsJson: JSON.stringify([{ id: 'track-1' }]),
-        },
-      ],
-    } as any);
-    expect(getTrackQueueStatus('track-1')).toBe('queued');
-  });
-
-  it('returns downloading status', async () => {
-    musicCacheStore.setState({
-      downloadQueue: [
-        {
-          queueId: 'q1',
-          itemId: 'album-1',
-          type: 'album',
-          name: 'X',
-          status: 'downloading',
-          totalSongs: 1,
-          completedSongs: 0,
-          addedAt: 0,
-          queuePosition: 1,
-          songsJson: JSON.stringify([{ id: 'track-1' }]),
-        },
-      ],
-    } as any);
+  it('answers from the indexed queue-song lookup', () => {
+    mockReadQueuedSongStatus.mockReturnValueOnce('downloading');
     expect(getTrackQueueStatus('track-1')).toBe('downloading');
+    expect(mockReadQueuedSongStatus).toHaveBeenCalledWith('track-1');
   });
 
-  it('returns null for completed/error items', async () => {
-    musicCacheStore.setState({
-      downloadQueue: [
-        {
-          queueId: 'q1',
-          itemId: 'album-1',
-          type: 'album',
-          name: 'X',
-          status: 'error',
-          totalSongs: 1,
-          completedSongs: 0,
-          addedAt: 0,
-          queuePosition: 1,
-          songsJson: JSON.stringify([{ id: 'track-1' }]),
-        },
-      ],
-    } as any);
-    expect(getTrackQueueStatus('track-1')).toBeNull();
-  });
-
-  it('skips items whose songsJson is invalid', async () => {
-    musicCacheStore.setState({
-      downloadQueue: [
-        {
-          queueId: 'q1',
-          itemId: 'album-1',
-          type: 'album',
-          name: 'X',
-          status: 'queued',
-          totalSongs: 1,
-          completedSongs: 0,
-          addedAt: 0,
-          queuePosition: 1,
-          songsJson: 'not json',
-        },
-      ],
-    } as any);
+  it('returns null when the track is in no active queue item', () => {
+    mockReadQueuedSongStatus.mockReturnValueOnce(null);
     expect(getTrackQueueStatus('track-1')).toBeNull();
   });
 });
@@ -754,10 +759,10 @@ describe('recoverStalledDownloadsAsync', () => {
           completedSongs: 0,
           addedAt: 0,
           queuePosition: 1,
-          songsJson: JSON.stringify([makeChild('t1', { albumId: 'a-sweep' })]),
         },
       ],
     } as any);
+    seedQueuePayload('q1', [makeChild('t1', { albumId: 'a-sweep' })]);
     mockListDirectoryAsync.mockResolvedValue(['t1.mp3.tmp', 't1.mp3']);
     mockFileExists = true;
 
@@ -951,7 +956,9 @@ describe('enqueueAlbumDownload', () => {
     expect(queue).toHaveLength(1);
     expect(queue[0].itemId).toBe('album-1');
     expect(queue[0].totalSongs).toBe(3);
-    const songs = JSON.parse(queue[0].songsJson) as Array<{ id: string }>;
+    // The payload is asserted on disk, so wait for the write the enqueue started.
+    await whenQueuePayloadWritten(queue[0].queueId);
+    const songs = persistenceMock.__queueSongs.get(queue[0].queueId) as Array<{ id: string }>;
     expect(songs.map((s) => s.id).sort()).toEqual(['t3', 't4', 't5']);
     // downloadedAt on the existing cached_items row is untouched.
     expect(musicCacheStore.getState().cachedItems['album-1'].downloadedAt).toBe(111);
@@ -1026,7 +1033,7 @@ describe('enqueueAlbumDownload', () => {
     expect(queue[0].totalSongs).toBe(2);
   });
 
-  it('caches album cover by the album coverArt value, not the entity ID (#202)', async () => {
+  it('caches album cover by the album coverArt value, not the entity ID', async () => {
     mockCheckStorageLimit.mockReturnValue(true);
     mockFetchAlbum.mockResolvedValue({
       id: 'album-1',
@@ -1155,14 +1162,14 @@ describe('enqueueStarredSongsDownload', () => {
   });
 
   it('skips when no favorites', async () => {
-    (favoritesStore as any).setState({ songs: [] });
+    await seedStarred([]);
     await enqueueStarredSongsDownload();
     expect(musicCacheStore.getState().downloadQueue).toHaveLength(0);
   });
 
   it('enqueues favorites as virtual playlist', async () => {
     mockCheckStorageLimit.mockReturnValue(true);
-    (favoritesStore as any).setState({ songs: [makeChild('s1'), makeChild('s2')] });
+    await seedStarred([makeChild('s1'), makeChild('s2')]);
     await enqueueStarredSongsDownload();
     const queue = musicCacheStore.getState().downloadQueue;
     expect(queue).toHaveLength(1);
@@ -1837,7 +1844,7 @@ describe('syncCachedItemTracks', () => {
 
 describe('cancelDownload', () => {
   it('no-op for missing id', async () => {
-    cancelDownload('missing');
+    await cancelDownload('missing');
   });
 
   it('removes item from queue', async () => {
@@ -1851,7 +1858,7 @@ describe('cancelDownload', () => {
       ],
     } as any);
 
-    cancelDownload('q1');
+    await cancelDownload('q1');
     expect(musicCacheStore.getState().downloadQueue).toHaveLength(0);
   });
 
@@ -1873,13 +1880,29 @@ describe('cancelDownload', () => {
       .mockResolvedValueOnce(['album-a'])
       .mockResolvedValueOnce(['s.mp3']);
 
-    cancelDownload('q1');
+    await cancelDownload('q1');
     await new Promise((r) => setTimeout(r, 50));
 
     expect(musicCacheStore.getState().totalBytes).toBe(1000);
   });
 
-  it('handles invalid songsJson gracefully', async () => {
+  it('waits for the payload write, so a cancel cannot be undone by its own insert', async () => {
+    musicCacheStore.getState().enqueue(
+      { itemId: 'album-cancel-race', type: 'album', name: 'Race', totalSongs: 1 },
+      [makeChild('cancel-t1', { albumId: 'album-cancel-race' })],
+    );
+    const { queueId } = musicCacheStore.getState().downloadQueue[0];
+
+    // Same tick as the enqueue: the payload write is still parked on the batch lock, so
+    // a DELETE issued now matches nothing and the insert lands behind it.
+    await cancelDownload(queueId);
+    await new Promise((r) => setImmediate(r));
+
+    expect(persistenceMock.__queueSongs.has(queueId)).toBe(false);
+    expect(musicCacheStore.getState().downloadQueue).toHaveLength(0);
+  });
+
+  it('handles a queue item with no stored payload gracefully', async () => {
     musicCacheStore.setState({
       downloadQueue: [
         {
@@ -1889,7 +1912,7 @@ describe('cancelDownload', () => {
         },
       ],
     } as any);
-    expect(() => cancelDownload('q1')).not.toThrow();
+    await expect(cancelDownload('q1')).resolves.toBeUndefined();
   });
 });
 
@@ -1913,7 +1936,7 @@ describe('clearDownloadQueue', () => {
         },
       ],
     } as any);
-    clearDownloadQueue();
+    await clearDownloadQueue();
     expect(musicCacheStore.getState().downloadQueue).toHaveLength(0);
   });
 });
@@ -2046,6 +2069,60 @@ describe('resumeIfSpaceAvailable', () => {
   it('attempts processing when storage available', async () => {
     mockCheckStorageLimit.mockReturnValue(false);
     resumeIfSpaceAvailable();
+  });
+});
+
+describe('offline mode pauses the download queue', () => {
+  afterEach(async () => {
+    offlineModeStore.setState({ offlineMode: false } as any);
+    await waitForQueueIdle();
+    mockCheckStorageLimit.mockReturnValue(true);
+    await forceRecoverDownloadsAsync();
+    await waitForQueueIdle();
+  });
+
+  it('parks a newly enqueued item instead of downloading it', async () => {
+    mockCheckStorageLimit.mockReturnValue(false);
+    offlineModeStore.setState({ offlineMode: true } as any);
+    mockFileExists = true;
+    mockFileSize = 5000;
+    mockDownloadFileAsyncWithProgress.mockResolvedValue(undefined);
+    mockFetchAlbum.mockResolvedValue({
+      id: 'album-off1',
+      name: 'Offline',
+      song: [makeChild('off1-t1', { albumId: 'album-off1' })],
+    });
+
+    await enqueueAlbumDownload('album-off1');
+    await waitForQueueIdle();
+
+    // Queued, not downloading, and no bytes moved — the user told us not to talk to
+    // the server, so the queue waits rather than burning retries.
+    expect(musicCacheStore.getState().downloadQueue[0].status).toBe('queued');
+    expect(mockDownloadFileAsyncWithProgress).not.toHaveBeenCalled();
+    expect(musicCacheStore.getState().cachedItems['album-off1']).toBeUndefined();
+  });
+
+  it('resumes automatically when offline mode is turned back off', async () => {
+    mockCheckStorageLimit.mockReturnValue(false);
+    offlineModeStore.setState({ offlineMode: true } as any);
+    mockFileExists = true;
+    mockFileSize = 5000;
+    mockDownloadFileAsyncWithProgress.mockResolvedValue(undefined);
+    mockFetchAlbum.mockResolvedValue({
+      id: 'album-off2',
+      name: 'Resumes',
+      song: [makeChild('off2-t1', { albumId: 'album-off2' })],
+    });
+    await enqueueAlbumDownload('album-off2');
+    await waitForQueueIdle();
+    expect(musicCacheStore.getState().downloadQueue[0].status).toBe('queued');
+
+    // No explicit kick: the service's own offline subscription restarts the queue.
+    offlineModeStore.setState({ offlineMode: false } as any);
+    await waitForQueueIdle();
+
+    expect(musicCacheStore.getState().cachedItems['album-off2']).toBeDefined();
   });
 });
 
@@ -2257,7 +2334,7 @@ describe('download pipeline', () => {
     expect(partial.songIds.sort()).toEqual(['p1', 'p2']);
   });
 
-  it('partial-album: cached_songs row captures full Child envelope via raw_json', async () => {
+  it('partial-album: cached_songs row captures the full Child in promoted columns', async () => {
     mockFileExists = true;
     mockFileSize = 5000;
     mockDownloadFileAsyncWithProgress.mockResolvedValue(undefined);
@@ -2267,6 +2344,7 @@ describe('download pipeline', () => {
       track: 4,
       discNumber: 2,
       genre: 'Jazz',
+      genres: ['Jazz', 'Folk, World, & Country'] as any,
       bpm: 120,
       musicBrainzId: 'mbid-abc',
       contributors: [{ role: 'producer', artist: { id: 'a1', name: 'X' } }] as any,
@@ -2282,17 +2360,24 @@ describe('download pipeline', () => {
 
     const cached = musicCacheStore.getState().cachedSongs['rich-1'];
     expect(cached).toBeDefined();
-    expect(cached.rawJson).toBeDefined();
-    const env = JSON.parse(cached.rawJson!);
-    expect(env.track).toBe(4);
-    expect(env.discNumber).toBe(2);
-    expect(env.genre).toBe('Jazz');
-    expect(env.bpm).toBe(120);
-    expect(env.musicBrainzId).toBe('mbid-abc');
-    expect(env.contributors).toBeDefined();
+    // No envelope carried any more — the metadata lives in typed columns.
+    expect('rawJson' in cached).toBe(false);
+    expect(cached.track).toBe(4);
+    expect(cached.discNumber).toBe(2);
+    expect(cached.genre).toBe('Jazz');
+    expect(cached.bpm).toBe(120);
+    expect(cached.musicBrainzId).toBe('mbid-abc');
+    expect(cached.genres).toEqual(['Jazz', 'Folk, World, & Country']);
+    // `srcAlbumId` is the SERVER's album; `albumId` stays the file's directory.
+    expect(cached.srcAlbumId).toBe('album-rich');
+    // The real `Child` is handed to the persistence layer so it can rebuild the
+    // `cached_song_*` mirrors (contributors et al. have no in-memory projection).
+    const { upsertCachedSong } = require('../../store/persistence/musicCacheTables');
+    const call = upsertCachedSong.mock.calls.find((c: any[]) => c[0]?.id === 'rich-1');
+    expect(call?.[1]?.contributors).toEqual(richChild.contributors);
   });
 
-  it('partial-album: row carries AlbumID3 envelope when album detail is cached', async () => {
+  it('partial-album: row carries AlbumID3 metadata when album detail is cached', async () => {
     mockFileExists = true;
     mockFileSize = 5000;
     mockDownloadFileAsyncWithProgress.mockResolvedValue(undefined);
@@ -2318,16 +2403,18 @@ describe('download pipeline', () => {
     await waitForQueueIdle();
 
     const partial = musicCacheStore.getState().cachedItems['album-env'];
-    expect(partial.rawJson).toBeDefined();
-    const env = JSON.parse(partial.rawJson!);
-    expect(env.genre).toBe('Classical');
-    expect(env.moods).toEqual(['calm']);
-    expect(env.recordLabels).toEqual([{ name: 'DG' }]);
-    // `.song` stripped — songs live on cached_songs.raw_json.
-    expect('song' in env).toBe(false);
+    expect('rawJson' in partial).toBe(false);
+    expect(partial.albumMeta).toBeDefined();
+    expect(partial.albumMeta!.name).toBe('Env Album');
+    expect(partial.albumMeta!.genre).toBe('Classical');
+    // Reduced to the `cached_albums` scalars — the multi-valued fields are not
+    // mirrored on the download side (plan §2.3); the library keeps them.
+    expect('moods' in partial.albumMeta!).toBe(false);
+    expect('recordLabels' in partial.albumMeta!).toBe(false);
+    expect('song' in partial.albumMeta!).toBe(false);
   });
 
-  it('partial-album: row upgraded with envelope when an earlier partial existed without one', async () => {
+  it('partial-album: row upgraded with metadata when an earlier partial existed without any', async () => {
     mockFileExists = true;
     mockFileSize = 5000;
     mockDownloadFileAsyncWithProgress.mockResolvedValue(undefined);
@@ -2361,9 +2448,9 @@ describe('download pipeline', () => {
     await waitForQueueIdle();
 
     const partial = musicCacheStore.getState().cachedItems['album-up'];
-    expect(partial.rawJson).toBeDefined();
-    const env = JSON.parse(partial.rawJson!);
-    expect(env.genre).toBe('Folk');
+    expect(partial.albumMeta).toBeDefined();
+    expect(partial.albumMeta!.genre).toBe('Folk');
+    expect(partial.albumMeta!.name).toBe('Upgraded');
   });
 
   it('partial-album: no-op when triggering item IS the album', async () => {
@@ -2435,13 +2522,15 @@ describe('download pipeline', () => {
     expect(musicCacheStore.getState().cachedItems['a2']).toBeDefined();
   });
 
-  it('handles invalid songsJson as error', async () => {
+  it('errors a queue item whose payload reads back empty — never completes it', async () => {
+    // The data-loss guard. A row whose songs cannot be read has nothing to download,
+    // and "downloaded all 0 of 0" would finalise the item and discard a queued
+    // download the user is waiting on.
     musicCacheStore.setState({
       downloadQueue: [
         {
           queueId: 'q-bad', itemId: 'album-bad', type: 'album', name: 'X', status: 'queued',
-          totalSongs: 0, completedSongs: 0, addedAt: 0, queuePosition: 1,
-          songsJson: 'not json',
+          totalSongs: 3, completedSongs: 0, addedAt: 0, queuePosition: 1,
         },
       ],
     } as any);
@@ -2450,7 +2539,8 @@ describe('download pipeline', () => {
     await waitForQueueIdle();
 
     const q = musicCacheStore.getState().downloadQueue.find((x: any) => x.queueId === 'q-bad');
-    if (q) expect(q.status).toBe('error');
+    expect(q?.status).toBe('error');
+    expect(musicCacheStore.getState().cachedItems['album-bad']).toBeUndefined();
   });
 
   it('retry-once-on-null: second downloadSong call succeeds', async () => {
@@ -2504,6 +2594,167 @@ describe('download pipeline', () => {
 });
 
 /* ------------------------------------------------------------------ */
+/*  The worker never claims an item whose payload is not on disk yet   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Every status a queue item passes through, plus any error it is stamped with.
+ * `insertDownloadQueueItem` commits a MACROTASK after the enqueue (see its mock), so a
+ * worker that claims the item straight away reads an empty payload.
+ */
+function trackQueueItem(itemId: string): {
+  statuses: string[];
+  errors: string[];
+  stop: () => void;
+} {
+  const statuses: string[] = [];
+  const errors: string[] = [];
+  const stop = musicCacheStore.subscribe((state) => {
+    const row = state.downloadQueue.find((q) => q.itemId === itemId);
+    if (!row) return;
+    if (statuses[statuses.length - 1] !== row.status) statuses.push(row.status);
+    if (row.error && !errors.includes(row.error)) errors.push(row.error);
+  });
+  return { statuses, errors, stop };
+}
+
+describe('download queue payload durability', () => {
+  beforeEach(() => {
+    mockFileExists = true;
+    mockFileSize = 5000;
+    mockDownloadFileAsyncWithProgress.mockResolvedValue(undefined);
+  });
+
+  afterEach(async () => {
+    await waitForQueueIdle();
+    mockCheckStorageLimit.mockReturnValue(true);
+    await forceRecoverDownloadsAsync();
+    await waitForQueueIdle();
+  });
+
+  it('a fresh album enqueue downloads instead of erroring on an unwritten payload', async () => {
+    mockFetchAlbum.mockResolvedValue({
+      id: 'album-race', name: 'Race', artist: 'A', coverArt: 'c',
+      song: [makeChild('race-t1', { albumId: 'album-race' })],
+    });
+    const seen = trackQueueItem('album-race');
+
+    await enqueueAlbumDownload('album-race');
+    await waitForQueueIdle();
+    seen.stop();
+
+    expect(seen.errors).toEqual([]);
+    expect(seen.statuses).toEqual(['queued', 'downloading']);
+    expect(musicCacheStore.getState().cachedItems['album-race'].songIds).toEqual(['race-t1']);
+  });
+
+  it('a playlist enqueue downloads rather than erroring', async () => {
+    mockFetchPlaylist.mockResolvedValue({
+      id: 'pl-race', name: 'PL',
+      entry: [makeChild('plr-t1', { albumId: 'album-plr' })],
+    });
+    const seen = trackQueueItem('pl-race');
+
+    await enqueuePlaylistDownload('pl-race');
+    await waitForQueueIdle();
+    seen.stop();
+
+    expect(seen.errors).toEqual([]);
+    expect(musicCacheStore.getState().cachedItems['pl-race'].songIds).toEqual(['plr-t1']);
+  });
+
+  it('a single-song enqueue downloads rather than erroring', async () => {
+    const seen = trackQueueItem('song:one-t1');
+
+    await enqueueSongDownload(makeChild('one-t1', { albumId: 'album-one' }));
+    await waitForQueueIdle();
+    seen.stop();
+
+    expect(seen.errors).toEqual([]);
+    expect(musicCacheStore.getState().cachedItems['song:one-t1'].songIds).toEqual(['one-t1']);
+  });
+
+  it('a top-up enqueues only the missing songs and downloads them', async () => {
+    seedSong(makeCachedSong('top-t1', { albumId: 'album-top' }));
+    seedItem('album-top', { type: 'album', songIds: ['top-t1'], expectedSongCount: 2 });
+    mockFetchAlbum.mockResolvedValue({
+      id: 'album-top', name: 'Top', artist: 'A', coverArt: 'c',
+      song: [
+        makeChild('top-t1', { albumId: 'album-top' }),
+        makeChild('top-t2', { albumId: 'album-top' }),
+      ],
+    });
+    const seen = trackQueueItem('album-top');
+
+    await enqueueAlbumDownload('album-top');
+    await waitForQueueIdle();
+    seen.stop();
+
+    expect(seen.errors).toEqual([]);
+    expect(seen.statuses).toEqual(['queued', 'downloading']);
+    expect(musicCacheStore.getState().cachedItems['album-top'].songIds).toEqual(['top-t1', 'top-t2']);
+  });
+
+  it('syncCachedItemTracks re-enqueues a changed playlist and downloads it', async () => {
+    seedSong(makeCachedSong('sync-t1', { albumId: 'album-sync' }));
+    seedItem('pl-sync', { type: 'playlist', songIds: ['sync-t1'] });
+    const seen = trackQueueItem('pl-sync');
+
+    syncCachedItemTracks('pl-sync', [
+      makeChild('sync-t1', { albumId: 'album-sync' }),
+      makeChild('sync-t2', { albumId: 'album-sync' }),
+    ]);
+    await waitForQueueIdle();
+    seen.stop();
+
+    expect(seen.errors).toEqual([]);
+    expect(musicCacheStore.getState().cachedItems['pl-sync'].songIds).toEqual([
+      'sync-t1',
+      'sync-t2',
+    ]);
+  });
+
+  it('re-adding an album after removing it downloads again', async () => {
+    mockFetchAlbum.mockResolvedValue({
+      id: 'album-again', name: 'Again', artist: 'A', coverArt: 'c',
+      song: [makeChild('again-t1', { albumId: 'album-again' })],
+    });
+    await enqueueAlbumDownload('album-again');
+    await waitForQueueIdle();
+    expect(musicCacheStore.getState().cachedItems['album-again']).toBeDefined();
+
+    await deleteCachedItem('album-again');
+    expect(musicCacheStore.getState().cachedItems['album-again']).toBeUndefined();
+
+    const seen = trackQueueItem('album-again');
+    await enqueueAlbumDownload('album-again');
+    await waitForQueueIdle();
+    seen.stop();
+
+    expect(seen.errors).toEqual([]);
+    expect(musicCacheStore.getState().cachedItems['album-again'].songIds).toEqual(['again-t1']);
+  });
+
+  it('retrying an errored item still downloads it', async () => {
+    seedQueuePayload('q-retry', [makeChild('retry-t1', { albumId: 'album-retry2' })]);
+    musicCacheStore.setState({
+      downloadQueue: [
+        {
+          queueId: 'q-retry', itemId: 'album-retry2', type: 'album', name: 'Retry',
+          status: 'error', error: 'Failed to read songs', totalSongs: 1,
+          completedSongs: 0, addedAt: 0, queuePosition: 1,
+        },
+      ],
+    } as any);
+
+    await retryDownload('q-retry');
+    await waitForQueueIdle();
+
+    expect(musicCacheStore.getState().cachedItems['album-retry2'].songIds).toEqual(['retry-t1']);
+  });
+});
+
+/* ------------------------------------------------------------------ */
 /*  downloadSong catch (tmp cleanup)                                   */
 /* ------------------------------------------------------------------ */
 
@@ -2550,7 +2801,7 @@ describe('redownloadItem', () => {
     });
     await redownloadItem('album-1');
     expect(musicCacheStore.getState().cachedItems['album-1']).toBeUndefined();
-    expect(mockFetchAlbum).toHaveBeenCalledWith('album-1');
+    expect(mockFetchAlbum).toHaveBeenCalledWith('album-1', { force: true });
   });
 
   it('re-enqueues playlist', async () => {
@@ -2562,14 +2813,14 @@ describe('redownloadItem', () => {
     });
     await redownloadItem('pl-1');
     expect(musicCacheStore.getState().cachedItems['pl-1']).toBeUndefined();
-    expect(mockFetchPlaylist).toHaveBeenCalledWith('pl-1');
+    expect(mockFetchPlaylist).toHaveBeenCalledWith('pl-1', { force: true });
   });
 
   it('re-enqueues starred via favorites path', async () => {
     mockCheckStorageLimit.mockReturnValue(true);
     seedSong(makeCachedSong('s1'));
     seedItem(STARRED_SONGS_ITEM_ID, { type: 'favorites', songIds: ['s1'] });
-    (favoritesStore as any).setState({ songs: [makeChild('s1')] });
+    await seedStarred([makeChild('s1')]);
     await redownloadItem(STARRED_SONGS_ITEM_ID);
     // starred gets re-enqueued via the favorites path.
     expect(
@@ -2689,21 +2940,55 @@ describe('syncStarredSongsDownload via subscription', () => {
     seedItem(STARRED_SONGS_ITEM_ID, { type: 'favorites', songIds: ['s1'] });
     await deferredMusicCacheInit();
 
-    (favoritesStore as any).setState({ songs: [makeChild('s1')] });
-    (favoritesStore as any).setState({ songs: [] });
+    await seedStarred([makeChild('s1')]);
+    await seedStarred([]);
+    // The reactor is fire-and-forget and now reads SQL, so let its awaits settle.
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
 
     expect(musicCacheStore.getState().cachedItems[STARRED_SONGS_ITEM_ID]).toBeUndefined();
   });
 
-  it('does not fire when songs reference unchanged', async () => {
+  it('reads nothing at all when the favourites download does not exist', async () => {
+    // "Remove Download, then star something again" — with no `__starred__` aggregate the
+    // reactor must bail on the in-memory membership check, before any starred-set read.
+    // Otherwise every star toggle costs a full favourites projection.
     mockFileExists = true;
-    const songs = [makeChild('s1')];
-    (favoritesStore as any).setState({ songs });
+    await seedStarred([makeChild('s1')]);
+    await deferredMusicCacheInit();
+    expect(musicCacheStore.getState().cachedItems[STARRED_SONGS_ITEM_ID]).toBeUndefined();
+
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const favRepo = require('../../db/repository/favorites');
+    const countSpy = jest.spyOn(favRepo, 'countStarredSongs');
+    const listSpy = jest.spyOn(favRepo, 'listAllStarredSongs');
+    try {
+      await seedStarred([makeChild('s1'), makeChild('s2')]);
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(countSpy).not.toHaveBeenCalled();
+      expect(listSpy).not.toHaveBeenCalled();
+      expect(musicCacheStore.getState().downloadQueue).toHaveLength(0);
+    } finally {
+      countSpy.mockRestore();
+      listSpy.mockRestore();
+    }
+  });
+
+  it('does not fire when the membership set reference is unchanged', async () => {
+    mockFileExists = true;
+    await seedStarred([makeChild('s1')]);
     seedItem(STARRED_SONGS_ITEM_ID, { type: 'favorites', songIds: ['s1'] });
     await deferredMusicCacheInit();
 
-    // Same reference — store's subscribe shouldn't act.
-    (favoritesStore as any).setState({ songs });
+    // Re-reading SQL with the same membership keeps the same Set object, so the
+    // identity guard skips — the aggregate survives.
+    const before = (favoritesStore.getState() as { songIds: ReadonlySet<string> }).songIds;
+    (favoritesStore as unknown as { setState: (s: unknown) => void }).setState({
+      songIds: before,
+    });
+    expect((favoritesStore.getState() as { songIds: ReadonlySet<string> }).songIds).toBe(before);
     expect(musicCacheStore.getState().cachedItems[STARRED_SONGS_ITEM_ID]).toBeDefined();
   });
 });
@@ -2763,8 +3048,8 @@ describe('reconcileMusicCacheAsync', () => {
 
   it('skips the stale-dir sweep when validAlbumIds is empty (pre-migration safety gate)', async () => {
     // No songs seeded → validAlbumIds is empty. Directories on disk must
-    // NOT be swept — this is the gate that protects v1 cache data when
-    // task #14 hasn't completed yet.
+    // NOT be swept — this is the gate that protects v1 cache data when the
+    // v1→v2 migration hasn't completed yet.
     mockFileExists = true;
     mockListDirectoryAsync.mockImplementation(async (uri: string) => {
       if (uri.endsWith('/music-cache')) return ['v1-playlist-dir', 'v1-album-dir'];

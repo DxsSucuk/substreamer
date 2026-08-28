@@ -8,7 +8,6 @@ import { useTranslation } from 'react-i18next';
 import { useTheme } from '../../hooks/useTheme';
 import { useThemedAlert } from '../../hooks/useThemedAlert';
 import { settingsStyles } from '../../styles/settingsStyles';
-import { albumLibraryStore } from '../../store/albumLibraryStore';
 import { connectivityStore } from '../../store/connectivityStore';
 import { fullLibraryDownloadStore } from '../../store/fullLibraryDownloadStore';
 import {
@@ -16,8 +15,10 @@ import {
   type MaxConcurrentDownloads,
 } from '../../store/musicCacheStore';
 import { offlineModeStore } from '../../store/offlineModeStore';
-import { playlistLibraryStore } from '../../store/playlistLibraryStore';
 import { downloadedMetadataRefreshStore } from '../../store/downloadedMetadataRefreshStore';
+import { getDb } from '../../store/persistence/db';
+import { countAlbums } from '../../db/repository/albums';
+import { countPlaylists } from '../../db/repository/playlists';
 import {
   canDownloadFullLibrary,
   enqueueFullLibraryDownload,
@@ -55,10 +56,9 @@ export function DownloadedMusicCard() {
   const metaRefreshTotal = downloadedMetadataRefreshStore((s) => s.total);
 
   const handleRefreshMetadata = useCallback(() => {
-    // Button stays enabled unless offline mode, but a refresh needs a reachable
-    // server — otherwise every fetch just stalls on a timeout. Give feedback for
-    // both offline mode and a currently-unreachable server rather than firing a
-    // doomed pass. (Same message: "connect to your server…".)
+    // The button stays enabled unless offline mode, but a refresh needs a reachable
+    // server or every fetch stalls on a timeout. Both cases get the same message
+    // rather than a doomed pass.
     if (offlineMode || !connectivityStore.getState().isServerReachable) {
       alert(t('refreshDownloadedMetadata'), t('refreshMetadataOffline'));
       return;
@@ -74,7 +74,7 @@ export function DownloadedMusicCard() {
     setSheetVisible(false);
   }, []);
 
-  const handleDownloadFullLibrary = useCallback(() => {
+  const handleDownloadFullLibrary = useCallback(async () => {
     if (!canDownloadFullLibrary()) {
       alert(t('downloadFullLibrary'), t('downloadFullLibraryOffline'));
       return;
@@ -90,8 +90,9 @@ export function DownloadedMusicCard() {
       return;
     }
 
-    const albums = albumLibraryStore.getState().albums.length;
-    const playlists = playlistLibraryStore.getState().playlists.length;
+    const db = getDb();
+    const albums = db ? await countAlbums(db) : 0;
+    const playlists = db ? await countPlaylists(db) : 0;
     confirm({
       title: t('downloadFullLibraryConfirmTitle'),
       message: t('downloadFullLibraryConfirmBody', { albums, playlists }),

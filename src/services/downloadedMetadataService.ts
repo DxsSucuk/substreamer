@@ -1,10 +1,9 @@
 /**
  * Re-cache metadata (album/playlist detail) + cover art for DOWNLOADED items.
  *
- * Downloads are meant to carry their own metadata (see the download flow in
- * `musicCacheService`), so offline is just a filtered view over cached data.
- * This pass repairs downloaded items whose detail/art is missing (e.g. the
- * 8.0.89 on-demand-detail regression) and backs the proactive migration + the
+ * Downloads carry their own metadata (see the download flow in `musicCacheService`),
+ * so offline is just a filtered view over cached data. This pass repairs downloaded
+ * items whose detail/art is missing, and backs both the proactive migration and the
  * manual "Refresh downloaded metadata" settings button.
  *
  * - `missing`: only fetch detail that isn't already cached (cheap; migration).
@@ -13,11 +12,13 @@
  * Online-gated (no-op offline — `fetchAlbum`/`fetchPlaylist` short-circuit to the
  * cached entry offline anyway). One run at a time. Bounded concurrency.
  */
-import { albumDetailStore } from '../store/albumDetailStore';
+import { fetchAlbumDetail, fetchPlaylistDetail } from './detailFetchService';
 import { downloadedMetadataRefreshStore } from '../store/downloadedMetadataRefreshStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { offlineModeStore } from '../store/offlineModeStore';
-import { playlistDetailStore } from '../store/playlistDetailStore';
+import { getDb } from '../store/persistence/db';
+import { albumIdsWithSongs } from '../db/repository/songs';
+import { playlistIdsWithSongs } from '../db/repository/playlists';
 import { runPool } from '../utils/promisePool';
 
 const CONCURRENCY = 3;
@@ -65,14 +66,17 @@ export async function refreshDownloadedMetadata(opts: {
     }
   }
 
-  const albums = albumDetailStore.getState().albums;
-  const playlists = playlistDetailStore.getState().playlists;
+  // Presence = the item has its DETAIL in the normalized model (≥1 song / ≥1 membership
+  // row). `fetchAlbum`/`fetchPlaylist` dual-write it, so this reflects prior passes.
+  const db = getDb();
+  const albumsHave = db ? await albumIdsWithSongs(db, [...albumIds]) : new Set<string>();
+  const playlistsHave = db ? await playlistIdsWithSongs(db, [...playlistIds]) : new Set<string>();
   const tasks: Task[] = [
     ...[...albumIds]
-      .filter((id) => opts.mode === 'all' || !albums[id])
+      .filter((id) => opts.mode === 'all' || !albumsHave.has(id))
       .map((id) => ({ kind: 'album' as const, id })),
     ...[...playlistIds]
-      .filter((id) => opts.mode === 'all' || !playlists[id])
+      .filter((id) => opts.mode === 'all' || !playlistsHave.has(id))
       .map((id) => ({ kind: 'playlist' as const, id })),
   ];
 
@@ -86,9 +90,9 @@ export async function refreshDownloadedMetadata(opts: {
       async (t) => {
         try {
           if (t.kind === 'album') {
-            await albumDetailStore.getState().fetchAlbum(t.id, { prefetchCovers: true });
+            await fetchAlbumDetail(t.id, { prefetchCovers: true, force: opts.mode === 'all' });
           } else {
-            await playlistDetailStore.getState().fetchPlaylist(t.id, { prefetchCovers: true });
+            await fetchPlaylistDetail(t.id, { prefetchCovers: true, force: opts.mode === 'all' });
           }
           downloadedMetadataRefreshStore.getState().tick(true);
         } catch (e) {
@@ -98,24 +102,24 @@ export async function refreshDownloadedMetadata(opts: {
       },
       { concurrency: CONCURRENCY },
     );
-    // Covers are prefetched by `fetchAlbum`/`fetchPlaylist` (prefetchCovers:true)
-    // onto imageCacheService's self-draining in-memory download queue, so they
-    // land without an explicit drain here — and they're purge-protected +
-    // reconcile-recached + backfilled, so an in-flight cover survives an app
-    // kill. We report done on DETAIL presence (measured below), not covers.
+    // Covers go onto imageCacheService's self-draining download queue, so they land
+    // without an explicit drain here, and they're purge-protected + reconcile-recached
+    // + backfilled so an in-flight cover survives an app kill. Done is reported on
+    // DETAIL presence (measured below), not covers.
   } finally {
     downloadedMetadataRefreshStore.getState().finish();
   }
 
-  // Measure what's STILL missing from actual store presence (not fetch return
-  // values — `fetchAlbum` resolves null on a timeout/error without throwing).
-  // `remaining < attempted` ⇒ progress was made; `=== attempted` ⇒ the
-  // stragglers keep failing. The backfill caller uses this to resume-until-
-  // complete across launches without looping forever on unfetchable items.
-  const albumsAfter = albumDetailStore.getState().albums;
-  const playlistsAfter = playlistDetailStore.getState().playlists;
+  // Measure what's STILL missing from actual presence, not fetch return values —
+  // `fetchAlbum` resolves null on a timeout/error without throwing. The backfill caller
+  // uses this to resume-until-complete across launches without looping forever on
+  // unfetchable items.
+  const albumTaskIds = tasks.filter((t) => t.kind === 'album').map((t) => t.id);
+  const playlistTaskIds = tasks.filter((t) => t.kind === 'playlist').map((t) => t.id);
+  const albumsHaveAfter = db ? await albumIdsWithSongs(db, albumTaskIds) : new Set<string>();
+  const playlistsHaveAfter = db ? await playlistIdsWithSongs(db, playlistTaskIds) : new Set<string>();
   const remaining = tasks.filter((t) =>
-    t.kind === 'album' ? !albumsAfter[t.id] : !playlistsAfter[t.id],
+    t.kind === 'album' ? !albumsHaveAfter.has(t.id) : !playlistsHaveAfter.has(t.id),
   ).length;
   return { attempted: tasks.length, remaining };
 }

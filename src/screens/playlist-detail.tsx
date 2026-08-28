@@ -50,8 +50,10 @@ import { authStore } from '../store/authStore';
 import { moreOptionsStore } from '../store/moreOptionsStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { offlineModeStore } from '../store/offlineModeStore';
-import { playlistDetailStore } from '../store/playlistDetailStore';
-import { playlistLibraryStore } from '../store/playlistLibraryStore';
+import { fetchPlaylistDetail } from '../services/detailFetchService';
+import { getDb } from '../store/persistence/db';
+import { getPlaylistDetail } from '../db/repository/details';
+import { syncStatusStore } from '../store/syncStatusStore';
 import { processingOverlayStore } from '../store/processingOverlayStore';
 
 import { formatCompactDuration } from '../utils/formatters';
@@ -132,12 +134,11 @@ const EditTrackRow = memo(function EditTrackRow({
 
 /**
  * Editable playlist properties shown in the edit-mode list header: name +
- * description + a public/private toggle. Name and description are UNCONTROLLED
- * (defaultValue + ref) so typing never triggers a screen re-render — the parent
- * `listHeader` useMemo would otherwise recompute on every keystroke and yank
- * input focus in the reorderable list. Memoized on stable props so a track
- * reorder doesn't re-render the form. Only the Switch is controlled (a single
- * tap, and the uncontrolled inputs keep their content across its re-render).
+ * description + a public/private toggle. Name and description MUST stay UNCONTROLLED
+ * (defaultValue + ref): a keystroke that re-renders the screen recomputes the parent's
+ * `listHeader` useMemo and yanks input focus in the reorderable list. Memoized on
+ * stable props so a track reorder doesn't re-render the form. Only the Switch is
+ * controlled — one tap, and the uncontrolled inputs survive its re-render.
  */
 const PlaylistEditHeader = memo(function PlaylistEditHeader({
   colors,
@@ -213,8 +214,38 @@ export function PlaylistDetailScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const cachedEntry = playlistDetailStore((s) => (id ? s.playlists[id] : undefined));
-  const [playlist, setPlaylist] = useState<PlaylistWithSongs | null>(cachedEntry?.playlist ?? null);
+  const [playlist, setPlaylist] = useState<PlaylistWithSongs | null>(null);
+  const [hasCache, setHasCache] = useState(false);
+  const [cacheChecked, setCacheChecked] = useState(false);
+  // Read the cached detail from the local DB first (fast) — the server fetch only runs
+  // on a genuine miss, so a re-open is instant. The server refresh dual-writes normalized.
+  useEffect(() => {
+    if (!id) return;
+    const db = getDb();
+    if (!db) {
+      setCacheChecked(true);
+      return;
+    }
+    let alive = true;
+    getPlaylistDetail(db, id)
+      .then((d) => {
+        if (!alive) return;
+        if (d) {
+          setPlaylist((prev) => prev ?? ({ ...d.playlist, entry: d.entry } as PlaylistWithSongs));
+          // "Cached" only if we actually have the tracks — a playlist ROW exists from the
+          // list sync, but its membership (`playlist_songs`) is only populated by a detail
+          // fetch. An empty entry ⇒ fetch from the server (fixes the "No tracks" flash).
+          setHasCache(d.entry.length > 0);
+        }
+        setCacheChecked(true);
+      })
+      .catch(() => {
+        if (alive) setCacheChecked(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [id]);
   const transitionComplete = useTransitionComplete();
   const downloadStatus = useDownloadStatus('playlist', Platform.OS === 'ios' ? (id ?? '') : '');
   const isWide = useLayoutMode() === 'wide';
@@ -240,20 +271,20 @@ export function PlaylistDetailScreen() {
   const canEdit = !offlineMode && isOwn;
 
   /* ---- Data fetching ---- */
-  const { fetchPlaylist } = playlistDetailStore.getState();
-
   const load = useCallback(async (playlistId: string, isRefresh: boolean) => {
-    const data = await fetchPlaylist(playlistId);
+    // See album-detail: local answers a normal open, pull-to-refresh forces the server.
+    const data = await fetchPlaylistDetail(playlistId, { force: isRefresh });
     setPlaylist(data);
     if (isRefresh && data?.id) {
       refreshCoverArt(data.id, 'playlist-detail-pull').catch(() => { /* non-critical */ });
     }
     return data ? null : t('playlistNotFound');
-  }, [fetchPlaylist, t]);
+  }, [t]);
 
   const { loading, refreshing, error, onRefresh } = useDetailFetch({
     id,
-    hasCache: !!cachedEntry,
+    hasCache,
+    cacheChecked,
     missingIdMessage: t('missingPlaylistId'),
     failedMessage: t('failedToLoadPlaylist'),
     load,
@@ -354,17 +385,15 @@ export function PlaylistDetailScreen() {
 
       // 3. Reconcile from server truth; patch the library list from the refetched
       //    values so it reflects reality even on a partial (tracks-ok/props-failed) save.
-      const fresh = await fetchPlaylist(id);
+      const fresh = await fetchPlaylistDetail(id, { force: true });
       if (fresh?.id) {
         await ensureCached(fresh.id);
       }
       if (fresh) {
         setPlaylist(fresh);
-        playlistLibraryStore.getState().patchPlaylistMetadata(id, {
-          name: fresh.name,
-          comment: fresh.comment,
-          public: fresh.public,
-        });
+        // `fetchPlaylistDetail` already upserted the normalized row every list reads
+        // from; the car browse tree renders the name, so signal it too.
+        syncStatusStore.getState().bumpLibraryUpdated();
       }
 
       setEditing(false);
@@ -380,7 +409,7 @@ export function PlaylistDetailScreen() {
     } finally {
       setSaving(false);
     }
-  }, [playlist, id, tracks, editedTracks, editedPublic, fetchPlaylist, t]);
+  }, [playlist, id, tracks, editedTracks, editedPublic, t]);
 
   /* ---- Header ---- */
 
@@ -455,10 +484,9 @@ export function PlaylistDetailScreen() {
   const renderItem = useCallback(
     ({ item }: { item: Child; index: number }) => (
       <View style={styles.trackItemWrap}>
-        {/* Playlist tracks omit the position number — the cover thumbnail
-            already anchors the row and the number was eating ~28px of the
-            title column. Album-detail still shows numbers because all of
-            its tracks share the same cover (no thumbnail per row). */}
+        {/* Playlist tracks omit the position number: the cover thumbnail anchors the */}
+        {/* row, and the number costs ~28px of the title column. Album-detail keeps */}
+        {/* numbers because its tracks share one cover and carry no per-row thumbnail. */}
         <TrackRow
           track={item}
           colors={colors}
@@ -466,6 +494,7 @@ export function PlaylistDetailScreen() {
           playlistId={id}
           showCoverArt
           showAlbumName
+          optionsSource="playlist-detail"
         />
       </View>
     ),
@@ -634,13 +663,10 @@ export function PlaylistDetailScreen() {
     );
   }
 
-  // Unified paddingTop for iOS + Android. iOS previously used
-  // contentInset+contentOffset to position content under the floating
-  // Stack.Toolbar, but RN 0.85 Fabric recycles RCTScrollViewComponentView
-  // across screen pushes and ignores contentOffset on a recycled
-  // instance — leaving the hero partly scrolled off the top on
-  // subsequent detail pushes. See album-detail.tsx for the full
-  // explanation.
+  // paddingTop on both platforms, never contentInset+contentOffset: Fabric recycles
+  // RCTScrollViewComponentView across screen pushes and ignores contentOffset on a
+  // recycled instance, leaving the hero partly scrolled off the top.
+  // See album-detail.tsx.
   const listContentStyle = {
     paddingTop: insets.top + HEADER_BAR_HEIGHT,
     paddingBottom: 32,

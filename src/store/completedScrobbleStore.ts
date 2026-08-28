@@ -1,17 +1,16 @@
 import { create } from 'zustand';
 
 import {
-  clearScrobbles,
-  hydrateScrobbles,
-  hydrateScrobblesAsync,
   insertScrobble,
   mergeScrobbles,
   replaceAllScrobbles,
 } from './persistence/scrobbleTable';
+import {
+  computeScrobbleAnalytics,
+  loadRecentScrobbles,
+} from './persistence/scrobbleAggregates';
 
 import { type Child } from '../services/subsonicService';
-import { dateKey } from '../utils/dateKey';
-import { getPrimaryGenre } from '../utils/genreHelpers';
 
 export interface CompletedScrobble {
   /** Unique identifier (carried over from the pending entry). */
@@ -31,7 +30,13 @@ export interface ListeningStats {
 export interface AnalyticsAggregates {
   artistCounts: Record<string, { count: number; artistId?: string }>;
   albumCounts: Record<string, { artist: string; coverArt?: string; count: number; albumId?: string }>;
-  songCounts: Record<string, { song: Child; count: number }>;
+  /** Every unique song played: its play count plus the two fields the whole-set
+   *  consumers read — `duration` for the listening total, `year` for the decade mix.
+   *  Deliberately NOT a `Child` per song; see `topSongs`. */
+  songStats: Record<string, { count: number; duration?: number; year?: number }>;
+  /** The most-played songs, ranked, bounded, each a COMPLETE `Child` — they are
+   *  played from My Listening and opened in the track-details modal. */
+  topSongs: { song: Child; count: number }[];
   genreCounts: Record<string, number>;
   hourBuckets: number[];
   dayCounts: Record<string, number>;
@@ -46,226 +51,78 @@ const EMPTY_STATS: ListeningStats = {
 const EMPTY_AGGREGATES: AnalyticsAggregates = {
   artistCounts: {},
   albumCounts: {},
-  songCounts: {},
+  songStats: {},
+  topSongs: [],
   genreCounts: {},
   hourBuckets: new Array(24).fill(0),
   dayCounts: {},
 };
 
 export interface CompletedScrobbleState {
-  completedScrobbles: CompletedScrobble[];
+  /** Bounded, NEWEST-FIRST recent slice — for the history browser + any recent
+   *  display. NOT the full history: analytics come from SQL aggregates, never a
+   *  full in-memory array. */
+  recentScrobbles: CompletedScrobble[];
+  /** All-time stats + aggregates, computed by SQL GROUP BY (bounded by unique
+   *  entities). Refreshed on add / hydrate / replace / merge. */
   stats: ListeningStats;
   aggregates: AnalyticsAggregates;
   /** True after the on-start hydration from SQLite has populated the store. */
   hasHydrated: boolean;
 
   addCompleted: (scrobble: CompletedScrobble) => void;
-  rebuildStats: () => void;
-  rebuildAggregates: () => void;
+  /** Recompute all-time stats + aggregates + the recent slice from SQL. */
+  refreshFromDb: () => Promise<void>;
   /**
-   * Replace the entire scrobble set both in the SQLite table and in memory.
-   * Used by backup restore. Rebuilds derived stats + aggregates from the
-   * provided list.
+   * Replace the entire scrobble set in the SQLite table (backup restore),
+   * then refresh derived stats/aggregates from SQL.
    */
   replaceAll: (scrobbles: CompletedScrobble[]) => Promise<void>;
   /**
-   * Merge the given scrobbles into the existing set (INSERT OR IGNORE per
-   * row). Used by merge-mode backup restore so a backup from another device
-   * unifies with locally-accumulated scrobbles instead of replacing them.
-   * Re-hydrates from SQL after the merge so derived stats reflect the
-   * union. Returns `{ added, skipped }` where `added` is rows actually
-   * inserted and `skipped` covers duplicates + invalid inputs.
+   * Merge the given scrobbles into the existing set (INSERT OR IGNORE per row).
+   * Used by merge-mode backup restore so a backup from another device unifies
+   * with locally-accumulated scrobbles. Refreshes from SQL after. Returns
+   * `{ added, skipped }`.
    */
   mergeAll: (scrobbles: CompletedScrobble[]) => Promise<{ added: number; skipped: number }>;
-  /** Called once at app start to load persisted rows into memory — background
-   * read + chunked JSON.parse. Aggregates/stats are still built synchronously
-   * afterwards (single pass, needed before My Listening renders). */
+  /** Called once at app start: compute analytics from SQL (no full-history load
+   *  into memory). */
   hydrateFromDbAsync: () => Promise<void>;
 }
 
-function buildStats(scrobbles: CompletedScrobble[]): ListeningStats {
-  let totalListeningSeconds = 0;
-  const uniqueArtists: Record<string, true> = {};
-  for (const s of scrobbles) {
-    if (s.song.duration) totalListeningSeconds += s.song.duration;
-    if (s.song.artist) uniqueArtists[s.song.artist] = true;
-  }
-  return { totalPlays: scrobbles.length, totalListeningSeconds, uniqueArtists };
-}
-
-function buildAggregates(scrobbles: CompletedScrobble[]): AnalyticsAggregates {
-  const artistCounts: Record<string, { count: number; artistId?: string }> = {};
-  const albumCounts: Record<string, { artist: string; coverArt?: string; count: number; albumId?: string }> = {};
-  const songCounts: Record<string, { song: Child; count: number }> = {};
-  const genreCounts: Record<string, number> = {};
-  const hourBuckets = new Array<number>(24).fill(0);
-  const dayCounts: Record<string, number> = {};
-
-  for (const s of scrobbles) {
-    const artist = s.song.artist ?? 'Unknown';
-    const existingArtist = artistCounts[artist];
-    if (existingArtist) {
-      existingArtist.count++;
-      // Capture artistId opportunistically: rows from older app versions
-      // may lack it; the first scrobble that carries one wins.
-      if (!existingArtist.artistId && s.song.artistId) {
-        existingArtist.artistId = s.song.artistId;
-      }
-    } else {
-      artistCounts[artist] = { count: 1, artistId: s.song.artistId ?? undefined };
-    }
-
-    const albumKey = `${s.song.album ?? 'Unknown'}::${artist}`;
-    const existingAlbum = albumCounts[albumKey];
-    if (existingAlbum) {
-      existingAlbum.count++;
-      if (s.song.coverArt) existingAlbum.coverArt = s.song.coverArt;
-      if (!existingAlbum.albumId && s.song.albumId) {
-        existingAlbum.albumId = s.song.albumId;
-      }
-    } else {
-      albumCounts[albumKey] = {
-        artist,
-        coverArt: s.song.coverArt ?? undefined,
-        count: 1,
-        albumId: s.song.albumId ?? undefined,
-      };
-    }
-
-    const existingSong = songCounts[s.song.id];
-    if (existingSong) {
-      existingSong.count++;
-      existingSong.song = s.song;
-    } else {
-      songCounts[s.song.id] = { song: s.song, count: 1 };
-    }
-
-    const genre = getPrimaryGenre(s.song);
-    if (genre) {
-      genreCounts[genre] = (genreCounts[genre] ?? 0) + 1;
-    }
-
-    hourBuckets[new Date(s.time).getHours()]++;
-
-    const dk = dateKey(s.time);
-    dayCounts[dk] = (dayCounts[dk] ?? 0) + 1;
-  }
-
-  return { artistCounts, albumCounts, songCounts, genreCounts, hourBuckets, dayCounts };
-}
+/** How many recent scrobbles to keep in memory (history browser + home). */
+const RECENT_CAP = 200;
 
 export const completedScrobbleStore = create<CompletedScrobbleState>()((set, get) => ({
-  completedScrobbles: [],
+  recentScrobbles: [],
   stats: { ...EMPTY_STATS },
   aggregates: { ...EMPTY_AGGREGATES, hourBuckets: new Array(24).fill(0) },
   hasHydrated: false,
 
   addCompleted: (scrobble) => {
+    if (!scrobble.id || !scrobble.song?.id || !scrobble.song.title) return;
     const state = get();
-    if (
-      !scrobble.id ||
-      !scrobble.song?.id ||
-      !scrobble.song.title ||
-      state.completedScrobbles.some((s) => s.id === scrobble.id)
-    ) {
-      return;
-    }
-
-    // Persist optimistically (fire-and-forget) so the in-memory update below
-    // isn't blocked on disk IO. insertScrobble is async + INSERT OR IGNORE, so
-    // a collision with a concurrently-added row can't throw; a late write
-    // self-heals on the next hydrate.
-    void insertScrobble(scrobble);
-
-    const artist = scrobble.song.artist;
-    const newArtists =
-      artist && !(artist in state.stats.uniqueArtists)
-        ? { ...state.stats.uniqueArtists, [artist]: true as const }
-        : state.stats.uniqueArtists;
-
-    // Incremental aggregate updates
-    const agg = state.aggregates;
-    const artistName = artist ?? 'Unknown';
-    const existingArtistEntry = agg.artistCounts[artistName];
-    const newArtistCounts = {
-      ...agg.artistCounts,
-      [artistName]: existingArtistEntry
-        ? {
-            count: existingArtistEntry.count + 1,
-            artistId: existingArtistEntry.artistId ?? scrobble.song.artistId ?? undefined,
-          }
-        : { count: 1, artistId: scrobble.song.artistId ?? undefined },
-    };
-
-    const albumKey = `${scrobble.song.album ?? 'Unknown'}::${artistName}`;
-    const existingAlbum = agg.albumCounts[albumKey];
-    const newAlbumCounts = {
-      ...agg.albumCounts,
-      [albumKey]: existingAlbum
-        ? {
-            ...existingAlbum,
-            count: existingAlbum.count + 1,
-            coverArt: scrobble.song.coverArt ?? existingAlbum.coverArt,
-            albumId: existingAlbum.albumId ?? scrobble.song.albumId ?? undefined,
-          }
-        : {
-            artist: artistName,
-            coverArt: scrobble.song.coverArt ?? undefined,
-            count: 1,
-            albumId: scrobble.song.albumId ?? undefined,
-          },
-    };
-
-    const existingSong = agg.songCounts[scrobble.song.id];
-    const newSongCounts = {
-      ...agg.songCounts,
-      [scrobble.song.id]: { song: scrobble.song, count: (existingSong?.count ?? 0) + 1 },
-    };
-
-    const genre = getPrimaryGenre(scrobble.song);
-    let newGenreCounts = agg.genreCounts;
-    if (genre) {
-      newGenreCounts = { ...agg.genreCounts, [genre]: (agg.genreCounts[genre] ?? 0) + 1 };
-    }
-
-    const newHourBuckets = [...agg.hourBuckets];
-    newHourBuckets[new Date(scrobble.time).getHours()]++;
-
-    const dk = dateKey(scrobble.time);
-    const newDayCounts = { ...agg.dayCounts, [dk]: (agg.dayCounts[dk] ?? 0) + 1 };
-
-    set({
-      completedScrobbles: [...state.completedScrobbles, scrobble],
-      stats: {
-        totalPlays: state.stats.totalPlays + 1,
-        totalListeningSeconds:
-          state.stats.totalListeningSeconds + (scrobble.song.duration ?? 0),
-        uniqueArtists: newArtists,
-      },
-      aggregates: {
-        artistCounts: newArtistCounts,
-        albumCounts: newAlbumCounts,
-        songCounts: newSongCounts,
-        genreCounts: newGenreCounts,
-        hourBuckets: newHourBuckets,
-        dayCounts: newDayCounts,
-      },
-    });
+    if (state.recentScrobbles.some((s) => s.id === scrobble.id)) return;
+    // Optimistic: surface in the recent slice immediately (newest-first, capped).
+    set({ recentScrobbles: [scrobble, ...state.recentScrobbles].slice(0, RECENT_CAP) });
+    // Persist (INSERT OR IGNORE dedupes on disk), then recompute analytics from
+    // SQL. The aggregates are bounded by unique entities, so the recompute is
+    // cheap + drift-free (no incremental-bump double-count risk).
+    void (async () => {
+      await insertScrobble(scrobble);
+      await get().refreshFromDb();
+    })();
   },
 
-  rebuildStats: () => {
-    const { completedScrobbles } = get();
-    set({ stats: buildStats(completedScrobbles) });
-  },
-
-  rebuildAggregates: () => {
-    const { completedScrobbles } = get();
-    set({ aggregates: buildAggregates(completedScrobbles) });
+  refreshFromDb: async () => {
+    const [{ stats, aggregates }, recent] = await Promise.all([
+      computeScrobbleAnalytics(0),
+      loadRecentScrobbles(RECENT_CAP),
+    ]);
+    set({ stats, aggregates, recentScrobbles: recent });
   },
 
   replaceAll: async (scrobbles) => {
-    // Dedupe + validate mirror what `hydrateScrobbles` / `insertScrobble`
-    // already enforce, so the in-memory array matches what lands on disk.
     const seen = new Set<string>();
     const valid: CompletedScrobble[] = [];
     for (const s of scrobbles) {
@@ -274,35 +131,18 @@ export const completedScrobbleStore = create<CompletedScrobbleState>()((set, get
       valid.push(s);
     }
     await replaceAllScrobbles(valid);
-    set({
-      completedScrobbles: valid,
-      stats: buildStats(valid),
-      aggregates: buildAggregates(valid),
-    });
+    await get().refreshFromDb();
   },
 
   mergeAll: async (scrobbles) => {
     const result = await mergeScrobbles(scrobbles);
-    // Re-hydrate from SQL so the in-memory array matches the unioned table
-    // exactly. Cheaper than reconciling incrementally and avoids drift if
-    // any rows were silently rejected by the table-level validation.
-    const restored = await hydrateScrobblesAsync();
-    set({
-      completedScrobbles: restored,
-      stats: buildStats(restored),
-      aggregates: buildAggregates(restored),
-    });
+    await get().refreshFromDb();
     return result;
   },
 
   hydrateFromDbAsync: async () => {
-    // Idempotent re-read; the per-row table is the source of truth.
-    const restored = await hydrateScrobblesAsync();
-    set({
-      completedScrobbles: restored,
-      stats: buildStats(restored),
-      aggregates: buildAggregates(restored),
-      hasHydrated: true,
-    });
+    // Analytics come from SQL — no full-history array load into memory.
+    await get().refreshFromDb();
+    set({ hasHydrated: true });
   },
 }));

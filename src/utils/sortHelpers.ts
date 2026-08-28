@@ -4,14 +4,15 @@
  * Two helpers are exposed:
  *
  *   - `getSortKey(name, sortName?, articles?)` — returns the
- *     accent-folded, lowercased string to feed into `localeCompare`.
+ *     accent-folded, lowercased string every A–Z list orders by.
  *     Prefers a server-supplied `sortName` when present and meaningfully
  *     different from `name`; falls back to client-side article stripping.
- *   - `getSortFirstLetter(name, sortName?, articles?)` — returns the
- *     A–Z letter for the alphabet scroller, or `'#'` for non-alpha
- *     leading characters. Mirrors `getSortKey`'s normalisation so the
- *     scroller's section letter always matches where the entry actually
- *     sorts in the list.
+ *     Leading punctuation is dropped, so `"Heroes"` files under H.
+ *   - `letterOfSortKey(key)` — returns the A–Z letter for the alphabet
+ *     scroller, or `'#'`, for a key that has ALREADY been derived. It
+ *     never re-derives one: the list is ordered in SQL on a stored
+ *     `sort_*` key, and the letter has to come from that same key or a
+ *     row files under a letter it does not sort at.
  *
  * Article-list source — two-tier:
  *
@@ -100,6 +101,20 @@ export function stripArticle(name: string, articles?: readonly string[]): string
 }
 
 /**
+ * Drop leading characters that are neither letters nor digits, so punctuation cannot
+ * decide where an entry files: `"Heroes"` belongs under H, `(How to Live)` under H.
+ * `'74 Jailbreak` becomes `74 jailbreak` and stays in `#` — a digit, not a letter.
+ *
+ * Runs BEFORE article stripping so a quoted article is still recognised
+ * (`"The Beatles"` → B). Never collapses to empty: an entry titled `???` keeps its
+ * name and files under `#`.
+ */
+export function stripLeadingPunctuation(name: string): string {
+  const stripped = name.replace(/^[^\p{L}\p{N}]+/u, '');
+  return stripped.length > 0 ? stripped : name;
+}
+
+/**
  * Drop combining diacritics ("É" → "E", "ñ" → "n") so the alphabet
  * scroller can group accented entries under their base letter and the
  * sort comparator sees a clean ASCII-ish key.
@@ -136,23 +151,22 @@ export function getSortKey(
   articles?: readonly string[],
 ): string {
   if (sortName && sortName !== name && !isCommaSuffixSortName(sortName)) {
-    return foldAccents(sortName.toLowerCase());
+    return foldAccents(stripLeadingPunctuation(sortName).toLowerCase());
   }
-  return foldAccents(stripArticle(name, articles).toLowerCase());
+  return foldAccents(stripArticle(stripLeadingPunctuation(name), articles).toLowerCase());
 }
 
 /**
- * Derive the alphabet-scroller letter (`A`–`Z` or `'#'`) for a list
- * entry. Mirrors `getSortKey`'s normalisation — accent-folded and
- * article-stripped — so the scroller's section letter is always
- * coherent with where the entry sorts in the list.
+ * The alphabet-scroller letter for an already-derived sort key: `A`–`Z`,
+ * or `'#'` for anything else. This is the ONLY place that rule lives.
+ *
+ * Takes the key rather than the entry it came from, deliberately. The
+ * lists order in SQL on a stored `sort_*` column; deriving the letter
+ * from anything but that column is a second derivation of the same
+ * thing, and every time the two have drifted apart a row has ended up
+ * filed under a letter the scroller cannot reach it from.
  */
-export function getSortFirstLetter(
-  name: string,
-  sortName?: string | null,
-  articles?: readonly string[],
-): string {
-  const key = getSortKey(name, sortName, articles);
+export function letterOfSortKey(key: string): string {
   const ch = key.charAt(0).toUpperCase();
   return /[A-Z]/.test(ch) ? ch : '#';
 }

@@ -69,7 +69,6 @@ function makeQueueItem(overrides: Partial<DownloadQueueItem> = {}): DownloadQueu
     completedSongs: 0,
     addedAt: 0,
     queuePosition: 1,
-    songsJson: '[]',
     ...overrides,
   };
 }
@@ -88,20 +87,32 @@ describe('DownloadBanner', () => {
     );
   });
 
-  it('expands to BANNER_HEIGHT when queue has items', () => {
-    // The banner always mounts collapsed and runs the entrance animation
-    // via the visibility effect. With the reanimated mock, withTiming
-    // resolves synchronously on the shared value, but the rendered JSX
-    // captures the style at first render (height 0). A rerender flushes
-    // the post-effect value into the JSX.
+  it('is at full height on FIRST render when the queue already has items', () => {
+    // No rerender: the height must come from the seeded shared value, not from the
+    // entrance animation. `BottomChrome` mounts this only once the queue is
+    // non-empty, so mounting-while-visible is the normal case, not an edge case —
+    // and an entrance animation that fails to land must not be able to hide it.
     musicCacheStore.setState({
       downloadQueue: [makeQueueItem({ status: 'downloading', completedSongs: 3 })],
     });
-    const { toJSON, rerender } = render(<DownloadBanner />);
-    rerender(<DownloadBanner />);
+    const { toJSON } = render(<DownloadBanner />);
     const root = toJSON() as import('react-test-renderer').ReactTestRendererJSON;
     expect(root.props.style).toEqual(
       expect.arrayContaining([expect.objectContaining({ height: 44 })]),
+    );
+  });
+
+  it('shows its content on FIRST render too, not just the container', () => {
+    // The container can be 44 tall while the inner content sits at opacity 0,
+    // which reads to the user as a blank gap rather than a banner.
+    musicCacheStore.setState({
+      downloadQueue: [makeQueueItem({ status: 'downloading', completedSongs: 3 })],
+    });
+    const { toJSON } = render(<DownloadBanner />);
+    const root = toJSON() as import('react-test-renderer').ReactTestRendererJSON;
+    const inner = root.children?.[0] as import('react-test-renderer').ReactTestRendererJSON;
+    expect(inner.props.style).toEqual(
+      expect.arrayContaining([expect.objectContaining({ opacity: 1 })]),
     );
   });
 

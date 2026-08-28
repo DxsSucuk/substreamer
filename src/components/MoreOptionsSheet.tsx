@@ -51,7 +51,6 @@ import {
   type Playlist,
 } from '../services/subsonicService';
 import { addToPlaylistStore } from '../store/addToPlaylistStore';
-import { artistDetailStore } from '../store/artistDetailStore';
 import { scrobbleExclusionStore, type ScrobbleExclusionType } from '../store/scrobbleExclusionStore';
 import { createShareStore } from '../store/createShareStore';
 import { getOverride, mbidOverrideStore } from '../store/mbidOverrideStore';
@@ -60,11 +59,15 @@ import { musicCacheStore } from '../store/musicCacheStore';
 import {
   moreOptionsStore,
   type MoreOptionsEntity,
+  type MoreOptionsSource,
 } from '../store/moreOptionsStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { playerStore } from '../store/playerStore';
-import { playlistDetailStore } from '../store/playlistDetailStore';
-import { playlistLibraryStore } from '../store/playlistLibraryStore';
+import { syncStatusStore } from '../store/syncStatusStore';
+import { getDb } from '../store/persistence/db';
+import { getArtistBioRow } from '../db/repository/details';
+import { deletePlaylist as deletePlaylistRow } from '../db/repository/playlists';
+import { bumpDetailChanged } from '../db/detailNotifier';
 import { runWithOverlay } from '../store/processingOverlayStore';
 import { canUserShare, supports } from '../services/serverCapabilityService';
 import { setRatingStore } from '../store/setRatingStore';
@@ -72,6 +75,10 @@ import { setRatingStore } from '../store/setRatingStore';
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
+
+/** Annotated, not inlined: renaming the union member has to break the build rather
+ *  than silently re-enable the option this source hides. */
+const PLAYLIST_DETAIL_SOURCE: MoreOptionsSource = 'playlist-detail';
 
 function getTitle(entity: MoreOptionsEntity, t: (key: string, options?: Record<string, unknown>) => string): string {
   switch (entity.type) {
@@ -104,8 +111,8 @@ function getSubtitle(entity: MoreOptionsEntity, t: (key: string, options?: Recor
 }
 
 function getCoverArtId(entity: MoreOptionsEntity): string | undefined {
-  // Cover-art lookups use the entity's `coverArt` value (mode-aware for songs) —
-  // the single rule lives in src/utils/coverArtId.ts. (#202)
+  // Cover-art lookups use the entity's `coverArt` value (mode-aware for songs).
+  // The single rule lives in src/utils/coverArtId.ts.
   return resolveEntityCoverArt(entity.item);
 }
 
@@ -172,11 +179,9 @@ function isRatable(entity: MoreOptionsEntity): boolean {
 }
 
 function canExcludeFromScrobbling(entity: MoreOptionsEntity): boolean {
-  // Playlist exclusion is intentionally NOT offered: it only suppresses
-  // scrobbles when a track is played from that playlist's context, so the same
-  // track still scrobbles when played from its album — a leaky, confusing
-  // option. Album/artist exclusion keys off stable song.albumId/artistId and
-  // applies regardless of playback context.
+  // Playlists are deliberately excluded: exclusion would only apply when a track is
+  // played from that playlist's context, so the same track still scrobbles from its
+  // album. Album/artist keys off song.albumId/artistId, which holds in any context.
   return entity.type === 'album' || entity.type === 'artist';
 }
 
@@ -241,7 +246,9 @@ export function MoreOptionsSheet() {
   const entity = moreOptionsStore((s) => s.entity);
   const source = moreOptionsStore((s) => s.source);
   const hide = moreOptionsStore((s) => s.hide);
-  const isPlayerSource = source !== 'default';
+  // Match the prefix, NOT `!== 'default'`: other non-player sources exist, and treating
+  // them as player sources swaps Add to Queue / Play Next for the queue actions.
+  const isPlayerSource = source.startsWith('player-');
 
   const starType: 'song' | 'album' | 'artist' =
     entity?.type === 'album' || entity?.type === 'artist' ? entity.type : 'song';
@@ -367,8 +374,10 @@ export function MoreOptionsSheet() {
       const artistId = entity.item.id;
       const artistName = entity.item.name;
       const override = getOverride(mbidOverrideStore.getState().overrides, 'artist', artistId);
-      const resolvedMbid = artistDetailStore.getState().artists[artistId]?.resolvedMbid;
-      const currentMbid = override?.mbid ?? resolvedMbid ?? null;
+      const db = getDb();
+      // `resolved_mbid` is written by the bio fetch; null before one has run.
+      const resolvedMbid = (db ? (await getArtistBioRow(db, artistId))?.resolvedMbid : null) ?? null;
+      const currentMbid = override?.mbid ?? resolvedMbid;
       await moreOptionsStore.getState().hideAndAwait();
       mbidSearchStore.getState().showArtist(artistId, artistName, currentMbid, resolveEntityCoverArt(entity.item));
     } else if (entity.type === 'album') {
@@ -510,10 +519,8 @@ export function MoreOptionsSheet() {
     } else if (entity.type === 'playlist') {
       createShareStore.getState().showPlaylist(entity.item.id, entity.item.name, resolveEntityCoverArt(entity.item));
     } else if (entity.type === 'song') {
-      // #151 — Subsonic createShare accepts a single song/mediafile id.
-      // Navidrome maps it to ResourceType="media_file"; other Subsonic
-      // servers behave the same. The existing CreateShareSheet handles
-      // the rest (expiry, description, copy/share-sheet output).
+      // Subsonic createShare accepts a single song/mediafile id; Navidrome maps
+      // it to ResourceType="media_file" and other servers behave the same.
       const song = entity.item;
       createShareStore.getState().showSong(
         song.id,
@@ -526,8 +533,8 @@ export function MoreOptionsSheet() {
 
   const handleSetRating = useCallback(async () => {
     if (!entity || !isRatable(entity)) return;
-    // `coverArt`-value based cover art (see src/utils/coverArtId.ts) — songs
-    // resolve mode-aware so mini player / rating sheet share one cache. (#202)
+    // `coverArt`-value based (see src/utils/coverArtId.ts): songs resolve mode-aware
+    // so the mini player and the rating sheet share one cache entry.
     const coverArtId = resolveEntityCoverArt(entity.item);
     await moreOptionsStore.getState().hideAndAwait();
     setRatingStore.getState().show(
@@ -545,10 +552,9 @@ export function MoreOptionsSheet() {
     const playlistName = entity.item.name;
     const onDetailView = pathname === `/playlist/${playlistId}`;
 
-    // Wait for the BottomSheet's native Modal to fully tear down BEFORE
-    // opening the confirmation alert. On Android, opening the alert
-    // while the sheet's Modal is still alive leaves the dialog visible
-    // but unable to receive touches (#154).
+    // Wait for the BottomSheet's native Modal to tear down BEFORE opening the
+    // confirmation alert. On Android an alert raised while the sheet's Modal is
+    // still alive is visible but cannot receive touches.
     await moreOptionsStore.getState().hideAndAwait();
 
     alert(
@@ -565,8 +571,11 @@ export function MoreOptionsSheet() {
                 const success = await deletePlaylist(playlistId);
                 if (!success) throw new Error('API returned false');
 
-                playlistDetailStore.getState().removePlaylist(playlistId);
-                playlistLibraryStore.getState().removePlaylist(playlistId);
+                const db = getDb();
+                if (db) await deletePlaylistRow(db, playlistId);
+                bumpDetailChanged('playlist', playlistId);
+                // The car browse tree renders playlists; tell it the set changed.
+                syncStatusStore.getState().bumpLibraryUpdated();
                 if (playlistId in musicCacheStore.getState().cachedItems) {
                   deleteCachedItem(playlistId);
                 }
@@ -576,10 +585,9 @@ export function MoreOptionsSheet() {
             );
 
             if (deleted && onDetailView) {
-              // The sheet has already unmounted by this point, so a useEffect
-              // cleanup can't cancel this timer. Guard with canGoBack so we
-              // never pop a stack the user navigated into during the
-              // success-overlay window.
+              // The sheet has already unmounted, so no cleanup can cancel this timer.
+              // canGoBack keeps it from popping a stack the user navigated into
+              // during the success-overlay window.
               setTimeout(() => {
                 if (!router.canGoBack()) return;
                 router.back();
@@ -642,9 +650,8 @@ export function MoreOptionsSheet() {
   const showAddToPlaylist = !offline && canAddToPlaylist(entity);
   const showAddQueueToPlaylist = !offline && isPlayerSource;
   const showAddToQueue = !isPlayerSource && canAddToQueue(entity);
-  // Play Next is song-only; shown wherever Add to Queue is shown so the
-  // user gets both "play right after current" and "play at end of queue"
-  // affordances side-by-side.
+  // Play Next is song-only, and shows wherever Add to Queue does so both
+  // "after current" and "at the end" sit side by side.
   const showPlayNext = !isPlayerSource && entity?.type === 'song';
   const showPlayMoreLikeThis = !offline && canPlayMoreLikeThis(entity);
   const showDetails = hasAlbumDetails(entity);
@@ -652,12 +659,16 @@ export function MoreOptionsSheet() {
   const showShare = !offline && canShare(entity) && canUserShare();
   const showDownload = canDownload(entity);
   // Single-song download controls (song rows only).
-  // - Show "Remove Download" when the song is explicitly downloaded
-  //   (`song:${id}` item) OR pooled via a downloaded album — removing it
-  //   reverts that album to a partial download.
-  // - Show "Download Song" when song isn't already pooled AND we're online.
+  // - "Remove Download" when the song is explicitly downloaded (`song:${id}` item) OR
+  //   pooled via a downloaded album — removing it makes that album partial.
+  // - "Download Song" when the song isn't already pooled AND we're online.
+  // Both are hidden in a playlist's detail view: the playlist owns its tracks'
+  // downloads, so there is no per-song claim to release there and Remove would be
+  // a no-op that leaves the badge in place.
   const showRemoveSongDownload =
-    entity?.type === 'song' && (hasSongItem || albumContainsSong);
+    entity?.type === 'song' &&
+    source !== PLAYLIST_DETAIL_SOURCE &&
+    (hasSongItem || albumContainsSong);
   const showDownloadSong =
     entity?.type === 'song' &&
     !offline &&

@@ -36,6 +36,7 @@ export const getRecentlyPlayedAlbums = jest.fn().mockResolvedValue([]);
 export const getFrequentlyPlayedAlbums = jest.fn().mockResolvedValue([]);
 export const getRandomAlbums = jest.fn().mockResolvedValue([]);
 export const getAlbum = jest.fn().mockResolvedValue(null);
+export const getAlbumResult = jest.fn().mockResolvedValue({ status: 'failed' });
 export const getAlbumInfo2 = jest.fn().mockResolvedValue(null);
 export const probeEmptySearch3 = jest.fn().mockResolvedValue(true);
 export const searchAlbumsPage = jest.fn().mockResolvedValue([]);

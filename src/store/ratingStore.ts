@@ -3,6 +3,13 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 
 import { kvStorage } from './persistence';
 
+/**
+ * TODO: move to the normalized SQL model, for consistency with everything else
+ * we persist. Still KV because this is transient tracking of the user's rating
+ * changes — an optimistic value that follows the server's the moment it reports
+ * one — not a durable dataset. It is held locally at all because no server API
+ * lists the rated items with their current rating.
+ */
 interface RatingOverride {
   rating: number;
 }

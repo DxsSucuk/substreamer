@@ -25,9 +25,10 @@ describe('kvStorageSync (happy path)', () => {
       getFirstAsync: jest.fn(),
       runSync: mockRunSync,
       runAsync: mockRunAsync,
+      runBatchAsync: jest.fn(),
+      runAtomicBatchAsync: jest.fn(),
       execSync: jest.fn(),
       withTransactionSync: jest.fn(),
-      withTransactionAsync: jest.fn(),
     });
   });
 
@@ -119,9 +120,10 @@ describe('kvStorage (async, happy path)', () => {
       getFirstAsync: mockGetFirstAsync,
       runSync: jest.fn(),
       runAsync: mockRunAsync,
+      runBatchAsync: jest.fn(),
+      runAtomicBatchAsync: jest.fn(),
       execSync: jest.fn(),
       withTransactionSync: jest.fn(),
-      withTransactionAsync: jest.fn(),
     });
   });
 

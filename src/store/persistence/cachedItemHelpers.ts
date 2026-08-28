@@ -1,51 +1,25 @@
-import {
-  type CachedItemRow,
-  type DownloadQueueRow,
-} from './musicCacheTables';
+import { type CachedItemRow, type DownloadQueueRow } from './musicCacheTables';
 
 /**
  * True when an album `cached_items` row represents a partial download —
  * fewer songs on disk than the album actually contains.
  *
- * `expectedSongCount` is authoritative: `ensurePartialAlbumEdge` now
- * fetches the album from the server when the album-detail store doesn't
- * yet have it, so the count always reflects the real album size. No
- * heuristic is needed to distinguish a real single-track album from a
- * fallback estimate — fixes #159.
+ * `expectedSongCount` is authoritative: `ensurePartialAlbumEdge` fetches the
+ * album from the server when the album-detail store doesn't have it, so the
+ * count always reflects the real album size and no heuristic is needed to tell
+ * a genuine single-track album from a fallback estimate.
  *
  * Songs and playlists never classify as partial — songs are 1/1 by
  * definition, playlists download atomically in v2.
+ *
+ * The SQL form of this rule lives in `db/repository/downloads.ts`
+ * (`partialGate`), which is what every downloaded FILTER now reads. This
+ * copy serves the callers that hold a `CachedItemRow` in hand already —
+ * the cache browser and the download-status hook.
  */
 export function isPartialAlbum(item: CachedItemRow): boolean {
   if (item.type !== 'album') return false;
   return item.songIds.length < item.expectedSongCount;
-}
-
-/** Convenience inverse of `isPartialAlbum` for albums. */
-export function isCompleteAlbum(item: CachedItemRow): boolean {
-  return item.type === 'album' && !isPartialAlbum(item);
-}
-
-interface MinimalAlbum {
-  id: string;
-}
-
-/**
- * Predicate shared by every screen that exposes a "Downloaded" album filter.
- * An album passes iff it has a `cached_items` entry, and — when
- * `includePartial` is false — is not a partial download. Centralizing this
- * keeps the filter behaviour consistent across home, library, favorites,
- * search, and the artist list.
- */
-export function albumPassesDownloadedFilter(
-  album: MinimalAlbum,
-  cachedItems: Record<string, CachedItemRow>,
-  includePartial: boolean,
-): boolean {
-  const item = cachedItems[album.id];
-  if (!item) return false;
-  if (!includePartial && isPartialAlbum(item)) return false;
-  return true;
 }
 
 /**

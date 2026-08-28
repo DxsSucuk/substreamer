@@ -4,17 +4,11 @@ Thank you for your interest in contributing to Substreamer! This guide covers ev
 
 ## AI Coding Tools
 
-This project includes pre-configured instruction files for AI coding assistants:
+This project's conventions, architecture and coding standards live in a single file: **[`AGENTS.md`](./AGENTS.md)**.
 
-| Tool | Instruction File |
-|------|-----------------|
-| [Cursor](https://cursor.sh/) | `.cursor/rules/project-overview.mdc` (+ additional rule files in `.cursor/rules/`) |
-| [GitHub Copilot](https://github.com/features/copilot) | `.github/copilot-instructions.md` |
-| [Claude Code](https://claude.ai/claude-code) | `CLAUDE.md` |
+It follows the [AGENTS.md](https://agents.md) open standard, which Claude Code, Cursor, Copilot, Codex, Windsurf, Aider, Devin and Amp all read natively — so the rules are picked up automatically, with no configuration.
 
-These files contain project conventions, architecture details, and coding standards so your AI assistant understands the codebase. If you use one of these tools, the rules will be picked up automatically — no configuration needed.
-
-**Important:** All three instruction files must stay in sync. If you update one, apply the same change to the other two.
+**Please don't add a per-tool copy** (`CLAUDE.md`, `.cursor/rules/`, `.github/copilot-instructions.md`). We kept those as pointer stubs and retired them in August 2026: two rules files drift, and the stale one is always the one that gets read.
 
 ### Terminal Observation
 

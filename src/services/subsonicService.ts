@@ -47,7 +47,7 @@ export function normalizeServerUrl(url: string): string {
   }
   // Strip a trailing '/rest' path segment (leading slash — never the '.rest'
   // TLD) so a saved '.../rest' URL doesn't double up when callers append the
-  // Subsonic '/rest/' path (issue #225).
+  // Subsonic '/rest/' path.
   return base.replace(/\/+$/, '').replace(/\/rest$/i, '');
 }
 
@@ -384,15 +384,49 @@ export async function getRandomAlbums(size?: number): Promise<AlbumID3[]> {
   return response.albumList2?.album ?? [];
 }
 
-export async function getAlbum(albumId: string): Promise<AlbumWithSongsID3 | null> {
+/** Subsonic error code 70 — "the requested data was not found". */
+const SUBSONIC_ERROR_NOT_FOUND = 70;
+
+/** The Subsonic error code carried by a protocol-level failure envelope, or null
+ *  when the response is not a failure. See {@link throwIfSubsonicFailure}. */
+function subsonicErrorCode(
+  response: { status?: string; error?: { code?: number } },
+): number | null {
+  if (response.status !== 'failed' && response.status !== 'fail') return null;
+  return response.error?.code ?? null;
+}
+
+/**
+ * Outcome of an album fetch, keeping the distinction {@link getAlbum} flattens.
+ * `not-found` is the server's own verdict that the album is gone (HTTP 200 with
+ * `status: 'failed'` and error code 70). Every other failure is `failed` — a
+ * transport throw, a malformed 200, and every other Subsonic code, because code
+ * 40 (wrong credentials) and 30 (incompatible version) share the same envelope
+ * and must never be read as "this album is gone".
+ */
+export type AlbumFetchResult =
+  | { status: 'ok'; album: AlbumWithSongsID3 }
+  | { status: 'not-found' }
+  | { status: 'failed' };
+
+export async function getAlbumResult(albumId: string): Promise<AlbumFetchResult> {
   const api = getApi();
-  if (!api) return null;
+  if (!api) return { status: 'failed' };
   try {
     const response = await api.getAlbum({ id: albumId });
-    return response.album ?? null;
+    if (response.album != null) return { status: 'ok', album: response.album };
+    if (subsonicErrorCode(response) === SUBSONIC_ERROR_NOT_FOUND) return { status: 'not-found' };
+    return { status: 'failed' };
   } catch {
-    return null;
+    return { status: 'failed' };
   }
+}
+
+/** Album detail, or `null` for every failure. Callers that must tell "the server
+ *  deleted it" from "the fetch failed" use {@link getAlbumResult}. */
+export async function getAlbum(albumId: string): Promise<AlbumWithSongsID3 | null> {
+  const result = await getAlbumResult(albumId);
+  return result.status === 'ok' ? result.album : null;
 }
 
 export async function getAlbumInfo2(albumId: string): Promise<AlbumInfo | null> {
@@ -549,7 +583,7 @@ export async function getLyricsForTrack(
  * fast library-sync path)? A tiny `albumCount:10` request — if it returns any
  * albums, the empty query "match all" works and we can page `search3` in bulk;
  * otherwise the caller falls back to the legacy `getAlbumList2` + per-album
- * walk path. (#204)
+ * walk path.
  */
 export async function probeEmptySearch3(): Promise<boolean> {
   const api = getApi();
@@ -560,9 +594,10 @@ export async function probeEmptySearch3(): Promise<boolean> {
 }
 
 /**
- * Fetch one page of albums via empty-query `search3` (fast path). Paged with
- * `albumOffset` in bulk chunks (`search3.albumCount` is uncapped). The caller
- * loops until a page returns 0.
+ * Fetch one page of albums via empty-query `search3` (fast path), paged with
+ * `albumOffset`. `albumCount` is uncapped on every server read (see SERVERS.md),
+ * unlike `getAlbumList2`'s documented 500 maximum. The caller pages until a page
+ * comes back shorter than it asked for.
  */
 export async function searchAlbumsPage(count: number, offset: number): Promise<AlbumID3[]> {
   const api = getApi();
@@ -581,8 +616,8 @@ export async function searchAlbumsPage(count: number, offset: number): Promise<A
 /**
  * Fetch one page of songs via empty-query `search3` (fast path). Paged with
  * `songOffset`; the caller loops until a page returns 0 and bulk-inserts each
- * page into `song_index`. Each `Child` carries `albumId` (verified per-page by
- * the caller, since the field is optional in the spec).
+ * page into the normalized `songs` table. Each `Child` carries `albumId`
+ * (verified per-page by the caller, since the field is optional in the spec).
  */
 export async function searchSongsPage(count: number, offset: number): Promise<Child[]> {
   const api = getApi();
@@ -617,13 +652,12 @@ export async function getAlbumListAlphabetical(
 }
 
 /**
- * Fetch a page of albums sorted alphabetically by NAME. Used by the paginated
- * library-list sync (`albumLibraryStore.fetchAllAlbums`). `alphabeticalByName`
- * (vs `…ByArtist`) gives the most stable offset paging across servers — album
- * name is a stable per-row key, whereas artist sorting has known ordering
- * quirks (e.g. Navidrome #3185). Order only needs to be stable + complete
- * across offsets; the client re-sorts by the user's preference afterward.
- * `getAlbumList2.size` is spec-capped at 500 across all supported servers.
+ * Fetch a page of albums sorted alphabetically by NAME — the basic-server album
+ * phase of the library sync. `alphabeticalByName` (vs `…ByArtist`) gives the most
+ * stable offset paging across servers: album name is a stable per-row key, whereas
+ * artist sorting has known ordering bugs (e.g. Navidrome #3185). Order only needs to
+ * be stable + complete across offsets; the client re-sorts by the user's preference
+ * afterward. `getAlbumList2.size` is spec-capped at 500 across all supported servers.
  */
 export async function getAlbumsPageByName(size: number, offset: number): Promise<AlbumID3[]> {
   const api = getApi();
@@ -713,9 +747,13 @@ export async function getArtistInfo2(id: string): Promise<ArtistInfo2 | null> {
 
 /**
  * Fetch top songs for a given artist by name.
- * Returns an empty array if the server does not support this endpoint.
+ *
+ * `[]` = a genuine answer of "none" (Various Artists, no API, or a server without the
+ * endpoint). `null` = the CALL FAILED. Callers persist a presence marker off this, so the
+ * two must stay distinguishable: stamping a failed call as "fetched, 0 songs" would leave
+ * a permanently empty Top Songs section with no TTL to recover from.
  */
-export async function getTopSongs(artistName: string, count = 20): Promise<Child[]> {
+export async function getTopSongs(artistName: string, count = 20): Promise<Child[] | null> {
   if (isVariousArtists(artistName)) return [];
   const api = getApi();
   if (!api) return [];
@@ -723,7 +761,7 @@ export async function getTopSongs(artistName: string, count = 20): Promise<Child
     const response = await api.getTopSongs({ artist: artistName, count });
     return response.topSongs?.song ?? [];
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -982,9 +1020,9 @@ export async function getStarred2(): Promise<{
 }
 
 /**
- * Per-category result cap for the interactive `search3` box search. Local
- * fuzzy search mirrors this so switching between the server path and the
- * local-first path yields a comparably-sized list (not an arbitrary number).
+ * Per-category result cap for the interactive `search3` box search. Local fuzzy
+ * search mirrors this so the server path and the local-first path return
+ * comparably-sized lists.
  */
 export const SEARCH3_RESULT_LIMIT = 20;
 

@@ -4,25 +4,29 @@ jest.mock('../imageCacheService', () => ({
   ensureCached: jest.fn().mockResolvedValue(undefined),
   prefetchCoverArt: jest.fn(),
 }));
-jest.mock('../../store/persistence/searchIndexQueries');
+// The full-library candidate layer is the repository search module. Mock it so the
+// routing / ranking / result-mapping logic under test is isolated from the candidate
+// SQL (which has its own real-DB tests in repository.test.ts). The OFFLINE path reads
+// the REAL repository/albums + repository/playlists against the seeded better-sqlite3
+// DB (those modules are NOT mocked).
+jest.mock('../../db/repository/search');
 
 import { ensureCoverArtAuth, search3 } from '../subsonicService';
-import { albumLibraryStore } from '../../store/albumLibraryStore';
-import { artistLibraryStore } from '../../store/artistLibraryStore';
 import { musicCacheStore } from '../../store/musicCacheStore';
-import { playlistLibraryStore } from '../../store/playlistLibraryStore';
 import { offlineModeStore } from '../../store/offlineModeStore';
 import { syncStatusStore } from '../../store/syncStatusStore';
 import { connectivityStore } from '../../store/connectivityStore';
-import {
-  querySongCandidates,
-  queryAlbumCandidates,
-  hasLocalLibraryRows,
-} from '../../store/persistence/searchIndexQueries';
+import { getDb } from '../../store/persistence/db';
+import { ensureNormalizedSchema } from '../../db/createNormalizedTables';
+import { upsertAlbums } from '../../db/repository/albums';
+import { upsertPlaylists } from '../../db/repository/playlists';
+import { hasLocalCorpus, searchAlbums, searchArtists, searchSongs } from '../../db/repository/search';
 import {
   performOnlineSearch,
   performOfflineSearch,
   getOfflineSongsByGenre,
+  getOfflineGenresPresent,
+  getOfflineSongsAll,
   searchLibrary,
   findAlbum,
   findArtistSongs,
@@ -30,22 +34,37 @@ import {
 
 const mockSearch3 = search3 as jest.MockedFunction<typeof search3>;
 const mockEnsureCoverArtAuth = ensureCoverArtAuth as jest.MockedFunction<typeof ensureCoverArtAuth>;
-const mockQuerySongs = querySongCandidates as jest.MockedFunction<typeof querySongCandidates>;
-const mockQueryAlbums = queryAlbumCandidates as jest.MockedFunction<typeof queryAlbumCandidates>;
-const mockHasLocalRows = hasLocalLibraryRows as jest.MockedFunction<typeof hasLocalLibraryRows>;
+const mockSearchSongs = searchSongs as jest.MockedFunction<typeof searchSongs>;
+const mockSearchAlbums = searchAlbums as jest.MockedFunction<typeof searchAlbums>;
+const mockSearchArtists = searchArtists as jest.MockedFunction<typeof searchArtists>;
+const mockHasLocalCorpus = hasLocalCorpus as jest.MockedFunction<typeof hasLocalCorpus>;
+
+const db = () => getDb()!;
+
+/** Valid AlbumID3 for seeding the normalized `albums` table (offline path). */
+const albumFixture = (id: string, name: string, extra: Record<string, unknown> = {}) =>
+  ({ id, name, created: new Date('2020-01-01'), duration: 100, songCount: 10, ...extra }) as never;
+/** Valid Playlist for seeding the normalized `playlists` table (offline path). */
+const playlistFixture = (id: string, name: string, extra: Record<string, unknown> = {}) =>
+  ({
+    id,
+    name,
+    created: new Date('2020-01-01'),
+    changed: new Date('2020-01-01'),
+    duration: 1000,
+    songCount: 5,
+    ...extra,
+  }) as never;
 
 function resetStores() {
   musicCacheStore.setState({ cachedItems: {}, cachedSongs: {} } as any);
-  albumLibraryStore.setState({ albums: [] });
-  artistLibraryStore.setState({ artists: [] } as any);
-  playlistLibraryStore.setState({ playlists: [] });
 }
 
 /**
  * Seed `musicCacheStore` from a compact {itemId: {name, tracks: [...]}}
- * description. Each track may carry genre / genres which get serialised
- * into the rawJson envelope so the production path can read them via
- * `getSongEnvelope()` exactly as it does at runtime.
+ * description. A track's fields land verbatim on the row as PROMOTED COLUMNS —
+ * the post-conversion shape every hydrated row has — which is what
+ * `getSongEnvelope()` reads at runtime.
  */
 function seedCache(
   oldItems: Record<string, { name: string; tracks: any[] }>,
@@ -59,21 +78,10 @@ function seedCache(
       if (!songIds.includes(t.id)) songIds.push(t.id);
       if (!cachedSongs[t.id]) {
         cachedSongs[t.id] = {
-          id: t.id,
-          title: t.title,
-          artist: t.artist,
+          ...t,
           albumId: t.albumId ?? itemId,
+          srcAlbumId: t.albumId ?? itemId,
           duration: t.duration ?? 0,
-          rawJson: JSON.stringify({
-            id: t.id,
-            title: t.title,
-            artist: t.artist,
-            albumId: t.albumId ?? itemId,
-            duration: t.duration ?? 0,
-            isDir: false,
-            ...(t.genre ? { genre: t.genre } : {}),
-            ...(t.genres ? { genres: t.genres } : {}),
-          }),
         };
       }
     }
@@ -86,9 +94,49 @@ function seedCache(
   musicCacheStore.setState({ cachedItems, cachedSongs } as any);
 }
 
+/**
+ * A downloaded track with the promoted columns populated the way a real cached row
+ * has them: the `src*` twins describe the SERVER's track, the same-named columns the
+ * downloaded file. `album` is the song's own, which the parent item name overrides.
+ */
+const fullTrack = () => ({
+  id: 't1', title: 'Shoegaze Anthem', artist: 'A', album: 'Real Album',
+  albumId: 'server-album', coverArt: 'songcover', duration: 200,
+  suffix: 'mp3', bitRate: 320,
+  srcSuffix: 'flac', srcBitRate: 1000, srcBitDepth: 24, srcSamplingRate: 96000,
+  size: 41_000_000, genres: ['Shoegaze'], genre: 'Shoegaze', track: 3, year: 1991,
+  rgTrackGain: -6.5, rgAlbumPeak: 0.99,
+});
+
+/** The fields the song-details modal renders. */
+function expectFullMetadata(song: any) {
+  expect(song.suffix).toBe('flac');
+  expect(song.bitRate).toBe(1000);
+  expect(song.bitDepth).toBe(24);
+  expect(song.samplingRate).toBe(96000);
+  expect(song.size).toBe(41_000_000);
+  expect(song.genres).toEqual(['Shoegaze']);
+  expect(song.replayGain).toEqual({
+    trackGain: -6.5, albumGain: undefined, trackPeak: undefined,
+    albumPeak: 0.99, baseGain: undefined, fallbackGain: undefined,
+  });
+  expect(song.track).toBe(3);
+  expect(song.year).toBe(1991);
+  expect(song.albumId).toBe('server-album');
+}
+
+beforeAll(() => ensureNormalizedSchema(db()));
+
 beforeEach(() => {
   jest.clearAllMocks();
   resetStores();
+  for (const t of ['albums', 'playlists', 'songs', 'artists']) db().runSync(`DELETE FROM ${t}`);
+  // Auto-mocked candidate fns default to undefined; give them empty resolutions so
+  // the ranking maps run. Individual tests override.
+  mockSearchSongs.mockResolvedValue([]);
+  mockSearchAlbums.mockResolvedValue([]);
+  mockSearchArtists.mockResolvedValue([]);
+  mockHasLocalCorpus.mockResolvedValue(true);
 });
 
 describe('performOnlineSearch', () => {
@@ -116,9 +164,7 @@ describe('performOnlineSearch', () => {
 describe('performOfflineSearch', () => {
   it('searches cached albums by name', async () => {
     seedCache({ a1: { name: 'Test Album', tracks: [] } });
-    albumLibraryStore.setState({
-      albums: [{ id: 'a1', name: 'Test Album', artist: 'Artist' }] as any,
-    });
+    await upsertAlbums(db(), [albumFixture('a1', 'Test Album', { artist: 'Artist' })]);
 
     const result = await performOfflineSearch('test');
 
@@ -128,30 +174,54 @@ describe('performOfflineSearch', () => {
 
   it('searches cached albums by artist name', async () => {
     seedCache({ a1: { name: 'Album', tracks: [] } });
-    albumLibraryStore.setState({
-      albums: [{ id: 'a1', name: 'Album', artist: 'Radiohead' }] as any,
-    });
+    await upsertAlbums(db(), [albumFixture('a1', 'Album', { artist: 'Radiohead' })]);
 
     expect((await performOfflineSearch('radiohead')).albums).toHaveLength(1);
   });
 
+  it('ranks several matching downloaded albums best-first', async () => {
+    seedCache({ a1: { name: 'Greatest Hits', tracks: [] }, a2: { name: 'Greatest', tracks: [] } });
+    await upsertAlbums(db(), [
+      albumFixture('a1', 'Greatest Hits', { artist: 'Artist' }),
+      albumFixture('a2', 'Greatest', { artist: 'Artist' }),
+    ]);
+
+    // The exact title wins over the one carrying extra words.
+    expect((await performOfflineSearch('greatest')).albums.map((a) => a.id)).toEqual(['a2', 'a1']);
+  });
+
+  it('ranks several matching downloaded playlists best-first', async () => {
+    seedCache({ p1: { name: 'Road Trip Mix', tracks: [] }, p2: { name: 'Road Trip', tracks: [] } });
+    await upsertPlaylists(db(), [
+      playlistFixture('p1', 'Road Trip Mix'),
+      playlistFixture('p2', 'Road Trip'),
+    ]);
+
+    expect((await performOfflineSearch('road trip')).albums.map((a) => a.id)).toEqual(['p2', 'p1']);
+  });
+
   it('excludes non-cached albums', async () => {
-    albumLibraryStore.setState({
-      albums: [{ id: 'a1', name: 'Test Album', artist: 'Artist' }] as any,
-    });
+    // Album exists in the library but is NOT downloaded (no cached item) → excluded.
+    await upsertAlbums(db(), [albumFixture('a1', 'Test Album', { artist: 'Artist' })]);
 
     expect((await performOfflineSearch('test')).albums).toHaveLength(0);
   });
 
   it('includes cached playlists as album-shaped results', async () => {
     seedCache({ p1: { name: 'My Playlist', tracks: [] } });
-    playlistLibraryStore.setState({
-      playlists: [
-        { id: 'p1', name: 'My Playlist', owner: 'user', coverArt: 'c1', songCount: 5, duration: 1000, created: '2024-01-01' },
-      ] as any,
-    });
+    await upsertPlaylists(db(), [
+      playlistFixture('p1', 'My Playlist', { owner: 'user', coverArt: 'c1' }),
+    ]);
 
     expect((await performOfflineSearch('my')).albums.some((a) => a.id === 'p1')).toBe(true);
+  });
+
+  it('preserves the playlist owner on the album-shaped result artist line', async () => {
+    seedCache({ p1: { name: 'My Playlist', tracks: [] } });
+    await upsertPlaylists(db(), [playlistFixture('p1', 'My Playlist', { owner: 'dave' })]);
+
+    const hit = (await performOfflineSearch('my')).albums.find((a) => a.id === 'p1');
+    expect(hit?.artist).toBe('dave');
   });
 
   it('searches cached songs by title', async () => {
@@ -228,6 +298,58 @@ describe('performOfflineSearch', () => {
     expect((await performOfflineSearch('track')).songs[0].album).toBe('Parent Item Name');
   });
 
+  /* Hits must be a full `Child`, not a narrow projection, or the details modal has
+   * nothing to render. They come off the promoted columns via `getSongEnvelope`. */
+  it('carries the full downloaded metadata onto a hit', async () => {
+    seedCache({ a1: { name: 'Album', tracks: [fullTrack()] } });
+
+    const song = (await performOfflineSearch('shoegaze anthem')).songs[0];
+
+    expectFullMetadata(song);
+  });
+
+  it('keeps the parent item name as `album` for a playlist-downloaded song', async () => {
+    seedCache({ pl1: { name: 'Road Trip', tracks: [fullTrack()] } });
+
+    const song = (await performOfflineSearch('shoegaze anthem')).songs[0];
+
+    expect(song.album).toBe('Road Trip');
+    expect(song.album).not.toBe('Real Album');
+  });
+
+  it('skips a songId whose cached row is gone', async () => {
+    seedCache({
+      a1: { name: 'Album', tracks: [{ id: 't1', title: 'Ghost Song', artist: 'A', duration: 200 }] },
+    });
+    const state = musicCacheStore.getState();
+    musicCacheStore.setState({
+      ...state,
+      cachedItems: { ...state.cachedItems, a1: { ...state.cachedItems.a1, songIds: ['t99'] } },
+    } as any);
+
+    expect((await performOfflineSearch('ghost')).songs).toEqual([]);
+  });
+
+  /* The row snapshot is taken before the scan's yields, so a song deleted while the
+   * scan is parked resolves from the snapshot but no longer has an envelope. */
+  it('drops a song whose row is deleted mid-scan', async () => {
+    // 1024 tracks so the scan yields exactly as it reaches the only matching one.
+    const tracks = Array.from({ length: 1024 }, (_, i) => ({
+      id: `t${i}`, title: i === 1023 ? 'Zephyr Quartet' : `Filler ${i}`, artist: 'A', duration: 200,
+    }));
+    seedCache({ a1: { name: 'Album', tracks } });
+
+    expect((await performOfflineSearch('zephyr')).songs.map((s) => s.id)).toEqual(['t1023']);
+
+    seedCache({ a1: { name: 'Album', tracks } });
+    const wipeRows = () => {
+      musicCacheStore.setState({ ...musicCacheStore.getState(), cachedSongs: {} } as any);
+      return false; // not an abort — let the scan run on with the rows gone
+    };
+
+    expect((await performOfflineSearch('zephyr', wipeRows)).songs).toEqual([]);
+  });
+
   it('always returns empty artists array', async () => {
     expect((await performOfflineSearch('anything')).artists).toEqual([]);
   });
@@ -236,9 +358,7 @@ describe('performOfflineSearch', () => {
     seedCache({
       a1: { name: 'Album', tracks: [{ id: 't1', title: 'Song', artist: 'Artist', duration: 200 }] },
     });
-    albumLibraryStore.setState({
-      albums: [{ id: 'a1', name: 'Album', artist: 'Artist' }] as any,
-    });
+    await upsertAlbums(db(), [albumFixture('a1', 'Album', { artist: 'Artist' })]);
 
     const result = await performOfflineSearch('zzzznotfound');
     expect(result.albums).toHaveLength(0);
@@ -247,9 +367,7 @@ describe('performOfflineSearch', () => {
 
   it('handles album with undefined artist gracefully', async () => {
     seedCache({ a1: { name: 'Album', tracks: [] } });
-    albumLibraryStore.setState({
-      albums: [{ id: 'a1', name: 'Album' }] as any,
-    });
+    await upsertAlbums(db(), [albumFixture('a1', 'Album')]);
 
     expect((await performOfflineSearch('someartist')).albums).toHaveLength(0);
   });
@@ -349,26 +467,144 @@ describe('getOfflineSongsByGenre', () => {
 
     expect(getOfflineSongsByGenre('Rock')).toHaveLength(0);
   });
+
+  /* The genre-filtered mixes get the same full `Child` as the unfiltered ones. */
+  it('carries the full downloaded metadata', () => {
+    seedCache({ a1: { name: 'Album', tracks: [fullTrack()] } });
+
+    expectFullMetadata(getOfflineSongsByGenre('shoegaze')[0]);
+  });
+});
+
+/** The ONE pass the Tuned-In builder replaced N per-genre walks with. */
+describe('getOfflineGenresPresent', () => {
+  it('collects every genre in the offline library, lowercased', () => {
+    seedCache({
+      a1: {
+        name: 'Album',
+        tracks: [
+          { id: 't1', title: 'Song', artist: 'A', duration: 200, genre: 'Rock' },
+          {
+            id: 't2',
+            title: 'Other',
+            artist: 'B',
+            duration: 180,
+            genres: [{ name: 'Electronic' }, { name: 'Ambient' }],
+          },
+        ],
+      },
+    });
+
+    expect([...getOfflineGenresPresent()].sort()).toEqual(['ambient', 'electronic', 'rock']);
+  });
+
+  it('visits a song held by two items once', () => {
+    seedCache({
+      a1: { name: 'Album', tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200, genre: 'Rock' }] },
+      p1: { name: 'Playlist', tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200, genre: 'Rock' }] },
+    });
+
+    expect([...getOfflineGenresPresent()]).toEqual(['rock']);
+  });
+
+  it('skips an edge whose song row is gone, and a song with no genre columns', () => {
+    seedCache({
+      a1: { name: 'Album', tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200, genre: 'Rock' }] },
+    });
+    const state = musicCacheStore.getState();
+    musicCacheStore.setState({
+      ...state,
+      cachedItems: {
+        ...state.cachedItems,
+        // `t99` has no `cachedSongs` row; `t-bare` has one with no genre columns.
+        a1: { ...state.cachedItems.a1, songIds: ['t1', 't99', 't-bare'] },
+      },
+      cachedSongs: {
+        ...state.cachedSongs,
+        't-bare': { id: 't-bare', title: 'Bare', albumId: 'a1', duration: 1 },
+      },
+    } as any);
+
+    expect([...getOfflineGenresPresent()]).toEqual(['rock']);
+  });
+
+  it('is empty when nothing is downloaded', () => {
+    expect(getOfflineGenresPresent().size).toBe(0);
+  });
+
+  it('is empty when the downloaded songs carry no genre', () => {
+    seedCache({
+      a1: { name: 'Album', tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200 }] },
+    });
+
+    expect(getOfflineGenresPresent().size).toBe(0);
+  });
+});
+
+describe('getOfflineSongsAll', () => {
+  it('returns every downloaded song, genre or not, deduplicated across items', () => {
+    seedCache({
+      a1: {
+        name: 'Album',
+        tracks: [
+          { id: 't1', title: 'Song', artist: 'A', duration: 200, genre: 'Rock' },
+          { id: 't2', title: 'Other', artist: 'B', duration: 180 },
+        ],
+      },
+      p1: { name: 'Playlist', tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200 }] },
+    });
+
+    expect(getOfflineSongsAll().map((s) => s.id).sort()).toEqual(['t1', 't2']);
+  });
+
+  it('is empty when nothing is downloaded', () => {
+    expect(getOfflineSongsAll()).toEqual([]);
+  });
+
+  it('skips a songId whose cached row is gone', () => {
+    seedCache({ a1: { name: 'Album', tracks: [{ id: 't1', title: 'Song', artist: 'A', duration: 200 }] } });
+    const state = musicCacheStore.getState();
+    musicCacheStore.setState({
+      ...state,
+      cachedItems: { ...state.cachedItems, a1: { ...state.cachedItems.a1, songIds: ['t1', 't99'] } },
+    } as any);
+
+    expect(getOfflineSongsAll().map((s) => s.id)).toEqual(['t1']);
+  });
+
+  /* Same full-`Child` requirement, on the path the Tuned In offline mixes read. */
+  it('carries the full downloaded metadata', () => {
+    seedCache({ a1: { name: 'Album', tracks: [fullTrack()] } });
+
+    expectFullMetadata(getOfflineSongsAll()[0]);
+  });
+
+  it('keeps the parent item name as `album` for a playlist-downloaded song', () => {
+    seedCache({ pl1: { name: 'Road Trip', tracks: [fullTrack()] } });
+
+    const song = getOfflineSongsAll()[0];
+    expect(song.album).toBe('Road Trip');
+    expect(song.album).not.toBe('Real Album');
+  });
 });
 
 describe('searchLibrary — data-state routing', () => {
+  // Lean SongListRow shape — searchFullLibraryScored ranks r.title/r.artist and maps
+  // the row to a Child via songListRowToChild.
   const localSong = (id: string, title = 'Test Song') =>
-    ({ id, albumId: 'a1', title, artist: 'A', duration: 200 }) as any;
+    ({ id, album_id: 'a1', title, artist: 'A', duration: 200 }) as any;
 
   beforeEach(() => {
     // Sane online + fully-synced + reachable defaults; each test overrides.
     offlineModeStore.setState({ offlineMode: false });
     syncStatusStore.setState({ librarySyncComplete: true, songSyncComplete: true });
     connectivityStore.setState({ hasConnection: true, isServerReachable: true });
-    mockHasLocalRows.mockResolvedValue(true);
-    mockQuerySongs.mockResolvedValue([]);
-    mockQueryAlbums.mockResolvedValue([]);
   });
 
   it('empty query short-circuits to empty with no queries', async () => {
     const res = await searchLibrary('   ');
     expect(res).toEqual({ albums: [], artists: [], songs: [] });
-    expect(mockHasLocalRows).not.toHaveBeenCalled();
+    expect(mockHasLocalCorpus).not.toHaveBeenCalled();
     expect(mockSearch3).not.toHaveBeenCalled();
   });
 
@@ -380,34 +616,63 @@ describe('searchLibrary — data-state routing', () => {
     const res = await searchLibrary('freak on a leash');
     expect(res.songs.map((s) => s.id)).toContain('t1');
     expect(mockSearch3).not.toHaveBeenCalled();
-    expect(mockQuerySongs).not.toHaveBeenCalled();
+    expect(mockSearchSongs).not.toHaveBeenCalled();
   });
 
   it('online + fully synced + confident local hit → local authoritative, no server', async () => {
-    mockQuerySongs.mockResolvedValue([localSong('s1')]);
+    mockSearchSongs.mockResolvedValue([localSong('s1')]);
     const res = await searchLibrary('test song');
     expect(res.songs.map((s) => s.id)).toEqual(['s1']);
     expect(mockSearch3).not.toHaveBeenCalled();
   });
 
   it('returns matching ARTISTS from the synced artist library (search3 parity)', async () => {
-    // Regression: local search used to hardcode artists:[] — "pearl" showed
-    // albums + songs but never the Pearl Jam artist row.
-    artistLibraryStore.setState({
-      artists: [
-        { id: 'ar1', name: 'Pearl Jam', albumCount: 57 },
-        { id: 'ar2', name: 'Metallica', albumCount: 12 },
-      ],
-    } as any);
-    mockQuerySongs.mockResolvedValue([]);
-    mockQueryAlbums.mockResolvedValue([]);
+    // Local search must not hardcode `artists: []` — "pearl" has to return the
+    // Pearl Jam artist row, not just albums + songs.
+    mockSearchArtists.mockResolvedValue([
+      { id: 'ar1', name: 'Pearl Jam', album_count: 57, cover_art: null, sort_name: null, sort_title: 'pearl jam', starred: null, user_rating: null, artist_image_url: null, music_brainz_id: null },
+      { id: 'ar2', name: 'Metallica', album_count: 12, cover_art: null, sort_name: null, sort_title: 'metallica', starred: null, user_rating: null, artist_image_url: null, music_brainz_id: null },
+    ]);
     const res = await searchLibrary('pearl');
     expect(res.artists.map((a) => a.id)).toEqual(['ar1']);
     expect(mockSearch3).not.toHaveBeenCalled();
   });
 
+  it('returns matching ALBUMS from the synced library, best-first', async () => {
+    mockSearchAlbums.mockResolvedValue([
+      { id: 'al2', name: 'Ten Again', display_artist: 'Pearl Jam' },
+      { id: 'al1', name: 'Ten', display_artist: 'Pearl Jam' },
+      { id: 'al9', name: 'Nothing Alike', display_artist: 'Nobody' },
+    ] as any);
+    const res = await searchLibrary('ten');
+    expect(res.albums.map((a) => a.id)).toEqual(['al1', 'al2']);
+    expect(res.albums[0].artist).toBe('Pearl Jam'); // mapped through albumListRowToAlbumID3
+  });
+
+  it('ranks several confidently-matching artists best-first', async () => {
+    const artistRow = (id: string, name: string) =>
+      ({ id, name, album_count: 1, cover_art: null, sort_name: null, sort_title: name.toLowerCase(), starred: null, user_rating: null, artist_image_url: null, music_brainz_id: null });
+    mockSearchArtists.mockResolvedValue([
+      artistRow('ar2', 'Pearl Jams'),
+      artistRow('ar1', 'Pearl Jam'),
+    ] as any);
+    const res = await searchLibrary('pearl jam');
+    expect(res.artists.map((a) => a.id)).toEqual(['ar1', 'ar2']);
+  });
+
+  it('a failing server call leaves the local results intact', async () => {
+    // The server half is wrapped so a 500 / dropped connection mid-search degrades to
+    // "local only" rather than failing the whole search.
+    syncStatusStore.setState({ librarySyncComplete: false, songSyncComplete: false });
+    mockSearchSongs.mockResolvedValue([localSong('loc')]);
+    mockSearch3.mockRejectedValue(new Error('Network error'));
+    const res = await searchLibrary('test song');
+    expect(mockSearch3).toHaveBeenCalled();
+    expect(res.songs.map((s) => s.id)).toEqual(['loc']);
+  });
+
   it('online + fully synced + weak/empty local hit → local only, NEVER the server (no blocking)', async () => {
-    mockQuerySongs.mockResolvedValue([]); // nothing local
+    mockSearchSongs.mockResolvedValue([]); // nothing local
     const res = await searchLibrary('test song');
     // Fully synced ⇒ local is complete; an interactive search must not block on
     // the network for a weak hit.
@@ -417,7 +682,7 @@ describe('searchLibrary — data-state routing', () => {
 
   it('online + partially synced + reachable → local-first MERGED with server', async () => {
     syncStatusStore.setState({ librarySyncComplete: false, songSyncComplete: false });
-    mockQuerySongs.mockResolvedValue([localSong('loc')]);
+    mockSearchSongs.mockResolvedValue([localSong('loc')]);
     mockSearch3.mockResolvedValue({ albums: [], artists: [], songs: [{ id: 'srv', title: 'Server' }] } as any);
     const res = await searchLibrary('test song');
     expect(mockSearch3).toHaveBeenCalled();
@@ -426,7 +691,7 @@ describe('searchLibrary — data-state routing', () => {
 
   it('online + partially synced → surfaces local via onLocalResults BEFORE merging the server', async () => {
     syncStatusStore.setState({ librarySyncComplete: false, songSyncComplete: false });
-    mockQuerySongs.mockResolvedValue([localSong('loc')]);
+    mockSearchSongs.mockResolvedValue([localSong('loc')]);
     mockSearch3.mockResolvedValue({ albums: [], artists: [], songs: [{ id: 'srv', title: 'Server' }] } as any);
     const surfaced: string[][] = [];
     const res = await searchLibrary('test song', {
@@ -439,23 +704,23 @@ describe('searchLibrary — data-state routing', () => {
   it('online + partially synced + unreachable → local only, no server', async () => {
     syncStatusStore.setState({ librarySyncComplete: false, songSyncComplete: false });
     connectivityStore.setState({ hasConnection: false, isServerReachable: false });
-    mockQuerySongs.mockResolvedValue([localSong('loc')]);
+    mockSearchSongs.mockResolvedValue([localSong('loc')]);
     const res = await searchLibrary('test song');
     expect(mockSearch3).not.toHaveBeenCalled();
     expect(res.songs.map((s) => s.id)).toEqual(['loc']);
   });
 
   it('online + no local corpus + reachable → straight to the server', async () => {
-    mockHasLocalRows.mockResolvedValue(false);
+    mockHasLocalCorpus.mockResolvedValue(false);
     mockSearch3.mockResolvedValue({ albums: [], artists: [], songs: [{ id: 'srv', title: 'S' }] } as any);
     const res = await searchLibrary('anything');
     expect(mockSearch3).toHaveBeenCalled();
     expect(res.songs.map((s) => s.id)).toEqual(['srv']);
-    expect(mockQuerySongs).not.toHaveBeenCalled();
+    expect(mockSearchSongs).not.toHaveBeenCalled();
   });
 
   it('online + no local corpus + unreachable → empty (no hang)', async () => {
-    mockHasLocalRows.mockResolvedValue(false);
+    mockHasLocalCorpus.mockResolvedValue(false);
     connectivityStore.setState({ hasConnection: false, isServerReachable: false });
     const res = await searchLibrary('anything');
     expect(mockSearch3).not.toHaveBeenCalled();
@@ -464,23 +729,33 @@ describe('searchLibrary — data-state routing', () => {
 });
 
 describe('findAlbum (voice album intent)', () => {
+  // Lean AlbumListRow shape — findAlbum scores r.name/r.display_artist and maps the
+  // winner to an AlbumID3 via albumListRowToAlbumID3.
   it('prefers the album by the given artist among same-named albums', async () => {
-    mockQueryAlbums.mockResolvedValue([
-      { id: 'a-x', name: 'Ten', artist: 'Somebody Else' },
-      { id: 'a-pj', name: 'Ten', artist: 'Pearl Jam' },
+    mockSearchAlbums.mockResolvedValue([
+      { id: 'a-x', name: 'Ten', display_artist: 'Somebody Else' },
+      { id: 'a-pj', name: 'Ten', display_artist: 'Pearl Jam' },
     ] as any);
     // "Ten by Pearl Jam" must pick Pearl Jam's Ten, not the other "Ten".
     expect((await findAlbum('Ten', 'Pearl Jam'))?.id).toBe('a-pj');
   });
 
   it('returns null when there are no candidates', async () => {
-    mockQueryAlbums.mockResolvedValue([]);
+    mockSearchAlbums.mockResolvedValue([]);
     expect(await findAlbum('Nonexistent', 'Nobody')).toBeNull();
   });
 
   it('matches on name alone when no artist is given', async () => {
-    mockQueryAlbums.mockResolvedValue([{ id: 'a1', name: 'Ten', artist: 'Pearl Jam' }] as any);
+    mockSearchAlbums.mockResolvedValue([{ id: 'a1', name: 'Ten', display_artist: 'Pearl Jam' }] as any);
     expect((await findAlbum('Ten'))?.id).toBe('a1');
+  });
+
+  it('picks the best of several surviving candidates, not the first', async () => {
+    mockSearchAlbums.mockResolvedValue([
+      { id: 'a-live', name: 'Ten Live', display_artist: 'Pearl Jam' },
+      { id: 'a-ten', name: 'Ten', display_artist: 'Pearl Jam' },
+    ] as any);
+    expect((await findAlbum('Ten', 'Pearl Jam'))?.id).toBe('a-ten');
   });
 });
 
@@ -489,14 +764,12 @@ describe('findArtistSongs (voice artist intent)', () => {
     offlineModeStore.setState({ offlineMode: false });
     syncStatusStore.setState({ librarySyncComplete: true, songSyncComplete: true });
     connectivityStore.setState({ hasConnection: true, isServerReachable: true });
-    mockHasLocalRows.mockResolvedValue(true);
-    mockQueryAlbums.mockResolvedValue([]);
   });
 
   it('keeps songs whose ARTIST confidently matches, drops title-only noise', async () => {
-    mockQuerySongs.mockResolvedValue([
-      { id: 's1', albumId: 'a1', title: 'Blind', artist: 'Korn' },
-      { id: 's2', albumId: 'a2', title: 'Korn Tribute', artist: 'Cover Band' },
+    mockSearchSongs.mockResolvedValue([
+      { id: 's1', album_id: 'a1', title: 'Blind', artist: 'Korn' },
+      { id: 's2', album_id: 'a2', title: 'Korn Tribute', artist: 'Cover Band' },
     ] as any);
     const songs = await findArtistSongs('Korn');
     expect(songs.map((s) => s.id)).toEqual(['s1']);

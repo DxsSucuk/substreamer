@@ -16,7 +16,7 @@ import { BottomChrome } from '../components/BottomChrome';
 import { SectionTitle } from '../components/SectionTitle';
 import { StatCard } from '../components/StatCard';
 import { TopItemRow } from '../components/TopItemRow';
-import { usePlaybackAnalytics, type TimePeriod } from '../hooks/usePlaybackAnalytics';
+import { usePeriodAggregates, usePlaybackAnalytics, type TimePeriod } from '../hooks/usePlaybackAnalytics';
 import { useRefreshControlKey } from '../hooks/useRefreshControlKey';
 import { albumCoverArtById, resolveSongCoverArt, useSongCoverArt } from '../hooks/useSongCoverArt';
 import { useTheme } from '../hooks/useTheme';
@@ -137,13 +137,17 @@ export function MyListeningScreen() {
   const [refreshing, setRefreshing] = useState(false);
 
   const hourLabels = useMemo(() => buildHourLabels(i18next.language), []);
-  const completedScrobbles = completedScrobbleStore((s) => s.completedScrobbles);
   const pendingScrobbles = pendingScrobbleStore((s) => s.pendingScrobbles);
-  const aggregates = completedScrobbleStore((s) => s.aggregates);
+  // All-time aggregates (SQL, cached in the store) drive the heatmap + streaks;
+  // the period-scoped aggregates come from a SQL query for the selected period.
+  const allTimeAggregates = completedScrobbleStore((s) => s.aggregates);
+  const totalPlays = completedScrobbleStore((s) => s.stats.totalPlays);
+  const recentScrobblesSlice = completedScrobbleStore((s) => s.recentScrobbles);
+  const { aggregates: periodAggregates, refresh: refreshPeriod } = usePeriodAggregates(period);
   const dateFormat = layoutPreferencesStore((s) => s.dateFormat);
   const offlineMode = offlineModeStore((s) => s.offlineMode);
 
-  const analytics = usePlaybackAnalytics(completedScrobbles, period, pendingScrobbles, aggregates);
+  const analytics = usePlaybackAnalytics(period, periodAggregates, allTimeAggregates, pendingScrobbles);
 
   const handlePeriodChange = useCallback((p: TimePeriod) => {
     setPeriod(p);
@@ -152,16 +156,12 @@ export function MyListeningScreen() {
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     const delay = minDelay();
-    // Let the refresh spinner paint before the O(n) aggregate rebuild
-    // (`buildAggregates` is a single pass over the full scrobble history,
-    // which can be 10k+ rows) blocks the JS thread. Without this yield the
-    // spinner is frozen for the entire rebuild. setTimeout, not rAF — rAF
-    // can stall on RN 0.85/Fabric.
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    completedScrobbleStore.getState().rebuildAggregates();
+    // Refresh the SQL aggregates: the store's all-time cache + the period query.
+    await completedScrobbleStore.getState().refreshFromDb();
+    refreshPeriod();
     await delay;
     setRefreshing(false);
-  }, []);
+  }, [refreshPeriod]);
 
   // Tap handlers for the various item rows. All return `undefined` when
   // offline so callers can pass the value straight through to TopItemRow's
@@ -199,7 +199,7 @@ export function MyListeningScreen() {
     );
   }
 
-  const isEmpty = completedScrobbles.length === 0 && pendingScrobbles.length === 0;
+  const isEmpty = totalPlays === 0 && pendingScrobbles.length === 0;
 
   if (isEmpty) {
     return (
@@ -231,12 +231,9 @@ export function MyListeningScreen() {
     label: hourLabels[i],
   }));
 
-  // Latest 20 for the "recent" list. Plain expression (not a hook) so it
-  // stays below the early returns and never runs on the loading-spinner
-  // render — matching the original behavior.
-  const recentScrobbles = [...completedScrobbles]
-    .sort((a, b) => b.time - a.time)
-    .slice(0, 20);
+  // Latest 20 for the "recent" list — the store keeps a bounded newest-first
+  // recent slice (full history lives in SQL).
+  const recentScrobbles = recentScrobblesSlice.slice(0, 20);
 
   return (
     <GradientBackground scrollable>
@@ -393,7 +390,10 @@ export function MyListeningScreen() {
               subtitle={item.artist}
               count={item.count}
               maxCount={analytics.topAlbums[0].count}
-              coverArtId={albumCoverArtById(item.albumId)}
+              // The aggregate already carries the cover art captured at scrobble time;
+              // prefer it over the album lookup, which is a synchronous cache read that
+              // returns undefined on a miss and never re-renders when the fill lands.
+              coverArtId={item.coverArt ?? albumCoverArtById(item.albumId)}
               colors={colors}
               index={i}
               onPress={onOpenAlbum(item.albumId)}

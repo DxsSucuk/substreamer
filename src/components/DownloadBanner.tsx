@@ -52,15 +52,14 @@ export function DownloadBanner() {
   );
   const visible = queueCount > 0;
 
-  // Always start collapsed and let the visibility effect run the entrance
-  // animation on the first false → true transition. This guarantees the
-  // slide-in plays whether the queue is non-empty at app launch or fills
-  // up after the banner remounts (e.g. when the bottom-chrome wrapper
-  // unmounts because both the play queue and the download queue cleared,
-  // then the user kicks off a fresh download).
-  const prevVisible = useRef(false);
-  const heightValue = useSharedValue(0);
-  const contentOpacity = useSharedValue(0);
+  // Seeded from `visible`, so a banner mounted with a non-empty queue is at full
+  // height on its first render. Visibility must not depend on the entrance
+  // animation having run: `prevVisible` latches on every effect pass, so an
+  // animation that never lands would leave the banner collapsed with no path
+  // back. The effect animates genuine transitions while mounted.
+  const prevVisible = useRef(visible);
+  const heightValue = useSharedValue(visible ? BANNER_HEIGHT : 0);
+  const contentOpacity = useSharedValue(visible ? 1 : 0);
 
   useEffect(() => {
     if (visible && !prevVisible.current) {

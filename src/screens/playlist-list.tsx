@@ -1,13 +1,315 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
 import { PlaylistListView, type PlaylistLayout } from '../components/PlaylistListView';
 import { useFetchOnHydrated } from '../hooks/useFetchOnHydrated';
 import { onPullToRefresh } from '../services/dataSyncService';
+import {
+  countPlaylists,
+  listPlaylists,
+  listPlaylistsBefore,
+  playlistCursorOf,
+  playlistListRowToPlaylist,
+  type PlaylistListRow,
+} from '../db/repository/playlists';
+import { type Cursor } from '../db/repository/core';
+import { downloadedPlaylistSortKey, listDownloadedPlaylists } from '../db/repository/downloads';
+import { getDb } from '../store/persistence/db';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { offlineModeStore } from '../store/offlineModeStore';
-import { playlistLibraryStore } from '../store/playlistLibraryStore';
+import { refreshPlaylistLibrary } from '../services/normalizedLibrarySync';
+import { syncStatusStore } from '../store/syncStatusStore';
+import { type IoniconsName } from '../utils/iconNames';
+
+const PAGE = 120;
+/** Alphabet-scroller letters — all active in keyset mode (the loaded window can't
+ *  reveal which letters exist; a tap on an empty letter seeks to the next one). */
+const ALL_LETTERS = new Set<string>([
+  '#',
+  ...Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i)),
+]);
+
+interface EmptyProps {
+  emptyIcon?: IoniconsName;
+  emptyMessage?: string;
+  emptySubtitle?: string;
+}
+
+/**
+ * Main playlist browse — reads bounded KEYSET pages from the normalized `playlists`
+ * table. Playlists fetch on demand (`refreshPlaylistLibrary`);
+ * on a fresh library the table is empty on first browse, so we trigger the fetch and
+ * reload the window when it lands (via the store's `lastFetchedAt`).
+ */
+function KeysetPlaylistList({
+  layout,
+  contentInsetTop,
+  emptyProps,
+}: {
+  layout: PlaylistLayout;
+  contentInsetTop: number;
+  emptyProps: EmptyProps;
+}) {
+  const [rows, setRows] = useState<PlaylistListRow[]>([]);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [seekTick, setSeekTick] = useState(0);
+  const cursorRef = useRef<Cursor | null>(null); // forward (end)
+  const prevCursorRef = useRef<Cursor | null>(null); // backward (start)
+  const doneRef = useRef(false);
+  const busyRef = useRef(false);
+  // Bumped by every load that REPLACES the window (first page, letter seek, top seek).
+  // A paging load that was already in flight when one of those ran must not write its
+  // rows or cursors afterwards — it belongs to a window that no longer exists.
+  const loadGenRef = useRef(0);
+  // Whether the loaded window begins at the START of the library. `prevCursorRef` cannot
+  // answer this: after the first page it holds row 0's own cursor, which is non-null and
+  // looks identical to a window that starts mid-library after a letter seek.
+  const atLibraryStartRef = useRef(true);
+  // Held across the whole prepend -> scroll -> trim transition. `busyRef` cannot do this
+  // job: every pager clears it in its own `finally`, so an in-flight load would drop the
+  // guard part-way through.
+  const transitionRef = useRef(false);
+
+  const loadFirstPage = useCallback(async () => {
+    const gen = (loadGenRef.current += 1);
+    busyRef.current = true;
+    try {
+      const db = getDb();
+      if (!db) return;
+      const page = await listPlaylists(db, { cursor: null, limit: PAGE });
+      // A newer load superseded this one — its rows belong to a window that is gone.
+      if (gen !== loadGenRef.current) return;
+      atLibraryStartRef.current = true;
+      cursorRef.current = page.nextCursor;
+      doneRef.current = !page.nextCursor;
+      prevCursorRef.current = page.rows.length > 0 ? playlistCursorOf(page.rows[0]) : null;
+      setRows(page.rows);
+    } finally {
+      busyRef.current = false;
+      setInitialLoading(false);
+    }
+  }, []);
+
+  const loadMore = useCallback(async () => {
+    if (transitionRef.current) return;
+    if (busyRef.current || doneRef.current) return;
+    const gen = loadGenRef.current;
+    busyRef.current = true;
+    try {
+      const db = getDb();
+      if (!db) return;
+      const page = await listPlaylists(db, { cursor: cursorRef.current, limit: PAGE });
+      if (gen !== loadGenRef.current) return false;
+      cursorRef.current = page.nextCursor;
+      if (!page.nextCursor) doneRef.current = true;
+      setRows((r) => [...r, ...page.rows]);
+    } finally {
+      busyRef.current = false;
+    }
+  }, []);
+
+  const loadPrevious = useCallback(async () => {
+    const before = prevCursorRef.current;
+    if (transitionRef.current) return;
+    if (busyRef.current || !before) return;
+    const gen = loadGenRef.current;
+    busyRef.current = true;
+    try {
+      const db = getDb();
+      if (!db) return;
+      const page = await listPlaylistsBefore(db, { before, limit: PAGE });
+      if (gen !== loadGenRef.current) return;
+      prevCursorRef.current = page.prevCursor;
+      if (page.prevCursor === null) atLibraryStartRef.current = true;
+      if (page.rows.length > 0) setRows((r) => [...page.rows, ...r]);
+    } finally {
+      busyRef.current = false;
+    }
+  }, []);
+
+  const seekLetter = useCallback(async (letter: string) => {
+    const gen = (loadGenRef.current += 1);
+    busyRef.current = true;
+    try {
+      const db = getDb();
+      if (!db) return;
+      const page = await listPlaylists(db, { letter, limit: PAGE });
+      // A newer seek superseded this one — same reasoning.
+      if (gen !== loadGenRef.current) return;
+      atLibraryStartRef.current = false;
+      cursorRef.current = page.nextCursor;
+      doneRef.current = !page.nextCursor;
+      prevCursorRef.current = page.rows.length > 0 ? playlistCursorOf(page.rows[0]) : null;
+      setRows(page.rows);
+      setSeekTick((t) => t + 1); // triggers scroll-to-top in PlaylistListView
+    } finally {
+      busyRef.current = false;
+    }
+  }, []);
+
+  // Initial window load on mount.
+  // iOS status-bar tap, delivered by `StatusBarTapTarget` — the list itself declines it,
+  // so nothing has scrolled when we get here. Reset to the first page exactly the way a
+  // letter seek does: replace the window, bump the tick. No traversal to flash through.
+  const seekTop = useCallback(async (): Promise<boolean> => {
+    // Already showing the first page: there is no window to replace, so report that and
+    // let the list scroll itself — otherwise the tap does nothing at all.
+    if (atLibraryStartRef.current || transitionRef.current) return false;
+    transitionRef.current = true;
+    try {
+      const db = getDb();
+      if (!db) return false;
+      const gen = (loadGenRef.current += 1);
+      const page = await listPlaylists(db, { cursor: null, limit: PAGE });
+      // A newer load superseded this one; it has already moved the list.
+      if (gen !== loadGenRef.current) return true;
+      cursorRef.current = page.nextCursor;
+      doneRef.current = !page.nextCursor;
+      prevCursorRef.current = page.rows.length > 0 ? playlistCursorOf(page.rows[0]) : null;
+      atLibraryStartRef.current = true;
+      setRows(page.rows);
+      setSeekTick((t) => t + 1);
+      return true;
+    } finally {
+      transitionRef.current = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadFirstPage();
+  }, [loadFirstPage]);
+
+  // Fetch-on-browse (once, post-hydration): if the normalized table is empty and
+  // nothing is in flight, pull playlists from the server (which dual-writes normalized
+  // + bumps lastFetchedAt → the reload effect below repaints the window).
+  useFetchOnHydrated(syncStatusStore, () => {
+    void (async () => {
+      const db = getDb();
+      if (db && !syncStatusStore.getState().playlistLibraryLoading && (await countPlaylists(db)) === 0) {
+        void refreshPlaylistLibrary();
+      }
+    })();
+  });
+
+  // Reload the window when a fetch lands. Skip the initial (persisted) value so this
+  // only fires on a genuine post-mount fetch completion.
+  const lastFetchedAt = syncStatusStore((s) => s.playlistLibraryLastFetchedAt);
+  const fetchLoading = syncStatusStore((s) => s.playlistLibraryLoading);
+  const seenFetchRef = useRef(lastFetchedAt);
+  useEffect(() => {
+    if (lastFetchedAt === seenFetchRef.current) return;
+    seenFetchRef.current = lastFetchedAt;
+    cursorRef.current = null;
+    prevCursorRef.current = null;
+    doneRef.current = false;
+    void loadFirstPage();
+  }, [lastFetchedAt, loadFirstPage]);
+
+  // Spinner (not empty placeholder) until we have a DEFINITIVE result: the first
+  // keyset read, a fetch in flight, or a library never fetched yet.
+  const showLoading =
+    initialLoading || (rows.length === 0 && (fetchLoading || lastFetchedAt == null));
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await onPullToRefresh('playlists');
+      cursorRef.current = null;
+      prevCursorRef.current = null;
+      doneRef.current = false;
+      await loadFirstPage();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadFirstPage]);
+
+  return (
+    <PlaylistListView
+      items={rows}
+      toPlaylist={playlistListRowToPlaylist}
+      layout={layout}
+      loading={showLoading}
+      showAlphabetScroller
+      activeLetters={ALL_LETTERS}
+      onEndReached={loadMore}
+      onStartReached={loadPrevious}
+      onSeekLetter={seekLetter}
+      onScrollToTop={seekTop}
+      onRefresh={handleRefresh}
+      refreshing={refreshing}
+      scrollToTopTrigger={`seek:${seekTick}`}
+      contentInsetTop={contentInsetTop}
+      {...emptyProps}
+    />
+  );
+}
+
+/** Downloaded filter reads the BOUNDED download tables straight from SQL
+ *  (`cached_items` ⋈ `cached_playlists`, never-reaped and offline-safe), not the paged
+ *  library — A–Z on the same stored `sort_title` the keyset browse orders by, so the
+ *  filter cannot reorder the list. No partial gate: playlists download atomically. */
+function FilteredPlaylistList({
+  layout,
+  contentInsetTop,
+  emptyProps,
+}: {
+  layout: PlaylistLayout;
+  contentInsetTop: number;
+  emptyProps: EmptyProps;
+}) {
+  // `revision` is the download tables' change signal: SQL has no Zustand subscription, so
+  // without it a download completing under the user leaves this list silently stale.
+  const revision = musicCacheStore((s) => s.revision);
+
+  const [rows, setRows] = useState<PlaylistListRow[]>([]);
+  const [loadedRevision, setLoadedRevision] = useState<number | null>(null);
+  // DERIVED, not seeded — see the note in `album-library-list.tsx`. The read is
+  // asynchronous, so a mount-time seed leaves one empty-and-not-loading frame that
+  // flashes the "no playlists" placeholder.
+  const loading = loadedRevision !== revision;
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      const db = getDb();
+      const list = db ? await listDownloadedPlaylists(db) : [];
+      if (alive) {
+        setRows(list);
+        setLoadedRevision(revision);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [revision]);
+
+  const [refreshing, setRefreshing] = useState(false);
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await onPullToRefresh('playlists');
+    } finally {
+      setRefreshing(false);
+    }
+  }, []);
+
+  return (
+    <PlaylistListView
+      items={rows}
+      toPlaylist={playlistListRowToPlaylist}
+      sortKeyOf={downloadedPlaylistSortKey}
+      layout={layout}
+      loading={loading}
+      onRefresh={handleRefresh}
+      refreshing={refreshing}
+      showAlphabetScroller
+      scrollToTopTrigger="downloaded"
+      contentInsetTop={contentInsetTop}
+      {...emptyProps}
+    />
+  );
+}
 
 export function PlaylistListScreen({
   layout = 'list',
@@ -20,56 +322,38 @@ export function PlaylistListScreen({
 }) {
   const { t } = useTranslation();
   const offlineMode = offlineModeStore((s) => s.offlineMode);
-  const playlists = playlistLibraryStore((s) => s.playlists);
-  const loading = playlistLibraryStore((s) => s.loading);
-  const error = playlistLibraryStore((s) => s.error);
 
-  const cachedItems = musicCacheStore((s) => s.cachedItems);
-
-  // Fetch only after hydration so a cached library isn't re-fetched on mount.
-  useFetchOnHydrated(playlistLibraryStore, () => {
-    const s = playlistLibraryStore.getState();
-    if (s.playlists.length === 0 && !s.loading) s.fetchAllPlaylists();
-  });
-
-  const filteredPlaylists = useMemo(() => {
-    if (!downloadedOnly) return playlists;
-    return playlists.filter((p) => p.id in cachedItems);
-  }, [playlists, downloadedOnly, cachedItems]);
-
-  const [refreshing, setRefreshing] = useState(false);
-
-  const handleRefresh = useCallback(async () => {
-    setRefreshing(true);
-    try {
-      await onPullToRefresh('playlists');
-    } finally {
-      setRefreshing(false);
-    }
-  }, []);
-
-  const emptyProps = offlineMode
+  // Three states, most specific first. Offline keeps its own copy (it explains the mode,
+  // not the chip); the Downloaded chip on its own says the filter emptied the list; with
+  // no filter the list view's "No playlists / from your server" copy is correct.
+  const emptyProps: EmptyProps = offlineMode
     ? {
-        emptyIcon: 'cloud-offline-outline' as const,
+        emptyIcon: 'cloud-offline-outline',
         emptyMessage: t('noDownloadedPlaylists'),
         emptySubtitle: t('noDownloadedPlaylistsSubtitle'),
       }
-    : {};
+    : downloadedOnly
+      ? {
+          emptyMessage: t('noMatchesForFilters'),
+          emptySubtitle: t('tryAdjustingFilters'),
+        }
+      : {};
 
   return (
     <View style={styles.container}>
-      <PlaylistListView
-        playlists={filteredPlaylists}
-        layout={layout}
-        loading={loading}
-        error={error}
-        onRefresh={handleRefresh}
-        refreshing={refreshing}
-        showAlphabetScroller
-        scrollToTopTrigger={`${downloadedOnly}`}
-        contentInsetTop={contentInsetTop}
-        {...emptyProps}
-      />
+      {downloadedOnly ? (
+        <FilteredPlaylistList
+          layout={layout}
+          contentInsetTop={contentInsetTop}
+          emptyProps={emptyProps}
+        />
+      ) : (
+        <KeysetPlaylistList
+          layout={layout}
+          contentInsetTop={contentInsetTop}
+          emptyProps={emptyProps}
+        />
+      )}
     </View>
   );
 }

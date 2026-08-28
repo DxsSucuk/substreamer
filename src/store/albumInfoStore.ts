@@ -1,8 +1,13 @@
 import { create } from 'zustand';
-import { createJSONStorage, persist } from 'zustand/middleware';
 
 import { getOverride, mbidOverrideStore } from './mbidOverrideStore';
-import { kvStorage } from './persistence';
+import {
+  clearAlbumInfo as clearAlbumInfoRows,
+  getAlbumInfoRow,
+  upsertAlbumInfoRow,
+  type AlbumInfoRow,
+} from '../db/repository/albums';
+import { getDb } from './persistence/db';
 
 import { getAlbumInfo2, type AlbumInfo } from '../services/subsonicService';
 import { getAlbumDescription } from '../services/musicbrainzService';
@@ -45,13 +50,39 @@ interface AlbumInfoState {
   ) => Promise<AlbumInfoEntry | null>;
   /** Clear all cached album info. */
   clearAlbumInfo: () => void;
+  /** Read one album's cached info from the table into `entries`, if present. */
+  hydrateAlbumInfo: (albumId: string) => Promise<AlbumInfoEntry | null>;
 }
 
-const PERSIST_KEY = 'substreamer-album-info';
+const entryToRow = (e: AlbumInfoEntry): AlbumInfoRow => ({
+  notes: e.albumInfo.notes ?? null,
+  lastFmUrl: e.albumInfo.lastFmUrl ?? null,
+  musicBrainzId: e.albumInfo.musicBrainzId ?? null,
+  imageUrlSmall: e.albumInfo.smallImageUrl ?? null,
+  imageUrlMedium: e.albumInfo.mediumImageUrl ?? null,
+  imageUrlLarge: e.albumInfo.largeImageUrl ?? null,
+  enrichedNotes: e.enrichedNotes,
+  enrichedNotesUrl: e.enrichedNotesUrl,
+  overrideMbid: e.overrideMbid,
+  retrievedAt: e.retrievedAt,
+});
 
-export const albumInfoStore = create<AlbumInfoState>()(
-  persist(
-    (set, get) => ({
+const rowToEntry = (r: AlbumInfoRow): AlbumInfoEntry => ({
+  albumInfo: {
+    notes: r.notes ?? undefined,
+    lastFmUrl: r.lastFmUrl ?? undefined,
+    musicBrainzId: r.musicBrainzId ?? undefined,
+    smallImageUrl: r.imageUrlSmall ?? undefined,
+    mediumImageUrl: r.imageUrlMedium ?? undefined,
+    largeImageUrl: r.imageUrlLarge ?? undefined,
+  } as AlbumInfo,
+  enrichedNotes: r.enrichedNotes,
+  enrichedNotesUrl: r.enrichedNotesUrl,
+  overrideMbid: r.overrideMbid,
+  retrievedAt: r.retrievedAt,
+});
+
+export const albumInfoStore = create<AlbumInfoState>()((set, get) => ({
       entries: {},
       loading: {},
       errors: {},
@@ -134,6 +165,14 @@ export const albumInfoStore = create<AlbumInfoState>()(
           set({
             entries: { ...get().entries, [albumId]: result },
           });
+          // Persist to `album_info` (keyed by album, cascading with it) rather than a
+          // KV blob — on-demand data, but still part of the data model.
+          const db = getDb();
+          if (db) {
+            void upsertAlbumInfoRow(db, albumId, entryToRow(result)).catch(() => {
+              /* best-effort: the in-memory entry still serves this session */
+            });
+          }
           return result;
         } catch {
           setError('error');
@@ -143,14 +182,22 @@ export const albumInfoStore = create<AlbumInfoState>()(
         }
       },
 
-      clearAlbumInfo: () => set({ entries: {}, loading: {}, errors: {} }),
-    }),
-    {
-      name: PERSIST_KEY,
-      storage: createJSONStorage(() => kvStorage),
-      partialize: (state) => ({
-        entries: state.entries,
-      }),
-    }
-  )
-);
+      clearAlbumInfo: () => {
+        set({ entries: {}, loading: {}, errors: {} });
+        const db = getDb();
+        if (db) void clearAlbumInfoRows(db).catch(() => { /* best-effort */ });
+      },
+
+      /** Load one album's cached info from the table into `entries`. Called on demand by
+       *  the player's info panel before deciding whether a fetch is needed. */
+      hydrateAlbumInfo: async (albumId: string) => {
+        if (get().entries[albumId]) return get().entries[albumId] ?? null;
+        const db = getDb();
+        if (!db) return null;
+        const row = await getAlbumInfoRow(db, albumId).catch(() => null);
+        if (!row) return null;
+        const entry = rowToEntry(row);
+        set({ entries: { ...get().entries, [albumId]: entry } });
+        return entry;
+      },
+}));

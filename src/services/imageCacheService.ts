@@ -48,6 +48,8 @@ import {
   deleteCachedImagesForCoverArt,
   findIncompleteCovers,
   getAllCachedCoverArtIds,
+  getAllCachedImageRows,
+  deleteCachedImageVariants,
   getCachedImagesForCoverArtAsync,
   hasCachedImage as dbHasCachedImage,
   hydrateImageCacheAggregatesAsync,
@@ -55,6 +57,10 @@ import {
   upsertCachedImage,
   type CacheBrowserFilter,
 } from '../store/persistence/imageCacheTable';
+import { isDbHealthy } from '../store/persistence/db';
+import { hydrateCachedItems, hydrateCachedSongs } from '../store/persistence/musicCacheTables';
+import { musicCacheStore } from '../store/musicCacheStore';
+import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import {
   clearImageQueueByCycle,
   countImageQueueRowsByCycle,
@@ -210,11 +216,10 @@ function buildVariantUri(coverArtId: string, size: number, ext: string): string 
 }
 
 /**
- * Resolve the local `file://` URI for a cached cover variant — the async,
- * DB-authoritative replacement for the old synchronous in-memory index. Reads
- * the cover's rows off the JS thread (`getCachedImagesForCoverArtAsync`) and
- * builds the deterministic path. No in-memory index, no synchronous FS/SQLite:
- * the DB is the single source of truth and render resolves into state.
+ * Resolve the local `file://` URI for a cached cover variant. Reads the cover's rows
+ * off the JS thread (`getCachedImagesForCoverArtAsync`) and builds the deterministic
+ * path. No in-memory index, no synchronous FS/SQLite: the DB is the single source of
+ * truth and render resolves into state.
  *
  * `sourceFallback` returns the 600px source URI when the requested smaller
  * variant isn't cached yet (the server served the original but the resize
@@ -238,9 +243,9 @@ export async function resolveCachedImageUri(
 
 /**
  * Which variant sizes a cover has on disk, per the DB — the source of truth for
- * download/skip decisions (`needed`, all-cached, still-missing). Async, off the
- * JS thread. Replaces the old `getCachedImageUri`-against-`uriCache` checks that
- * could skip a size when the in-memory index was transiently stale at boot.
+ * download/skip decisions (`needed`, all-cached, still-missing). Async, off the JS
+ * thread. Never decide these from an in-memory index: one that is transiently stale
+ * at boot silently skips a size.
  */
 async function cachedSizesForCover(coverArtId: string): Promise<Set<number>> {
   const rows = await getCachedImagesForCoverArtAsync(coverArtId);
@@ -256,15 +261,10 @@ async function cachedSizesForCover(coverArtId: string): Promise<Set<number>> {
  * lands a new file on disk, every subscriber for that coverArtId is
  * notified so it can re-derive its cached URI.
  *
- * Motivation: CachedImage instances on the home screen sometimes "give
- * up" on a flaky cover after two server errors and sit on the
- * placeholder. Later, the same coverArtId may successfully download via
- * a different code path — e.g. the user navigates to the album-detail
- * hero which retriggers cacheAllSizes from a fresh CachedImage mount,
- * and that attempt succeeds (server-side transient cleared). Without
- * the subscription, the placeholder card has no way to learn about the
- * new file landing on disk. With it, the card auto-refreshes as soon
- * as any subsequent download completes for its coverArtId.
+ * A `CachedImage` gives up on a flaky cover after two server errors and sits on the
+ * placeholder. The same coverArtId often lands later via another code path (an
+ * album-detail hero remounting and retriggering `cacheAllSizes`), and without this
+ * registry the placeholder card has no way to learn the file arrived.
  */
 const cacheUpdateListeners = new Map<string, Set<() => void>>();
 
@@ -385,6 +385,24 @@ function coverArtPathKey(coverArtId: string): string {
   );
 }
 
+/** The exact escapes {@link coverArtPathKey} emits — always uppercase hex. */
+const PATH_KEY_ESCAPES = /%(25|3A|5C|2F|3F|3C|3E|2A|7C|22|00)/g;
+
+/**
+ * Inverse of {@link coverArtPathKey}: an on-disk directory name back to the id.
+ *
+ * Deliberately NOT `decodeURIComponent`, which double-decodes (`a%253Ab` would
+ * yield `a:b`, where the true original is `a%3Ab`), throws on a lone `%`, and
+ * decodes UTF-8 pairs this encoder never emits. Only the eleven escapes above
+ * are recognised; anything else is left verbatim so the caller's round-trip
+ * check can reject it.
+ */
+function decodePathKey(dirName: string): string {
+  return dirName.replace(PATH_KEY_ESCAPES, (_m, hex: string) =>
+    String.fromCharCode(parseInt(hex, 16)),
+  );
+}
+
 /**
  * Gate for "is it safe to forcibly delete a cache row right now?"
  * True only when we have positive signal that the server is responding
@@ -421,9 +439,6 @@ let _dlCoverSongsSrc: unknown = null;
 let _dlCoverMode: string | null = null;
 let _dlCoverIds = new Set<string>();
 function downloadedCoverArtIds(): Set<string> {
-  // Lazy require to avoid an import cycle (musicCacheStore → services → here).
-  const { musicCacheStore } = require('../store/musicCacheStore');
-  const { layoutPreferencesStore } = require('../store/layoutPreferencesStore');
   const state = musicCacheStore.getState();
   const cachedItems = state.cachedItems;
   const cachedSongs = state.cachedSongs;
@@ -475,6 +490,7 @@ async function purgeCoverArtRows(coverArtId: string): Promise<{ files: number }>
     return { files: 0 };
   }
   const result = await deleteCachedImagesForCoverArt(coverArtId);
+  let filesDeleted = 0;
   try {
     const subDir = new Directory(ensureCacheDir(), coverArtPathKey(coverArtId));
     if (subDir.exists) {
@@ -482,7 +498,10 @@ async function purgeCoverArtRows(coverArtId: string): Promise<{ files: number }>
         for (const ext of EXTENSIONS) {
           const file = new File(subDir, `${size}${ext}`);
           if (file.exists) {
-            try { file.delete(); } catch { /* best-effort */ }
+            try {
+              file.delete();
+              filesDeleted += 1;
+            } catch { /* best-effort */ }
           }
         }
       }
@@ -490,6 +509,9 @@ async function purgeCoverArtRows(coverArtId: string): Promise<{ files: number }>
   } catch {
     /* best-effort — DB is the source of truth */
   }
+  // [file-delete] purge removes rows THEN files, so it can't leave a phantom
+  // (row without file); logged for the delete-audit trail.
+  logImageCache(`file-delete purge id=${coverArtId} rows=${result.count} files=${filesDeleted}`);
   variantFailureCount.delete(coverArtId);
   return { files: result.count };
 }
@@ -703,7 +725,7 @@ connectivityStore.subscribe((state, prev) => {
     // correlate the drop with cover-state changes in the same log stream.
     // No marker clearing — remote loads genuinely can't succeed now, and
     // re-enabling them would just re-fail. Cached covers are unaffected; they
-    // resolve from the in-memory URI index, not the network.
+    // resolve from their on-disk file, not the network.
     logImageCache('connectivity server-unreachable (was reachable)');
   }
 });
@@ -719,18 +741,19 @@ offlineModeStore.subscribe((state, prev) => {
 /**
  * Heal drift between the `cached_images` table and the on-disk layout.
  *
- *   - **FS → SQL.** Walk `{image-cache}/{coverArtId}/*` once; for every
- *     real variant file missing a DB row, insert one. Uses file size for
- *     bytes and `Date.now()` for cachedAt (mtime isn't always available
- *     via expo-file-system).
- *   - **SQL → FS.** For every DB row whose file doesn't exist on disk,
- *     delete the row. Handles external removal (iTunes wipe, low-storage
- *     cleanup, manual `rm`).
- *   - Safety gate: if the walk's apparent "missing from SQL" count
- *     dwarfs what we already know about (>100 entries AND the table was
- *     non-empty), log and skip — almost certainly a transient filesystem
- *     issue (cache dir mid-init, security-scoped URL failure), and
- *     wiping a correct DB to match a broken FS view would be worse.
+ *   - **FS -> SQL.** Walk `{image-cache}/{pathKey}/*` once; for every real
+ *     variant file missing a DB row, insert one. Uses file size for bytes and
+ *     `Date.now()` for cachedAt (mtime isn't always available).
+ *   - **SQL -> FS.** For every DB row whose file doesn't exist on disk, delete
+ *     the row. Handles external removal (iTunes wipe, low-storage cleanup, `rm`).
+ *
+ * Both passes read ONE snapshot of `cached_images`. A `null` snapshot means the
+ * table could not be read, which is NOT the same as an empty table: treating it
+ * as empty would make every file on disk look unrowed and rewrite the cache.
+ * Aborts in that state without stamping the throttle.
+ *
+ * Directory names are `coverArtPathKey(id)`, never the id itself — see
+ * {@link resolveCoverArtIdForDir}.
  */
 export async function reconcileImageCache(source: string = 'auto'): Promise<void> {
   const dir = ensureCacheDir();
@@ -748,7 +771,41 @@ export async function reconcileImageCache(source: string = 'auto'): Promise<void
   }
   logImageCache(`reconcile start source=${source} top-level-dirs=${topLevelNames.length}`);
 
+  // Read the aggregate BEFORE the snapshot and from its own query. Snapshot-first
+  // would race rows written by mounted covers during deferred init; deriving it
+  // from the snapshot would make the disagreement check below unreachable.
   const preAggregate = (await hydrateImageCacheAggregatesAsync());
+
+  const snapshot = await getAllCachedImageRows();
+  if (snapshot === null) {
+    // No recalc: hydrate would also fail and zero every aggregate on screen.
+    logImageCache(`reconcile abort source=${source} reason=snapshot-unavailable`);
+    return;
+  }
+  if (snapshot.length === 0 && preAggregate.fileCount > 0) {
+    logImageCache(
+      `reconcile abort source=${source} reason=snapshot-disagrees pre-rows=${preAggregate.fileCount}`,
+    );
+    return;
+  }
+
+  // id -> its variants. Answers Pass 1's "does (id,size) have a row?" by scanning
+  // at most four entries, and IS Pass 2's grouping — one structure, not two.
+  const byId = new Map<string, { size: number; ext: string }[]>();
+  // Encoded dir name -> original id, ONLY where they differ. An FS-safe id has no
+  // `%` (it is itself escaped), so its dir name has none either and decoding is
+  // the identity — the fallback already answers those.
+  const sqlIdByDirName = new Map<string, string>();
+  for (const row of snapshot) {
+    const variants = byId.get(row.coverArtId);
+    if (variants) variants.push({ size: row.size, ext: row.ext });
+    else byId.set(row.coverArtId, [{ size: row.size, ext: row.ext }]);
+    const key = coverArtPathKey(row.coverArtId);
+    if (key !== row.coverArtId) sqlIdByDirName.set(key, row.coverArtId);
+  }
+  const hasRow = (coverArtId: string, size: number): boolean =>
+    byId.get(coverArtId)?.some((v) => v.size === size) ?? false;
+
   const newRows: Array<{
     coverArtId: string;
     size: number;
@@ -757,30 +814,42 @@ export async function reconcileImageCache(source: string = 'auto'): Promise<void
     cachedAt: number;
   }> = [];
   // Track the (coverArtId, size) pairs we observe on disk so Pass 2 can
-  // ignore rows that match real files. Seed from the new rows too so
-  // Pass 2 doesn't delete rows we just queued for insert.
+  // ignore rows that match real files. Kept separate from `byId` on purpose:
+  // this is ext-AGNOSTIC where `fileMap` below is ext-specific, so when a row's
+  // ext disagrees with the file on disk the two answer differently.
   const seenOnDisk = new Set<string>();
   const diskKey = (coverArtId: string, size: number) => `${coverArtId}::${size}`;
 
   // Disk snapshot built during Pass 1 (dirName -> fileName -> size) so Pass 2
-  // needs no further filesystem calls. Only dirs we successfully listed appear.
+  // needs no further filesystem calls. Only dirs we successfully listed appear —
+  // Pass 2 keys "no reliable view" off a dir being ABSENT from this map, so a dir
+  // must never be added before we know we can read it.
   const diskFiles = new Map<string, Map<string, number>>();
+  let listFailures = 0;
 
   // --- Pass 1: FS -> SQL (discover missing rows) ---
   for (const dirName of topLevelNames) {
     if (!dirName) continue;
+    const coverArtId = resolveCoverArtIdForDir(dirName, sqlIdByDirName);
+    if (coverArtId === null) {
+      // Not a name this scheme could have written (a pre-scheme directory whose
+      // raw unsafe chars survived a no-op migration wipe). Rowing it under either
+      // spelling would create an unresolvable row, so leave it entirely alone.
+      logImageCache(`reconcile skip-dir unmappable dir=${dirName}`);
+      continue;
+    }
+    // Skipped before `diskFiles.set` below: a defined-but-empty entry would tell
+    // Pass 2 the directory is genuinely empty and it would drop live rows.
+    if (isSentinelCoverArtId(coverArtId)) continue;
+
     const subDir = new Directory(dir, dirName);
-    // Post-Migration-25, every on-disk dir was written under the
-    // sanitised entity-ID scheme, so the dir name IS the SQL coverArtId.
-    const coverArtId = dirName;
     // One off-thread call returns every entry's name + size + type — no
-    // per-file sync `.exists`/`.size` stat on the JS thread. A non-directory
-    // or missing path yields []; the `subDir.exists` sync check is no longer
-    // needed.
+    // per-file sync `.exists`/`.size` stat on the JS thread.
     let entries;
     try {
       entries = await listDirectoryWithSizesAsync(subDir.uri);
     } catch {
+      listFailures++;
       continue;
     }
     const fileMap = new Map<string, number>();
@@ -799,106 +868,113 @@ export async function reconcileImageCache(source: string = 'auto'): Promise<void
       // for it, so delete it (off-thread) here — Pass 2 then drops any
       // stale DB row (the zero size is recorded in fileMap above).
       if (entry.size === 0) {
+        logImageCache(`file-delete reconcile-zero-byte id=${coverArtId} file=${name}`);
         void deleteFileAsync(new File(subDir, name).uri);
         continue;
       }
       seenOnDisk.add(diskKey(coverArtId, size));
-      // eslint-disable-next-line no-await-in-loop
-      if (await dbHasCachedImage(coverArtId, size)) continue;
-      newRows.push({
-        coverArtId,
-        size,
-        ext,
-        bytes: entry.size,
-        cachedAt: Date.now(),
-      });
+      if (hasRow(coverArtId, size)) continue;
+      newRows.push({ coverArtId, size, ext, bytes: entry.size, cachedAt: Date.now() });
     }
   }
 
-  // Safety gate against filesystem-unavailable false-positive inserts.
-  // A large `newRows` alongside a non-trivial existing table means the
-  // table and the FS disagree wildly — treat as suspicious and skip.
-  const isMassInsert = newRows.length > 100 && preAggregate.fileCount > 50;
-  if (!isMassInsert && newRows.length > 0) {
+  if (newRows.length > 0) {
     await bulkInsertCachedImages(newRows);
-    logImageCache(`reconcile pass1 inserted=${newRows.length}`);
-  } else if (isMassInsert) {
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[reconcileImageCache] safety gate: ${newRows.length} would-be inserts ` +
-        `vs ${preAggregate.fileCount} rows already present — skipping FS→SQL sync this run`,
-    );
     logImageCache(
-      `reconcile pass1 safety-gate would-insert=${newRows.length} pre-rows=${preAggregate.fileCount}`,
+      `reconcile pass1 inserted=${newRows.length} first=${newRows
+        .slice(0, 5)
+        .map((r) => r.coverArtId)
+        .join(',')}`,
     );
   } else {
     logImageCache('reconcile pass1 no-new-rows');
   }
 
   // --- Pass 2: SQL -> FS (drop rows whose files are gone or empty) ---
-  // Walk the DB's view; delete any row whose file wasn't observed on disk
-  // or whose file exists but is zero bytes (crashed write). Guarded by
-  // the same mass-missing heuristic — a temporarily-missing cache
-  // directory shouldn't wipe the table.
-  if (!isMassInsert) {
-    const post = await listCachedImagesForBrowser('all');
-    let droppedCount = 0;
-    const staleDownloadedCovers = new Set<string>();
-    for (const entry of post) {
-      // Disk paths are sanitised; SQL rows keep the original coverArtId.
-      const onDiskDirName = coverArtPathKey(entry.coverArtId);
-      const fileMap = diskFiles.get(onDiskDirName);
-      // If Pass 1 couldn't list this dir, we have no reliable view of it —
-      // leave its rows alone rather than dropping on incomplete info.
-      if (fileMap === undefined) continue;
-      // Downloaded item's cover with a missing file (OS eviction, external
-      // wipe): do NOT drop the row — re-cache it instead so the offline copy
-      // is restored. Never leave a downloaded cover unrecoverable.
-      if (isDownloadedCover(entry.coverArtId)) {
-        for (const file of entry.files) {
-          if (seenOnDisk.has(diskKey(entry.coverArtId, file.size))) continue;
-          const onDiskSize = fileMap.get(`${file.size}.${file.ext}`);
-          if (onDiskSize !== undefined && onDiskSize > 0) continue;
-          staleDownloadedCovers.add(entry.coverArtId);
-          break;
-        }
-        continue;
-      }
-      for (const file of entry.files) {
-        if (seenOnDisk.has(diskKey(entry.coverArtId, file.size))) continue;
-        const onDiskSize = fileMap.get(`${file.size}.${file.ext}`);
-        // Present and non-zero — keep. (Rarely reached, since such a file
-        // would already be in seenOnDisk; guards the sanitised-id keying.)
+  // Walk the snapshot; delete any row whose file wasn't observed on disk or
+  // whose file exists but is zero bytes (crashed write).
+  let droppedCount = 0;
+  const staleDownloadedCovers = new Set<string>();
+  const toDrop: { coverArtId: string; size: number }[] = [];
+  for (const [coverArtId, variants] of byId) {
+    // Disk paths are sanitised; SQL rows keep the original coverArtId.
+    const fileMap = diskFiles.get(coverArtPathKey(coverArtId));
+    // If Pass 1 couldn't list this dir, we have no reliable view of it —
+    // leave its rows alone rather than dropping on incomplete info.
+    if (fileMap === undefined) continue;
+    // Downloaded item's cover with a missing file (OS eviction, external
+    // wipe): do NOT drop the row — re-cache it instead so the offline copy
+    // is restored. Never leave a downloaded cover unrecoverable.
+    if (isDownloadedCover(coverArtId)) {
+      for (const v of variants) {
+        if (seenOnDisk.has(diskKey(coverArtId, v.size))) continue;
+        const onDiskSize = fileMap.get(`${v.size}.${v.ext}`);
         if (onDiskSize !== undefined && onDiskSize > 0) continue;
-        // File gone, or zero-byte (Pass 1 already deleted it): drop the row.
-        // eslint-disable-next-line no-await-in-loop
-        await deleteCachedImageVariant(entry.coverArtId, file.size);
-        droppedCount++;
+        staleDownloadedCovers.add(coverArtId);
+        break;
       }
+      continue;
     }
-    // Re-cache downloaded covers whose files went missing (online-gated inside
-    // ensureCached; no-op offline — the row is kept so it recovers on reconnect).
-    for (const coverArtId of staleDownloadedCovers) {
-      void ensureCached(coverArtId);
+    for (const v of variants) {
+      if (seenOnDisk.has(diskKey(coverArtId, v.size))) continue;
+      const onDiskSize = fileMap.get(`${v.size}.${v.ext}`);
+      // Present and non-zero — keep. (Rarely reached, since such a file
+      // would already be in seenOnDisk; guards the sanitised-id keying.)
+      if (onDiskSize !== undefined && onDiskSize > 0) continue;
+      // File gone, or zero-byte (Pass 1 already deleted it): drop the row.
+      toDrop.push({ coverArtId, size: v.size });
+      droppedCount++;
     }
-    logImageCache(
-      `reconcile pass2 dropped=${droppedCount} downloaded-recache=${staleDownloadedCovers.size}`,
-    );
-    // Always recalc at the end so callers don't have to. If neither pass
-    // changed anything, this is a cheap aggregate query that re-syncs
-    // the store with the unchanged DB — safe to over-call.
-    imageCacheStore.getState().recalculateFromDb();
-
-    // Timestamp the successful pass so the deferred-init throttle can
-    // skip this work on the next launch. Only written when the safety
-    // gate did NOT trip — otherwise we'd lock in a 7-day skip on a
-    // transient filesystem issue.
-    markReconcileRan(Date.now());
-  } else {
-    // Mass-insert safety gate fired — still recalc so the store mirrors
-    // the (unchanged) DB and the spinner shows real numbers.
-    imageCacheStore.getState().recalculateFromDb();
   }
+  if (toDrop.length > 0) await deleteCachedImageVariants(toDrop);
+  // Re-cache downloaded covers whose files went missing (online-gated inside
+  // ensureCached; no-op offline — the row is kept so it recovers on reconnect).
+  for (const coverArtId of staleDownloadedCovers) {
+    void ensureCached(coverArtId);
+  }
+  logImageCache(
+    `reconcile pass2 dropped=${droppedCount} downloaded-recache=${staleDownloadedCovers.size}`,
+  );
+  // Always recalc at the end so callers don't have to. If neither pass
+  // changed anything, this is a cheap aggregate query that re-syncs
+  // the store with the unchanged DB — safe to over-call.
+  imageCacheStore.getState().recalculateFromDb();
+
+  // Timestamp the pass so the deferred-init throttle can skip this work on the
+  // next launch. Withheld when EVERY subdirectory failed to list: that pass saw
+  // nothing real, and stamping would lock in a 7-day skip on a transient
+  // filesystem issue. A few failed dirs are tolerated — they simply keep their
+  // rows, and re-walking the whole cache every launch costs more than it saves.
+  if (listFailures > 0 && listFailures === topLevelNames.length) {
+    logImageCache(`reconcile no-stamp reason=all-dirs-unreadable count=${listFailures}`);
+    return;
+  }
+  markReconcileRan(Date.now());
+}
+
+/**
+ * The SQL `cover_art_id` that owns an on-disk directory, or `null` when the name
+ * cannot have been produced by {@link coverArtPathKey}.
+ *
+ * A directory name is NEVER a SQL id: `coverArtPathKey` percent-escapes
+ * FS-unsafe characters for the path while rows keep the server's original value,
+ * so `dc-x:1` lives in `dc-x%3A1/` and looking the directory name up directly
+ * misses every time.
+ *
+ * Prefers the reverse index built from the rows themselves. That is exact:
+ * `%` is itself escaped, so `coverArtPathKey` is injective and a hit is the
+ * directory's only possible owner. The decode fallback covers a directory with
+ * no row yet, and is round-trip verified so an unrecognised name is rejected
+ * rather than rowed under a spelling nothing can resolve.
+ */
+function resolveCoverArtIdForDir(
+  dirName: string,
+  sqlIdByDirName: ReadonlyMap<string, string>,
+): string | null {
+  const known = sqlIdByDirName.get(dirName);
+  if (known !== undefined) return known;
+  const decoded = decodePathKey(dirName);
+  return coverArtPathKey(decoded) === dirName ? decoded : null;
 }
 
 /** Return the initialised cache directory (auto-inits if needed). */
@@ -916,10 +992,9 @@ function ensureCacheDir(): Directory {
  * variant generation, then re-queue every cover-art ID that's missing
  * one or more size variants on disk.
  *
- * The "incomplete" check used to walk every subdirectory; it now runs
- * as one SQL query (`findIncompleteCovers`). The `.tmp` sweep still
- * walks — `.tmp` files aren't in the DB by design, and a full tree
- * walk catches any that accumulated before the DB row was written.
+ * The "incomplete" check is one SQL query (`findIncompleteCovers`). The `.tmp`
+ * sweep still walks the tree: `.tmp` files are never in the DB by design, so a
+ * walk is the only way to catch ones written before their DB row.
  *
  * Exposed to the UI as the "Repair" action (settings-storage card +
  * image-cache browser row badge); also fires automatically at launch
@@ -962,9 +1037,9 @@ export async function repairIncompleteImages(
     subDirNames = [];
   }
   let tmpDeleted = 0;
-  for (const coverArtId of subDirNames) {
-    if (!coverArtId) continue;
-    const subDir = new Directory(dir, coverArtId);
+  for (const dirName of subDirNames) {
+    if (!dirName) continue;
+    const subDir = new Directory(dir, dirName);
     // No sync `subDir.exists` — listDirectoryAsync on a non-dir/missing path
     // yields [] (caught below).
     let fileNames: string[] = [];
@@ -1417,7 +1492,17 @@ async function downloadAndCacheImage(coverArtId: string): Promise<void> {
   if (!subDir.exists) subDir.create();
 
   let source600Uri = await resolveCachedImageUri(coverArtId, SOURCE_SIZE);
-  const sourceWasCached = source600Uri != null;
+  let sourceWasCached = source600Uri != null;
+  // The resolver is DB-authoritative (no FS check), so a 600 row whose file is gone
+  // makes every variant resize fail and trips the 3-strike purge, spamming errors.
+  // Verify the source actually exists; if the row is stale, drop it and re-download
+  // — a silent self-heal (proven to catch real stale rows in the diagnostic log).
+  if (source600Uri && !(await existsAsync(source600Uri))) {
+    logImageCache(`downloadAndCacheImage id=${coverArtId} source-row-without-file re-download`);
+    await deleteCachedImageVariant(coverArtId, SOURCE_SIZE);
+    source600Uri = null;
+    sourceWasCached = false;
+  }
   if (!source600Uri) {
     source600Uri = await downloadSourceImage(coverArtId, subDir);
     if (!source600Uri) {
@@ -1581,6 +1666,9 @@ async function downloadSourceImage(
 
     const dest = new File(subDir, fileName);
     if (await existsAsync(dest.uri)) {
+      // Old source deleted right before the new one is moved in. If the move
+      // then fails, the row (written later) is never updated → a phantom window.
+      logImageCache(`file-delete source-replace id=${coverArtId} file=${fileName}`);
       try { await deleteFileAsync(dest.uri); } catch { /* best-effort */ }
     }
     await tmpFile.move(dest);
@@ -1653,14 +1741,13 @@ async function generateResizedVariant(
   try {
     await resizeImageToFileAsync(sourceUri, tmpFile.uri, size, RESIZE_COMPRESS);
 
-    // Capture the size off tmpFile BEFORE the move. Reading dest.size
-    // after move worked OK with the sync moveSync, but capturing here
-    // is robust to either move/moveSync ordering and survives a
-    // refactor that swaps the sync variant for the async one (the bug
-    // that produced 0-byte upserts pre-fix).
+    // Capture the size off tmpFile BEFORE the move, never off `dest` after it —
+    // reading the destination is sensitive to move/moveSync ordering and yields
+    // 0-byte upserts when it loses that race.
     const fileBytes = tmpFile.size;
 
     if (await existsAsync(dest.uri)) {
+      logImageCache(`file-delete variant-replace id=${coverArtId} file=${fileName}`);
       try { await deleteFileAsync(dest.uri); } catch { /* best-effort */ }
     }
     await tmpFile.move(dest);
@@ -1683,12 +1770,10 @@ async function generateResizedVariant(
   } catch (e) {
     const next = (variantFailureCount.get(coverArtId) ?? 0) + 1;
     variantFailureCount.set(coverArtId, next);
-    // Phase 1 diagnostics — capture source-side context on every resize
-    // failure so we can pin down the actual offending format from user
-    // logs without another instrumentation round-trip. Gated by the
-    // image-cache logging flag (see imageCacheLogger). The native
-    // modules emit their own decode-path information via the thrown
-    // error message when their low-level fallbacks kick in.
+    // Capture source-side context on every resize failure so the offending format
+    // is identifiable from a user's logs. Gated by the image-cache logging flag
+    // (see imageCacheLogger); the native modules add their own decode-path detail
+    // to the thrown error message when their low-level fallbacks kick in.
     let sourceBytes = -1;
     let sourceExt = 'unknown';
     try {
@@ -1720,9 +1805,9 @@ async function generateResizedVariant(
       logImageCache(`resize id=${coverArtId} threshold-purge`);
       await purgeCoverArtRows(coverArtId);
       // No further server-side recovery is attempted. The Subsonic spec
-      // for `getCoverArt` accepts only `id` and `size`; the previously-
-      // used `format=jpg` query was a no-op (the server returned the
-      // same un-decodable bytes). User-visible recovery is handled
+      // for `getCoverArt` accepts only `id` and `size`, so a `format=jpg`
+      // query is a no-op — the server returns the same un-decodable
+      // bytes. User-visible recovery is handled
       // upstream in CachedImage's source-size fallback, which renders
       // the (decodable) 600 source in the smaller slot when smaller
       // variants are unavailable.
@@ -1746,10 +1831,8 @@ export interface ImageCacheStats {
 }
 
 /**
- * Pull cache statistics directly from SQL aggregates. Previously walked
- * the whole `{image-cache}/` tree on every launch; now it's a single
- * indexed scan. Returns `Promise` only to preserve the existing async
- * contract for callers.
+ * Pull cache statistics from SQL aggregates — one indexed scan, never a walk of the
+ * `{image-cache}/` tree. Async only to keep the existing caller contract.
  */
 export async function getImageCacheStats(): Promise<ImageCacheStats> {
   const agg = (await hydrateImageCacheAggregatesAsync());
@@ -1769,7 +1852,6 @@ export async function getImageCacheStats(): Promise<ImageCacheStats> {
 interface CachedFileEntry {
   size: number;
   fileName: string;
-  uri: string;
 }
 
 /** A cached image with all its size variants. */
@@ -1801,14 +1883,7 @@ export async function listCachedImages(
   return dbEntries.map((entry) => ({
     coverArtId: entry.coverArtId,
     complete: entry.complete,
-    files: entry.files.map((f) => {
-      const fileName = `${f.size}.${f.ext}`;
-      return {
-        size: f.size,
-        fileName,
-        uri: `${dirUri}/${entry.coverArtId}/${fileName}`,
-      };
-    }),
+    files: entry.files.map((f) => ({ size: f.size, fileName: `${f.size}.${f.ext}` })),
   }));
 }
 
@@ -1913,12 +1988,27 @@ async function teardownImageCacheState({ reinit }: { reinit: boolean }): Promise
   // rows drift the reconcile safety gate then refuses to heal). The cache path
   // is always `{document}/image-cache`, so delete it regardless of the handle.
   cacheDir = null;
+  // GUARD: never perform the destructive wipe when the DB is unavailable. The disk
+  // delete below is unconditional, but the paired row-clear (clearAllCachedImages)
+  // needs the DB — wiping now would orphan every row (files gone, rows remain → mass
+  // placeholder) — a clear triggered during a failed DB boot would nuke the cache.
+  // Skip the destructive part; the in-memory reset still runs.
+  if (!isDbHealthy()) {
+    logImageCache(`teardown-wipe SKIPPED reinit=${reinit} — DB unavailable, refusing to orphan the cache`);
+    imageCacheStore.getState().reset();
+    if (reinit) initImageCache();
+    return;
+  }
   try {
     // Recursive on-disk wipe off the JS thread — the image cache is thousands
     // of small variant files; a sync Directory.delete() would freeze the UI
     // (this runs on logout + clear-cache). Awaited so the `reinit` recreate
     // below only runs after the delete completes (no recreate-vs-delete race).
     const dirUri = new Directory(Paths.document, 'image-cache').uri;
+    // Whole-tree wipe (logout / clear-cache). If this succeeds but the row
+    // truncate below fails, EVERY cover becomes a phantom — the prime suspect
+    // for mass "row without file" drift, so it's logged loudly.
+    logImageCache(`file-delete teardown-wipe reinit=${reinit} — deleting entire image-cache dir`);
     await deleteDirectoryAsync(dirUri);
   } catch { /* best-effort */ }
   // Await the SQL truncate so a caller that repopulates right after (e.g. the
@@ -1953,7 +2043,7 @@ export async function clearImageCache(
  * artists, playlists). Keys off the entity's `coverArt` value via
  * `resolveEntityCoverArt` (mode-aware for songs) so the warmed file matches
  * what the render side reads. Deduplicates by resolved value and skips entries
- * already in cache. (#202)
+ * already in cache.
  */
 export function prefetchCoverArt(
   entities: Array<AlbumID3 | ArtistID3 | Playlist | Child>,
@@ -1972,15 +2062,13 @@ export function prefetchCoverArt(
 
 /**
  * Snapshot every cached item row's `(type, coverArtId)` for the
- * persistent image-download queue's `refresh-downloads` scope. Broken
- * out so it can be mocked in unit tests without dragging in the entire
- * `musicCacheTables` import surface.
+ * persistent image-download queue's `refresh-downloads` scope.
  *
  * Keys off each entity's stored `coverArt` value — the cached item's
  * `coverArtId` field for albums/playlists, and the mode-aware song cover value
  * for songs (see src/utils/coverArtId.ts) — NOT the entity ID. Same scheme that
  * every consumer (CachedImage, childToTrack, etc.) uses, so the recached files
- * match what callers will look up. (#202)
+ * match what callers will look up.
  */
 function hydrateCachedItemsForRecache(): {
   items: Array<{ type: string; coverArtId: string | null }>;
@@ -1991,12 +2079,6 @@ function hydrateCachedItemsForRecache(): {
    */
   songCoverArtIds: string[];
 } {
-  // Lazy-required: keeps the recache worker testable without forcing
-  // every test that touches imageCacheService to mock musicCacheTables.
-  const { hydrateCachedItems, hydrateCachedSongs } = require('../store/persistence/musicCacheTables') as {
-    hydrateCachedItems: () => Record<string, { itemId: string; type: string; coverArtId?: string }>;
-    hydrateCachedSongs: () => Record<string, { id: string; albumId?: string | null; coverArt?: string | null }>;
-  };
   const items = Object.values(hydrateCachedItems()).map((r) => ({
     type: r.type,
     coverArtId: r.coverArtId ?? null,
@@ -2014,15 +2096,12 @@ function hydrateCachedItemsForRecache(): {
 
 /* ------------------------------------------------------------------ */
 /*  Persistent image-download queue worker                              */
-/*  See plans/2026-05-23-image-cache-queue-rework.md.                   */
 /* ------------------------------------------------------------------ */
 
 /**
- * Scalar cycle metadata persisted via kvStorage. The queue rows live in
- * SQL; only the cycle's denominator (`total`), identity (`cycleId`), and
- * pause flag survive separately so the UI can show "X / Y" and so the
- * worker can short-circuit when the user has paused. Phase 3 wraps these
- * accessors in `imageDownloadQueueStore` for store-friendly consumption.
+ * Scalar cycle metadata persisted via kvStorage. The queue rows live in SQL; only
+ * the cycle's denominator (`total`), identity (`cycleId`) and pause flag survive
+ * separately, so the UI can show "X / Y" and the worker can short-circuit on pause.
  */
 const IMAGE_QUEUE_META_KEY = 'substreamer-image-queue-meta';
 
@@ -2089,12 +2168,10 @@ export interface ImageQueueState {
 }
 
 /**
- * One-shot snapshot of every consumer-relevant queue field. Replaces the
- * three-getter dance (isImageQueuePaused + getImageQueueCycle +
- * getImageQueueCycleProgress) so the store only takes one read per refresh
- * and there's a single place to add new fields. The "processed" derivation
- * is: anything not 'queued' OR 'downloading' counts as attempted; errored
- * rows are attempted-and-failed, not still-in-queue.
+ * One-shot snapshot of every consumer-relevant queue field, so the store takes one
+ * read per refresh and new fields have a single home. `processed` counts anything
+ * not 'queued' or 'downloading' as attempted; errored rows are attempted-and-failed,
+ * not still-in-queue.
  */
 export async function getImageQueueState(): Promise<ImageQueueState> {
   const meta = readImageQueueMeta();
@@ -2153,18 +2230,16 @@ function notifyImageQueueChange(): void {
 /* ----- Worker ----- */
 
 /**
- * The currently-running worker promise, or null if no worker is active.
- * Held so re-entrant callers (and test code) can `await processImageQueue()`
- * and reliably wait for the drain to finish — matches the test-ergonomic
- * shape we want without breaking the fire-and-forget call sites.
+ * The currently-running worker promise, or null if no worker is active. Held so
+ * re-entrant callers (and tests) can `await processImageQueue()` and reliably wait
+ * for the drain, without breaking the fire-and-forget call sites.
  */
 let imageWorkerPromise: Promise<void> | null = null;
 
 /**
- * Debounced aggregate recalc — replaces the per-image `recalculateFromDb()`
- * call that historically caused the Settings UI flicker. A 750ms window
- * with force-flush at cycle end means a 200-image cycle goes from 200
- * SQL aggregate queries to a handful.
+ * Debounced aggregate recalc. Recalculating per image flickers the Settings UI; a
+ * 750ms window with a force-flush at cycle end takes a 200-image cycle from 200 SQL
+ * aggregate queries to a handful.
  */
 let recalcTimer: ReturnType<typeof setTimeout> | null = null;
 function scheduleAggregateRecalc(): void {
@@ -2190,7 +2265,7 @@ function connectivityAllowsImageWork(): boolean {
 }
 
 /**
- * Test seam — the queue worker calls this rather than `downloadAndCacheImage`
+ * Test-only — the queue worker calls this rather than `downloadAndCacheImage`
  * directly so tests can swap it for a deterministic stub. Production code
  * uses the default (real `downloadAndCacheImage`).
  */

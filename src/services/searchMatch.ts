@@ -62,16 +62,29 @@ export function tokenize(input: string | null | undefined): string[] {
 }
 
 /**
- * Per-token Double-Metaphone primary codes, space-joined (the stored `dmeta_*`
- * column). Empty codes (non-Latin tokens) are excluded so they never collide.
+ * Per-token Double-Metaphone primary codes from an ALREADY-normalized string
+ * (whitespace-separated tokens). Skipping the re-normalize is most of the per-row
+ * dmeta cost, so a caller holding a `norm_*` value gets its phonetic key nearly free.
+ * Empty codes (non-Latin tokens) are excluded.
  */
-export function metaphoneKey(input: string | null | undefined): string {
+export function metaphoneKeyFromNormalized(normalized: string): string {
+  if (!normalized) return '';
   const out: string[] = [];
-  for (const tok of tokenize(input)) {
+  for (const tok of normalized.split(' ')) {
+    if (!tok) continue;
     const [primary] = doubleMetaphone(tok);
     if (primary) out.push(primary);
   }
   return out.join(' ');
+}
+
+/**
+ * Per-token Double-Metaphone primary codes, space-joined — for callers starting
+ * from raw input (e.g. the search query). Row mappers should prefer
+ * {@link metaphoneKeyFromNormalized} with the `norm_*` value they already computed.
+ */
+export function metaphoneKey(input: string | null | undefined): string {
+  return metaphoneKeyFromNormalized(normalize(input));
 }
 
 /** Jaro-Winkler similarity (0..1) — prefix-weighted, good for short names. */

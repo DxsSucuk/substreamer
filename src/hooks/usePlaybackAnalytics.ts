@@ -1,12 +1,11 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { type Child } from '../services/subsonicService';
 import { type AnalyticsAggregates } from '../store/completedScrobbleStore';
+import { computeScrobbleAnalytics } from '../store/persistence/scrobbleAggregates';
 import { dateKey, offsetDateKey } from '../utils/dateKey';
-import { getPrimaryGenre } from '../utils/genreHelpers';
 
-// Re-export so consumers that imported from this file historically keep
-// working without touching every call site.
+// Re-exported for the consumers that import `dateKey` from this module.
 export { dateKey } from '../utils/dateKey';
 
 export type TimePeriod = '7d' | '30d' | '90d' | 'all';
@@ -168,22 +167,64 @@ function computePeakHour(hourBuckets: number[]): number {
   return peakHour;
 }
 
+const EMPTY_PERIOD_DEPENDENT = {
+  totalPlays: 0,
+  totalListeningSeconds: 0,
+  uniqueArtists: 0,
+  uniqueAlbums: 0,
+  dailyActivity: [] as DailyActivity[],
+  hourlyDistribution: new Array<number>(24).fill(0),
+  topSongs: [] as TopSong[],
+  topArtists: [] as TopArtist[],
+  topAlbums: [] as TopAlbum[],
+  genreBreakdown: [] as GenreSlice[],
+  peakHour: 0,
+  averagePlaysPerDay: 0,
+};
+
+/**
+ * Load period-scoped analytics aggregates from SQL. `period` picks the `time >=`
+ * cutoff; the query runs GROUP BY over the scrobble columns (never a full-array
+ * load). `refresh()` re-runs it (pull-to-refresh). Returns `undefined` until the
+ * first query resolves.
+ */
+export function usePeriodAggregates(period: TimePeriod): {
+  aggregates: AnalyticsAggregates | undefined;
+  refresh: () => void;
+} {
+  const [aggregates, setAggregates] = useState<AnalyticsAggregates | undefined>(undefined);
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    const days = PERIOD_DAYS[period];
+    const cutoff = days ? Date.now() - days * 86_400_000 : 0;
+    void computeScrobbleAnalytics(cutoff).then((r) => {
+      if (alive) setAggregates(r.aggregates);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [period, tick]);
+  return { aggregates, refresh: () => setTick((t) => t + 1) };
+}
+
+/**
+ * Derive the My Listening view-model from SQL aggregates. `periodAggregates` is
+ * scoped to the selected period (drives tops/charts); `allTimeAggregates` drives
+ * the period-INDEPENDENT heatmap + streaks (which always span all history).
+ */
 export function usePlaybackAnalytics(
-  scrobbles: ScrobbleRecord[],
   period: TimePeriod,
+  periodAggregates: AnalyticsAggregates | undefined,
+  allTimeAggregates: AnalyticsAggregates | undefined,
   pendingScrobbles?: Pick<ScrobbleRecord, 'time'>[],
-  aggregates?: AnalyticsAggregates,
 ): PlaybackAnalytics {
-  // Stable per-calendar-day key. Drives recomputation across midnight
-  // so the streak doesn't show yesterday's "current streak" until the
-  // user navigates away and back. Cheap — dateKey(Date.now()) is a
-  // handful of integer ops per render, and the equality check upstream
-  // means the memo only re-runs on actual day rollover.
+  // Stable per-calendar-day key so the streak recomputes across midnight.
   const todayKey = dateKey(Date.now());
 
-  // Period-independent: heatmap + streaks (always use all data)
+  // Period-independent: heatmap + streaks from ALL-TIME day counts.
   const periodIndependent = useMemo(() => {
-    // Heatmap
+    const dayCounts = allTimeAggregates?.dayCounts ?? {};
     const heatmapDays = HEATMAP_WEEKS * 7;
     const heatmapData: DailyActivity[] = [];
     const today = new Date();
@@ -193,184 +234,34 @@ export function usePlaybackAnalytics(
     gridEnd.setHours(0, 0, 0, 0);
     const gridStart = new Date(gridEnd);
     gridStart.setDate(gridStart.getDate() - heatmapDays + 1);
-
-    if (aggregates?.dayCounts && Object.keys(aggregates.dayCounts).length > 0) {
-      // Use pre-computed day counts — O(112) iterations
-      for (let d = new Date(gridStart); d <= gridEnd; d.setDate(d.getDate() + 1)) {
-        const dk = dateKey(d.getTime());
-        heatmapData.push({ date: dk, count: aggregates.dayCounts[dk] ?? 0 });
-      }
-    } else {
-      // Fallback: iterate all scrobbles
-      const allDayCounts = new Map<string, number>();
-      for (const s of scrobbles) {
-        const dk = dateKey(s.time);
-        allDayCounts.set(dk, (allDayCounts.get(dk) ?? 0) + 1);
-      }
-      for (let d = new Date(gridStart); d <= gridEnd; d.setDate(d.getDate() + 1)) {
-        const dk = dateKey(d.getTime());
-        heatmapData.push({ date: dk, count: allDayCounts.get(dk) ?? 0 });
-      }
+    for (let d = new Date(gridStart); d <= gridEnd; d.setDate(d.getDate() + 1)) {
+      const dk = dateKey(d.getTime());
+      heatmapData.push({ date: dk, count: dayCounts[dk] ?? 0 });
     }
 
-    // Streaks
-    const allPending = pendingScrobbles ?? [];
-    let streaks: { longest: number; current: number };
-    if (aggregates?.dayCounts && Object.keys(aggregates.dayCounts).length > 0) {
-      const dayKeys = new Set(Object.keys(aggregates.dayCounts));
-      for (const s of allPending) dayKeys.add(dateKey(s.time));
-      streaks = computeStreaks(Array.from(dayKeys));
-    } else {
-      streaks = computeStreaks([...scrobbles, ...allPending]);
-    }
+    const dayKeys = new Set(Object.keys(dayCounts));
+    for (const s of pendingScrobbles ?? []) dayKeys.add(dateKey(s.time));
+    const streaks = computeStreaks(Array.from(dayKeys));
 
     return { heatmapData, ...streaks };
-  }, [aggregates, scrobbles, pendingScrobbles, todayKey]);
+  }, [allTimeAggregates, pendingScrobbles, todayKey]);
 
-  // Period-dependent: stats, tops, charts
+  // Period-dependent: tops + charts from the period-scoped aggregates.
   const periodDependent = useMemo(() => {
-    const periodDays = PERIOD_DAYS[period];
-
-    // "all" period with aggregates: use pre-computed data
-    if (!periodDays && aggregates?.dayCounts && Object.keys(aggregates.dayCounts).length > 0) {
-      let totalListeningSeconds = 0;
-      for (const entry of Object.values(aggregates.songCounts)) {
-        totalListeningSeconds += (entry.song.duration ?? 0) * entry.count;
-      }
-
-      const topSongs = Object.values(aggregates.songCounts)
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 10);
-
-      const topArtists = Object.entries(aggregates.artistCounts)
-        .map(([artist, val]) => ({ artist, count: val.count, artistId: val.artistId }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 10);
-
-      const topAlbums = Object.entries(aggregates.albumCounts)
-        .map(([key, val]) => ({
-          album: key.split('::')[0],
-          artist: val.artist,
-          coverArt: val.coverArt,
-          count: val.count,
-          albumId: val.albumId,
-        }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 5);
-
-      const genreBreakdown = buildGenreBreakdown(aggregates.genreCounts);
-
-      const totalPlays = Object.values(aggregates.dayCounts).reduce((sum, c) => sum + c, 0);
-      const uniqueDays = Object.keys(aggregates.dayCounts).length;
-
-      const dailyActivity: DailyActivity[] = [];
-      const activityDays = 90;
-      // Walk back day-by-day using calendar component arithmetic so a DST
-      // transition can't skip or duplicate a date. Fixed 86_400_000 ms
-      // steps would silently drop the transition day (the local day is
-      // 23 or 25 hours, not 24).
-      const todayKey = dateKey(Date.now());
-      for (let i = activityDays - 1; i >= 0; i--) {
-        const dk = offsetDateKey(todayKey, -i);
-        dailyActivity.push({ date: dk, count: aggregates.dayCounts[dk] ?? 0 });
-      }
-
-      return {
-        totalPlays,
-        totalListeningSeconds,
-        uniqueArtists: Object.keys(aggregates.artistCounts).length,
-        uniqueAlbums: Object.keys(aggregates.albumCounts).length,
-        dailyActivity,
-        hourlyDistribution: aggregates.hourBuckets,
-        topSongs,
-        topArtists,
-        topAlbums,
-        genreBreakdown,
-        peakHour: computePeakHour(aggregates.hourBuckets),
-        averagePlaysPerDay: uniqueDays > 0 ? Math.round((totalPlays / uniqueDays) * 10) / 10 : 0,
-      };
-    }
-
-    // Filter-based path: period-specific or no aggregates
-    const cutoff = periodDays
-      ? Date.now() - periodDays * 86_400_000
-      : 0;
-
-    const filtered = periodDays
-      ? scrobbles.filter((s) => s.time >= cutoff)
-      : scrobbles;
-
-    const totalPlays = filtered.length;
+    const agg = periodAggregates;
+    if (!agg) return EMPTY_PERIOD_DEPENDENT;
 
     let totalListeningSeconds = 0;
-    const artistCounts = new Map<string, { count: number; artistId?: string }>();
-    const albumCounts = new Map<string, { artist: string; coverArt?: string; count: number; albumId?: string }>();
-    const songCounts = new Map<string, { song: Child; count: number }>();
-    const genreCounts = new Map<string, number>();
-    const hourBuckets = new Array<number>(24).fill(0);
-    const dayCounts = new Map<string, number>();
-
-    for (const s of filtered) {
-      if (s.song.duration) {
-        totalListeningSeconds += s.song.duration;
-      }
-
-      const artist = s.song.artist ?? 'Unknown';
-      const existingArtist = artistCounts.get(artist);
-      if (existingArtist) {
-        existingArtist.count++;
-        if (!existingArtist.artistId && s.song.artistId) {
-          existingArtist.artistId = s.song.artistId;
-        }
-      } else {
-        artistCounts.set(artist, { count: 1, artistId: s.song.artistId ?? undefined });
-      }
-
-      const albumKey = `${s.song.album ?? 'Unknown'}::${artist}`;
-      const existing = albumCounts.get(albumKey);
-      if (existing) {
-        existing.count++;
-        if (s.song.coverArt) existing.coverArt = s.song.coverArt;
-        if (!existing.albumId && s.song.albumId) existing.albumId = s.song.albumId;
-      } else {
-        albumCounts.set(albumKey, {
-          artist,
-          coverArt: s.song.coverArt ?? undefined,
-          count: 1,
-          albumId: s.song.albumId ?? undefined,
-        });
-      }
-
-      const songEntry = songCounts.get(s.song.id);
-      if (songEntry) {
-        songEntry.count++;
-        songEntry.song = s.song;
-      } else {
-        songCounts.set(s.song.id, { song: s.song, count: 1 });
-      }
-
-      const genre = getPrimaryGenre(s.song);
-      if (genre) {
-        genreCounts.set(genre, (genreCounts.get(genre) ?? 0) + 1);
-      }
-
-      const hour = new Date(s.time).getHours();
-      hourBuckets[hour]++;
-
-      const dk = dateKey(s.time);
-      dayCounts.set(dk, (dayCounts.get(dk) ?? 0) + 1);
+    for (const entry of Object.values(agg.songStats)) {
+      totalListeningSeconds += (entry.duration ?? 0) * entry.count;
     }
 
-    const topSongs = Array.from(songCounts.values())
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 10);
-
-    const topArtists = Array.from(artistCounts.entries())
+    const topArtists = Object.entries(agg.artistCounts)
       .map(([artist, val]) => ({ artist, count: val.count, artistId: val.artistId }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 10);
 
-    const topAlbums = Array.from(albumCounts.entries())
+    const topAlbums = Object.entries(agg.albumCounts)
       .map(([key, val]) => ({
         album: key.split('::')[0],
         artist: val.artist,
@@ -381,42 +272,44 @@ export function usePlaybackAnalytics(
       .sort((a, b) => b.count - a.count)
       .slice(0, 5);
 
-    const genreBreakdown = buildGenreBreakdown(genreCounts);
+    const genreBreakdown = buildGenreBreakdown(agg.genreCounts);
 
-    const activityDays = periodDays ?? 90;
+    const totalPlays = Object.values(agg.dayCounts).reduce((sum, c) => sum + c, 0);
+    const uniqueDays = Object.keys(agg.dayCounts).length;
+
+    // Walk back day-by-day (calendar arithmetic — DST-safe).
+    const activityDays = PERIOD_DAYS[period] ?? 90;
     const dailyActivity: DailyActivity[] = [];
-    // Walk back day-by-day using calendar component arithmetic so a DST
-    // transition can't skip or duplicate a date.
-    const todayKey = dateKey(Date.now());
     for (let i = activityDays - 1; i >= 0; i--) {
       const dk = offsetDateKey(todayKey, -i);
-      dailyActivity.push({ date: dk, count: dayCounts.get(dk) ?? 0 });
+      dailyActivity.push({ date: dk, count: agg.dayCounts[dk] ?? 0 });
     }
-
-    const uniqueDays = dayCounts.size;
-    const averagePlaysPerDay =
-      uniqueDays > 0 ? Math.round((totalPlays / uniqueDays) * 10) / 10 : 0;
 
     return {
       totalPlays,
       totalListeningSeconds,
-      uniqueArtists: artistCounts.size,
-      uniqueAlbums: albumCounts.size,
+      uniqueArtists: Object.keys(agg.artistCounts).length,
+      uniqueAlbums: Object.keys(agg.albumCounts).length,
       dailyActivity,
-      hourlyDistribution: hourBuckets,
-      topSongs,
+      hourlyDistribution: agg.hourBuckets,
+      // Already ranked and bounded by the SQL layer — the only entries carrying a
+      // full `Child`.
+      topSongs: agg.topSongs,
       topArtists,
       topAlbums,
       genreBreakdown,
-      peakHour: computePeakHour(hourBuckets),
-      averagePlaysPerDay,
+      peakHour: computePeakHour(agg.hourBuckets),
+      averagePlaysPerDay: uniqueDays > 0 ? Math.round((totalPlays / uniqueDays) * 10) / 10 : 0,
     };
-  }, [scrobbles, period, aggregates, todayKey]);
+  }, [periodAggregates, period, todayKey]);
 
-  return useMemo(() => ({
-    ...periodDependent,
-    heatmapData: periodIndependent.heatmapData,
-    longestStreak: periodIndependent.longest,
-    currentStreak: periodIndependent.current,
-  }), [periodDependent, periodIndependent]);
+  return useMemo(
+    () => ({
+      ...periodDependent,
+      heatmapData: periodIndependent.heatmapData,
+      longestStreak: periodIndependent.longest,
+      currentStreak: periodIndependent.current,
+    }),
+    [periodDependent, periodIndependent],
+  );
 }

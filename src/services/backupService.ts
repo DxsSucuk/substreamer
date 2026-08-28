@@ -7,6 +7,7 @@ import { defaultCollator } from '../utils/intl';
 import { authStore } from '../store/authStore';
 import { backupStore } from '../store/backupStore';
 import { completedScrobbleStore } from '../store/completedScrobbleStore';
+import { hydrateScrobblesAsync } from '../store/persistence/scrobbleTable';
 import { deviceIdentityStore, getDeviceShortId } from '../store/deviceIdentityStore';
 import { mbidOverrideStore } from '../store/mbidOverrideStore';
 import { scrobbleExclusionStore } from '../store/scrobbleExclusionStore';
@@ -233,8 +234,11 @@ function serverUrlsMatch(a: string, b: string): boolean {
 export async function createBackup(): Promise<void> {
   initBackupDir();
 
-  const { serverUrl, username } = authStore.getState();
-  if (!serverUrl || !username) {
+  const { serverUrl, primaryServerUrl, username } = authStore.getState();
+  // Identity = the SERVER, so key off the primary slot. `serverUrl` is only whichever
+  // address is live, so a failover would otherwise stamp the same server as a new one.
+  const identityUrl = primaryServerUrl ?? serverUrl;
+  if (!identityUrl || !username) {
     throw new Error('Cannot create backup: no active session');
   }
 
@@ -252,11 +256,16 @@ export async function createBackup(): Promise<void> {
   let exclusionsMeta: BackupDatasetMeta | null = null;
   let bookmarksMeta: BackupDatasetMeta | null = null;
 
-  const scrobbles = completedScrobbleStore.getState().completedScrobbles;
+  // Read the FULL history from SQL for the backup (transient — the store keeps
+  // only a bounded recent slice in memory; analytics are SQL aggregates).
+  const scrobbles = await hydrateScrobblesAsync();
   if (scrobbles.length > 0) {
     scrobblesMeta = await writeBackupDataset(scrobblesFileName(stem), scrobbles, scrobbles.length);
   }
 
+  // The stores, not the repositories, for the same reason the bookmarks read below gives:
+  // each holds the complete set whichever source it hydrates from, including before
+  // migration 42 has moved its KV blob into rows.
   const overrides = mbidOverrideStore.getState().overrides;
   const overrideCount = Object.keys(overrides).length;
   if (overrideCount > 0) {
@@ -273,6 +282,9 @@ export async function createBackup(): Promise<void> {
     exclusionsMeta = await writeBackupDataset(exclusionsFileName(stem), exclusionsData, exclusionCount);
   }
 
+  // The store, not the repository: it holds the complete set whichever source it
+  // hydrates from — including the case where migration 36 has not moved the KV blob
+  // into rows yet. Exporting an empty file over a real set is not recoverable.
   const bookmarks = bookmarksStore.getState().bookmarks;
   const bookmarkCount = Object.keys(bookmarks).length;
   if (bookmarkCount > 0) {
@@ -284,7 +296,7 @@ export async function createBackup(): Promise<void> {
   const meta: BackupMetaV6 = {
     version: 6,
     createdAt: new Date().toISOString(),
-    serverUrl,
+    serverUrl: identityUrl,
     username,
     deviceId,
     deviceName,
@@ -298,7 +310,7 @@ export async function createBackup(): Promise<void> {
   const metaFile = new File(backupDir, metaFileName(stem));
   metaFile.write(JSON.stringify(meta));
 
-  const identityKey = makeBackupIdentityKey(serverUrl, username);
+  const identityKey = makeBackupIdentityKey(identityUrl, username);
   backupStore.getState().setLastBackupTime(identityKey, Date.now());
 }
 
@@ -408,7 +420,7 @@ export async function restoreBackup(
   // Yield once so the caller's "restoring" spinner paints a frame before the
   // synchronous JSON.parse of the (potentially multi-MB) scrobble blob and the
   // O(n) buildAggregates/buildStats inside replaceAll/mergeAll block the JS
-  // thread. setTimeout, not rAF (rAF can stall on RN 0.85/Fabric).
+  // thread. setTimeout, not rAF — rAF can stall on Fabric.
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   if (entry.scrobbleCount > 0) {
@@ -427,10 +439,10 @@ export async function restoreBackup(
       scrobbleSkipped = result.skipped;
     } else {
       // replaceAll writes the scrobble_events table in one transaction and then
-      // rebuilds stats/aggregates from the validated set, keeping SQL + memory
-      // coherent for any follow-up reads (home stats, my-listening, etc.).
+      // refreshes stats/aggregates from SQL, keeping SQL + the store coherent for
+      // any follow-up reads (home stats, my-listening, etc.).
       await completedScrobbleStore.getState().replaceAll(scrobbles);
-      scrobbleCount = completedScrobbleStore.getState().completedScrobbles.length;
+      scrobbleCount = completedScrobbleStore.getState().stats.totalPlays;
     }
   }
 
@@ -462,8 +474,10 @@ export async function restoreBackup(
       mbidOverrideCount = result.added;
       mbidOverrideSkipped = result.skipped;
     } else {
-      mbidOverrideStore.setState({ overrides });
-      mbidOverrideCount = Object.keys(overrides).length;
+      // Through the store's action, never `setState`: replace mode has to clear the
+      // existing rows and write the file's in their place, and the action owns both
+      // halves (plus dropping malformed entries).
+      mbidOverrideCount = mbidOverrideStore.getState().replaceOverrides(overrides);
     }
   }
 
@@ -483,15 +497,9 @@ export async function restoreBackup(
       scrobbleExclusionCount = result.added;
       scrobbleExclusionSkipped = result.skipped;
     } else {
-      scrobbleExclusionStore.setState({
-        excludedAlbums: data.excludedAlbums,
-        excludedArtists: data.excludedArtists,
-        excludedPlaylists: data.excludedPlaylists,
-      });
-      scrobbleExclusionCount =
-        Object.keys(data.excludedAlbums).length +
-        Object.keys(data.excludedArtists).length +
-        Object.keys(data.excludedPlaylists).length;
+      // Through the store's action, never `setState` — same reason as the overrides
+      // above: the existing rows have to go before the file's are written.
+      scrobbleExclusionCount = scrobbleExclusionStore.getState().replaceExclusions(data);
     }
   }
 
@@ -507,17 +515,10 @@ export async function restoreBackup(
       bookmarkCount = result.added;
       bookmarkSkipped = result.skipped;
     } else {
-      // Replace mode trusts the file wholesale, but a bookmark carries a nested
-      // Child[] queue the UI iterates — drop malformed entries so a corrupt or
-      // hand-edited backup can't crash the bookmarks list on render.
-      const valid: Record<string, PlayQueueBookmark> = {};
-      for (const [id, value] of Object.entries(data)) {
-        if (value && typeof value === 'object' && value.id && Array.isArray(value.queue)) {
-          valid[id] = value;
-        }
-      }
-      bookmarksStore.setState({ bookmarks: valid });
-      bookmarkCount = Object.keys(valid).length;
+      // Through the store's action, never `setState`: replace mode has to clear the
+      // existing snapshot rows and write the file's in their place, and the action
+      // owns both halves (plus dropping malformed entries).
+      bookmarkCount = bookmarksStore.getState().replaceBookmarks(data);
     }
   }
 
@@ -534,11 +535,12 @@ export async function restoreBackup(
 /* ------------------------------------------------------------------ */
 
 export async function pruneBackups(keep = MAX_BACKUPS): Promise<void> {
-  const { serverUrl, username } = authStore.getState();
-  if (!serverUrl || !username) return;
+  const { serverUrl, primaryServerUrl, username } = authStore.getState();
+  const identityUrl = primaryServerUrl ?? serverUrl;
+  if (!identityUrl || !username) return;
 
   // Get all backups for the current username (across all server URLs)
-  const { current, other } = await listBackups({ serverUrl, username });
+  const { current, other } = await listBackups({ serverUrl: identityUrl, username });
   const allForUser = [...current, ...other];
   // Sort newest-first so each bucket retains the freshest `keep` entries.
   allForUser.sort((a, b) => defaultCollator.compare(b.createdAt, a.createdAt));
@@ -638,10 +640,11 @@ export async function runAutoBackupIfNeeded(): Promise<void> {
     const { autoBackupEnabled } = backupStore.getState();
     if (!autoBackupEnabled) return;
 
-    const { serverUrl, username } = authStore.getState();
-    if (!serverUrl || !username) return;
+    const { serverUrl, primaryServerUrl, username } = authStore.getState();
+    const identityUrl = primaryServerUrl ?? serverUrl;
+    if (!identityUrl || !username) return;
 
-    const identityKey = makeBackupIdentityKey(serverUrl, username);
+    const identityKey = makeBackupIdentityKey(identityUrl, username);
     const lastBackupTime = backupStore.getState().getLastBackupTime(identityKey);
 
     const now = Date.now();

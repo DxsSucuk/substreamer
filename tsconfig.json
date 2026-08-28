@@ -6,5 +6,6 @@
       "@/*": ["./src/*"]
     },
     "types": ["jest"]
-  }
+  },
+  "exclude": ["reference"]
 }

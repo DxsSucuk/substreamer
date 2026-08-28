@@ -23,8 +23,9 @@ export function configureNetInfo(): void {
   try {
     NetInfo.configure({
       shouldFetchWiFiSSID: needsWiFiSSID(),
-      // Disable NetInfo's own internet-reachability probe entirely (periodic
-      // HTTP to a generate_204 endpoint — a known battery drain, netinfo#178).
+      // Disable NetInfo's own internet-reachability probe entirely (periodic HTTP
+      // to a generate_204 endpoint — a known battery drain,
+      // react-native-netinfo/react-native-netinfo#178).
       // We don't consume `isInternetReachable`: the OS-level `isConnected` flag
       // tells us whether there's a network, and our own server ping
       // (connectivityService) is the ground truth for whether the server is

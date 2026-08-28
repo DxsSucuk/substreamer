@@ -21,7 +21,8 @@ import {
   type MusicBrainzReleaseGroup,
 } from '../services/musicbrainzService';
 import { albumInfoStore } from '../store/albumInfoStore';
-import { artistDetailStore } from '../store/artistDetailStore';
+import { fetchArtistBio } from '../services/detailFetchService';
+import { bumpDetailChanged } from '../db/detailNotifier';
 import { mbidOverrideStore } from '../store/mbidOverrideStore';
 import { mbidSearchStore } from '../store/mbidSearchStore';
 import { runWithOverlay } from '../store/processingOverlayStore';
@@ -213,11 +214,13 @@ export function MbidSearchSheet() {
       hide();
 
       if (type === 'artist') {
-        await runWithOverlay(() => artistDetailStore.getState().fetchArtist(entityId), {
+        await runWithOverlay(() => fetchArtistBio(entityId, { reresolve: true }), {
           loading: t('updatingArtist'),
           success: t('mbidOverrideSaved'),
           error: t('failedToUpdateArtist'),
         });
+        // The refetch dual-wrote fresh normalized detail — tell an open artist screen to re-read.
+        bumpDetailChanged('artist', entityId);
       } else {
         await runWithOverlay(() => albumInfoStore.getState().fetchAlbumInfo(entityId), {
           loading: t('updatingAlbum'),

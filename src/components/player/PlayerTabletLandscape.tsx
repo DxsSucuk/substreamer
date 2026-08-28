@@ -90,6 +90,9 @@ export function PlayerTabletLandscape({
   const showSkipInterval = playbackSettingsStore((s) => s.showSkipIntervalButtons);
   const showSleepTimer = playbackSettingsStore((s) => s.showSleepTimerButton);
   const offlineMode = offlineModeStore((s) => s.offlineMode);
+  // This overlay is root-mounted and stays mounted (transparent, non-interactive)
+  // while collapsed, so "the player is open" is the expanded flag, not the mount.
+  const playerExpanded = tabletLayoutStore((s) => s.playerExpanded);
   const { canSkipNext, canSkipPrevious } = useCanSkip();
 
   // Own palette extraction for gradient background. Primary is already
@@ -138,7 +141,7 @@ export function PlayerTabletLandscape({
     loading: lyricsLoading,
     error: lyricsError,
     handleRetry: handleRetryLyrics,
-  } = usePlayerLyrics(trackId, currentTrack?.artist, currentTrack?.title);
+  } = usePlayerLyrics(trackId, currentTrack?.artist, currentTrack?.title, playerExpanded);
 
   // Measure the art area so cover art fills available height
   const [artMaxSize, setArtMaxSize] = useState(0);

@@ -8,7 +8,10 @@ jest.mock('../persistence/musicCacheTables', () => ({
   hydrateCachedSongsAsync: jest.fn(async () => ({})),
   hydrateCachedItemsAsync: jest.fn(async () => ({})),
   hydrateDownloadQueueAsync: jest.fn(async () => []),
-  insertDownloadQueueItem: jest.fn(),
+  // Returns the slot SQL assigned. The default echoes the optimistic one back —
+  // memory and disk agreeing, so the store's reconcile is a no-op. Scenarios that
+  // care about the disagreement override it.
+  insertDownloadQueueItem: jest.fn(async (row: { queuePosition: number }) => row.queuePosition),
   removeDownloadQueueItem: jest.fn(),
   updateDownloadQueueItem: jest.fn(),
   reorderDownloadQueue: jest.fn(),
@@ -25,6 +28,8 @@ jest.mock('../persistence/musicCacheTables', () => ({
     prunedItems: [],
   })),
   clearAllMusicCacheRows: jest.fn(),
+  convertLegacyMetadataAsync: jest.fn(async () => {}),
+  childGenreNames: jest.fn((child: { genres?: string[] }) => child.genres ?? []),
 }));
 
 jest.mock('../persistence/kvStorage', () => require('../persistence/__mocks__/kvStorage'));
@@ -136,9 +141,31 @@ function makeQueueDraft(itemId: string, totalSongs = 5): Omit<
     type: 'album',
     name: `Item ${itemId}`,
     totalSongs,
-    songsJson: '[]',
   };
 }
+
+/** Put the mirror straight into the given slots, `q-<slot>` per row, in slot order.
+ *  Non-contiguous slots are the shape a hydrate off a table holed by an older build
+ *  produces — `enqueue` can only ever build a dense one. */
+function seedMirror(slots: number[]): void {
+  musicCacheStore.setState({
+    downloadQueue: slots.map((slot) => ({
+      queueId: `q-${slot}`,
+      itemId: `item-${slot}`,
+      type: 'album',
+      name: `Item ${slot}`,
+      status: 'queued',
+      totalSongs: 5,
+      completedSongs: 0,
+      addedAt: slot,
+      queuePosition: slot,
+    })),
+  });
+}
+
+/** The mirror as `[queueId, queuePosition]` pairs, in array order. */
+const mirrorOf = (): Array<[string, number]> =>
+  musicCacheStore.getState().downloadQueue.map((q) => [q.queueId, q.queuePosition]);
 
 function resetStore() {
   musicCacheStore.setState({
@@ -149,8 +176,12 @@ function resetStore() {
     totalBytes: 0,
     totalFiles: 0,
     hasHydrated: false,
+    revision: 0,
   });
 }
+
+/** `revision` before/after an action — the downloaded lists key their SQL re-reads on it. */
+const revision = (): number => musicCacheStore.getState().revision;
 
 /* ------------------------------------------------------------------ */
 /*  Setup                                                              */
@@ -182,7 +213,7 @@ beforeEach(() => {
 
 describe('enqueue', () => {
   it('appends a new queue row with generated id, queued status, and position 1', () => {
-    musicCacheStore.getState().enqueue(makeQueueDraft('album-1', 3));
+    musicCacheStore.getState().enqueue(makeQueueDraft('album-1', 3), []);
 
     const { downloadQueue } = musicCacheStore.getState();
     expect(downloadQueue).toHaveLength(1);
@@ -193,30 +224,50 @@ describe('enqueue', () => {
     expect(downloadQueue[0].itemId).toBe('album-1');
 
     expect(mockInsertDownloadQueueItem).toHaveBeenCalledTimes(1);
-    expect(mockInsertDownloadQueueItem).toHaveBeenCalledWith(downloadQueue[0]);
+    expect(mockInsertDownloadQueueItem).toHaveBeenCalledWith(downloadQueue[0], []);
   });
 
   it('assigns ascending queuePositions for consecutive enqueues', () => {
-    musicCacheStore.getState().enqueue(makeQueueDraft('a'));
-    musicCacheStore.getState().enqueue(makeQueueDraft('b'));
-    musicCacheStore.getState().enqueue(makeQueueDraft('c'));
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'), []);
+    musicCacheStore.getState().enqueue(makeQueueDraft('b'), []);
+    musicCacheStore.getState().enqueue(makeQueueDraft('c'), []);
     const { downloadQueue } = musicCacheStore.getState();
     expect(downloadQueue.map((q) => q.queuePosition)).toEqual([1, 2, 3]);
     expect(mockInsertDownloadQueueItem).toHaveBeenCalledTimes(3);
   });
 
   it('skips duplicate itemId already in the queue', () => {
-    musicCacheStore.getState().enqueue(makeQueueDraft('a'));
-    musicCacheStore.getState().enqueue(makeQueueDraft('a'));
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'), []);
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'), []);
     expect(musicCacheStore.getState().downloadQueue).toHaveLength(1);
     expect(mockInsertDownloadQueueItem).toHaveBeenCalledTimes(1);
   });
 
   it('skips itemId that is already a cached item', () => {
     musicCacheStore.setState({ cachedItems: { 'a': makeItem('a', ['s1']) } });
-    musicCacheStore.getState().enqueue(makeQueueDraft('a'));
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'), []);
     expect(musicCacheStore.getState().downloadQueue).toHaveLength(0);
     expect(mockInsertDownloadQueueItem).not.toHaveBeenCalled();
+  });
+
+  it('adopts the slot SQL assigned when it differs from the optimistic one', async () => {
+    // What an enqueue that beats `hydrateFromDbAsync` looks like: memory is empty
+    // so it guesses 1, while the DB already holds a persisted queue and hands back
+    // 8. SQL is the authority; memory follows.
+    mockInsertDownloadQueueItem.mockResolvedValueOnce(8);
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'), []);
+    expect(musicCacheStore.getState().downloadQueue[0].queuePosition).toBe(1);
+
+    await Promise.resolve();
+    expect(musicCacheStore.getState().downloadQueue[0].queuePosition).toBe(8);
+  });
+
+  it('leaves the in-memory row alone when the write was dropped', async () => {
+    mockInsertDownloadQueueItem.mockResolvedValueOnce(null);
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'), []);
+
+    await Promise.resolve();
+    expect(musicCacheStore.getState().downloadQueue[0].queuePosition).toBe(1);
   });
 });
 
@@ -226,8 +277,8 @@ describe('enqueue', () => {
 
 describe('removeFromQueue', () => {
   it('removes the matching row from SQL and in-memory queue', () => {
-    musicCacheStore.getState().enqueue(makeQueueDraft('a'));
-    musicCacheStore.getState().enqueue(makeQueueDraft('b'));
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'), []);
+    musicCacheStore.getState().enqueue(makeQueueDraft('b'), []);
     const qid = musicCacheStore.getState().downloadQueue[0].queueId;
 
     musicCacheStore.getState().removeFromQueue(qid);
@@ -243,6 +294,37 @@ describe('removeFromQueue', () => {
     expect(mockRemoveDownloadQueueItem).toHaveBeenCalledWith('does-not-exist');
     expect(musicCacheStore.getState().downloadQueue).toHaveLength(0);
   });
+
+  it('drops the row and leaves every surviving slot alone', () => {
+    // Disk leaves the vacated slot vacant, so renumbering here would put the mirror
+    // out of step with it — and `reorderQueue` reads the mirror's slots.
+    seedMirror([1, 2, 3, 4]);
+    musicCacheStore.getState().removeFromQueue('q-2');
+    expect(mirrorOf()).toEqual([
+      ['q-1', 1],
+      ['q-3', 3],
+      ['q-4', 4],
+    ]);
+  });
+
+  it('keeps the mirror faithful on a queue whose slots were already holed', () => {
+    seedMirror([1, 3, 7]);
+    musicCacheStore.getState().removeFromQueue('q-3');
+    expect(mirrorOf()).toEqual([
+      ['q-1', 1],
+      ['q-7', 7],
+    ]);
+  });
+
+  it('leaves every slot alone when the queueId is unknown', () => {
+    seedMirror([1, 2, 3]);
+    musicCacheStore.getState().removeFromQueue('q-9');
+    expect(mirrorOf()).toEqual([
+      ['q-1', 1],
+      ['q-2', 2],
+      ['q-3', 3],
+    ]);
+  });
 });
 
 /* ------------------------------------------------------------------ */
@@ -252,7 +334,7 @@ describe('removeFromQueue', () => {
 describe('reorderQueue', () => {
   function seed(count: number) {
     for (let i = 0; i < count; i++) {
-      musicCacheStore.getState().enqueue(makeQueueDraft(`item-${i}`));
+      musicCacheStore.getState().enqueue(makeQueueDraft(`item-${i}`), []);
     }
     // Ignore the insertDownloadQueueItem calls from setup.
     mockInsertDownloadQueueItem.mockClear();
@@ -306,6 +388,89 @@ describe('reorderQueue', () => {
     musicCacheStore.getState().reorderQueue(0, 0);
     expect(mockReorderDownloadQueue).not.toHaveBeenCalled();
   });
+
+  // `index + 1` is only the row's slot while the table is dense. These cases hand it
+  // a mirror that is not, which is what a table holed by an older build hydrates to.
+  describe('on a queue whose slots are not dense', () => {
+    it('sends the rows real slots, not their array indices', () => {
+      seedMirror([1, 3, 7]);
+      musicCacheStore.getState().reorderQueue(0, 2);
+      expect(mockReorderDownloadQueue).toHaveBeenCalledWith(1, 7);
+    });
+
+    it('sends real slots moving backward too', () => {
+      seedMirror([1, 3, 7]);
+      musicCacheStore.getState().reorderQueue(2, 0);
+      expect(mockReorderDownloadQueue).toHaveBeenCalledWith(7, 1);
+    });
+
+    it('mirrors the repack the SQL performs, so memory keeps matching disk', () => {
+      seedMirror([1, 3, 7]);
+      musicCacheStore.getState().reorderQueue(0, 2);
+      expect(mirrorOf()).toEqual([
+        ['q-3', 2],
+        ['q-7', 6],
+        ['q-1', 7],
+      ]);
+    });
+
+    it('leaves rows outside the moved range on their own slots', () => {
+      seedMirror([1, 3, 7, 9]);
+      musicCacheStore.getState().reorderQueue(1, 2);
+      expect(mirrorOf()).toEqual([
+        ['q-1', 1],
+        ['q-7', 6],
+        ['q-3', 7],
+        ['q-9', 9],
+      ]);
+    });
+  });
+
+  it('permutes the occupied slots rather than minting new ones', () => {
+    seed(4);
+    musicCacheStore.getState().reorderQueue(0, 2);
+    expect(mirrorOf().map(([, position]) => position)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('translates array indices to the slots left after a removal', () => {
+    // The reported bug, at the store boundary: remove from the middle, then drag
+    // the new first row to the back. `index + 1` would have sent slot 3 — q-3's.
+    seedMirror([1, 2, 3, 4]);
+    musicCacheStore.getState().removeFromQueue('q-2');
+    musicCacheStore.getState().reorderQueue(0, 2);
+    expect(mockReorderDownloadQueue).toHaveBeenCalledWith(1, 4);
+    expect(mirrorOf()).toEqual([
+      ['q-3', 2],
+      ['q-4', 3],
+      ['q-1', 4],
+    ]);
+  });
+
+  it('still moves the right row after a long run of completions', () => {
+    // What a full-library download leaves: every completion vacates the front slot,
+    // so the survivors sit at a high, sparse offset and nothing is ever 1..N again.
+    seedMirror([1, 2, 3, 4, 5, 6, 7, 8]);
+    for (const done of ['q-1', 'q-2', 'q-3', 'q-4', 'q-5']) {
+      musicCacheStore.getState().markItemComplete(
+        done,
+        makeItem(`item-${done}`, []) as Omit<CachedItemMeta, 'songIds'>,
+        [],
+        [],
+      );
+    }
+    expect(mirrorOf()).toEqual([
+      ['q-6', 6],
+      ['q-7', 7],
+      ['q-8', 8],
+    ]);
+    musicCacheStore.getState().reorderQueue(2, 0);
+    expect(mockReorderDownloadQueue).toHaveBeenCalledWith(8, 6);
+    expect(mirrorOf()).toEqual([
+      ['q-8', 6],
+      ['q-6', 7],
+      ['q-7', 8],
+    ]);
+  });
 });
 
 /* ------------------------------------------------------------------ */
@@ -314,7 +479,7 @@ describe('reorderQueue', () => {
 
 describe('updateQueueItem', () => {
   it('writes the partial update to SQL and maps it in memory', () => {
-    musicCacheStore.getState().enqueue(makeQueueDraft('a'));
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'), []);
     const qid = musicCacheStore.getState().downloadQueue[0].queueId;
 
     musicCacheStore.getState().updateQueueItem(qid, {
@@ -332,8 +497,8 @@ describe('updateQueueItem', () => {
   });
 
   it('leaves non-matching rows alone', () => {
-    musicCacheStore.getState().enqueue(makeQueueDraft('a'));
-    musicCacheStore.getState().enqueue(makeQueueDraft('b'));
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'), []);
+    musicCacheStore.getState().enqueue(makeQueueDraft('b'), []);
     const [first, second] = musicCacheStore.getState().downloadQueue;
 
     musicCacheStore.getState().updateQueueItem(first.queueId, { status: 'error', error: 'boom' });
@@ -353,7 +518,7 @@ describe('enqueueTopUp', () => {
     musicCacheStore.setState({
       cachedItems: { 'album-1': makeItem('album-1', ['s1', 's2']) },
     });
-    musicCacheStore.getState().enqueueTopUp(makeQueueDraft('album-1', 3));
+    musicCacheStore.getState().enqueueTopUp(makeQueueDraft('album-1', 3), []);
     const queue = musicCacheStore.getState().downloadQueue;
     expect(queue).toHaveLength(1);
     expect(queue[0].itemId).toBe('album-1');
@@ -362,8 +527,8 @@ describe('enqueueTopUp', () => {
   });
 
   it('still dedupes against an existing queue entry for the same itemId', () => {
-    musicCacheStore.getState().enqueueTopUp(makeQueueDraft('album-1'));
-    musicCacheStore.getState().enqueueTopUp(makeQueueDraft('album-1'));
+    musicCacheStore.getState().enqueueTopUp(makeQueueDraft('album-1'), []);
+    musicCacheStore.getState().enqueueTopUp(makeQueueDraft('album-1'), []);
     expect(musicCacheStore.getState().downloadQueue).toHaveLength(1);
   });
 
@@ -371,7 +536,7 @@ describe('enqueueTopUp', () => {
     musicCacheStore.setState({
       cachedItems: { 'album-1': makeItem('album-1', ['s1']) },
     });
-    musicCacheStore.getState().enqueue(makeQueueDraft('album-1'));
+    musicCacheStore.getState().enqueue(makeQueueDraft('album-1'), []);
     expect(musicCacheStore.getState().downloadQueue).toHaveLength(0);
   });
 });
@@ -382,7 +547,7 @@ describe('enqueueTopUp', () => {
 
 describe('markItemComplete', () => {
   it('delegates to markDownloadComplete and mirrors item + songs in memory', () => {
-    musicCacheStore.getState().enqueue(makeQueueDraft('a'));
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'), []);
     const qid = musicCacheStore.getState().downloadQueue[0].queueId;
 
     const item = makeItem('a', []) as Omit<CachedItemMeta, 'songIds'>;
@@ -396,7 +561,8 @@ describe('markItemComplete', () => {
 
     musicCacheStore.getState().markItemComplete(qid, item, songs, edges);
 
-    expect(mockMarkDownloadComplete).toHaveBeenCalledWith(qid, item, songs, edges);
+    // Trailing `undefined` = no `childBySongId`: these rows carry no real `Child`.
+    expect(mockMarkDownloadComplete).toHaveBeenCalledWith(qid, item, songs, edges, undefined);
     const state = musicCacheStore.getState();
     expect(state.downloadQueue).toHaveLength(0);
     expect(state.cachedItems['a']).toBeDefined();
@@ -404,6 +570,35 @@ describe('markItemComplete', () => {
     expect(state.cachedSongs['s1']).toEqual(songs[0]);
     expect(state.cachedSongs['s2']).toEqual(songs[1]);
     expect(state.cachedSongs['s3']).toEqual(songs[2]);
+  });
+
+  it('drops the completed row and leaves every surviving slot alone', () => {
+    seedMirror([1, 2, 3]);
+    musicCacheStore.getState().markItemComplete(
+      'q-2',
+      makeItem('item-2', []) as Omit<CachedItemMeta, 'songIds'>,
+      [makeSong('s1')],
+      [{ songId: 's1', position: 1 }],
+    );
+    expect(mirrorOf()).toEqual([
+      ['q-1', 1],
+      ['q-3', 3],
+    ]);
+  });
+
+  it('leaves every slot alone when the completed item was never queued', () => {
+    seedMirror([1, 2, 3]);
+    musicCacheStore.getState().markItemComplete(
+      'q-9',
+      makeItem('item-9', []) as Omit<CachedItemMeta, 'songIds'>,
+      [makeSong('s1')],
+      [{ songId: 's1', position: 1 }],
+    );
+    expect(mirrorOf()).toEqual([
+      ['q-1', 1],
+      ['q-2', 2],
+      ['q-3', 3],
+    ]);
   });
 
   it('preserves existing cached songs from other items', () => {
@@ -435,7 +630,7 @@ describe('markItemComplete', () => {
         },
       },
     });
-    musicCacheStore.getState().enqueue(makeQueueDraft('top-up-q'));
+    musicCacheStore.getState().enqueue(makeQueueDraft('top-up-q'), []);
     const qid = musicCacheStore.getState().downloadQueue[0].queueId;
 
     const item: Omit<CachedItemMeta, 'songIds'> = {
@@ -922,7 +1117,7 @@ describe('upsertCachedSong', () => {
   it('writes to SQL and merges into cachedSongs', () => {
     const song = makeSong('new');
     musicCacheStore.getState().upsertCachedSong(song);
-    expect(mockUpsertCachedSong).toHaveBeenCalledWith(song);
+    expect(mockUpsertCachedSong).toHaveBeenCalledWith(song, undefined);
     expect(musicCacheStore.getState().cachedSongs['new']).toEqual(song);
   });
 
@@ -1059,7 +1254,6 @@ describe('hydrateFromDbAsync', () => {
         completedSongs: 0,
         addedAt: 1,
         queuePosition: 1,
-        songsJson: '[]',
       },
     ];
 
@@ -1155,52 +1349,223 @@ describe('getSongEnvelope', () => {
     expect(getSongEnvelope('nope')).toBeNull();
   });
 
-  it('returns null when raw_json is absent', () => {
+  it('builds from the promoted columns', () => {
     musicCacheStore.setState({
       cachedSongs: {
-        s1: makeSong('s1'), // no rawJson
+        s1: makeSong('s1', {
+          artist: 'Unknown Artist',
+          srcAlbumId: 'server-album',
+          track: 3,
+          genre: 'Rock',
+          genres: ['Folk, World, & Country'],
+          rgTrackGain: -7.5,
+        }),
       } as any,
     });
-    expect(getSongEnvelope('s1')).toBeNull();
+    const c = getSongEnvelope('s1');
+    expect(c.track).toBe(3);
+    // `albumId` is the SERVER's album (`src_album_id`), not the file's directory.
+    expect(c.albumId).toBe('server-album');
+    expect(c.genres).toEqual(['Folk, World, & Country']);
+    expect(c.replayGain.trackGain).toBe(-7.5);
+    // The download-time placeholder IS the stored data — no `undefined` here.
+    expect(c.artist).toBe('Unknown Artist');
   });
 
-  it('parses and caches the Child envelope; repeated calls return the same object', () => {
+  it('memoises per row object; repeated calls return the same Child', () => {
     musicCacheStore.setState({
-      cachedSongs: {
-        s1: { ...makeSong('s1'), rawJson: '{"id":"s1","isDir":false,"title":"T","track":7,"genre":"Rock"}' },
-      } as any,
+      cachedSongs: { s1: makeSong('s1', { track: 7, genre: 'Rock' }) } as any,
     });
     const a = getSongEnvelope('s1');
     const b = getSongEnvelope('s1');
-    expect(a).toBeTruthy();
     expect(a).toBe(b); // memoised identity
     expect(a.track).toBe(7);
     expect(a.genre).toBe('Rock');
   });
 
-  it('returns null on malformed JSON', () => {
+  it('rebuilds after the row is replaced by an upsert (no stale memo)', () => {
     musicCacheStore.setState({
-      cachedSongs: {
-        s1: { ...makeSong('s1'), rawJson: '{not-json' },
-      } as any,
-    });
-    expect(getSongEnvelope('s1')).toBeNull();
-  });
-
-  it('re-parses after the row is replaced by an upsert (no stale memo)', () => {
-    musicCacheStore.setState({
-      cachedSongs: {
-        s1: { ...makeSong('s1'), rawJson: '{"id":"s1","isDir":false,"title":"Old"}' },
-      } as any,
+      cachedSongs: { s1: makeSong('s1', { title: 'Old' }) } as any,
     });
     expect(getSongEnvelope('s1')?.title).toBe('Old');
     // Replace the row object (an upsert) — the WeakMap is keyed on the row, so
-    // the new row misses the cache and re-parses.
+    // the new row misses the cache and rebuilds.
     musicCacheStore.setState({
-      cachedSongs: {
-        s1: { ...makeSong('s1'), rawJson: '{"id":"s1","isDir":false,"title":"New"}' },
-      } as any,
+      cachedSongs: { s1: makeSong('s1', { title: 'New' }) } as any,
     });
     expect(getSongEnvelope('s1')?.title).toBe('New');
+  });
+});
+
+describe('completeSongFromCache', () => {
+  /* eslint-disable @typescript-eslint/no-require-imports */
+  const { completeSongFromCache } = require('../musicCacheStore');
+  /* eslint-enable @typescript-eslint/no-require-imports */
+
+  /** What a list projection built to render a row hands on: no album, no file facts. */
+  const thin = (id = 's1'): any => ({ id, title: `Song ${id}`, duration: 180, isDir: false });
+
+  beforeEach(() => {
+    musicCacheStore.setState({ cachedSongs: {}, cachedItems: {} } as any);
+  });
+
+  it('fills the gaps from the downloaded row', () => {
+    musicCacheStore.setState({
+      cachedSongs: {
+        s1: makeSong('s1', {
+          album: 'The Album',
+          srcAlbumId: 'server-album',
+          srcSuffix: 'flac',
+          srcBitRate: 1000,
+          size: 41_000_000,
+          year: 1991,
+          genre: 'Shoegaze',
+        }),
+      } as any,
+    });
+
+    const song = completeSongFromCache(thin());
+
+    expect(song.album).toBe('The Album');
+    expect(song.albumId).toBe('server-album');
+    expect(song.suffix).toBe('flac');
+    expect(song.bitRate).toBe(1000);
+    expect(song.size).toBe(41_000_000);
+    expect(song.year).toBe(1991);
+    expect(song.genre).toBe('Shoegaze');
+  });
+
+  it('returns the same object when nothing is held for the song', () => {
+    const incoming = thin('unknown');
+    expect(completeSongFromCache(incoming)).toBe(incoming);
+  });
+
+  it('never overwrites a value the incoming object already has', () => {
+    musicCacheStore.setState({
+      cachedSongs: {
+        s1: makeSong('s1', { album: 'The Album', srcSuffix: 'flac', size: 41_000_000 }),
+      } as any,
+    });
+
+    // A playlist download shows the playlist as the album — a deliberate override.
+    const song = completeSongFromCache({ ...thin(), album: 'Road Trip' } as any);
+
+    expect(song.album).toBe('Road Trip');
+    expect(song.suffix).toBe('flac');
+  });
+
+  it('leaves an already-complete track untouched, without a lookup', () => {
+    musicCacheStore.setState({
+      cachedSongs: { s1: makeSong('s1', { album: 'The Album' }) } as any,
+    });
+    const incoming = { ...thin(), album: 'Server Album', suffix: 'mp3', size: 1 } as any;
+
+    expect(completeSongFromCache(incoming)).toBe(incoming);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  revision                                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * SQL reads have no Zustand subscription, so the downloaded lists key an effect on
+ * `revision` — which means a mutation that forgets to bump it is a silently stale
+ * list, invisible in a diff.
+ *
+ * So this suite is completeness-driven: every action that can change either map is
+ * listed. Adding a mutation without a case here is the bug it exists to catch.
+ */
+describe('revision', () => {
+  it('starts at 0 and is monotonic across a sequence of mutations', () => {
+    expect(revision()).toBe(0);
+    musicCacheStore.getState().upsertCachedItem(makeItem('a', []), []);
+    musicCacheStore.getState().upsertCachedSong(makeSong('s1'));
+    expect(revision()).toBe(2);
+  });
+
+  it('bumps on markItemComplete — the download-finished path the lists must react to', () => {
+    const before = revision();
+    musicCacheStore
+      .getState()
+      .markItemComplete('q1', makeItem('a', ['s1']), [makeSong('s1')], [
+        { songId: 's1', position: 1 },
+      ]);
+    expect(revision()).toBeGreaterThan(before);
+  });
+
+  it('bumps on upsertCachedItem', () => {
+    const before = revision();
+    musicCacheStore.getState().upsertCachedItem(makeItem('a', ['s1']), ['s1']);
+    expect(revision()).toBeGreaterThan(before);
+  });
+
+  it('bumps on removeCachedItem — the delete path', async () => {
+    musicCacheStore.getState().upsertCachedItem(makeItem('a', ['s1']), ['s1']);
+    const before = revision();
+    await musicCacheStore.getState().removeCachedItem('a');
+    expect(revision()).toBeGreaterThan(before);
+  });
+
+  it('bumps on removeCachedItemSong', async () => {
+    musicCacheStore.getState().upsertCachedItem(makeItem('a', ['s1', 's2']), ['s1', 's2']);
+    musicCacheStore.getState().upsertCachedSong(makeSong('s1'));
+    const before = revision();
+    await musicCacheStore.getState().removeCachedItemSong('a', 1);
+    expect(revision()).toBeGreaterThan(before);
+  });
+
+  it('bumps on reorderCachedItemSongs', () => {
+    musicCacheStore.getState().upsertCachedItem(makeItem('a', ['s1', 's2']), ['s1', 's2']);
+    const before = revision();
+    musicCacheStore.getState().reorderCachedItemSongs('a', 1, 2);
+    expect(revision()).toBeGreaterThan(before);
+  });
+
+  it('bumps on upsertCachedSong and deleteCachedSong', () => {
+    const beforeUpsert = revision();
+    musicCacheStore.getState().upsertCachedSong(makeSong('s1'));
+    expect(revision()).toBeGreaterThan(beforeUpsert);
+
+    const beforeDelete = revision();
+    musicCacheStore.getState().deleteCachedSong('s1');
+    expect(revision()).toBeGreaterThan(beforeDelete);
+  });
+
+  it('bumps on reset — logout must not leave a stale downloaded list on screen', () => {
+    musicCacheStore.getState().upsertCachedItem(makeItem('a', []), []);
+    const before = revision();
+    musicCacheStore.getState().reset();
+    expect(revision()).toBeGreaterThan(before);
+  });
+
+  it('bumps on hydrateFromDbAsync — the legacy conversion publishes through it', async () => {
+    const before = revision();
+    await musicCacheStore.getState().hydrateFromDbAsync();
+    expect(revision()).toBeGreaterThan(before);
+  });
+
+  // The other half of the contract: a no-op must NOT wake every SQL reader.
+  it('does NOT bump when deleteCachedSong is given an absent song', () => {
+    const before = revision();
+    musicCacheStore.getState().deleteCachedSong('never-existed');
+    expect(revision()).toBe(before);
+  });
+
+  it('does NOT bump when removeCachedItemSong is given an out-of-range position', async () => {
+    musicCacheStore.getState().upsertCachedItem(makeItem('a', ['s1']), ['s1']);
+    const before = revision();
+    await musicCacheStore.getState().removeCachedItemSong('a', 99);
+    expect(revision()).toBe(before);
+  });
+
+  it('does NOT bump on a queue-only mutation — no downloaded list depends on it', () => {
+    musicCacheStore.getState().enqueue(makeQueueDraft('a'), []);
+    const before = revision();
+    musicCacheStore.getState().updateQueueItem(
+      musicCacheStore.getState().downloadQueue[0].queueId,
+      { completedSongs: 1 },
+    );
+    expect(revision()).toBe(before);
   });
 });

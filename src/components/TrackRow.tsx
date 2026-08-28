@@ -14,7 +14,8 @@ import { useSongCoverArt } from '../hooks/useSongCoverArt';
 import { addSongToQueue, toggleStar } from '../services/moreOptionsService';
 import { playTrack } from '../services/playerService';
 import { addToPlaylistStore } from '../store/addToPlaylistStore';
-import { moreOptionsStore } from '../store/moreOptionsStore';
+import { completeSongFromCache } from '../store/musicCacheStore';
+import { type MoreOptionsSource, moreOptionsStore } from '../store/moreOptionsStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { playerStore } from '../store/playerStore';
 import { formatTrackDuration } from '../utils/formatters';
@@ -40,26 +41,25 @@ export interface TrackRowProps {
   showCoverArt?: boolean;
   /** Show the album name with a disc icon below the artist name. */
   showAlbumName?: boolean;
+  /** Context passed to the options sheet, which varies its actions by origin. */
+  optionsSource?: MoreOptionsSource;
 }
 
-export const TrackRow = memo(function TrackRow({ track, trackNumber, colors, onPress, songs, playlistId, showCoverArt, showAlbumName }: TrackRowProps) {
+export const TrackRow = memo(function TrackRow({ track, trackNumber, colors, onPress, songs, playlistId, showCoverArt, showAlbumName, optionsSource }: TrackRowProps) {
   const { t } = useTranslation();
   const duration = track.duration != null ? formatTrackDuration(track.duration) : '—';
   const starred = useIsStarred('song', track.id);
   const downloadStatus = useDownloadStatus('song', track.id);
   const offlineMode = offlineModeStore((s) => s.offlineMode);
   const rating = useRating(track.id, track.userRating);
-  // Per-row "is this the currently-playing track" subscription. Returns a
-  // stable boolean per track, so non-active rows only re-render when
-  // currentTrack changes to/from this row (not on every track change).
+  // Selects a boolean, not the track: non-active rows then re-render only when
+  // currentTrack moves to or from this row, not on every track change.
   const isActive = playerStore((s) => s.currentTrack?.id === track.id);
   const songCoverArtId = useSongCoverArt(track);
-  // In offline mode, tracks that aren't fully cached can't play and shouldn't
-  // accept any interaction — tapping them today silently routes to the first
-  // playable track (via playerService.buildPlayableQueue) which is confusing
-  // because the row gives no signal that it's inert. Songs report 'complete'
-  // exactly when getLocalTrackUri(id) is non-null, matching the predicate
-  // playerService.childToTrack uses to filter the offline queue.
+  // Offline, a track that isn't fully cached is inert — tapping it would route to the
+  // first playable track in the queue with no on-screen signal why. 'complete' is true
+  // exactly when getLocalTrackUri(id) is non-null, the same predicate
+  // playerService.childToTrack filters the offline queue on.
   const isOfflineUnplayable = offlineMode && downloadStatus !== 'complete';
 
   const handleAddToQueue = useCallback(() => {
@@ -74,13 +74,17 @@ export const TrackRow = memo(function TrackRow({ track, trackNumber, colors, onP
     addToPlaylistStore.getState().showSong(track);
   }, [track]);
 
+  // The row may have been built from a narrow list projection. The sheet gates
+  // "Go to Artist" on `artistId` and renders the details modal off this object, so
+  // the track is completed as the sheet opens — one song, not one per rendered row.
   const handleLongPress = useCallback(() => {
-    moreOptionsStore.getState().show({ type: 'song', item: track });
-  }, [track]);
+    moreOptionsStore
+      .getState()
+      .show({ type: 'song', item: completeSongFromCache(track) }, optionsSource);
+  }, [track, optionsSource]);
 
-  // Deriving the tap action from props (rather than an inline closure passed
-  // by the parent) keeps this memoized row from re-rendering on every parent
-  // render — `songs`/`playlistId` are stable across unrelated re-renders.
+  // Derive the tap action from props rather than take an inline closure from the
+  // parent, or this memoized row re-renders on every parent render.
   const playFromContext = useCallback(() => {
     playTrack(track, songs ?? [track], playlistId);
   }, [track, songs, playlistId]);
@@ -132,9 +136,8 @@ export const TrackRow = memo(function TrackRow({ track, trackNumber, colors, onP
         ]}
         accessibilityState={isOfflineUnplayable ? { disabled: true } : undefined}
       >
-        {/* Leading slot: cover (if showCoverArt) OR track number — and on
-            the active row, the now-playing indicator replaces the track
-            number outright or overlays the cover. */}
+        {/* Leading slot: cover, or track number. The active row's now-playing */}
+        {/* indicator replaces the number outright, or overlays the cover. */}
         {showCoverArt ? (
           <View style={styles.coverWrap}>
             <CachedImage
@@ -224,11 +227,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     minHeight: 80,
     paddingVertical: 12,
-    // Matches the `info` block padding (16) on album-detail /
-    // playlist-detail so the first column of the row lines up with the
-    // title / "by owner" / song-count text above. The outer
-    // trackItemWrap on those screens intentionally has no horizontal
-    // padding now, so this is the single source of truth.
+    // Matches the `info` block padding (16) on album-detail / playlist-detail so the
+    // row's first column lines up with the title text above. The `trackItemWrap` on
+    // those screens carries no horizontal padding, so this is the only source of it.
     paddingHorizontal: 16,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
@@ -239,8 +240,8 @@ const styles = StyleSheet.create({
     fontSize: 14,
     minWidth: 28,
   },
-  // Width matches `trackNum.minWidth` so swapping the indicator in for
-  // the position number doesn't shift the title column.
+  // Width matches `trackNum.minWidth` so swapping the indicator in for the
+  // position number doesn't shift the title column.
   numberIndicator: {
     minWidth: 28,
     alignItems: 'flex-start',
@@ -269,9 +270,9 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
-  // Each text line splits into a left-flexed text + a right-pinned
-  // RowMetaLine block. The text gets `flex: 1` + numberOfLines={1} so
-  // it truncates instead of pushing the trailing block off-screen.
+  // Each text line splits into left-flexed text + a right-pinned RowMetaLine. The
+  // text needs `flex: 1` + numberOfLines={1} so it truncates instead of pushing the
+  // trailing block off-screen.
   line: {
     flexDirection: 'row',
     alignItems: 'center',

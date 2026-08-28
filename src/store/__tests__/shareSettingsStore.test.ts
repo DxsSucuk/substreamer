@@ -52,7 +52,7 @@ describe('rewriteShareUrl', () => {
     expect(rewriteShareUrl(original)).toBe(original);
   });
 
-  it('restores a port the server stripped from a same-host share link (#208)', () => {
+  it('restores a port the server stripped from a same-host share link', () => {
     // Navidrome behind a reverse proxy returns the share URL without the port
     // because req.Host carried no port. We connect on :4533, so restore it.
     authStore.setState({

@@ -16,6 +16,11 @@ const transformIgnorePatterns = [
   '/node_modules/@react-native/babel-preset/',
 ];
 
+// `reference/` holds read-only clones of the Subsonic servers we support, used to check
+// their behaviour against real source. `testMatch` already excludes them, but Jest still
+// walks the tree for snapshots and reports theirs as ours.
+const modulePathIgnorePatterns = ['<rootDir>/reference/'];
+
 module.exports = {
   projects: [
     {
@@ -36,7 +41,9 @@ module.exports = {
         '<rootDir>/src/test-utils/i18nSetup.ts',
         '<rootDir>/src/test-utils/keyboardControllerSetup.ts',
       ],
+      setupFilesAfterEnv: ['<rootDir>/src/test-utils/asyncTimeouts.ts'],
       transformIgnorePatterns,
+      modulePathIgnorePatterns,
     },
     {
       preset: 'jest-expo/android',
@@ -56,7 +63,9 @@ module.exports = {
         '<rootDir>/src/test-utils/i18nSetup.ts',
         '<rootDir>/src/test-utils/keyboardControllerSetup.ts',
       ],
+      setupFilesAfterEnv: ['<rootDir>/src/test-utils/asyncTimeouts.ts'],
       transformIgnorePatterns,
+      modulePathIgnorePatterns,
     },
   ],
   collectCoverageFrom: [
@@ -72,7 +81,13 @@ module.exports = {
     'src/hooks/usePlaybackAnalytics.ts',
     'src/store/**/*.ts',
     'src/services/**/*.ts',
+    'src/db/**/*.ts',
     '!src/**/__tests__/**',
     '!src/**/__mocks__/**',
+    // drizzle-kit's schema source: the DDL is generated from it ahead of time
+    // (`normalizedDdl.ts`), so nothing imports it at runtime.
+    '!src/db/schema.ts',
+    // The op-SQLite ⇄ better-sqlite3 Jest substitute — test infrastructure.
+    '!src/db/testing/**',
   ],
 };

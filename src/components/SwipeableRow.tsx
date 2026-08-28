@@ -108,7 +108,7 @@ const FULL_SWIPE_CLOSE_TIMEOUT = 500;
 /**
  * Leftmost band (px) reserved for the OS back-swipe. A negative-left hitSlop
  * insets the pan's begin-region so the row swipe won't START in this band,
- * letting the native iOS edge-back recognizer win there (#217). Taps are
+ * letting the native iOS edge-back recognizer win there. Taps are
  * unaffected. Tunable: raise if back-swipe still opens a row, lower if
  * near-edge row swipes feel unresponsive.
  */

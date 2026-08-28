@@ -21,6 +21,7 @@ import Animated, {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useTheme } from '../hooks/useTheme';
+import { overlayStore } from '../store/overlayStore';
 
 import { absoluteFill } from '../utils/styles';
 const BACKDROP_OPACITY = 0.4;
@@ -177,6 +178,14 @@ export function BottomSheet({
     });
   }, [translateY, backdropOpacity, sheetHeightSV, finishClose]);
 
+  // Claim screen-level input while up, so the status-bar tap does not reach the list
+  // behind the sheet — see `overlayStore`.
+  useEffect(() => {
+    if (!visible) return undefined;
+    overlayStore.getState().open();
+    return () => overlayStore.getState().close();
+  }, [visible]);
+
   // visible prop → true: push sheet off-screen before mounting Modal
   useEffect(() => {
     if (visible && !internalVisible) {
@@ -192,7 +201,7 @@ export function BottomSheet({
   // back button) which call playExitAnimation directly. Programmatic closes must
   // be instant so the next sheet can mount without two Modals overlapping.
   //
-  // U8 (react-native-screens iOS Fabric Yoga SIGABRT, software-mansion/react-native-screens#3786):
+  // iOS Fabric Yoga SIGABRT (software-mansion/react-native-screens#3786):
   // defer setInternalVisible(false) by one frame. Action handlers commonly call
   // both `setSomeParentState(...)` and `hide()` in the same tick. Tearing down
   // the native Modal in the same frame as the parent re-render races Yoga and
@@ -328,6 +337,8 @@ export function BottomSheet({
             <ScrollView
               style={styles.scroll}
               contentContainerStyle={styles.scrollContent}
+              // Sheets do not own the status-bar tap — the screen behind them does.
+              scrollsToTop={false}
               bounces={false}
               showsVerticalScrollIndicator
             >

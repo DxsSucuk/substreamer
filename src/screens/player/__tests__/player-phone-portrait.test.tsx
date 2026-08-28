@@ -237,11 +237,15 @@ jest.mock('@shopify/flash-list', () => {
 import React from 'react';
 import { render, fireEvent, act } from '@testing-library/react-native';
 
+import { appStateStore } from '@/store/appStateStore';
+import { lyricsStore } from '@/store/lyricsStore';
 import { playerStore } from '@/store/playerStore';
 import { type Child } from '@/services/subsonicService';
 
 // Must import after mocks
 const { PlayerPhonePortrait } = require('@/screens/player/player-phone-portrait');
+
+const fetchLyrics = lyricsStore.getState().fetchLyrics as jest.Mock;
 
 const MOCK_TRACK: Child = {
   id: 'track-1',
@@ -261,6 +265,8 @@ const MOCK_QUEUE: Child[] = [
 ];
 
 beforeEach(() => {
+  fetchLyrics.mockClear();
+  appStateStore.setState({ isActive: true });
   playerStore.setState({
     currentTrack: MOCK_TRACK,
     currentTrackIndex: 0,
@@ -319,6 +325,24 @@ describe('PlayerPhonePortrait', () => {
 
     expect(getByLabelText('Share queue')).toBeTruthy();
     expect(getByLabelText('Clear Queue')).toBeTruthy();
+  });
+
+  it('fetches lyrics for the playing track without the lyrics tab being opened', () => {
+    const { queryByText } = render(<PlayerPhonePortrait />);
+
+    // The tab is still unmounted — the fetch is owned by the screen, so lyrics
+    // are ready whenever the player is open, not only once Lyrics is selected.
+    expect(queryByText('LyricsContent')).toBeNull();
+    expect(fetchLyrics).toHaveBeenCalledTimes(1);
+    expect(fetchLyrics).toHaveBeenCalledWith('track-1', 'Test Artist', 'Test Song');
+  });
+
+  it('does not fetch lyrics when nothing is playing', () => {
+    playerStore.setState({ currentTrack: null });
+
+    render(<PlayerPhonePortrait />);
+
+    expect(fetchLyrics).not.toHaveBeenCalled();
   });
 
   it('switches to lyrics tab and mounts LyricsContent', () => {

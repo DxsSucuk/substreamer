@@ -12,21 +12,19 @@ import {
   clearKvStorage,
   dropAllPendingPersistWrites,
 } from './persistence';
-import { clearDetailTables } from './persistence/detailTables';
-import { clearLibraryAlbumsAsync } from './persistence/libraryAlbumsTable';
+import { getDb } from './persistence/db';
+import { awaitDbWritesIdle } from '../db/client';
+import { resetNormalizedSchema } from '../db/createNormalizedTables';
 import { clearPendingScrobbles } from './persistence/pendingScrobbleTable';
 import { clearScrobbles } from './persistence/scrobbleTable';
 import { clearMusicCacheTables } from './musicCacheStore';
 import { teardownMusicCache } from '../services/musicCacheService';
 import { clearImageCache, teardownImageCache } from '../services/imageCacheService';
+import { resetFavoritesSyncFlags } from '../services/favoritesSyncService';
 
 // Persisted stores
-import { albumDetailStore } from './albumDetailStore';
 import { albumInfoStore } from './albumInfoStore';
-import { albumLibraryStore } from './albumLibraryStore';
 import { albumListsStore } from './albumListsStore';
-import { artistDetailStore } from './artistDetailStore';
-import { artistLibraryStore } from './artistLibraryStore';
 import { authStore } from './authStore';
 import { autoOfflineStore } from './autoOfflineStore';
 import { backupStore } from './backupStore';
@@ -37,13 +35,12 @@ import { favoritesStore } from './favoritesStore';
 import { genreStore } from './genreStore';
 import { imageCacheStore } from './imageCacheStore';
 import { layoutPreferencesStore } from './layoutPreferencesStore';
+import { lyricsStore } from './lyricsStore';
 import { mbidOverrideStore } from './mbidOverrideStore';
 import { musicCacheStore } from './musicCacheStore';
 import { offlineModeStore } from './offlineModeStore';
 import { pendingScrobbleStore } from './pendingScrobbleStore';
 import { playbackSettingsStore } from './playbackSettingsStore';
-import { playlistDetailStore } from './playlistDetailStore';
-import { playlistLibraryStore } from './playlistLibraryStore';
 import { ratingStore } from './ratingStore';
 import { recentSearchStore } from './recentSearchStore';
 import { scanStatusStore } from './scanStatusStore';
@@ -51,8 +48,6 @@ import { scrobbleExclusionStore } from './scrobbleExclusionStore';
 import { serverInfoStore } from './serverInfoStore';
 import { shareSettingsStore } from './shareSettingsStore';
 import { sharesStore } from './sharesStore';
-import { songIndexStore } from './songIndexStore';
-import { songLibraryStore } from './songLibraryStore';
 import { sslCertStore } from './sslCertStore';
 import { localeStore } from './localeStore';
 import { storageLimitStore } from './storageLimitStore';
@@ -77,12 +72,8 @@ import { setRatingStore } from './setRatingStore';
 
 const allStores = [
   // Persisted
-  albumDetailStore,
   albumInfoStore,
-  albumLibraryStore,
   albumListsStore,
-  artistDetailStore,
-  artistLibraryStore,
   authStore,
   autoOfflineStore,
   backupStore,
@@ -94,13 +85,15 @@ const allStores = [
   imageCacheStore,
   layoutPreferencesStore,
   localeStore,
+  // Session cache over the `lyrics` table, which logout drops with the rest of the
+  // model. Reset here too: the keys are server-scoped song ids, so a map surviving a
+  // server switch can show another server's words against a colliding id.
+  lyricsStore,
   mbidOverrideStore,
   musicCacheStore,
   offlineModeStore,
   pendingScrobbleStore,
   playbackSettingsStore,
-  playlistDetailStore,
-  playlistLibraryStore,
   ratingStore,
   recentSearchStore,
   scanStatusStore,
@@ -108,8 +101,6 @@ const allStores = [
   serverInfoStore,
   shareSettingsStore,
   sharesStore,
-  songIndexStore,
-  songLibraryStore,
   sslCertStore,
   storageLimitStore,
   syncStatusStore,
@@ -126,10 +117,33 @@ const allStores = [
   moreOptionsStore,
   playbackToastStore,
   playerStore,
-  processingOverlayStore,
+  // processingOverlayStore is deliberately NOT reset here: logout itself runs behind
+  // that overlay, so clearing it mid-teardown would blank the only progress the user
+  // can see. The caller owns showing and hiding it.
   searchStore,
   setRatingStore,
 ];
+
+/**
+ * Truncate the legacy blob tables on logout. They are not in `schema.ts`, so
+ * `resetNormalizedSchema` does not touch them, and `clearKvStorage()` wipes the blob→
+ * normalized ETL's one-shot flag — so rows left here get re-imported into the NEXT
+ * server's library on the following launch. One serialized slot per table with its own
+ * try/catch: a table missing (fresh install, or a lineage that never had `library_albums`)
+ * must not abort the others.
+ */
+async function clearLegacyBlobTables(): Promise<void> {
+  const db = getDb();
+  if (db === null) return;
+  for (const table of ['album_details', 'song_index', 'library_albums']) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await db.runAsync(`DELETE FROM ${table};`);
+    } catch {
+      /* table absent on this install — nothing to clear */
+    }
+  }
+}
 
 export async function resetAllStores(): Promise<void> {
   // (Native SSL trust + proxy teardown happens in the logout handler, awaited
@@ -140,24 +154,39 @@ export async function resetAllStores(): Promise<void> {
   // download recovery against a reset store. The next login re-arms them.
   teardownMusicCache();
   teardownImageCache();
+  // Module-scope flags in favoritesSyncService: zustand's `getInitialState()` returns a
+  // memoised object and never re-runs the store initializer, so the reset loop below
+  // cannot clear them.
+  resetFavoritesSyncFlags();
   await clearKvStorage();
-  // Clear the per-row SQLite tables used by albumDetailStore + songIndexStore.
-  // These live in a separate connection (`detailTables.ts`) from the generic
-  // `storage` key-value table that `clearKvStorage()` wipes, so they would
-  // otherwise persist stale rows across logout.
-  await clearDetailTables();
-  // albumLibraryStore is row-based now (`library_albums`), in its own table;
-  // wipe it here so the browse list doesn't survive logout.
-  await clearLibraryAlbumsAsync();
-  // completedScrobbleStore also persists to a per-row table (`scrobble_events`)
-  // in its own connection; truncate it here so logged-out state is clean.
+  await clearLegacyBlobTables();
+  // The normalized model is the sole source of truth — wipe it too so a different
+  // account/server can't see the previous account's library after logout (downloads +
+  // blobs are cleared here as well, so a full reset is consistent).
+  const normDb = getDb();
+  if (normDb) {
+    // `resetNormalizedSchema` is `withTransactionSync` — its `BEGIN` runs on the JS
+    // thread and hard-fails if a batch's savepoint is open on the pool. Wait for the
+    // pool to be write-idle first, and never let a failure here abort the rest of the
+    // teardown (scrobbles, the music cache, the image cache and the store resets all
+    // follow).
+    await awaitDbWritesIdle();
+    try {
+      resetNormalizedSchema(normDb);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('[resetAllStores] normalized schema reset failed:', e);
+    }
+  }
+  // completedScrobbleStore also persists to a per-row table (`scrobble_events`);
+  // truncate it here so logged-out state is clean.
   await clearScrobbles();
   // pendingScrobbleStore persists to `pending_scrobble_events`; truncate
   // here so the offline transmit queue doesn't survive logout.
   await clearPendingScrobbles();
   // musicCacheStore persists its four v2 tables (cached_songs, cached_items,
-  // cached_item_songs, download_queue) in yet another connection; truncate
-  // them here and drop the settings blob too.
+  // cached_item_songs, download_queue); truncate them here and drop the
+  // settings blob too.
   await clearMusicCacheTables();
   kvStorage.removeItem('substreamer-music-cache-settings');
   // imageCacheStore persists the `cached_images` table; the service-owned

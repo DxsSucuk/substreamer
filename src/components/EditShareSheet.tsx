@@ -131,7 +131,7 @@ export function EditShareSheet() {
     return t('share');
   }, [share, t]);
 
-  // `coverArt`-value based cover art (see src/utils/coverArtId.ts). (#202)
+  // `coverArt`-value based cover art (see src/utils/coverArtId.ts).
   // Share's first entry is a song-level Child; resolve its song cover.
   const firstEntry = share?.entry?.[0];
   const coverArtId = firstEntry ? resolveSongCoverArt(firstEntry) : undefined;

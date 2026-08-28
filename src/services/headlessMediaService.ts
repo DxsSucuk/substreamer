@@ -5,14 +5,14 @@
  * taps/voice to the app's `playTrack()` (which carries all app bookkeeping —
  * offline filtering, streaming, artwork, scrobble). Registered at bootstrap
  * (AFTER `configure()`) so a cold car / Siri / Assistant wake is served before
- * any UI mounts. Mirrors the RNQP demo's `headlessMediaService.ts` lifecycle:
+ * any UI mounts. Lifecycle:
  *   installHeadlessMediaService → registerPlaybackService(() => handler) + pushSnapshot,
  *   push on onCarConnect, re-install on onServiceReady('service-reborn').
  *
  * The four sections (platform ~4-tab limit): Home (curated album lists, offline
  * recomposed via homeSectionsService), Favorites (flat songs), Albums (A–Z
- * buckets), Playlists. See src/services/headlessMediaService.helpers.ts for the id scheme
- * + A–Z bucketing, and plans/carplay-android-auto.md for the full design.
+ * buckets), Playlists. See src/services/headlessMediaService.helpers.ts for the
+ * id scheme + A–Z bucketing.
  */
 import type {
   BrowseItem,
@@ -39,20 +39,29 @@ import {
   findAlbum,
   findArtistSongs,
 } from './searchService';
-import { getLocalTrackUri } from './musicCacheService';
 import { logVoiceSearch } from './voiceSearchLogger';
 import { scoreCandidate, REJECT } from './searchMatch';
-import { composeHomeAlbumSections } from './homeSectionsService';
-import { albumLibraryStore } from '../store/albumLibraryStore';
-import { playlistLibraryStore } from '../store/playlistLibraryStore';
+import { composeHomeAlbumSections, type ComposeHomeInput } from './homeSectionsService';
+import { getDb } from '../store/persistence/db';
+import {
+  listAllAlbums,
+  albumBrowseRowToAlbumID3,
+  albumListRowToAlbumID3,
+} from '../db/repository/albums';
+import { listAllStarredSongs, listStarredArtistNames, starredItemOf } from '../db/repository/favorites';
+import { listAllPlaylists, playlistBrowseRowToPlaylist } from '../db/repository/playlists';
+import {
+  listDownloadedAlbumIds,
+  listDownloadedAlbums,
+  listDownloadedPlaylistIds,
+} from '../db/repository/downloads';
 import { favoritesStore } from '../store/favoritesStore';
 import { albumListsStore } from '../store/albumListsStore';
-import { albumDetailStore } from '../store/albumDetailStore';
-import { playlistDetailStore } from '../store/playlistDetailStore';
+import { fetchAlbumDetail, fetchPlaylistDetail } from './detailFetchService';
 import { offlineModeStore } from '../store/offlineModeStore';
+import { syncStatusStore } from '../store/syncStatusStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
-import { albumPassesDownloadedFilter } from '../store/persistence/cachedItemHelpers';
 import { awaitKvHydration, rehydrateAllStores } from '../store/persistence/rehydrate';
 import i18n from '../i18n/i18n';
 import {
@@ -85,32 +94,56 @@ function isOffline(): boolean {
   return offlineModeStore.getState().offlineMode;
 }
 
-/** Library albums, filtered to downloaded when offline. */
-function albumSet(): AlbumID3[] {
-  const albums = albumLibraryStore.getState().albums;
+/** All library albums from the normalized `albums` table (sort-title order). This is a
+ *  WHOLE-TABLE load — the car browse tree needs the full A–Z set to bucket it. */
+async function allAlbums(): Promise<AlbumID3[]> {
+  const db = getDb();
+  return db ? (await listAllAlbums(db)).map(albumBrowseRowToAlbumID3) : [];
+}
+
+/** All playlists from the normalized `playlists` table. */
+async function allPlaylists(): Promise<Playlist[]> {
+  const db = getDb();
+  return db ? (await listAllPlaylists(db)).map(playlistBrowseRowToPlaylist) : [];
+}
+
+/** Library albums, filtered to downloaded when offline. MEMBERSHIP, not visibility: these
+ *  albums came from the library table and already carry their metadata, so an item row in
+ *  `cached_items` is all "downloaded" means (see `downloads.ts`). */
+async function albumSet(): Promise<AlbumID3[]> {
+  const albums = await allAlbums();
   if (!isOffline()) return albums;
-  const cachedItems = musicCacheStore.getState().cachedItems;
+  const db = getDb();
+  if (!db) return [];
   const includePartial = layoutPreferencesStore.getState().includePartialInDownloadedFilter;
-  return albums.filter((a) => albumPassesDownloadedFilter(a, cachedItems, includePartial));
+  const downloadedIds = await listDownloadedAlbumIds(db, { includePartial });
+  return albums.filter((a) => downloadedIds.has(a.id));
 }
 
-/** Favorite songs, filtered to downloaded when offline. */
-function favoriteSongs(): Child[] {
-  const songs = favoritesStore.getState().songs;
-  if (!isOffline()) return songs;
-  return songs.filter((s) => getLocalTrackUri(s.id) != null);
+/** Favorite songs, filtered to downloaded when offline. ONE ordering, shared by the
+ *  browse rows (display-capped) and `resolvePlayback` (full list) — `favTrackId(i)`
+ *  indexes across both, so they must agree row for row. */
+async function favoriteSongs(): Promise<Child[]> {
+  const db = getDb();
+  if (!db) return [];
+  return (await listAllStarredSongs(db, { downloadedOnly: isOffline() })).map(starredItemOf);
 }
 
-/** Playlists, filtered to cached when offline (playlists download atomically). */
-function playlistSet(): Playlist[] {
-  const pls = playlistLibraryStore.getState().playlists;
+/** Playlists, filtered to downloaded when offline. MEMBERSHIP, exactly like `albumSet`:
+ *  these playlists came from the library table and already carry their metadata, so an
+ *  item row in `cached_items` is all "downloaded" means. No partial gate — playlists
+ *  download atomically. */
+async function playlistSet(): Promise<Playlist[]> {
+  const pls = await allPlaylists();
   if (!isOffline()) return pls;
-  const cachedItems = musicCacheStore.getState().cachedItems;
-  return pls.filter((p) => p.id in cachedItems);
+  const db = getDb();
+  if (!db) return [];
+  const downloadedIds = await listDownloadedPlaylistIds(db);
+  return pls.filter((p) => downloadedIds.has(p.id));
 }
 
-function azItems(): AzItem[] {
-  return albumSet().map((a) => ({
+async function azItems(): Promise<AzItem[]> {
+  return (await albumSet()).map((a) => ({
     id: a.id,
     title: a.name,
     coverArt: a.coverArt ?? undefined,
@@ -118,21 +151,41 @@ function azItems(): AzItem[] {
   }));
 }
 
-function homeInput() {
+/**
+ * The `ComposeHomeInput` for the car's Home section. Async because both downloaded
+ * reads are SQL; costless here, since there is no UI to flash an empty state at.
+ */
+async function homeInput(): Promise<ComposeHomeInput> {
   const offline = isOffline();
   const lists = albumListsStore.getState();
+  const includePartial = layoutPreferencesStore.getState().includePartialInDownloadedFilter;
+  const db = getDb();
+  // Two different predicates, both from the never-reaped download tables (offline-safe):
+  // the Downloaded Albums body needs renderable metadata (VISIBILITY), the curated-list
+  // filter only needs ids because those albums carry their own (MEMBERSHIP).
+  // ORDERED by SQL under the phone's own album-sort preference, so the browse tree and
+  // the Home screen show the same sequence.
+  const sortOrder = layoutPreferencesStore.getState().albumSortOrder;
+  const [downloadedAlbums, downloadedAlbumIds]: [AlbumID3[], ReadonlySet<string>] = db
+    ? await Promise.all([
+        listDownloadedAlbums(db, { includePartial, sortOrder }).then((rs) =>
+          rs.map(albumListRowToAlbumID3),
+        ),
+        listDownloadedAlbumIds(db, { includePartial }),
+      ])
+    : [[], new Set<string>()];
   return {
     recentlyAdded: lists.recentlyAdded,
     recentlyPlayed: lists.recentlyPlayed,
     frequentlyPlayed: lists.frequentlyPlayed,
     randomSelection: lists.randomSelection,
-    allLibraryAlbums: albumLibraryStore.getState().albums,
+    downloadedAlbums,
     offlineMode: offline,
     downloadedOnly: offline,
     favoritesOnly: false,
-    starredAlbums: favoritesStore.getState().albums,
-    cachedItems: musicCacheStore.getState().cachedItems,
-    includePartial: layoutPreferencesStore.getState().includePartialInDownloadedFilter,
+    // `favoritesOnly` is hard-coded false above, so the composer never reads this.
+    starredAlbumIds: new Set<string>(),
+    downloadedAlbumIds,
   };
 }
 
@@ -143,7 +196,7 @@ function homeInput() {
 /**
  * Row artwork via the app's SHARED resolver (`resolveDisplayImage`) — the same
  * file:// cache → server-URL decision (offline/remote-failed-gated) `CachedImage`
- * uses. Keyed off the entity's coverArt VALUE (never the id — #202).
+ * uses. Keyed off the entity's coverArt VALUE, never its id.
  */
 async function resolveRowArtwork(coverArtValue: string | undefined): Promise<string | undefined> {
   if (!coverArtValue) return undefined;
@@ -223,7 +276,7 @@ async function trackRows(
 async function buildSnapshot(): Promise<BrowseSnapshot> {
   // Home: curated album lists (offline recomposed — drop Random, add
   // Downloaded Albums, filter to downloaded) — one drill row per non-empty list.
-  const homeItems: BrowseItem[] = composeHomeAlbumSections(homeInput())
+  const homeItems: BrowseItem[] = composeHomeAlbumSections(await homeInput())
     .filter((s) => s.albums.length > 0)
     .map((s) => ({
       id: listId(s.type),
@@ -234,16 +287,16 @@ async function buildSnapshot(): Promise<BrowseSnapshot> {
 
   // Favorites: flat playable songs (display-capped; play uses the same list).
   const favItems = await trackRows(
-    favoriteSongs().slice(0, CAR_MAX_ITEMS_PER_NODE),
+    (await favoriteSongs()).slice(0, CAR_MAX_ITEMS_PER_NODE),
     favTrackId,
   );
 
   // Albums: A–Z letter buckets first (mandatory — libraries exceed the cap).
-  const albumItems = albumLetterRows(azItems());
+  const albumItems = albumLetterRows(await azItems());
 
   // Playlists: shown directly (display-capped; play loads the full list).
   const playlistItems = await Promise.all(
-    playlistSet().slice(0, CAR_MAX_ITEMS_PER_NODE).map(playlistRow),
+    (await playlistSet()).slice(0, CAR_MAX_ITEMS_PER_NODE).map(playlistRow),
   );
 
   const sections: BrowseSection[] = [
@@ -269,11 +322,30 @@ async function buildSnapshot(): Promise<BrowseSnapshot> {
 /*  Drilldown resolution                                               */
 /* ------------------------------------------------------------------ */
 
+/**
+ * In offline mode, drop album tracks with no downloaded file. The app greys these
+ * out instead (`TrackRow`'s `isOfflineUnplayable`), but a car list has no useful
+ * disabled state — an unplayable row just invites a tap that does nothing.
+ *
+ * Albums only: they are the sole item type with a partial download state
+ * (`isPartialAlbum`), so a downloaded playlist or favorites set always holds every
+ * track and has nothing to filter.
+ *
+ * Applied inside `albumSongs` so browse, play and voice see the SAME list — the
+ * browse media ids encode a position (`albumTrackId(id, i)`) that playback resolves
+ * against, so filtering one caller and not another would play the wrong track.
+ */
+function playableOffline(songs: Child[]): Child[] {
+  if (!offlineModeStore.getState().offlineMode) return songs;
+  const cached = musicCacheStore.getState().cachedSongs;
+  return songs.filter((s) => s.id in cached);
+}
+
 /** Album tracks via the SHARED offline-aware `fetchAlbum` — same function + source
  *  the app's album screen uses (online → server; offline → persisted detail cache). */
 async function albumSongs(id: string): Promise<Child[]> {
   try {
-    return (await albumDetailStore.getState().fetchAlbum(id))?.song ?? [];
+    return playableOffline((await fetchAlbumDetail(id))?.song ?? []);
   } catch (e) {
     console.warn(`${LOG_TAG} fetchAlbum(${id}) failed:`, e);
     return [];
@@ -284,7 +356,7 @@ async function albumSongs(id: string): Promise<Child[]> {
  *  source the app's playlist screen uses (online → server; offline → detail cache). */
 async function playlistSongs(id: string): Promise<Child[]> {
   try {
-    return (await playlistDetailStore.getState().fetchPlaylist(id))?.entry ?? [];
+    return (await fetchPlaylistDetail(id))?.entry ?? [];
   } catch (e) {
     console.warn(`${LOG_TAG} fetchPlaylist(${id}) failed:`, e);
     return [];
@@ -296,13 +368,15 @@ async function resolveBrowseChildren(parentId: string): Promise<BrowseItem[]> {
   const p = parseMediaId(parentId);
   switch (p.kind) {
     case 'list': {
-      const section = composeHomeAlbumSections(homeInput()).find((s) => s.type === p.list);
+      const section = composeHomeAlbumSections(await homeInput()).find((s) => s.type === p.list);
       return Promise.all((section?.albums ?? []).map(albumRow));
     }
-    case 'azLetter':
-      return resolveAlbumLetterNode(albumsForLetter(azItems(), p.letter), p.letter, toAzAlbumRow);
+    case 'azLetter': {
+      const items = await azItems();
+      return resolveAlbumLetterNode(albumsForLetter(items, p.letter), p.letter, toAzAlbumRow);
+    }
     case 'azBucket':
-      return Promise.all(albumsForBucket(azItems(), p.letter, p.lo, p.hi).map(toAzAlbumRow));
+      return Promise.all(albumsForBucket(await azItems(), p.letter, p.lo, p.hi).map(toAzAlbumRow));
     case 'album':
       return trackRows(await albumSongs(p.albumId), (i) => albumTrackId(p.albumId, i));
     case 'playlist':
@@ -351,15 +425,15 @@ async function resolvePlayback(mediaId: string): Promise<ResolvedPlayback> {
       return { queue, startIndex: clampIndex(p.index, queue), sourcePlaylistId: p.ctxId };
     }
     // fav
-    const queue = favoriteSongs();
+    const queue = await favoriteSongs();
     return { queue, startIndex: clampIndex(p.index, queue), sourcePlaylistId: null };
   }
   return { queue: [], startIndex: 0, sourcePlaylistId: null };
 }
 
-function findPlaylistByName(name: string): Playlist | undefined {
+async function findPlaylistByName(name: string): Promise<Playlist | undefined> {
   const target = name.trim().toLowerCase();
-  const pls = playlistSet();
+  const pls = await playlistSet();
   return (
     pls.find((p) => p.name.trim().toLowerCase() === target) ??
     pls.find((p) => p.name.trim().toLowerCase().includes(target))
@@ -455,7 +529,7 @@ async function resolveVoice(request: MediaSearchRequest): Promise<Child[]> {
   logVoiceSearch(`intent=${intent}`);
 
   if (intent === 'playlist') {
-    const pl = findPlaylistByName(request.playlist?.trim() || request.query);
+    const pl = await findPlaylistByName(request.playlist?.trim() || request.query);
     if (pl) {
       const songs = await playlistSongs(pl.id);
       if (songs.length) {
@@ -551,14 +625,15 @@ function uniqueSorted(values: string[]): string[] {
   return Array.from(new Set(values)).sort((a, b) => baseCollator.compare(a, b));
 }
 
-function donateVocabulary(): void {
+async function donateVocabulary(): Promise<void> {
   try {
+    const [albums, playlists] = await Promise.all([allAlbums(), allPlaylists()]);
+    const db = getDb();
     const artists = uniqueSorted([
-      ...albumLibraryStore.getState().albums.map((a) => a.artist).filter((a): a is string => !!a),
-      ...favoritesStore.getState().artists.map((a) => a.name),
+      ...albums.map((a) => a.artist).filter((a): a is string => !!a),
+      ...(db ? await listStarredArtistNames(db) : []),
     ]);
-    const playlists = playlistLibraryStore.getState().playlists.map((p) => p.name);
-    getTrackPlayer().donateVoiceVocabulary({ artists, playlists });
+    getTrackPlayer().donateVoiceVocabulary({ artists, playlists: playlists.map((p) => p.name) });
   } catch (e) {
     console.warn(`${LOG_TAG} donateVoiceVocabulary failed:`, e);
   }
@@ -577,7 +652,7 @@ async function pushSnapshot(): Promise<void> {
     }
     // Siri vocabulary is iOS SiriKit (INVocabulary) — phone-side, independent of any
     // car connection — so it is NOT car-gated (unlike the browse snapshot above).
-    donateVocabulary();
+    await donateVocabulary();
   } catch (e) {
     console.warn(`${LOG_TAG} pushSnapshot failed:`, e);
   }
@@ -624,6 +699,8 @@ const handler: PlaybackServiceHandler = {
 let installed = false;
 let subscribed = false;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+/** Set once the initial hydrate-then-push has run; gates `scheduleRefresh`. */
+let dataReady = false;
 /** Store-subscription disposers, captured so `__test.reset()` can tear them down. */
 const headlessSubscriptions: Array<() => void> = [];
 /** Memoized full-hydration promise (see `ensureHeadlessDataReady`). */
@@ -634,7 +711,9 @@ let dataReadyPromise: Promise<void> | null = null;
  *  (anti-refresh-loop). `pushSnapshot` re-checks the live connection at fire time,
  *  so a mid-window disconnect makes the deferred push a no-op. */
 function scheduleRefresh(): void {
-  if (refreshTimer || !getTrackPlayer().isCarConnected()) return;
+  // Hydration replaces whole store slices, which every subscription below reads as a
+  // change. Ignore refreshes until the post-hydration push has already gone out.
+  if (!dataReady || refreshTimer || !getTrackPlayer().isCarConnected()) return;
   refreshTimer = setTimeout(() => {
     refreshTimer = null;
     void pushSnapshot();
@@ -672,6 +751,7 @@ function ensureHeadlessDataReady(): Promise<void> {
 /** Hydrate the full store set, then push the now-populated browse snapshot. */
 async function hydrateThenPush(): Promise<void> {
   await ensureHeadlessDataReady();
+  dataReady = true;
   void pushSnapshot();
 }
 
@@ -706,7 +786,21 @@ export function installHeadlessMediaService(): void {
     headlessSubscriptions.push(
       albumListsStore.subscribe(scheduleRefresh),
       favoritesStore.subscribe(scheduleRefresh),
-      playlistLibraryStore.subscribe(scheduleRefresh),
+      // Library data changed (album/artist/playlist sync, playlist create/rename/delete).
+      // Compare the stamp rather than subscribing bare: syncStatusStore ticks on every
+      // cursor write during a sync.
+      syncStatusStore.subscribe((state, prev) => {
+        if (state.libraryLastUpdatedAt !== prev.libraryLastUpdatedAt) scheduleRefresh();
+      }),
+      // Offline, the whole tree filters on the downloaded set, so a download finishing or
+      // an item being deleted while already offline otherwise never reaches the car.
+      // Totals, not `cachedItems` identity: re-hydration rebuilds that object with the
+      // same contents, which would arm a redundant whole-table rebuild on every launch.
+      musicCacheStore.subscribe((state, prev) => {
+        if (state.totalFiles !== prev.totalFiles || state.totalBytes !== prev.totalBytes) {
+          scheduleRefresh();
+        }
+      }),
     );
   }
 }
@@ -738,6 +832,7 @@ export const __test = {
     }
     installed = false;
     subscribed = false;
+    dataReady = false;
     dataReadyPromise = null;
   },
 };

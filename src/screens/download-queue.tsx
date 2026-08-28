@@ -16,6 +16,7 @@ import ReorderableList, {
   type ReorderableListReorderEvent,
 } from 'react-native-reorderable-list';
 import Animated, {
+  runOnJS,
   useAnimatedStyle,
   useSharedValue,
   withTiming,
@@ -34,6 +35,8 @@ import {
   musicCacheStore,
   type DownloadQueueItem,
 } from '../store/musicCacheStore';
+import { connectivityStore } from '../store/connectivityStore';
+import { offlineModeStore } from '../store/offlineModeStore';
 import { computeQueueItemProgress } from '../store/persistence/cachedItemHelpers';
 import { formatSpeed } from '../utils/formatters';
 
@@ -125,11 +128,15 @@ const QueueRow = memo(function QueueRow({
   colors,
   onRemove,
   onRetry,
+  onGrabHandle,
+  onReleaseHandle,
 }: {
   item: DownloadQueueItem;
   colors: ReturnType<typeof useTheme>['colors'];
   onRemove: (queueId: string) => void;
   onRetry: (queueId: string) => void;
+  onGrabHandle: () => void;
+  onReleaseHandle: () => void;
 }) {
   const { t } = useTranslation();
   const drag = useReorderableDrag();
@@ -222,7 +229,15 @@ const QueueRow = memo(function QueueRow({
           </View>
 
           {isQueued && (
-            <Pressable onPressIn={drag} hitSlop={8} style={styles.dragHandle}>
+            <Pressable
+              onPressIn={() => {
+                onGrabHandle();
+                drag();
+              }}
+              onPressOut={onReleaseHandle}
+              hitSlop={8}
+              style={styles.dragHandle}
+            >
               <Ionicons name="reorder-three" size={28} color={colors.textSecondary} />
             </Pressable>
           )}
@@ -373,6 +388,30 @@ export function DownloadQueueScreen() {
 
   /* ---- Render ---- */
 
+  /**
+   * Suppresses list scrolling for as long as the drag handle is held.
+   *
+   * `useReorderableDrag` only disables scrolling after `startDrag` round-trips
+   * JS -> UI -> JS, and the library composes its pan as
+   * `Gesture.Simultaneous(Gesture.Native(), pan)` — so the native scroll stays live
+   * across that window and claims any finger movement inside it, scrolling the list
+   * instead of picking the row up. Grabbing the handle is unambiguous intent, so cut
+   * scrolling at touch-down instead of racing.
+   *
+   * Released on press-out AND on drag-end: a tap that never becomes a drag fires only
+   * the former, and a pan that steals the Pressable's responder only the latter.
+   *
+   * `onDragEnd` is invoked on the UI runtime, so it must be a worklet that hops back to
+   * JS itself — the prop's type is a plain signature and will not enforce this.
+   */
+  const [handleHeld, setHandleHeld] = useState(false);
+  const grabHandle = useCallback(() => setHandleHeld(true), []);
+  const releaseHandle = useCallback(() => setHandleHeld(false), []);
+  const releaseHandleOnDragEnd = useCallback(() => {
+    'worklet';
+    runOnJS(setHandleHeld)(false);
+  }, []);
+
   const renderItem = useCallback(
     ({ item }: { item: DownloadQueueItem }) => (
       <QueueRow
@@ -380,9 +419,11 @@ export function DownloadQueueScreen() {
         colors={colors}
         onRemove={handleRemove}
         onRetry={handleRetry}
+        onGrabHandle={grabHandle}
+        onReleaseHandle={releaseHandle}
       />
     ),
-    [colors, handleRemove, handleRetry],
+    [colors, handleRemove, handleRetry, grabHandle, releaseHandle],
   );
 
   const keyExtractor = useCallback(
@@ -402,12 +443,42 @@ export function DownloadQueueScreen() {
     [downloadQueue],
   );
 
+  // Why is nothing downloading? Offline mode parks the queue by design; an unreachable
+  // server leaves items retrying. Either way the user sees a stalled list, so say which.
+  const offlineMode = offlineModeStore((st) => st.offlineMode);
+  const serverReachable = connectivityStore((st) => st.isServerReachable);
+  const hasConnection = connectivityStore((st) => st.hasConnection);
+  const pausedReason: 'offline' | 'unreachable' | null =
+    downloadQueue.length === 0
+      ? null
+      : offlineMode
+        ? 'offline'
+        : !hasConnection || !serverReachable
+          ? 'unreachable'
+          : null;
+
   const listHeader = useMemo(
     () =>
       downloadQueue.length > 0 ? (
-        <DownloadStatsCard colors={colors} queuedCount={queuedCount} />
+        <>
+          {pausedReason && (
+            <View style={[styles.pausedNotice, { backgroundColor: colors.card }]}>
+              <Ionicons
+                name={pausedReason === 'offline' ? 'cloud-offline-outline' : 'warning-outline'}
+                size={18}
+                color={colors.primary}
+              />
+              <Text style={[styles.pausedText, { color: colors.textSecondary }]}>
+                {pausedReason === 'offline'
+                  ? t('downloadsPausedOffline')
+                  : t('downloadsPausedUnreachable')}
+              </Text>
+            </View>
+          )}
+          <DownloadStatsCard colors={colors} queuedCount={queuedCount} />
+        </>
       ) : null,
-    [downloadQueue.length, colors, queuedCount],
+    [downloadQueue.length, colors, queuedCount, pausedReason, t],
   );
 
   const contentStyle = useMemo(
@@ -426,6 +497,8 @@ export function DownloadQueueScreen() {
         renderItem={renderItem}
         keyExtractor={keyExtractor}
         onReorder={handleReorder}
+        onDragEnd={releaseHandleOnDragEnd}
+        scrollEnabled={!handleHeld}
         onScrollBeginDrag={closeOpenRow}
         ListHeaderComponent={listHeader}
         ListEmptyComponent={listEmpty}
@@ -480,6 +553,19 @@ const styles = StyleSheet.create({
     width: StyleSheet.hairlineWidth,
     height: 48,
     opacity: 0.6,
+  },
+  pausedNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 12,
+  },
+  pausedText: {
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 18,
   },
   headerRight: {
     flexDirection: 'row',

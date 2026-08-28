@@ -1,14 +1,3 @@
-// `persistence/db.ts` imports `expo-sqlite` at module load; stub it.
-jest.mock('expo-sqlite', () => ({
-  openDatabaseSync: () => ({
-    getFirstSync: () => undefined,
-    getAllSync: () => [],
-    runSync: () => {},
-    execSync: () => {},
-    withTransactionSync: (fn: () => void) => fn(),
-  }),
-}));
-
 jest.mock('react-native', () => ({
   AppState: {
     addEventListener: jest.fn(() => ({ remove: jest.fn() })),
@@ -86,6 +75,8 @@ jest.mock('../musicCacheService', () => ({
 
 jest.mock('../../store/musicCacheStore', () => ({
   musicCacheStore: { getState: jest.fn(() => ({ cachedSongs: {} })) },
+  // Nothing downloaded here, so the queue builder's completion pass is a pass-through.
+  completeSongFromCache: (song: unknown) => song,
 }));
 
 const mockOfflineMode = { offlineMode: false };
@@ -96,19 +87,19 @@ jest.mock('../../store/offlineModeStore', () => ({
 jest.mock('../subsonicService');
 
 const mockPersistQueue = jest.fn();
+const mockPersistCurrentIndex = jest.fn();
 const mockClearPersistedQueue = jest.fn();
 const mockGetPersistedQueue = jest.fn().mockReturnValue(null);
 const mockGetPersistedPosition = jest.fn().mockReturnValue(null);
 
 jest.mock('../queuePersistenceService', () => ({
   persistQueue: (...args: unknown[]) => mockPersistQueue(...args),
+  persistCurrentIndex: (...args: unknown[]) => mockPersistCurrentIndex(...args),
   persistPositionIfDue: jest.fn(),
   flushPosition: jest.fn(),
   clearPersistedQueue: () => mockClearPersistedQueue(),
   getPersistedQueue: () => mockGetPersistedQueue(),
   getPersistedPosition: () => mockGetPersistedPosition(),
-  resetPersistTimer: jest.fn(),
-  PERSIST_INTERVAL_MS: 10_000,
 }));
 
 import { playbackSettingsStore } from '../../store/playbackSettingsStore';

@@ -165,10 +165,10 @@ describe('albumListsStore', () => {
     });
   });
 
-  // #148 — home-screen lists weren't auto-refreshing on launch/foreground.
-  // refreshAllIfDue is the gated entry point: respects offline, server
-  // reachability, and a minimum-since-last-refresh interval to avoid
-  // refresh storms on background/foreground flips.
+  // refreshAllIfDue is the gated entry point for home-screen list auto-refresh
+  // on launch/foreground: respects offline, server reachability, and a
+  // minimum-since-last-refresh interval to avoid refresh storms on
+  // background/foreground flips.
   describe('refreshAllIfDue', () => {
     beforeEach(() => {
       mockGetRecentlyAdded.mockResolvedValue([]);

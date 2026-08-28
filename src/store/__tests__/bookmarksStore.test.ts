@@ -72,6 +72,17 @@ describe('bookmarksStore', () => {
       expect(partialized).not.toHaveProperty('addBookmark');
       expect(partialized).not.toHaveProperty('mergeBookmarks');
     });
+
+    it('drops the bookmarks blob once the rows are authoritative, keeping the prefs', () => {
+      bookmarksStore.getState().addBookmark(makeBookmark('b1'));
+      bookmarksStore.setState({ sqlAuthoritative: true });
+      const partialized = (bookmarksStore as any).persist
+        .getOptions()
+        .partialize(bookmarksStore.getState());
+      expect(partialized).not.toHaveProperty('bookmarks');
+      expect(partialized).toHaveProperty('autoName');
+      expect(partialized).toHaveProperty('sortOrder');
+    });
   });
 
   describe('mergeBookmarks', () => {

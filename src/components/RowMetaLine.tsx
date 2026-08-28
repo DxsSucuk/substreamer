@@ -29,9 +29,6 @@ export const ICON_SLOT_WIDTH = 22;
  *     "99:59" (5 chars). The narrower slot removes the dead space to the
  *     left of the time text inside the slot, freeing horizontal room for
  *     the title column.
- *
- * The clock icon that used to live in this slot was dropped to widen the
- * title column on song/track rows.
  */
 export const DURATION_SLOT_WIDTH = 48;
 const DURATION_SLOT_WIDTH_TRACK = 40;

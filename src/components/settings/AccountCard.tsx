@@ -12,14 +12,18 @@ import { clearMusicCache } from '../../services/musicCacheService';
 import { clearQueue } from '../../services/playerService';
 import { stopPolling } from '../../services/scanService';
 import { clearAllNativeTrust } from '../../services/sslTrustService';
-import { clearApiCache, login } from '../../services/subsonicService';
+import { clearApiCache, ensureCoverArtAuth, login } from '../../services/subsonicService';
 import { authStore } from '../../store/authStore';
 import { deviceIdentityStore } from '../../store/deviceIdentityStore';
+import { processingOverlayStore } from '../../store/processingOverlayStore';
 import { resetAllStores } from '../../store/resetAllStores';
 import { serverInfoStore } from '../../store/serverInfoStore';
 import { ChangePasswordSheet } from './ChangePasswordSheet';
 import { EditDeviceNameSheet } from './EditDeviceNameSheet';
 import { SettingsSectionTitle } from './SettingsSectionTitle';
+
+/** Minimum time the logout overlay stays up before the move to login. */
+const LOGOUT_OVERLAY_MIN_MS = 2000;
 
 export function AccountCard() {
   const { t } = useTranslation();
@@ -59,6 +63,9 @@ export function AccountCard() {
       if (result.success) {
         authStore.getState().setLegacyAuth(next);
         clearApiCache();
+        // `legacyAuth` changes the token's FORM (enc:-hex vs salted MD5), so the dropped
+        // token is invalid rather than merely missing — re-mint it now.
+        void ensureCoverArtAuth();
         alert(t('legacyAuthentication'), t('legacyAuthVerified'));
       } else {
         alert(t('error'), result.error || t('legacyAuthValidationFailed'));
@@ -68,19 +75,41 @@ export function AccountCard() {
   );
 
   const handleLogout = useCallback(async () => {
-    clearQueue();
-    stopPolling();
-    clearApiCache();
-    // Clear the NATIVE trust store + stop the proxy BEFORE resetting JS state /
-    // navigating to login. The native store is what the URLProtocol swizzle /
-    // OkHttp actually enforce; awaiting here (rather than fire-and-forget) means
-    // a self-signed re-login re-prompts instead of racing a still-trusted cert.
-    await clearAllNativeTrust();
-    await resetAllStores();
-    await clearImageCache();
-    await clearMusicCache();
-    router.replace('/login');
-  }, [router]);
+    const startedAt = Date.now();
+    processingOverlayStore.getState().show(t('loggingOut'));
+    // Yield one macrotask so the overlay actually paints first. The teardown below
+    // takes seconds and partly blocks the JS thread, so without this the first frame
+    // showing the overlay never lands and logout looks like it did nothing.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    try {
+      clearQueue();
+      stopPolling();
+      clearApiCache();
+      // Clear the NATIVE trust store + stop the proxy BEFORE resetting JS state /
+      // navigating to login. The native store is what the URLProtocol swizzle /
+      // OkHttp actually enforce; awaiting here (rather than fire-and-forget) means
+      // a self-signed re-login re-prompts instead of racing a still-trusted cert.
+      await clearAllNativeTrust();
+      await resetAllStores();
+      await clearImageCache();
+      await clearMusicCache();
+      // Hold the overlay for a minimum beat BEFORE moving to login. A fresh install
+      // with little to clear finishes almost instantly, and the overlay flashing up
+      // and vanishing reads as a glitch rather than as work being done.
+      const elapsed = Date.now() - startedAt;
+      if (elapsed < LOGOUT_OVERLAY_MIN_MS) {
+        await new Promise((resolve) => setTimeout(resolve, LOGOUT_OVERLAY_MIN_MS - elapsed));
+      }
+      // Clear the history behind us first — `replace` only swaps the top route, so
+      // without this a back gesture (or the Android back button) walks straight back
+      // into the settings screen of a logged-out app. `dismissAll` pops to the root,
+      // then `replace` swaps that for login, leaving login as the only route.
+      if (router.canDismiss()) router.dismissAll();
+      router.replace('/login');
+    } finally {
+      processingOverlayStore.getState().hide();
+    }
+  }, [router, t]);
 
   const maskedPassword = password ? '•'.repeat(password.length) : '';
 

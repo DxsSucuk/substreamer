@@ -79,10 +79,10 @@ describe('useDownloadStatus', () => {
       expect(result.current).toBe('partial');
     });
 
-    it('returns "complete" for a real single-track album (1 of 1) — fixes #159', () => {
-      // expectedSongCount is now authoritative (server-fetched at write
-      // time), so a 1/1 row reflects a real single-track album. The old
-      // heuristic that forced this to "partial" caused #159.
+    it('returns "complete" for a real single-track album (1 of 1)', () => {
+      // expectedSongCount is authoritative (server-fetched at write time), so a
+      // 1/1 row reflects a real single-track album — forcing it to "partial"
+      // would misreport every genuine single.
       musicCacheStore.setState({
         cachedItems: {
           a1: makeItem({ songIds: ['s1'], expectedSongCount: 1 }),

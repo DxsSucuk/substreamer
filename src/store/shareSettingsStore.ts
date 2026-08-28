@@ -40,9 +40,9 @@ function getPrimaryServerUrl(): string | null {
  *
  * Solves two problems:
  *  - Some servers (e.g. Navidrome reached on a non-default port) return a share
- *    `url` with the port stripped from the host, producing an unusable link
- *    (#208). We restore the origin we actually connect to, which carries the
- *    correct port.
+ *    `url` with the port stripped from the host, producing an unusable link.
+ *    We restore the origin we actually connect to, which carries the correct
+ *    port.
  *  - When the user has configured an alternate public share base URL, we swap
  *    the origin to that instead.
  *

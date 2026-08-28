@@ -2,7 +2,7 @@ import Ionicons from "@react-native-vector-icons/ionicons/static";
 import { useIsFocused } from "expo-router/react-navigation";
 import { FlashList } from '@shopify/flash-list';
 import { useRouter } from 'expo-router';
-import { Fragment, useCallback, useEffect, useMemo, useRef } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Pressable,
   ScrollView,
@@ -31,7 +31,14 @@ import { computeStreaks, dateKey } from '../hooks/usePlaybackAnalytics';
 import { useTheme } from '../hooks/useTheme';
 import type { AlbumID3, Playlist } from '../services/subsonicService';
 import { composeHomeAlbumSections } from '../services/homeSectionsService';
-import { albumLibraryStore } from '../store/albumLibraryStore';
+import { albumListRowToAlbumID3 } from '../db/repository/albums';
+import {
+  listDownloadedAlbumIds,
+  listDownloadedAlbums,
+  listDownloadedPlaylists,
+} from '../db/repository/downloads';
+import { playlistListRowToPlaylist } from '../db/repository/playlists';
+import { getDb } from '../store/persistence/db';
 import {
   albumListsStore,
   type AlbumListType,
@@ -44,7 +51,6 @@ import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { LIST_LENGTH_DISPLAY_CAP } from '../store/layoutPreferencesStore';
 import { offlineModeStore } from '../store/offlineModeStore';
-import { playlistLibraryStore } from '../store/playlistLibraryStore';
 import { searchStore } from '../store/searchStore';
 
 import { absoluteFill } from '../utils/styles';
@@ -53,13 +59,17 @@ const CARD_GAP = 12;
 // Stable module-level separator so FlashList isn't handed a fresh component
 // identity on every render of each horizontal section.
 const CardSeparator = () => <View style={{ width: CARD_GAP }} />;
-// Render off-screen items eagerly so horizontal FlashLists nested below the
-// vertical home-screen ScrollView paint before the user scrolls them into
-// view. Without this, FlashList v2's lazy viewport measurement under the
-// New Architecture leaves the cards blank until a scroll event triggers a
-// re-measure (kill + restart was the only way to recover). Matches the
-// 300px used by AlbumListView / PlaylistListView / ArtistListView.
+// Render off-screen items eagerly so the horizontal FlashLists nested inside the
+// vertical home ScrollView paint before the user scrolls them into view. Without it,
+// FlashList v2's lazy viewport measurement leaves the cards blank until some scroll
+// event forces a re-measure. Matches AlbumListView / PlaylistListView / ArtistListView.
 const HORIZONTAL_DRAW_DISTANCE = 300;
+
+// Every carousel below passes `maintainVisibleContentPosition={{ disabled: true }}`.
+// FlashList v2 enables it by default, anchoring the viewport to a previously-visible
+// item; these carousels have their data REPLACED wholesale (filter toggle, section
+// refresh, sync), so the anchor lands at a different index and parks the list where
+// there is nothing to draw — only a manual scroll recovers it.
 
 const SECTION_CONFIG: Record<
   AlbumListType,
@@ -145,9 +155,10 @@ function AlbumSection({
     () => albums.filter((a) => a.id).slice(0, LIST_LENGTH_DISPLAY_CAP),
     [albums],
   );
+
   const onRefresh = useCallback(() => {
     config.refresh();
-  }, [listType]);
+  }, [config]);
   const onSeeMore = useCallback(() => {
     router.push({ pathname: '/album-list', params: { type: listType } });
   }, [listType, router]);
@@ -211,10 +222,9 @@ function AlbumSection({
         <SectionPlaceholder message={t(config.emptyMessageKey)} colors={colors} />
       ) : (
         <FlashList
-          // Guard against entries with a falsy id: keyExtractor returns
-          // `item.id`, so an id-less item yields an `undefined` key that
-          // corrupts FlashList recycling (a stuck-placeholder vector). Such a
-          // card can't render art, cache, or navigate anyway — drop it.
+          // `listData` drops entries with a falsy id: keyExtractor returns `item.id`,
+          // and an undefined key corrupts FlashList recycling into stuck placeholders.
+          // Such a card can't render art, cache, or navigate anyway.
           data={listData}
           renderItem={renderItem}
           keyExtractor={keyExtractor}
@@ -222,6 +232,8 @@ function AlbumSection({
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.horizontalList}
           ItemSeparatorComponent={CardSeparator}
+          // Data replaced wholesale — see the note on HORIZONTAL_DRAW_DISTANCE above.
+          maintainVisibleContentPosition={{ disabled: true }}
           drawDistance={HORIZONTAL_DRAW_DISTANCE}
         />
       )}
@@ -232,9 +244,13 @@ function AlbumSection({
 function DownloadedAlbumSection({
   albums,
   colors,
+  loading,
 }: {
   albums: AlbumID3[];
   colors: ReturnType<typeof useTheme>['colors'];
+  /** The SQL read is in flight — hold the placeholder back rather than claim "nothing
+   *  downloaded" before the answer is known. */
+  loading: boolean;
 }) {
   const { t } = useTranslation();
   const renderItem = useCallback(
@@ -251,7 +267,9 @@ function DownloadedAlbumSection({
         {t('downloadedAlbums')}
       </Text>
       {albums.length === 0 ? (
-        <SectionPlaceholder message={t('downloadAlbumsOffline')} colors={colors} />
+        loading ? null : (
+          <SectionPlaceholder message={t('downloadAlbumsOffline')} colors={colors} />
+        )
       ) : (
         <FlashList
           data={albums}
@@ -261,6 +279,8 @@ function DownloadedAlbumSection({
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.horizontalList}
           ItemSeparatorComponent={CardSeparator}
+          // Data replaced wholesale — see the note on HORIZONTAL_DRAW_DISTANCE above.
+          maintainVisibleContentPosition={{ disabled: true }}
           drawDistance={HORIZONTAL_DRAW_DISTANCE}
         />
       )}
@@ -271,9 +291,12 @@ function DownloadedAlbumSection({
 function PlaylistSection({
   playlists,
   colors,
+  loading,
 }: {
   playlists: Playlist[];
   colors: ReturnType<typeof useTheme>['colors'];
+  /** See `DownloadedAlbumSection` — same in-flight guard. */
+  loading: boolean;
 }) {
   const { t } = useTranslation();
   const renderItem = useCallback(
@@ -290,7 +313,9 @@ function PlaylistSection({
         {t('downloadedPlaylists')}
       </Text>
       {playlists.length === 0 ? (
-        <SectionPlaceholder message={t('downloadPlaylistsOffline')} colors={colors} />
+        loading ? null : (
+          <SectionPlaceholder message={t('downloadPlaylistsOffline')} colors={colors} />
+        )
       ) : (
         <FlashList
           data={playlists}
@@ -300,6 +325,8 @@ function PlaylistSection({
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.horizontalList}
           ItemSeparatorComponent={CardSeparator}
+          // Data replaced wholesale — see the note on HORIZONTAL_DRAW_DISTANCE above.
+          maintainVisibleContentPosition={{ disabled: true }}
           drawDistance={HORIZONTAL_DRAW_DISTANCE}
         />
       )}
@@ -381,12 +408,66 @@ export function HomeScreen() {
   const offlineMode = offlineModeStore((s) => s.offlineMode);
   const downloadedOnly = filterBarStore((s) => s.downloadedOnly);
   const favoritesOnly = filterBarStore((s) => s.favoritesOnly);
-  const cachedItems = musicCacheStore((s) => s.cachedItems);
-  const starredAlbums = favoritesStore((s) => s.albums);
+  // `revision` is the download tables' change signal. The three reads below are SQL, and
+  // SQL has no Zustand subscription — without this a completing download leaves both
+  // Downloaded sections AND the curated-list filter silently stale.
+  const revision = musicCacheStore((s) => s.revision);
+  const starredAlbumIds = favoritesStore((s) => s.albumIds);
   const includePartial = layoutPreferencesStore((s) => s.includePartialInDownloadedFilter);
+  const albumSortOrder = layoutPreferencesStore((s) => s.albumSortOrder);
 
-  const allLibraryAlbums = albumLibraryStore((s) => s.albums);
-  const allPlaylists = playlistLibraryStore((s) => s.playlists);
+  // The Downloaded sections come from the never-reaped download tables (bounded,
+  // offline-safe), not the paged library. One effect covers all three: they share a
+  // trigger, and one loading flag keeps the two sections, the curated-list filter and
+  // the whole-screen empty state from disagreeing about whether the answer is known.
+  //
+  // The id set is the MEMBERSHIP predicate (`cached_items` alone) that filters the curated
+  // lists, whose albums arrive from the album-lists store already carrying their metadata;
+  // the two row reads are VISIBILITY (they must be renderable). See `downloads.ts`.
+  const [downloadedAlbumRows, setDownloadedAlbumRows] = useState<AlbumID3[]>([]);
+  const [downloadedPlaylistRows, setDownloadedPlaylistRows] = useState<Playlist[]>([]);
+  const [downloadedAlbumIds, setDownloadedAlbumIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  // `albumSortOrder` is part of the key because the ORDER BY is the DB's: changing the
+  // preference re-reads rather than re-sorting what we hold.
+  const downloadedKey = `${includePartial}:${revision}:${albumSortOrder}`;
+  // DERIVED, not seeded (see `album-library-list.tsx`): a mount-time seed only runs once,
+  // so turning the Downloaded filter on later would render one empty-and-not-loading frame
+  // and flash "No downloaded music" over the whole screen.
+  const downloadedLoading = downloadedOnly && loadedKey !== downloadedKey;
+  useEffect(() => {
+    if (!downloadedOnly) return;
+    let alive = true;
+    void (async () => {
+      const db = getDb();
+      const [albums, playlists, ids]: [AlbumID3[], Playlist[], ReadonlySet<string>] = db
+        ? await Promise.all([
+            listDownloadedAlbums(db, { includePartial, sortOrder: albumSortOrder }).then((rs) =>
+              rs.map(albumListRowToAlbumID3),
+            ),
+            listDownloadedPlaylists(db).then((rs) => rs.map(playlistListRowToPlaylist)),
+            listDownloadedAlbumIds(db, { includePartial }),
+          ])
+        : [[], [], new Set<string>()];
+      if (!alive) return;
+      setDownloadedAlbumRows(albums);
+      setDownloadedPlaylistRows(playlists);
+      setDownloadedAlbumIds(ids);
+      setLoadedKey(downloadedKey);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [downloadedOnly, includePartial, revision, albumSortOrder, downloadedKey]);
+
+  // Both reads come back ORDERED (SQL, on the stored `sort_*` keys). The guard stays:
+  // the rows outlive a filter toggle-off, and the sections must empty with the filter.
+  const downloadedAlbums = useMemo(
+    () => (downloadedOnly ? downloadedAlbumRows : []),
+    [downloadedOnly, downloadedAlbumRows],
+  );
 
   // Which album lists appear (order + downloaded/favorites filtering + offline
   // drop-Random + Downloaded Albums) is owned by the shared homeSectionsService
@@ -398,39 +479,46 @@ export function HomeScreen() {
         recentlyPlayed,
         frequentlyPlayed,
         randomSelection,
-        allLibraryAlbums,
+        downloadedAlbums,
         offlineMode,
         downloadedOnly,
         favoritesOnly,
-        starredAlbums,
-        cachedItems,
-        includePartial,
+        starredAlbumIds,
+        downloadedAlbumIds,
       }),
     [
       recentlyAdded,
       recentlyPlayed,
       frequentlyPlayed,
       randomSelection,
-      allLibraryAlbums,
+      downloadedAlbums,
       offlineMode,
       downloadedOnly,
       favoritesOnly,
-      starredAlbums,
-      cachedItems,
-      includePartial,
+      starredAlbumIds,
+      downloadedAlbumIds,
     ],
   );
 
   const hasAnyFilters = downloadedOnly || favoritesOnly;
 
-  const downloadedPlaylists = useMemo(() => {
-    if (!downloadedOnly) return [];
-    // Playlists don't have a "partial" state — they download atomically.
-    return allPlaylists.filter((p) => p.id in cachedItems);
-  }, [downloadedOnly, allPlaylists, cachedItems]);
+  // Playlists download atomically (no partial state), so the read carries no gate; it
+  // comes back A-Z on the stored `sort_title`. Never-reaped source, independent of the
+  // paged library.
+  const downloadedPlaylists = useMemo(
+    () => (downloadedOnly ? downloadedPlaylistRows : []),
+    [downloadedOnly, downloadedPlaylistRows],
+  );
 
-  const offlineEmpty = useMemo(() => {
-    if (!downloadedOnly) return false;
+  // Every album section emptied by the active filter(s). Individual sections emptied by a
+  // filter are hidden rather than placeheld (see the render below), so without this a
+  // Favourites filter with nothing starred leaves a screen of missing sections and no
+  // explanation for their absence.
+  const filteredEmpty = useMemo(() => {
+    if (!hasAnyFilters) return false;
+    // "Nothing downloaded" is only true once the reads have answered — otherwise entering
+    // the filter replaces the whole screen with the empty state for a frame.
+    if (downloadedLoading) return false;
     const hasDownloadedAlbums = albumSections.some(
       (s) => s.type === 'downloadedAlbums' && s.albums.length > 0,
     );
@@ -438,21 +526,32 @@ export function HomeScreen() {
     return albumSections
       .filter((s) => s.type !== 'downloadedAlbums')
       .every((s) => s.albums.length === 0);
-  }, [downloadedOnly, albumSections, downloadedPlaylists]);
+  }, [hasAnyFilters, downloadedLoading, albumSections, downloadedPlaylists]);
 
   return (
     <View style={styles.container}>
-      {offlineEmpty ? (
-        <EmptyState
-          icon="cloud-offline-outline"
-          title={t('noDownloadedMusic')}
-        >
-          <Text style={[styles.emptySubtitle, { color: colors.textSecondary }]}>
-            {t('noDownloadedMusicHintBefore')}{' '}
-            <DownloadedIcon size={15} circleColor={colors.primary} arrowColor="#fff" />
-            {' '}{t('noDownloadedMusicHintAfter')}
-          </Text>
-        </EmptyState>
+      {filteredEmpty ? (
+        // The Downloaded filter keeps its own copy — "download something" is more
+        // actionable than "adjust your filters", and the chip is locked offline anyway.
+        // Reaching the other branch means Favourites is the only filter on.
+        downloadedOnly ? (
+          <EmptyState
+            icon="cloud-offline-outline"
+            title={t('noDownloadedMusic')}
+          >
+            <Text style={[styles.emptySubtitle, { color: colors.textSecondary }]}>
+              {t('noDownloadedMusicHintBefore')}{' '}
+              <DownloadedIcon size={15} circleColor={colors.primary} arrowColor="#fff" />
+              {' '}{t('noDownloadedMusicHintAfter')}
+            </Text>
+          </EmptyState>
+        ) : (
+          <EmptyState
+            icon="heart-outline"
+            title={t('noMatchesForFilters')}
+            subtitle={t('tryAdjustingFilters')}
+          />
+        )
       ) : (
         <ScrollView
           style={styles.scroll}
@@ -568,8 +667,16 @@ export function HomeScreen() {
               // immediately followed by the downloaded-playlists section.
               return (
                 <Fragment key={section.type}>
-                  <DownloadedAlbumSection albums={section.albums} colors={colors} />
-                  <PlaylistSection playlists={downloadedPlaylists} colors={colors} />
+                  <DownloadedAlbumSection
+                    albums={section.albums}
+                    colors={colors}
+                    loading={downloadedLoading}
+                  />
+                  <PlaylistSection
+                    playlists={downloadedPlaylists}
+                    colors={colors}
+                    loading={downloadedLoading}
+                  />
                 </Fragment>
               );
             }

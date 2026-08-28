@@ -1,25 +1,17 @@
 /**
  * Eager local-play-stats updater.
  *
- * When a scrobble fires (song played to completion, exclusions passed), we
- * mutate the local copies of the song and its album everywhere they live so
- * the UI reflects the new play count + last-played date without waiting for
- * a server round-trip. Pull-to-refresh on any of these stores replaces the
- * local blob with the server response, so reconciliation is automatic: if
- * the server is ahead, the local values are overwritten; if the server is
- * still catching up, the local eager values carry until the next refresh.
+ * When a scrobble fires (song played to completion, exclusions passed), bump the
+ * local play count + last-played date for the song and its album so the UI reflects
+ * the play without waiting for a server round-trip. A later refresh overwrites these
+ * with the server response, so reconciliation is automatic.
  *
- * This module has a single public entry point, `applyLocalPlay(song)`, that
- * fans out to every store that may hold a copy of the row. Stores no-op
- * when the row isn't present — there is nothing to update, hence nothing to
- * go stale.
+ * Single public entry point: `applyLocalPlay(song)`.
  */
 
-import { albumDetailStore } from '../store/albumDetailStore';
-import { albumLibraryStore } from '../store/albumLibraryStore';
-import { artistDetailStore } from '../store/artistDetailStore';
-import { favoritesStore } from '../store/favoritesStore';
-import { playlistDetailStore } from '../store/playlistDetailStore';
+import { bumpAlbumPlayStats } from '../db/repository/albums';
+import { bumpSongPlayStats } from '../db/repository/songs';
+import { getDb } from '../store/persistence/db';
 import { type Child } from './subsonicService';
 
 /**
@@ -32,12 +24,7 @@ export type PlayerPlayStatListener = (songId: string, now: string) => void;
 
 let playerPlayStatListener: PlayerPlayStatListener | null = null;
 
-/**
- * Subscribe the player's ephemeral-state updater to play-stat events.
- * `playerService` calls this once at module load to wire `applyLocalPlay`
- * → `applyLocalPlayToPlayer` without the reverse import that would close
- * the playerService ↔ scrobbleService ↔ playStatsService cycle.
- */
+/** Subscribe the player's ephemeral-state updater to play-stat events. */
 export function registerPlayerPlayStatListener(
   listener: PlayerPlayStatListener | null,
 ): void {
@@ -55,12 +42,14 @@ export function applyLocalPlay(song: Child): void {
   const songId = song.id;
   const albumId = song.albumId;
 
-  // Persistent stores that hold this song's metadata.
-  albumDetailStore.getState().applyLocalPlay(songId, albumId, now);
-  playlistDetailStore.getState().applyLocalPlay(songId, now);
-  favoritesStore.getState().applyLocalPlay(songId, albumId, now);
-  albumLibraryStore.getState().applyLocalPlay(albumId, now);
-  artistDetailStore.getState().applyLocalPlay(songId, albumId, now);
+  // Every list that renders play stats reads the normalized rows, so these scalar
+  // bumps are the whole update path: a targeted +1 UPDATE on the song and its album,
+  // no child-table churn. Best-effort; no-op if the row isn't synced yet.
+  const db = getDb();
+  if (db) {
+    void bumpSongPlayStats(db, songId, now).catch(() => { /* best-effort */ });
+    if (albumId) void bumpAlbumPlayStats(db, albumId, now).catch(() => { /* best-effort */ });
+  }
 
   // Ephemeral player state — the currently-displayed track copy.
   playerPlayStatListener?.(songId, now);

@@ -1,0 +1,13 @@
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+apply plugin: 'expo-module-gradle-plugin'
+
+group = 'expo.modules.scrolltotop'
+version = '1.0.0'
+
+android {
+  namespace "expo.modules.scrolltotop"
+  defaultConfig {
+    minSdkVersion safeExtGet("minSdkVersion", 24)
+  }
+}

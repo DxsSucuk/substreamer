@@ -35,8 +35,10 @@ import {
   type AddToPlaylistTarget,
 } from '../store/addToPlaylistStore';
 import { musicCacheStore } from '../store/musicCacheStore';
-import { playlistDetailStore } from '../store/playlistDetailStore';
-import { playlistLibraryStore } from '../store/playlistLibraryStore';
+import { fetchPlaylistDetail } from '../services/detailFetchService';
+import { refreshPlaylistLibrary } from '../services/normalizedLibrarySync';
+import { getDb } from '../store/persistence/db';
+import { listAllPlaylists, playlistBrowseRowToPlaylist } from '../db/repository/playlists';
 import { processingOverlayStore, runWithOverlay } from '../store/processingOverlayStore';
 
 import type { Playlist } from '../services/subsonicService';
@@ -61,7 +63,7 @@ async function resolveSongIds(target: AddToPlaylistTarget): Promise<string[] | n
 }
 
 function getTargetCoverArt(target: AddToPlaylistTarget): string | undefined {
-  // `coverArt`-value based cover art (see src/utils/coverArtId.ts). (#202)
+  // `coverArt`-value based cover art (see src/utils/coverArtId.ts).
   if (target.type === 'song') return resolveSongCoverArt(target.item);
   if (target.type === 'album') return coverArtForAlbum(target.item);
   const first = target.songs[0];
@@ -87,40 +89,58 @@ export function AddToPlaylistSheet() {
   const visible = addToPlaylistStore((s) => s.visible);
   const target = addToPlaylistStore((s) => s.target);
   const hide = addToPlaylistStore((s) => s.hide);
-  const playlists = playlistLibraryStore((s) => s.playlists);
-  const playlistsLoading = playlistLibraryStore((s) => s.loading);
-  const playlistsFetchError = playlistLibraryStore((s) => s.error);
+  // The pickable playlists come from the normalized `playlists` table (bounded read),
+  // seeded from cache then refreshed from the server on open.
+  const [playlists, setPlaylists] = useState<Playlist[]>([]);
+  const [playlistsLoading, setPlaylistsLoading] = useState(false);
+  const [playlistsFetchError, setPlaylistsFetchError] = useState(false);
 
   const { colors } = useTheme();
   const { t } = useTranslation();
 
-  // Animate content reveal in two phases:
-  // Phase 1 (entry animation): show spinner at a compact height.
-  // Phase 2 (after delay): mount the real content off-screen to measure it,
-  //   then animate the container height from SPINNER_HEIGHT → measured height
-  //   and fade the content in simultaneously.
-  // Phase: 'loading' → 'measuring' → 'ready'
-  // 'loading': spinner shown, compact height
-  // 'measuring': content mounted off-screen to capture its height
-  // 'ready': height + opacity animating in
+  // Reveal runs 'loading' → 'measuring' → 'ready':
+  //   'loading'   — spinner at SPINNER_HEIGHT while the sheet animates in
+  //   'measuring' — content mounted off-screen to capture its natural height
+  //   'ready'     — height animates SPINNER_HEIGHT → measured, content fades in
   const [phase, setPhase] = useState<'loading' | 'measuring' | 'ready'>('loading');
   const hasMeasured = useRef(false);
   const animatedHeight = useSharedValue(SPINNER_HEIGHT);
   const contentOpacity = useSharedValue(0);
 
   useEffect(() => {
-    if (visible) {
-      setPhase('loading');
-      hasMeasured.current = false;
-      animatedHeight.value = SPINNER_HEIGHT;
-      contentOpacity.value = 0;
-      const timer = setTimeout(() => {
-        playlistLibraryStore.getState().fetchAllPlaylists();
-        setPhase('measuring');
-      }, CONTENT_DELAY_MS);
-      return () => clearTimeout(timer);
-    }
-    return undefined;
+    if (!visible) return undefined;
+    setPhase('loading');
+    hasMeasured.current = false;
+    animatedHeight.value = SPINNER_HEIGHT;
+    contentOpacity.value = 0;
+    let alive = true;
+    const timer = setTimeout(async () => {
+      const db = getDb();
+      // Seed with the cached playlists first so the reveal animation measures real
+      // content, THEN measure, THEN refresh from the server (dual-writes normalized).
+      if (db) {
+        const cached = (await listAllPlaylists(db)).map(playlistBrowseRowToPlaylist);
+        if (!alive) return;
+        if (cached.length) setPlaylists(cached);
+      }
+      setPhase('measuring');
+      setPlaylistsLoading(true);
+      setPlaylistsFetchError(false);
+      try {
+        await refreshPlaylistLibrary();
+        if (db && alive) {
+          setPlaylists((await listAllPlaylists(db)).map(playlistBrowseRowToPlaylist));
+        }
+      } catch {
+        if (alive) setPlaylistsFetchError(true);
+      } finally {
+        if (alive) setPlaylistsLoading(false);
+      }
+    }, CONTENT_DELAY_MS);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
   }, [visible, animatedHeight, contentOpacity]);
 
   const transitionToReady = useCallback(() => {
@@ -181,14 +201,15 @@ export function AddToPlaylistSheet() {
           const success = await addToPlaylist(playlist.id, songIds);
           if (!success) throw new Error('API returned false');
 
-          if (playlist.id in playlistDetailStore.getState().playlists) {
-            const updated = await playlistDetailStore.getState().fetchPlaylist(playlist.id);
-            if (updated && playlist.id in musicCacheStore.getState().cachedItems) {
-              syncCachedItemTracks(playlist.id, updated.entry ?? []);
-            }
+          // Only downloaded playlists need a re-fetch here — to re-sync the on-disk
+          // tracks with the added songs. Non-downloaded playlists re-fetch lazily when
+          // their detail screen next opens (local-first).
+          if (playlist.id in musicCacheStore.getState().cachedItems) {
+            const updated = await fetchPlaylistDetail(playlist.id, { force: true });
+            if (updated) syncCachedItemTracks(playlist.id, updated.entry ?? []);
           }
 
-          playlistLibraryStore.getState().fetchAllPlaylists();
+          void refreshPlaylistLibrary();
         },
         { loading: t('adding'), success: t('addedToPlaylist'), error: t('failedToAddToPlaylist') },
       );
@@ -214,7 +235,7 @@ export function AddToPlaylistSheet() {
       if (!success) throw new Error('API returned false');
 
       handleClose();
-      playlistLibraryStore.getState().fetchAllPlaylists();
+      void refreshPlaylistLibrary();
       processingOverlayStore.getState().show(t('creating'));
       processingOverlayStore.getState().showSuccess(t('playlistCreated'));
     } catch {
@@ -274,12 +295,11 @@ export function AddToPlaylistSheet() {
       </View>
 
       {mode === 'create' ? (
-        // Create form lives OUTSIDE the fixed-height measuring container: that
-        // container is overflow:'hidden' and sized to the pick-list's measured
-        // height, which clipped the create button. Here it renders at natural
-        // height in its own scroll view so the button reflows above the keyboard
-        // (#224). This is not the node measured by handleContentLayout, so the
-        // pick-list reveal animation is untouched.
+        // The create form must stay OUTSIDE the measuring container: that container is
+        // overflow:'hidden' at the pick-list's measured height, which clips the create
+        // button. Its own scroll view renders at natural height so the button reflows
+        // above the keyboard, and it isn't the node handleContentLayout measures, so
+        // the pick-list reveal animation is unaffected.
         <ScrollView
           style={styles.flexContainer}
           contentContainerStyle={styles.formSection}

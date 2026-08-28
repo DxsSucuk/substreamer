@@ -244,7 +244,7 @@ export async function refreshProxyInfo(): Promise<void> {
   }
 }
 
-/** Test seam — set the in-memory proxy cache directly. */
+/** Test-only — set the in-memory proxy cache directly. */
 export function __setProxyInfoForTests(info: ProxyInfo | null): void {
   cachedProxyInfo = info;
 }

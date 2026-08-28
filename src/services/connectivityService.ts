@@ -41,7 +41,7 @@ function invokeHook(hook: ConnectivityHook | null, tag: string): void {
 // on its own, a network change triggers an immediate ping (handleNetInfoChange),
 // foreground resume re-pings, and the moment any ping fails we drop to the
 // UNREACHABLE cadence below. So a frequent healthy poll buys little and keeps the
-// radio warm (battery, #200); 60s is plenty for the idle backstop.
+// radio warm (battery); 60s is plenty for the idle backstop.
 const PING_INTERVAL_REACHABLE_MS = 60_000;
 const PING_INTERVAL_UNREACHABLE_MS = 5_000;
 const PING_TIMEOUT_MS = 5_000;
@@ -266,7 +266,7 @@ function handleNetInfoChange(state: NetInfoState): void {
 
   // WiFi emits frequent events for signal-strength / BSSID-roaming changes
   // that don't alter connectivity. Re-ping only when isConnected / type
-  // actually change, so that churn doesn't become a server-ping storm (#200).
+  // actually change, so that churn doesn't become a server-ping storm.
   // The heartbeat (schedulePing) still catches server-side outages between
   // these events.
   const netKey = `${state.isConnected}:${state.type}`;
@@ -302,7 +302,7 @@ export function startMonitoring(): void {
       pingServer();
     } else {
       // Background / inactive: stop the heartbeat so it doesn't keep pinging
-      // (and churning on WiFi NetInfo events) during background playback (#200).
+      // (and churning on WiFi NetInfo events) during background playback.
       monitoringPaused = true;
       clearPingTimer();
     }

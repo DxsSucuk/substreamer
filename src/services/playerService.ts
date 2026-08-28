@@ -33,6 +33,7 @@ import { syncProxyUpstreams } from './sslTrustService';
 import { getLocalTrackUri, waitForTrackMapsReady } from './musicCacheService';
 import {
   persistQueue,
+  persistCurrentIndex,
   persistPositionIfDue,
   flushPosition,
   clearPersistedQueue,
@@ -181,7 +182,8 @@ export async function initPlayer(): Promise<void> {
       const child = currentChildQueue.find((c) => c.id === track.id) ?? null;
       playerStore.getState().setCurrentTrack(child, index ?? null);
       if (child) sendNowPlaying(child, trackPlaylistMap.get(child.id));
-      if (index != null && index >= 0) persistQueue(currentChildQueue, index);
+      // The queue is unchanged here — only the cursor moved, so this is one UPDATE.
+      if (index != null && index >= 0) persistCurrentIndex(index);
     } else {
       playerStore.getState().setCurrentTrack(null, null);
     }
@@ -411,10 +413,9 @@ function restorePersistedQueue(): boolean {
 }
 
 /**
- * Load the restored queue into the native engine. A single atomic
- * `setQueue(tracks, startIndex)` (which does NOT auto-play) replaces the
- * former RNTP mute→reset→verify→skip→seek→pause ceremony. The prerequisite
- * waits stay — they resolve local URIs / cover-art auth / the iOS SSL proxy so
+ * Load the restored queue into the native engine with a single atomic
+ * `setQueue(tracks, startIndex)`, which does NOT auto-play. The prerequisite waits
+ * are load-bearing: they resolve local URIs / cover-art auth / the iOS SSL proxy, so
  * downloaded songs use local files rather than server URLs that stall offline.
  */
 async function hydrateRestoredQueue(): Promise<void> {
@@ -562,15 +563,6 @@ export async function skipToNext(): Promise<void> {
 export async function skipToPrevious(): Promise<void> {
   await awaitHydration();
   await tp.skipToPrevious();
-}
-
-/** Whether skip-to-next is possible given current queue position and repeat mode. */
-export function canSkipToNext(): boolean {
-  const { currentTrackIndex, queue } = playerStore.getState();
-  const { repeatMode } = playbackSettingsStore.getState();
-  if (currentTrackIndex == null || queue.length === 0) return false;
-  if (repeatMode !== 'off') return true;
-  return currentTrackIndex < queue.length - 1;
 }
 
 /** Whether skip-to-previous is possible (native restarts the current track if

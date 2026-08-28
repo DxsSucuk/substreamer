@@ -10,6 +10,8 @@
 import { onAppForeground } from '../utils/onAppForeground';
 
 import { completedScrobbleStore } from '../store/completedScrobbleStore';
+import { existingScrobbleIds } from '../store/persistence/scrobbleTable';
+import { completeSongFromCache } from '../store/musicCacheStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { pendingScrobbleStore } from '../store/pendingScrobbleStore';
 import { scrobbleExclusionStore } from '../store/scrobbleExclusionStore';
@@ -71,11 +73,9 @@ export function initScrobbleService(): void {
   const retryInterval = setInterval(processScrobbles, PROCESS_INTERVAL_MS);
   (retryInterval as { unref?: () => void }).unref?.();
 
-  // U17 (facebook/react-native#56324): on Samsung Android the
-  // setInterval above can stop firing while the app is backgrounded
-  // without active audio playback. Re-trigger a processing pass when
-  // the app returns to the foreground so the queue drains promptly
-  // instead of waiting up to a minute (or longer) for the next tick.
+  // On Samsung Android the interval above can stop firing while the app is
+  // backgrounded without active audio playback (facebook/react-native#56324), so
+  // also drain on foreground rather than waiting out the next tick.
   onAppForeground(() => {
     processScrobbles();
   });
@@ -108,14 +108,18 @@ export async function sendNowPlaying(song: Child, playlistId?: string): Promise<
  * Record a completed-playback scrobble.  The item is added to the
  * persisted pending queue and processing is triggered immediately.
  * Skipped silently when the song matches a scrobble exclusion.
+ *
+ * Whatever fed the queue may have built the track from a narrow list projection, so
+ * the gaps are filled from the downloaded row here — a scrobble is a permanent record
+ * and this is the last point before it is written. It also decides the exclusion
+ * correctly, which reads `artistId`. In-memory, so no DB round trip on the audio path.
  */
-export function addCompletedScrobble(song: Child, playlistId?: string): void {
-  if (!song?.id || !song.title) return;
+export function addCompletedScrobble(incoming: Child, playlistId?: string): void {
+  if (!incoming?.id || !incoming.title) return;
+  const song = completeSongFromCache(incoming);
   if (isExcluded(song, playlistId)) return;
-  // Eagerly bump local play-count + last-played across every store that
-  // holds a copy of this song or its album so UI reflects the play before
-  // the server round-trip. Respects the exclusion gate above for free —
-  // excluded plays skip this automatically.
+  // Bump local play-count + last-played so the UI reflects the play before the
+  // server round-trip. Below the exclusion gate, so excluded plays skip it.
   applyLocalPlay(song);
   pendingScrobbleStore.getState().addScrobble(song, Date.now());
   processScrobbles();
@@ -145,9 +149,8 @@ async function processScrobbles(): Promise<void> {
     // Snapshot the queue – iterate over a copy so mutations don't
     // interfere with the loop.
     const pending = [...pendingScrobbleStore.getState().pendingScrobbles];
-    const completedIds = new Set(
-      completedScrobbleStore.getState().completedScrobbles.map((s) => s.id),
-    );
+    // Which of the pending items are already committed as completed.
+    const completedIds = await existingScrobbleIds(pending.map((s) => s.id));
     let anySucceeded = false;
 
     for (const item of pending) {
@@ -184,9 +187,8 @@ async function processScrobbles(): Promise<void> {
       }
     }
 
-    // Refresh the home screen's recently played list if any scrobbles
-    // were submitted so it reflects the latest play history. Routed through
-    // dataSyncService so future change-detection hooks can observe it.
+    // Refresh the home screen's recently played list so it reflects the latest play
+    // history. Routed through dataSyncService so change-detection hooks can observe it.
     if (anySucceeded) {
       onBatchCompleted?.();
     }

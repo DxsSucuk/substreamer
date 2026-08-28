@@ -4,7 +4,7 @@
  * Shared by the Home screen (`src/screens/home.tsx`) and the CarPlay / Android
  * Auto browse tree (`headlessMediaService`) so both agree exactly, especially offline.
  *
- * Rules (mirrors the historical inline `home.tsx` logic):
+ * Rules:
  * - Online, unfiltered: Recently Added / Recently Played / Frequently Played /
  *   Random, in that order.
  * - `downloadedOnly`: prepend a **Downloaded Albums** list (every downloaded
@@ -19,7 +19,6 @@
  */
 import type { AlbumID3 } from './subsonicService';
 import { type AlbumListType } from '../store/albumListsStore';
-import { albumPassesDownloadedFilter } from '../store/persistence/cachedItemHelpers';
 
 /** Album-section identity: one of the curated lists, or the downloaded-albums list. */
 export type HomeAlbumSectionType = AlbumListType | 'downloadedAlbums';
@@ -31,23 +30,28 @@ export interface HomeAlbumSection {
   albums: AlbumID3[];
 }
 
-/** `musicCacheStore.cachedItems` shape — borrowed from the filter predicate. */
-type CachedItems = Parameters<typeof albumPassesDownloadedFilter>[1];
-
 export interface ComposeHomeInput {
   recentlyAdded: AlbumID3[];
   recentlyPlayed: AlbumID3[];
   frequentlyPlayed: AlbumID3[];
   randomSelection: AlbumID3[];
-  /** Full library album list — source for the Downloaded Albums list. */
-  allLibraryAlbums: AlbumID3[];
+  /** The downloaded albums — the body of the Downloaded Albums list, already read (from the
+   *  never-reaped download tables), filtered and sorted by the caller. This is the
+   *  VISIBILITY set and is passed through verbatim; `downloadedAlbumIds` below is a
+   *  different, wider predicate and is deliberately not applied to it. */
+  downloadedAlbums: AlbumID3[];
   offlineMode: boolean;
   downloadedOnly: boolean;
   favoritesOnly: boolean;
-  /** Starred albums — used when `favoritesOnly`. */
-  starredAlbums: AlbumID3[];
-  cachedItems: CachedItems;
-  includePartial: boolean;
+  /** Starred album ids — used when `favoritesOnly`. Ids, not entities: the caller
+   *  already holds the membership set and this only ever does `has()`. */
+  starredAlbumIds: ReadonlySet<string>;
+  /** Downloaded album ids — used when `downloadedOnly`. The MEMBERSHIP set from
+   *  `listDownloadedAlbumIds` (`cached_items` alone, partial gate already applied by the
+   *  caller): the albums here came from elsewhere and already carry their metadata, so an
+   *  item row is all "downloaded" means. A plain set keeps this function pure and
+   *  synchronous while the read behind it is SQL. */
+  downloadedAlbumIds: ReadonlySet<string>;
 }
 
 /** Curated-list order (Random last; dropped offline). */
@@ -64,13 +68,12 @@ export function composeHomeAlbumSections(input: ComposeHomeInput): HomeAlbumSect
     recentlyPlayed,
     frequentlyPlayed,
     randomSelection,
-    allLibraryAlbums,
+    downloadedAlbums,
     offlineMode,
     downloadedOnly,
     favoritesOnly,
-    starredAlbums,
-    cachedItems,
-    includePartial,
+    starredAlbumIds,
+    downloadedAlbumIds,
   } = input;
 
   const lists: Record<AlbumListType, AlbumID3[]> = {
@@ -81,14 +84,12 @@ export function composeHomeAlbumSections(input: ComposeHomeInput): HomeAlbumSect
   };
 
   const hasFilters = downloadedOnly || favoritesOnly;
-  const starredIds = favoritesOnly ? new Set(starredAlbums.map((a) => a.id)) : null;
+  const starredIds = favoritesOnly ? starredAlbumIds : null;
 
   const filterList = (albums: AlbumID3[]): AlbumID3[] => {
     if (!hasFilters) return albums;
     return albums.filter((album) => {
-      if (downloadedOnly && !albumPassesDownloadedFilter(album, cachedItems, includePartial)) {
-        return false;
-      }
+      if (downloadedOnly && !downloadedAlbumIds.has(album.id)) return false;
       if (starredIds && !starredIds.has(album.id)) return false;
       return true;
     });
@@ -100,9 +101,7 @@ export function composeHomeAlbumSections(input: ComposeHomeInput): HomeAlbumSect
     sections.push({
       type: 'downloadedAlbums',
       titleKey: 'downloadedAlbums',
-      albums: allLibraryAlbums.filter((a) =>
-        albumPassesDownloadedFilter(a, cachedItems, includePartial),
-      ),
+      albums: downloadedAlbums,
     });
   }
 

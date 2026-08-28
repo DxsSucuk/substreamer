@@ -38,15 +38,23 @@ import { PillToggle } from '../components/PillToggle';
 import { playAllByArtist, playMoreByArtist, toggleStar } from '../services/moreOptionsService';
 import { shuffleArray } from '../utils/arrayHelpers';
 import { playTrack } from '../services/playerService';
-import { artistDetailStore } from '../store/artistDetailStore';
-import { layoutPreferencesStore, LIST_LENGTH_DISPLAY_CAP } from '../store/layoutPreferencesStore';
+import {
+  fetchArtistBase,
+  fetchArtistBio,
+  fetchArtistInfo,
+  fetchArtistTopSongs,
+} from '../services/detailFetchService';
+import { getDb } from '../store/persistence/db';
+import { getArtistBase } from '../db/repository/details';
+import { subscribeDetailChanged } from '../db/detailNotifier';
+import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import { moreOptionsStore } from '../store/moreOptionsStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { playbackSettingsStore, type ArtistPlayMode } from '../store/playbackSettingsStore';
 
 import {
   type AlbumID3,
-  type ArtistInfo2,
+  type ArtistID3,
   type ArtistWithAlbumsID3,
   type Child,
 } from '../services/subsonicService';
@@ -78,32 +86,85 @@ export function ArtistDetailScreen() {
     if (id) toggleStar('artist', id);
   }, [id]);
 
-  const cachedEntry = artistDetailStore((s) => (id ? s.artists[id] : undefined));
-  const [artist, setArtist] = useState<ArtistWithAlbumsID3 | null>(cachedEntry?.artist ?? null);
-  const [artistInfo, setArtistInfo] = useState<ArtistInfo2 | null>(cachedEntry?.artistInfo ?? null);
-  const [topSongs, setTopSongs] = useState<Child[]>(cachedEntry?.topSongs ?? []);
-  const [biography, setBiography] = useState<string | null>(cachedEntry?.biography ?? null);
+  const [artist, setArtist] = useState<ArtistWithAlbumsID3 | null>(null);
+  const [similarArtists, setSimilarArtists] = useState<ArtistID3[]>([]);
+  const [heroFallbackUrl, setHeroFallbackUrl] = useState<string | undefined>(undefined);
+  const [topSongs, setTopSongs] = useState<Child[]>([]);
+  const [biography, setBiography] = useState<string | null>(null);
   const [bioExpanded, setBioExpanded] = useState(false);
   const [albumSortDesc, setAlbumSortDesc] = useState(
     () => layoutPreferencesStore.getState().artistAlbumSortOrder === 'newest',
   );
+  const [topSongsSettled, setTopSongsSettled] = useState(false);
+  const [bioLoading, setBioLoading] = useState(false);
+  const [refreshNonce, setRefreshNonce] = useState(0);
+  const [hasCache, setHasCache] = useState(false);
+  const [cacheChecked, setCacheChecked] = useState(false);
 
   // Defer heavy sections (top songs, similar artists, albums) until the
   // navigation animation completes so the transition isn't blocked by
   // mounting dozens of CachedImage components synchronously.
-  const ready = useTransitionComplete(!cachedEntry);
+  const ready = useTransitionComplete();
   const isWide = useLayoutMode() === 'wide';
   const refreshControlKey = useRefreshControlKey();
 
-  // Sync local state when the store entry is updated externally (e.g. after
-  // an MBID override triggers a background refetch).
+  // Read the cached detail from the local DB first (fast) — the server fetch only runs on a
+  // genuine miss. The server refresh (fetchArtist) dual-writes normalized + bumps the detail
+  // notifier, so a re-open resolves instantly here and a background MBID-override refetch
+  // re-reads without a store subscription.
   useEffect(() => {
-    if (!cachedEntry) return;
-    setArtist(cachedEntry.artist);
-    setArtistInfo(cachedEntry.artistInfo);
-    setTopSongs(cachedEntry.topSongs);
-    setBiography(cachedEntry.biography);
-  }, [cachedEntry]);
+    if (!id) return;
+    const db = getDb();
+    if (!db) {
+      setCacheChecked(true);
+      return;
+    }
+    let alive = true;
+    const read = () =>
+      getArtistBase(db, id).then((d) => {
+        if (!alive || !d) return;
+        setArtist({ ...d.artist, album: d.albums } as ArtistWithAlbumsID3);
+        // Presence is the repository's rule (albums present, or a known-empty artist) —
+        // never "the row exists", which is true for everything after a list sync.
+        setHasCache(true);
+      });
+    read()
+      .catch(() => { /* treat a read failure as a miss → server fetch */ })
+      .finally(() => { if (alive) setCacheChecked(true); });
+    const unsub = subscribeDetailChanged('artist', id, () => { void read(); });
+    return () => {
+      alive = false;
+      unsub();
+    };
+  }, [id]);
+
+  // The other three parts load independently — `useDetailFetch` only calls `load` on a
+  // base MISS, so routing them through it would leave them unfetched for every artist we
+  // already hold. Each owns its own state and its own failure; none may set the shared
+  // `error`, which would blank a screen that has already rendered its albums.
+  useEffect(() => {
+    if (!id) return;
+    let alive = true;
+    const force = refreshNonce > 0;
+    void fetchArtistInfo(id, { force })
+      .then((info) => {
+        if (!alive || !info) return;
+        setSimilarArtists(info.similarArtist);
+        setHeroFallbackUrl(info.largeImageUrl ?? undefined);
+      })
+      .catch(() => { /* section stays absent */ });
+    setBioLoading(true);
+    void fetchArtistBio(id, { force })
+      .then((bio) => { if (alive && bio) setBiography(bio.biography); })
+      .catch(() => { /* section stays absent */ })
+      .finally(() => { if (alive) setBioLoading(false); });
+    setTopSongsSettled(false);
+    void fetchArtistTopSongs(id, { force })
+      .then((top) => { if (alive) setTopSongs(top?.songs ?? []); })
+      .catch(() => { /* section stays absent */ })
+      .finally(() => { if (alive) setTopSongsSettled(true); });
+    return () => { alive = false; };
+  }, [id, refreshNonce]);
 
   /* ---- Header right: more options button ---- */
   useEffect(() => {
@@ -133,30 +194,31 @@ export function ArtistDetailScreen() {
   }, [artist, navigation, colors.textPrimary, colors.red, starred, offlineMode, handleToggleStar]);
 
   /* ---- Data fetching ---- */
-  const { fetchArtist } = artistDetailStore.getState();
-
   const load = useCallback(async (artistId: string, isRefresh: boolean) => {
-    const entry = await fetchArtist(artistId);
-    if (!entry) {
+    // Base only. The other three parts have their own effect; a pull bumps the nonce so
+    // they re-run forced. `force` here is the local-row bypass — it deliberately does NOT
+    // re-resolve the bio, which would re-hammer MusicBrainz on every pull.
+    if (isRefresh) setRefreshNonce((n) => n + 1);
+    const base = await fetchArtistBase(artistId, { force: isRefresh });
+    if (!base) {
       setArtist(null);
-      setArtistInfo(null);
+      setSimilarArtists([]);
+      setHeroFallbackUrl(undefined);
       setTopSongs([]);
       setBiography(null);
       return t('artistNotFound');
     }
-    setArtist(entry.artist);
-    setArtistInfo(entry.artistInfo);
-    setTopSongs(entry.topSongs);
-    setBiography(entry.biography);
-    if (isRefresh && entry.artist.id) {
-      refreshCoverArt(entry.artist.id, 'artist-detail-pull').catch(() => { /* non-critical */ });
+    setArtist({ ...base.artist, album: base.albums } as ArtistWithAlbumsID3);
+    if (isRefresh && base.artist.id) {
+      refreshCoverArt(base.artist.id, 'artist-detail-pull').catch(() => { /* non-critical */ });
     }
     return null;
-  }, [fetchArtist, t]);
+  }, [t]);
 
   const { loading, refreshing, error, onRefresh } = useDetailFetch({
     id,
-    hasCache: !!cachedEntry,
+    hasCache,
+    cacheChecked,
     missingIdMessage: t('missingArtistId'),
     failedMessage: t('failedToLoadArtist'),
     load,
@@ -164,7 +226,6 @@ export function ArtistDetailScreen() {
 
   /* ---- Derived values ---- */
   const albums = artist?.album ?? [];
-  const similarArtists = artistInfo?.similarArtist ?? [];
 
   const sortedAlbums = useMemo(() => {
     if (albums.length === 0) return albums;
@@ -235,7 +296,7 @@ export function ArtistDetailScreen() {
           <CachedImage
             coverArtId={artist.coverArt}
             size={HERO_COVER_SIZE}
-            fallbackUri={artistInfo?.largeImageUrl ?? undefined}
+            fallbackUri={heroFallbackUrl}
             style={[styles.heroImage, { width: heroImageSize, height: heroImageSize, borderRadius: heroImageSize / 2 }]}
             resizeMode="cover"
           />
@@ -257,7 +318,12 @@ export function ArtistDetailScreen() {
             colors={colors}
           />
           <View style={styles.heroPlayButtons}>
+            {/* Top songs arrive after the base, so an unarrived list must not read as an
+                empty one — that would silently fall through to "more by artist" and play
+                the wrong thing. Only the topSongs mode depends on it; allSongs needs the
+                base alone and stays live. */}
             <ShufflePlayButton
+              disabled={artistPlayMode === 'topSongs' && !topSongsSettled}
               onPress={() => {
                 if (artistPlayMode === 'allSongs') {
                   playAllByArtist(artist.id, artist.name, true);
@@ -270,6 +336,7 @@ export function ArtistDetailScreen() {
               }}
             />
             <PlayAllButton
+              disabled={artistPlayMode === 'topSongs' && !topSongsSettled}
               onPress={() => {
                 if (artistPlayMode === 'allSongs') {
                   playAllByArtist(artist.id, artist.name, false);
@@ -287,6 +354,20 @@ export function ArtistDetailScreen() {
         {ready && (
           <>
             {/* ---- Biography ---- */}
+            {/* The bio is the slowest part — it can fall through to MusicBrainz — so show
+                the section with a spinner while it resolves rather than leaving a gap that
+                looks like the artist simply has no bio. */}
+            {bioLoading && (biography == null || biography.length === 0) && (
+              <View style={styles.section}>
+                <SectionTitle title={t('about')} color={colors.label} />
+                <View style={styles.bioLoading}>
+                  <ActivityIndicator size="small" color={colors.primary} />
+                  <Text style={[styles.bioLoadingText, { color: colors.textSecondary }]}>
+                    {t('loadingBiography')}
+                  </Text>
+                </View>
+              </View>
+            )}
             {biography != null && biography.length > 0 && (
               <View style={styles.section}>
                 <SectionTitle title={t('about')} color={colors.label} />
@@ -311,8 +392,10 @@ export function ArtistDetailScreen() {
             {topSongs.length > 0 && (
               <View style={styles.section}>
                 <SectionTitle title={t('topSongs')} color={colors.label} />
+                {/* Uncapped: the fetch is already bounded by the list-length setting, so what
+                    renders matches what Play/Shuffle queue from. */}
                 <FlashList
-                  data={topSongs.slice(0, LIST_LENGTH_DISPLAY_CAP)}
+                  data={topSongs}
                   renderItem={topSongsRenderItem}
                   keyExtractor={topSongsKeyExtractor}
                   drawDistance={LIST_DRAW_DISTANCE}
@@ -376,7 +459,7 @@ export function ArtistDetailScreen() {
     );
   }, [
     artist,
-    artistInfo,
+    heroFallbackUrl,
     heroImageSize,
     ready,
     biography,
@@ -451,13 +534,10 @@ export function ArtistDetailScreen() {
           showsVerticalScrollIndicator={false}
           contentContainerStyle={[
             styles.content,
-            // Unified paddingTop for iOS + Android. iOS previously used
-            // contentInset+contentOffset to position content under the
-            // floating Stack.Toolbar, but RN 0.85 Fabric recycles
-            // RCTScrollViewComponentView across screen pushes and ignores
-            // contentOffset on a recycled instance — leaving the hero
-            // partly scrolled off the top on subsequent detail pushes.
-            // See album-detail.tsx for the full explanation.
+            // paddingTop on both platforms, never contentInset+contentOffset:
+            // Fabric recycles RCTScrollViewComponentView across screen pushes and
+            // ignores contentOffset on a recycled instance, leaving the hero partly
+            // scrolled off the top. See album-detail.tsx.
             { paddingTop: insets.top + HEADER_BAR_HEIGHT },
           ]}
           refreshControl={
@@ -555,6 +635,15 @@ const styles = StyleSheet.create({
   },
 
   /* Biography */
+  bioLoading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 6,
+  },
+  bioLoadingText: {
+    fontSize: 13,
+  },
   bioText: {
     fontSize: 16,
     lineHeight: 22,

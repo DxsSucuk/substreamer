@@ -9,7 +9,13 @@ const mockDeleteShare = deleteShare as jest.MockedFunction<typeof deleteShare>;
 
 beforeEach(() => {
   jest.clearAllMocks();
-  sharesStore.setState({ shares: [], loading: false, error: null, notAvailable: false });
+  sharesStore.setState({
+    shares: [],
+    loading: false,
+    error: null,
+    notAvailable: false,
+    sqlAuthoritative: false,
+  });
 });
 
 const makeShare = (id: string) => ({ id, url: `https://example.com/${id}` } as any);
@@ -77,6 +83,23 @@ describe('sharesStore', () => {
 
       expect(result).toBe(false);
       expect(sharesStore.getState().shares).toEqual([makeShare('s1')]);
+    });
+  });
+
+  describe('partialize', () => {
+    const partialize = (): Record<string, unknown> =>
+      (sharesStore as any).persist.getOptions().partialize(sharesStore.getState());
+
+    it('persists the shares blob while the rows are unproven, never the actions', () => {
+      sharesStore.setState({ shares: [makeShare('s1')], sqlAuthoritative: false });
+      const partialized = partialize();
+      expect(partialized).toHaveProperty('shares');
+      expect(partialized).not.toHaveProperty('fetchShares');
+    });
+
+    it('drops the shares blob once the rows are authoritative', () => {
+      sharesStore.setState({ shares: [makeShare('s1')], sqlAuthoritative: true });
+      expect(partialize()).toEqual({});
     });
   });
 

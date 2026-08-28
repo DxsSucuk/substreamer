@@ -53,6 +53,12 @@ describe('layoutPreferencesStore', () => {
     expect(layoutPreferencesStore.getState().albumSortOrder).toBe('title');
   });
 
+  it('defaults songSortOrder to title and setSongSortOrder changes it', () => {
+    expect(layoutPreferencesStore.getState().songSortOrder).toBe('title');
+    layoutPreferencesStore.getState().setSongSortOrder('artist');
+    expect(layoutPreferencesStore.getState().songSortOrder).toBe('artist');
+  });
+
   it('setArtistAlbumSortOrder changes artist album sort', () => {
     layoutPreferencesStore.getState().setArtistAlbumSortOrder('oldest');
     expect(layoutPreferencesStore.getState().artistAlbumSortOrder).toBe('oldest');

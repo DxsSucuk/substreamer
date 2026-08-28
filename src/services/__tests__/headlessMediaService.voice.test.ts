@@ -27,9 +27,16 @@ jest.mock('../voiceSearchLogger', () => ({
   logVoiceSearch: (...a: unknown[]) => mockLogVoiceSearch(...a),
 }));
 
+// Album/playlist drilldown goes through the shared normalized detailFetchService.
+jest.mock('../detailFetchService', () => ({
+  fetchAlbumDetail: jest.fn(),
+  fetchPlaylistDetail: jest.fn(),
+}));
+
 import { __test } from '../headlessMediaService';
 import { offlineModeStore } from '../../store/offlineModeStore';
-import { albumDetailStore } from '../../store/albumDetailStore';
+import { musicCacheStore } from '../../store/musicCacheStore';
+import { fetchAlbumDetail } from '../detailFetchService';
 
 const korn = { id: 'sk', title: 'Freak on a Leash', artist: 'Korn', albumId: 'al-1' };
 const other = { id: 'so', title: 'Freak on a Leash', artist: 'Other Band', albumId: 'al-2' };
@@ -54,6 +61,13 @@ beforeEach(() => {
   mockFindArtistSongs.mockReset();
   mockLogVoiceSearch.mockReset();
   offlineModeStore.setState({ offlineMode: true } as any);
+  // These run offline, and album/playlist track lists are filtered to downloaded
+  // songs there — seed the fixtures as downloaded so the filter is a no-op and the
+  // tests stay about intent resolution. Offline filtering itself is covered in
+  // headlessMediaService.test.ts.
+  musicCacheStore.setState({
+    cachedSongs: Object.fromEntries(['sk', 'so', 't1', 't2'].map((id) => [id, {}])),
+  } as any);
 });
 
 describe('resolveVoice — structured-field handling', () => {
@@ -86,8 +100,8 @@ describe('resolveVoice — structured-field handling', () => {
   });
 
   it('locks the artist in FUZZILY via scoreCandidate ("by corn" → Korn, not Other Band)', async () => {
-    // The old code was a case-insensitive substring filter — "corn" would not
-    // match "Korn". scoreCandidate scores it phonetically, so Korn still wins.
+    // A case-insensitive substring filter would not match "corn" to "Korn".
+    // scoreCandidate scores it phonetically, so Korn still wins.
     mockSearchLibrary.mockResolvedValue({ songs: [korn, other], albums: [], artists: [] });
     const songs = await __test.resolveVoice(
       req({ song: 'Freak on a Leash', artist: 'corn', type: 'song' }),
@@ -136,14 +150,11 @@ describe('resolveVoice — album + artist intents', () => {
     mockFindAlbum.mockResolvedValue({ id: 'al-1', name: 'Ten', artist: 'Pearl Jam' });
     const t1 = { id: 't1', title: 'Once', discNumber: 1, track: 1 };
     const t2 = { id: 't2', title: 'Alive', discNumber: 1, track: 2 };
-    // albumSongs() → albumDetailStore.fetchAlbum(); return out-of-order to prove the sort.
-    const spy = jest
-      .spyOn(albumDetailStore.getState(), 'fetchAlbum')
-      .mockResolvedValue({ song: [t2, t1] } as any);
+    // albumSongs() → fetchAlbumDetail(); return out-of-order to prove the sort.
+    (fetchAlbumDetail as jest.Mock).mockResolvedValueOnce({ song: [t2, t1] } as any);
     const songs = await __test.resolveVoice(req({ album: 'Ten', artist: 'Pearl Jam', type: 'album' }));
     expect(mockFindAlbum).toHaveBeenCalledWith('Ten', 'Pearl Jam');
     expect(songs.map((s: any) => s.id)).toEqual(['t1', 't2']); // disc/track order
-    spy.mockRestore();
   });
 
   it('album intent with no match falls through to a song search', async () => {

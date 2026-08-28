@@ -1,23 +1,21 @@
-import { albumDetailStore } from '../albumDetailStore';
 import { errMessage } from '../../utils/errorMessage';
-import { albumLibraryStore } from '../albumLibraryStore';
-import { albumListsStore } from '../albumListsStore';
-import { artistLibraryStore } from '../artistLibraryStore';
+import { albumListsStore, hydrateAlbumListsFromDb } from '../albumListsStore';
 import { autoOfflineStore } from '../autoOfflineStore';
+import { bookmarksStore } from '../bookmarksStore';
 import { completedScrobbleStore } from '../completedScrobbleStore';
 import { favoritesStore } from '../favoritesStore';
 import { genreStore } from '../genreStore';
 import { imageCacheStore } from '../imageCacheStore';
 import { imageDownloadQueueStore } from '../imageDownloadQueueStore';
+import { mbidOverrideStore } from '../mbidOverrideStore';
 import { musicCacheStore } from '../musicCacheStore';
 import { offlineModeStore } from '../offlineModeStore';
 import { pendingScrobbleStore } from '../pendingScrobbleStore';
 import { playbackSettingsStore } from '../playbackSettingsStore';
-import { playlistDetailStore } from '../playlistDetailStore';
-import { playlistLibraryStore } from '../playlistLibraryStore';
 import { scanStatusStore } from '../scanStatusStore';
+import { scrobbleExclusionStore } from '../scrobbleExclusionStore';
 import { serverInfoStore } from '../serverInfoStore';
-import { songIndexStore } from '../songIndexStore';
+import { sharesStore } from '../sharesStore';
 import { syncStatusStore } from '../syncStatusStore';
 
 export interface RehydrationResult {
@@ -39,32 +37,41 @@ export interface RehydrationResult {
  *
  * Each store hydrates independently — no FK-style dependency between them —
  * so they run **concurrently** via `Promise.all`. The per-store SQLite reads
- * (`getAllAsync`/`getFirstAsync`) execute on expo-sqlite's background IO
- * thread, and the JS-side JSON.parse / row-mapping is chunked with
- * `setTimeout(0)` yields inside each `hydrateFromDbAsync`, so boot hydration
- * never blocks the JS thread for long even on a large library. Concurrent
- * reads queue on the native IO dispatcher; correctness is unaffected because
- * each store writes only its own slice of state.
- *
- * Each store hydrates in its own try/catch so a corrupt row in one store
- * cannot block the others; the caller receives a structured result.
+ * (`getAllAsync`/`getFirstAsync`) execute on op-SQLite's pool thread, and the
+ * JS-side JSON.parse / row-mapping is chunked with `setTimeout(0)` yields
+ * inside each `hydrateFromDbAsync`, so boot hydration never blocks the JS
+ * thread for long even on a large library. Concurrent reads queue FIFO on that
+ * one pool thread; correctness is unaffected because each store writes only
+ * its own slice of state.
  *
  * **Not exported from `./index.ts`.** This module imports stores; stores
  * import from `./index.ts` for table helpers. Re-exporting here would
  * create a cycle. Consumers import directly from
  * `'../store/persistence/rehydrate'`.
  *
- * kvStorage-backed stores (favorites, ratings, theme, etc.) aren't covered
- * by this helper — Zustand's `persist` middleware auto-rehydrates them on
- * store creation.
+ * kvStorage-backed stores (ratings, theme, etc.) aren't covered by this
+ * helper — Zustand's `persist` middleware auto-rehydrates them on store
+ * creation.
  */
 export async function rehydrateAllStores(): Promise<RehydrationResult> {
   const result: RehydrationResult = { succeeded: [], failed: [] };
   const stores: Array<[string, () => Promise<void>]> = [
-    ['albumDetail', () => albumDetailStore.getState().hydrateFromDbAsync()],
-    ['albumLibrary', () => albumLibraryStore.getState().hydrateFromDbAsync()],
-    ['songIndex', () => songIndexStore.getState().hydrateFromDbAsync()],
+    // Album lists are ordered ids in `album_list_entries` joined to `albums`, not a KV
+    // blob — the store still persists `lastRefreshedAt`, so it stays in STARTUP_KV_STORES,
+    // but the lists themselves are seeded here.
+    ['albumLists', () => hydrateAlbumListsFromDb()],
+    // The only `persist`-wrapped store here whose DB-hydrated slice is also its
+    // persisted one, so its `hydrateFromDbAsync` waits on `persist.hasHydrated()`
+    // itself before it replaces anything (see the store).
+    ['bookmarks', () => bookmarksStore.getState().hydrateFromDbAsync()],
     ['completedScrobble', () => completedScrobbleStore.getState().hydrateFromDbAsync()],
+    ['favorites', () => favoritesStore.getState().hydrateFromDbAsync()],
+    // All four are `persist`-wrapped over the slice they DB-hydrate, like bookmarks
+    // above, so each waits on its own `persist.hasHydrated()` before replacing anything.
+    ['genres', () => genreStore.getState().hydrateFromDbAsync()],
+    ['shares', () => sharesStore.getState().hydrateFromDbAsync()],
+    ['mbidOverrides', () => mbidOverrideStore.getState().hydrateFromDbAsync()],
+    ['scrobbleExclusions', () => scrobbleExclusionStore.getState().hydrateFromDbAsync()],
     ['pendingScrobble', () => pendingScrobbleStore.getState().hydrateFromDbAsync()],
     ['musicCache', () => musicCacheStore.getState().hydrateFromDbAsync()],
     ['imageCache', () => imageCacheStore.getState().hydrateFromDbAsync()],
@@ -87,10 +94,6 @@ export async function rehydrateAllStores(): Promise<RehydrationResult> {
     // eslint-disable-next-line no-console
     console.warn('[rehydrateAllStores] partial failure', result.failed);
   }
-  // The songs-library list is built by `initSongLibrary` (called from the
-  // deferred-startup chain, after the data-load/refresh tasks settle) and then
-  // kept current by optimistic in-memory patches from `songIndexStore` writes —
-  // no full rebuild on every album-detail sync.
   return result;
 }
 
@@ -110,22 +113,22 @@ export async function rehydrateAllStores(): Promise<RehydrationResult> {
 const STARTUP_KV_STORES = [
   offlineModeStore,
   autoOfflineStore,
-  // albumLibraryStore is NO LONGER here: it's row-based now (not KV-persisted),
-  // so it has no `persist` API to await. Its `hydrateFromDbAsync` runs in
+  // albumLibraryStore is absent by design: it's row-based, not KV-persisted, so it
+  // has no `persist` API to await. Its `hydrateFromDbAsync` runs in
   // `rehydrateAllStores` above (awaited before `onStartup`), and the startup
   // "needs full fetch?" gate reads SQL `COUNT(*)` rather than the in-memory
   // array — so there's no empty-window race to guard here.
-  artistLibraryStore,
-  playlistLibraryStore,
   albumListsStore,
-  favoritesStore,
+  // favoritesStore is absent by design: membership lives in SQL (the `starred` marks +
+  // the `favorite_*` remainder), so it has no `persist` API to await. Its
+  // `hydrateFromDbAsync` runs in `rehydrateAllStores` above, awaited before
+  // `onStartup`.
   genreStore,
   serverInfoStore,
   syncStatusStore,
   scanStatusStore,
-  // Detail/settings caches the headless (car/voice) service reads offline before any
-  // UI mounts — awaited here so a headless start + the app boot both have them ready.
-  playlistDetailStore,
+  // Settings the headless (car/voice) service reads offline before any UI mounts —
+  // awaited here so a headless start + the app boot both have them ready.
   playbackSettingsStore,
 ];
 

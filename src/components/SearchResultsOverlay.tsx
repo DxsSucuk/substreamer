@@ -25,6 +25,7 @@ import {
 } from '../services/subsonicService';
 import { recentSearchStore } from '../store/recentSearchStore';
 import { searchStore } from '../store/searchStore';
+import { overlayStore } from '../store/overlayStore';
 
 import { absoluteFill } from '../utils/styles';
 const COVER_SIZE = 150;
@@ -303,7 +304,15 @@ export function SearchResultsOverlay() {
     [recordCurrent, hideOverlay]
   );
 
-  if (!isOverlayVisible || !query.trim()) return null;
+  // Anything covering the screen claims screen-level input — see `overlayStore`.
+  const covering = isOverlayVisible && query.trim().length > 0;
+  useEffect(() => {
+    if (!covering) return undefined;
+    overlayStore.getState().open();
+    return () => overlayStore.getState().close();
+  }, [covering]);
+
+  if (!covering) return null;
 
   return (
     <View style={[styles.overlay, { top: headerHeight }]}>
@@ -339,6 +348,9 @@ export function SearchResultsOverlay() {
           <ScrollView
             style={styles.scroll}
             contentContainerStyle={styles.scrollContent}
+            // The status-bar tap belongs to the list underneath, not to an overlay sitting
+            // over it. Declining here keeps this out of UIKit's candidate selection.
+            scrollsToTop={false}
             // "always" not "handled": the latter is documented to fire
             // Pressable onPress on the first tap when the keyboard is up,
             // but a known RN/Android quirk swallows the first tap in

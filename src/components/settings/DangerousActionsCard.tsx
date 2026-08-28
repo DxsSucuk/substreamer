@@ -11,11 +11,8 @@ import { clearImageCache } from '../../services/imageCacheService';
 import { clearMusicCache } from '../../services/musicCacheService';
 import { clearQueue } from '../../services/playerService';
 import { checkStorageLimit } from '../../services/storageService';
-import { albumDetailStore } from '../../store/albumDetailStore';
-import { artistDetailStore } from '../../store/artistDetailStore';
 import { imageCacheStore } from '../../store/imageCacheStore';
 import { musicCacheStore } from '../../store/musicCacheStore';
-import { playlistDetailStore } from '../../store/playlistDetailStore';
 import { formatBytes } from '../../utils/formatters';
 
 export function DangerousActionsCard() {
@@ -31,10 +28,6 @@ export function DangerousActionsCard() {
 
   const totalBytes = imageCacheStore((s) => s.totalBytes);
   const musicCacheBytes = musicCacheStore((s) => s.totalBytes);
-  const cachedAlbumCount = albumDetailStore((s) => Object.keys(s.albums).length);
-  const cachedArtistCount = artistDetailStore((s) => Object.keys(s.artists).length);
-  const cachedPlaylistCount = playlistDetailStore((s) => Object.keys(s.playlists).length);
-  const totalMetadataCount = cachedAlbumCount + cachedArtistCount + cachedPlaylistCount;
 
   const handleToggle = useCallback(() => {
     setExpanded((prev) => {
@@ -69,38 +62,6 @@ export function DangerousActionsCard() {
       },
     });
   }, [confirm, t, musicCacheBytes]);
-
-  const handleClearMetadataCache = useCallback(() => {
-    confirm({
-      title: t('clearMetadataCache'),
-      message: t('clearMetadataCacheMessage', { count: totalMetadataCount }),
-      confirmLabel: t('clear'),
-      destructive: true,
-      onConfirm: async () => {
-        await albumDetailStore.getState().clearAlbums();
-        artistDetailStore.getState().clearArtists();
-        playlistDetailStore.getState().clearPlaylists();
-      },
-    });
-  }, [confirm, t, totalMetadataCount]);
-
-  const handleClearAll = useCallback(() => {
-    confirm({
-      title: t('clearAllData'),
-      message: t('clearAllDataMessage'),
-      confirmLabel: t('clearEverything'),
-      destructive: true,
-      onConfirm: async () => {
-        await clearQueue();
-        await clearMusicCache();
-        await clearImageCache();
-        await albumDetailStore.getState().clearAlbums();
-        artistDetailStore.getState().clearArtists();
-        playlistDetailStore.getState().clearPlaylists();
-        checkStorageLimit();
-      },
-    });
-  }, [confirm, t]);
 
   return (
     <View style={settingsStyles.section}>
@@ -138,28 +99,6 @@ export function DangerousActionsCard() {
           >
             <Ionicons name="warning" size={18} color={colors.red} />
             <Text style={[styles.buttonText, { color: colors.red }]}>{t('clearDownloadedMusic')}</Text>
-          </Pressable>
-          <Pressable
-            onPress={handleClearMetadataCache}
-            style={({ pressed }) => [
-              styles.button,
-              { borderColor: colors.red },
-              pressed && settingsStyles.pressed,
-            ]}
-          >
-            <Ionicons name="warning" size={18} color={colors.red} />
-            <Text style={[styles.buttonText, { color: colors.red }]}>{t('clearMetadataCache')}</Text>
-          </Pressable>
-          <Pressable
-            onPress={handleClearAll}
-            style={({ pressed }) => [
-              styles.button,
-              { borderColor: colors.red },
-              pressed && settingsStyles.pressed,
-            ]}
-          >
-            <Ionicons name="warning" size={18} color={colors.red} />
-            <Text style={[styles.buttonText, { color: colors.red }]}>{t('clearAllData')}</Text>
           </Pressable>
         </View>
       )}

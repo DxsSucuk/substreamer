@@ -40,7 +40,10 @@ import { playTrack } from '../services/playerService';
 import { getAlbum } from '../services/subsonicService';
 import { albumListsStore } from '../store/albumListsStore';
 import { completedScrobbleStore } from '../store/completedScrobbleStore';
+import { loadScrobblesSince } from '../store/persistence/scrobbleAggregates';
 import { connectivityStore } from '../store/connectivityStore';
+import { randomStarredSong } from '../db/repository/favorites';
+import { getDb } from '../store/persistence/db';
 import { favoritesStore } from '../store/favoritesStore';
 import { genreStore } from '../store/genreStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
@@ -849,8 +852,7 @@ export function TunedInScreen() {
   const bentoHeroW = bentoCellW * 2 + BENTO_GAP;
 
   const aggregates = completedScrobbleStore((s) => s.aggregates);
-  const completedScrobbles = completedScrobbleStore((s) => s.completedScrobbles);
-  const starredSongs = favoritesStore((s) => s.songs);
+  const favoritesVersion = favoritesStore((s) => s.version);
   const online = !offlineModeStore((s) => s.offlineMode) && connectivityStore((s) => s.isServerReachable);
   const recentlyPlayed = albumListsStore((s) => s.recentlyPlayed);
 
@@ -860,14 +862,11 @@ export function TunedInScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
-  // Smart mixes are computed off the render path. `generateMixes` is an O(n)
-  // pass over the full scrobble history (can be 10k+), so running it inside a
-  // synchronous `useMemo` blocked the navigation transition on mount — the
-  // memo runs before the `!transitionComplete` early return below, so the
-  // heavy work landed on the very frame the transition needed. Instead we
-  // gate on `transitionComplete`, then defer the compute one tick with
-  // `setTimeout(0)` (not rAF — rAF can stall on RN 0.85/Fabric) so the
-  // transition's final frame paints first. `refreshKey` re-rolls the picks.
+  // Smart mixes MUST be computed off the render path: `generateMixes` is an O(n) pass
+  // over the whole scrobble history (10k+), and a synchronous `useMemo` runs before the
+  // `!transitionComplete` early return below, landing the work on the exact frame the
+  // navigation transition needs. Gate on `transitionComplete`, then defer one tick with
+  // `setTimeout(0)` — not rAF, which can stall on Fabric. `refreshKey` re-rolls the picks.
   const [mixes, setMixes] = useState<ReturnType<typeof generateMixes>>([]);
   // True once the deferred mix compute has run at least once. Gating the screen
   // on this (not just `transitionComplete`) prevents a flash where "Jump back in"
@@ -876,8 +875,18 @@ export function TunedInScreen() {
   const [mixesReady, setMixesReady] = useState(false);
   useEffect(() => {
     if (!transitionComplete) return;
-    const handle = setTimeout(() => {
-      const scrobbles = completedScrobbles.map((s) => ({
+    let alive = true;
+    // A BOUNDED recent slice (last 30 days) from SQL feeds the time-window mixes
+    // (Heavy Rotation 7d, time-of-day) — never the full history. All-time patterns
+    // still come from the SQL aggregates above.
+    const RECENT_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+    const handle = setTimeout(async () => {
+      const recent = await loadScrobblesSince(Date.now() - RECENT_WINDOW_MS);
+      if (!alive) return;
+      const db = getDb();
+      const favoritesSeed = db ? await randomStarredSong(db) : null;
+      if (!alive) return;
+      const scrobbles = recent.map((s) => ({
         time: s.time,
         song: s.song as { genre?: string; genres?: unknown[]; artist?: string; artistId?: string },
       }));
@@ -885,18 +894,21 @@ export function TunedInScreen() {
         generateMixes({
           hourBuckets: aggregates.hourBuckets,
           genreCounts: aggregates.genreCounts,
-          songCounts: aggregates.songCounts,
+          songStats: aggregates.songStats,
           artistCounts: aggregates.artistCounts,
           scrobbles,
-          starredSongs,
+          favoritesSeed,
           isOnline: online,
           listLength: layoutPreferencesStore.getState().listLength,
         }),
       );
       setMixesReady(true);
     }, 0);
-    return () => clearTimeout(handle);
-  }, [transitionComplete, aggregates, completedScrobbles, starredSongs, online, refreshKey]);
+    return () => {
+      alive = false;
+      clearTimeout(handle);
+    };
+  }, [transitionComplete, aggregates, favoritesVersion, online, refreshKey]);
 
   // Available genres for the builder
   const builderGenres = useMemo(() => {
@@ -1011,7 +1023,7 @@ export function TunedInScreen() {
                 ))}
               </View>
             ) : (
-              /* Phone: unchanged hero / medium-row / compact-list stack. */
+              /* Phone: hero / medium-row / compact-list stack. */
               <View style={styles.mixList}>
                 {heroMix && <HeroMixCard mix={heroMix} index={0} />}
 

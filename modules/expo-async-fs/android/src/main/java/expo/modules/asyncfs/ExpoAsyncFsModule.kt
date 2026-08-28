@@ -19,6 +19,7 @@ import okio.ForwardingSource
 import okio.Source
 import okio.buffer
 import java.io.File
+import java.io.IOException
 import java.io.FileOutputStream
 
 class ExpoAsyncFsModule : Module() {
@@ -27,9 +28,22 @@ class ExpoAsyncFsModule : Module() {
 
     Events("onDownloadProgress")
 
+    // `File.list()` returns null both for "not a directory" and for an I/O
+    // error, so a missing path and an UNREADABLE one are indistinguishable
+    // downstream. Callers that walk a cache and delete rows for whatever they
+    // don't see must be able to tell those apart, so an existing-but-unreadable
+    // path throws here (matching iOS) while a missing path keeps returning an
+    // empty list — the many callers that list a maybe-absent directory rely on
+    // that.
     AsyncFunction("listDirectoryAsync") { uri: String ->
       val path = Uri.parse(uri).path ?: return@AsyncFunction emptyList<String>()
-      File(path).list()?.toList() ?: emptyList()
+      val file = File(path)
+      val names = file.list()
+      if (names == null) {
+        if (file.exists()) throw IOException("Cannot list directory: $path")
+        return@AsyncFunction emptyList<String>()
+      }
+      names.toList()
     }
 
     AsyncFunction("getDirectorySizeAsync") { uri: String ->
@@ -43,7 +57,11 @@ class ExpoAsyncFsModule : Module() {
     // reconcileImageCache to walk the cover-art cache without blocking JS.
     AsyncFunction("listDirectoryWithSizesAsync") { uri: String ->
       val path = Uri.parse(uri).path ?: return@AsyncFunction emptyList<Bundle>()
-      val entries = File(path).listFiles() ?: return@AsyncFunction emptyList<Bundle>()
+      val dir = File(path)
+      // Same existing-but-unreadable vs missing distinction as listDirectoryAsync.
+      val entries = dir.listFiles()
+        ?: if (dir.exists()) throw IOException("Cannot list directory: $path")
+           else return@AsyncFunction emptyList<Bundle>()
       entries.map { f ->
         bundleOf(
           "name" to f.name,
