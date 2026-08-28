@@ -19,6 +19,9 @@ jobs:
         
       - name: Install expo
         run: npm install expo
+        
+      - name: Install npm dependencies
+        run: npm install
 
       - name: Run prebuild with expo only for android
         run: npx expo prebuild -p android
