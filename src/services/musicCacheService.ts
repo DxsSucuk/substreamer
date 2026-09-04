@@ -131,6 +131,28 @@ function getTrackFileExtension(track: Child): string {
   return 'dat';
 }
 
+/**
+ * Whether an already-cached file can serve a download requested under the
+ * CURRENT download-format setting without re-transcoding.
+ *
+ * Cross-item dedup shares one file per song id, but a copy cached while the
+ * setting kept the original is stale once the user asks for a transcode: the
+ * favourites/playlist lists span songs already downloaded from their albums,
+ * so they silently kept originals after "Download Format → MP3".
+ * An `Original` (raw) request is served by whatever the cache already holds —
+ * converting the whole cache back to server originals on a toggle would be a
+ * full re-download — so only an explicit transcode/lossless target forces a
+ * format match and re-transfers a stale copy.
+ */
+function cachedFileMatchesSetting(
+  existing: { suffix?: string },
+  track: Child,
+): boolean {
+  const { downloadFormat } = playbackSettingsStore.getState();
+  if (downloadFormat === 'raw') return true;
+  return existing.suffix === getTrackFileExtension(track);
+}
+
 /* ------------------------------------------------------------------ */
 /*  Module state                                                       */
 /* ------------------------------------------------------------------ */
@@ -975,11 +997,15 @@ export async function enqueueSongDownload(song: Child): Promise<void> {
   }
 
   const state = musicCacheStore.getState();
-  // If the underlying song is already fully cached, don't transfer bytes —
-  // just create the `song:` item + edge so it shows up in the browser, and
-  // refresh the promoted metadata with whatever the caller supplied. The real
-  // `Child` goes along, so the `cached_song_*` mirrors are rebuilt too.
-  if (song.id in state.cachedSongs) {
+  // If the underlying song is already fully cached in the format the current
+  // download-format setting asks for, don't transfer bytes — just create the
+  // `song:` item + edge so it shows up in the browser, and refresh the promoted
+  // metadata with whatever the caller supplied. The real `Child` goes along, so
+  // the `cached_song_*` mirrors are rebuilt too. A cached copy in another
+  // format (reachable when the song was downloaded inside an album/playlist,
+  // not yet as a `song:` item) falls through to a real download so the setting
+  // is honoured.
+  if (song.id in state.cachedSongs && cachedFileMatchesSetting(state.cachedSongs[song.id], song)) {
     const existing = state.cachedSongs[song.id];
     musicCacheStore.getState().upsertCachedSong(
       { ...existing, ...promotedSongFieldsFromChild(song) },
@@ -1277,7 +1303,10 @@ async function downloadItem(queueItem: DownloadQueueItem, myId: number): Promise
     }
     seen.add(song.id);
     const existing = state0.cachedSongs[song.id];
-    if (existing) {
+    // A cached copy only counts as "already downloaded" when its format matches
+    // the current download-format setting; a stale-format copy must go through
+    // downloadSong to be re-transcoded.
+    if (existing && cachedFileMatchesSetting(existing, song)) {
       preScannedSongs.add(`${i}`);
       itemEdges.push({ position, songId: song.id });
       itemSongsForCommit.set(song.id, existing);
@@ -1409,7 +1438,9 @@ async function downloadItem(queueItem: DownloadQueueItem, myId: number): Promise
  */
 async function downloadSong(track: Child): Promise<CachedSongMeta | null> {
   const existing = musicCacheStore.getState().cachedSongs[track.id];
-  if (existing) return existing;
+  // Reuse the cached copy only when it matches the current download format; a
+  // stale-format copy is re-transcoded below.
+  if (existing && cachedFileMatchesSetting(existing, track)) return existing;
 
   await ensureCoverArtAuth();
 
@@ -1435,6 +1466,17 @@ async function downloadSong(track: Child): Promise<CachedSongMeta | null> {
       try { dest.delete(); } catch { /* best-effort */ }
     }
     await tmpDest.move(dest);
+
+    // The copy just replaced was a different format (a re-transcode). Drop the
+    // stale file — it resolves from the OLD row suffix, so it can't collide
+    // with the file we just moved into place. Failure is harmless: the orphan
+    // is swept by the next reconcile.
+    if (existing && existing.suffix !== ext) {
+      const stale = resolveSongFile(existing);
+      if (stale.exists && stale.uri !== dest.uri) {
+        try { stale.delete(); } catch { /* best-effort */ }
+      }
+    }
 
     const bytes = dest.exists ? dest.size ?? 0 : 0;
 
