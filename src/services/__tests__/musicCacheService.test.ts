@@ -2214,6 +2214,57 @@ describe('download pipeline', () => {
     expect(musicCacheStore.getState().cachedSongs['fmt-t1'].suffix).toBe('mp3');
   });
 
+  it('re-downloads a cached song whose format no longer matches downloadFormat', async () => {
+    // A song downloaded earlier under a different setting (here the
+    // m4a original) must NOT be silently reused when Download Format is now
+    // MP3 — the favourites/playlist lists hit this because they span songs
+    // already cached from their albums.
+    mockFileExists = true;
+    mockFileSize = 5000;
+    mockDownloadFileAsyncWithProgress.mockResolvedValue(undefined);
+    playbackSettingsStore.setState({ downloadFormat: 'mp3', downloadMaxBitRate: 192 } as any);
+
+    seedSong(makeCachedSong('s1', { suffix: 'm4a', albumId: 'album-A' }));
+    seedItem('album-A', { type: 'album', songIds: ['s1'] });
+
+    mockFetchPlaylist.mockResolvedValue({
+      id: 'pl-fmt-changed',
+      name: 'X',
+      entry: [makeChild('s1', { suffix: 'm4a', albumId: 'album-A' })],
+    });
+    await enqueuePlaylistDownload('pl-fmt-changed');
+    await waitForQueueIdle();
+
+    expect(mockDownloadFileAsyncWithProgress).toHaveBeenCalledTimes(1);
+    expect(musicCacheStore.getState().cachedSongs['s1'].suffix).toBe('mp3');
+    // The superseded m4a file is removed once the mp3 copy is in place. (The
+    // mock nests `file://` prefixes when composing URIs, so match the tail.)
+    expect(fileDeletes.some((u) => u.endsWith('/album-A/s1.m4a'))).toBe(true);
+  });
+
+  it('still reuses the cached copy when its format matches downloadFormat', async () => {
+    // Cross-item dedup must keep working: an mp3 file cached under the mp3
+    // setting is a real match and needs no re-transfer.
+    mockFileExists = true;
+    mockFileSize = 5000;
+    mockDownloadFileAsyncWithProgress.mockResolvedValue(undefined);
+    playbackSettingsStore.setState({ downloadFormat: 'mp3', downloadMaxBitRate: 192 } as any);
+
+    seedSong(makeCachedSong('s1', { suffix: 'mp3', albumId: 'album-A' }));
+    seedItem('album-A', { type: 'album', songIds: ['s1'] });
+
+    mockFetchPlaylist.mockResolvedValue({
+      id: 'pl-fmt-match',
+      name: 'X',
+      entry: [makeChild('s1', { suffix: 'flac', albumId: 'album-A' }), makeChild('s2', { albumId: 'album-B' })],
+    });
+    await enqueuePlaylistDownload('pl-fmt-match');
+    await waitForQueueIdle();
+
+    expect(mockDownloadFileAsyncWithProgress).toHaveBeenCalledTimes(1);
+    expect(musicCacheStore.getState().cachedSongs['s1'].suffix).toBe('mp3');
+  });
+
   it('errors when getDownloadStreamUrl returns null', async () => {
     mockDownloadFileAsyncWithProgress.mockResolvedValue(undefined);
     (getDownloadStreamUrl as jest.Mock).mockReturnValue(null);
