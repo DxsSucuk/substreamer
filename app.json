@@ -49,11 +49,12 @@
         "foregroundImage": "./src/assets/adaptive-icon.png",
         "backgroundColor": "#1D9BF0"
       },
-      "permissions": [
-        "ACCESS_FINE_LOCATION",
-        "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
-        "POST_NOTIFICATIONS"
-      ],
+ "permissions": [
+  "ACCESS_FINE_LOCATION",
+  "ACCESS_LOCAL_NETWORK",
+  "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+  "POST_NOTIFICATIONS"
+ ],
       "predictiveBackGestureEnabled": false,
       "versionCode": 80000176,
       "package": "com.ghenry22.substream2"

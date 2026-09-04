@@ -22,6 +22,7 @@ import { authStore } from '../store/authStore';
 import { onboardingStore } from '../store/onboardingStore';
 import { isDbHealthy } from '../store/persistence';
 import { serverInfoStore } from '../store/serverInfoStore';
+import { ensureAndroidLocalNetworkPermission } from '../utils/androidLocalNetworkPermission';
 
 import {
   getCertificateInfo,
@@ -165,6 +166,16 @@ export function LoginScreen() {
     }
     setError(null);
     setLoading(true);
+
+    // Android 17+ can block LAN servers behind ACCESS_LOCAL_NETWORK; request it
+    // before the first connection attempt so a refusal surfaces here instead of
+    // a silent network error. No-op (already granted) at the current targetSdk.
+    const localNetwork = await ensureAndroidLocalNetworkPermission();
+    if (localNetwork === 'denied') {
+      setLoading(false);
+      setError(t('localNetworkPermissionDenied'));
+      return;
+    }
 
     const result = await subsonicLogin(url, user, pass, legacyAuth);
 
