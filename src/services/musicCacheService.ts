@@ -1504,6 +1504,9 @@ async function downloadSong(track: Child, workerId: number): Promise<CachedSongM
     beginDownload(track.id);
     const tmpDest = new File(albumDir, tmpName);
     await downloadFileAsyncWithProgress(url, tmpDest.uri, track.id);
+    // A 2xx with an empty body is not a download; recording it leaves a song
+    // marked downloaded that can never play.
+    if (!tmpDest.size) throw new Error('Empty download');
     if (workerId !== processingId && isReidRunning()) {
       try { tmpDest.delete(); } catch { /* best-effort */ }
       clearDownload(track.id);
