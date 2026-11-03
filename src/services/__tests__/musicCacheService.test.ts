@@ -2426,6 +2426,43 @@ describe('download pipeline', () => {
     if (item) expect(item.status).toBe('error');
   });
 
+  it('errors instead of recording a song when the download is empty', async () => {
+    mockFileExists = true;
+    mockFileSize = 0;
+    mockDownloadFileAsyncWithProgress.mockResolvedValue(undefined);
+    mockFetchAlbum.mockResolvedValue({
+      id: 'album-empty',
+      name: 'X',
+      song: [makeChild('empty-t1', { albumId: 'album-empty' })],
+    });
+    await enqueueAlbumDownload('album-empty');
+    await waitForQueueIdle();
+
+    expect(musicCacheStore.getState().cachedSongs['empty-t1']).toBeUndefined();
+    expect(musicCacheStore.getState().cachedItems['album-empty']).toBeUndefined();
+    const item = musicCacheStore.getState().downloadQueue.find((q: any) => q.itemId === 'album-empty');
+    expect(item?.status).toBe('error');
+    expect(fileDeletes.some((u) => u.includes('/album-empty/empty-t1.') && u.endsWith('.tmp'))).toBe(true);
+  });
+
+  it('retries an empty download and records the retry', async () => {
+    mockFileExists = true;
+    mockFileSize = 0;
+    mockDownloadFileAsyncWithProgress
+      .mockImplementationOnce(async () => { mockFileSize = 0; })
+      .mockImplementationOnce(async () => { mockFileSize = 5000; });
+    mockFetchAlbum.mockResolvedValue({
+      id: 'album-retry',
+      name: 'X',
+      song: [makeChild('retry-t1', { albumId: 'album-retry' })],
+    });
+    await enqueueAlbumDownload('album-retry');
+    await waitForQueueIdle();
+
+    expect(mockDownloadFileAsyncWithProgress).toHaveBeenCalledTimes(2);
+    expect(musicCacheStore.getState().cachedSongs['retry-t1'].bytes).toBe(5000);
+  });
+
   it('deduplicates song within a playlist item', async () => {
     mockFileExists = true;
     mockFileSize = 5000;
